@@ -36,3 +36,40 @@ pub const CREATED_HASH: &str = "66fc20349b370dd2d15cf9fdf2a0b59ccb906da315619c9f
 pub fn fixtures_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
+
+/// A shared chronological event log for the test fakes (FakeSystemd,
+/// FakeTapBackend, StaticRuleset): one clone attached to each fake makes
+/// cross-seam ordering observable, so a tap-created-after-unit-start bug
+/// fails a cargo test instead of only a root integration run.
+#[derive(Debug, Default, Clone)]
+pub struct EventLog(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl EventLog {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn record(&self, event: &str) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(event.to_string());
+    }
+
+    pub fn events(&self) -> Vec<String> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Index of the first event starting with `prefix`; panics with the
+    /// full log when absent (assertion helper).
+    pub fn position(&self, prefix: &str) -> usize {
+        let events = self.events();
+        events
+            .iter()
+            .position(|event| event.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no event starting with {prefix:?} in {events:?}"))
+    }
+}

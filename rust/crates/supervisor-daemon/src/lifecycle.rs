@@ -90,6 +90,18 @@ impl Pacing {
 
 // ── Shared helpers ──────────────────────────────────────────────────────
 
+/// The host-network mutation lock (`DaemonState::net_lock`): serializes
+/// host-port allocation-through-persistence, tap/nftables setup and
+/// teardown, and RecreateNetwork's flush-and-rebuild. Innermost lock
+/// (creation_lock, then vm_lock, then this); never held across the systemd
+/// waits, and never held while calling a function that acquires it.
+fn net_lock(state: &DaemonState) -> std::sync::MutexGuard<'_, ()> {
+    state
+        .net_lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// The per-VM mutation lock. Python relies on per-execution locks and
 /// event-loop interleaving; blocking threads need the real thing.
 fn vm_lock(state: &DaemonState, vm_id: &str) -> Arc<std::sync::Mutex<()>> {
@@ -369,49 +381,59 @@ fn stop_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
     wait_for_controller_stopped(state, &unit);
     with_entry_mut(state, vm_id, |entry| entry.times.stopping_at_ns = now_ns());
 
-    // removed_all_ports_redirection.
+    // removed_all_ports_redirection. Protocol order is Python's
+    // SUPPORTED_PROTOCOL_FOR_REDIRECT = ["udp", "tcp"].
     let device = format!("vmtap{}", entry.vm_index);
     let guest_ip = guest_ipv4(state, &entry);
-    for forward in &entry.port_forwards {
-        for (active, protocol) in [(forward.tcp, "tcp"), (forward.udp, "udp")] {
-            if active {
-                nft_remove_redirect(
-                    state,
-                    &device,
-                    &guest_ip,
-                    forward.host_port,
-                    forward.vm_port,
-                    protocol,
-                )
-                .map_err(RpcError::Internal)?;
+    {
+        let _net = net_lock(state);
+        for forward in &entry.port_forwards {
+            for (active, protocol) in [(forward.udp, "udp"), (forward.tcp, "tcp")] {
+                if active {
+                    nft_remove_redirect(
+                        state,
+                        &device,
+                        &guest_ip,
+                        forward.host_port,
+                        forward.vm_port,
+                        protocol,
+                    )
+                    .map_err(RpcError::Internal)?;
+                }
             }
         }
-    }
-    with_entry_mut(state, vm_id, |entry| entry.port_forwards.clear());
+        with_entry_mut(state, vm_id, |entry| entry.port_forwards.clear());
 
-    // vm.teardown(): nftables chains, then the tap (with the ndp range).
-    if networking_enabled(state, &entry) {
-        nft_teardown_vm(state, entry.vm_index);
-        std::thread::sleep(state.pacing.tap_delete_delay);
-        if let Some(ndp) = &state.ndp {
-            ndp.delete_range(&device, true);
+        // vm.teardown(): nftables chains, then the tap (with the ndp range).
+        if networking_enabled(state, &entry) {
+            nft_teardown_vm(state, entry.vm_index);
+            std::thread::sleep(state.pacing.tap_delete_delay);
+            if let Some(ndp) = &state.ndp {
+                ndp.delete_range(&device, true)
+                    .map_err(RpcError::Internal)?;
+            }
+            // Only the device name matters for the deletion; the addresses go
+            // with the link (a missing device is a warning inside the backend).
+            let tap = TapAssignment::new(
+                entry.vm_index,
+                entry.ipv4.clone().unwrap_or(world::IpPair {
+                    address: String::new(),
+                    network_cidr: "0.0.0.0/0".into(),
+                    gateway: String::new(),
+                }),
+                entry.ipv6.clone().unwrap_or(world::IpPair {
+                    address: String::new(),
+                    network_cidr: "::/0".into(),
+                    gateway: String::new(),
+                }),
+            );
+            if let Err(error) = state.taps.delete_tap(&tap) {
+                // Python's TapInterface.delete swallows every deletion
+                // failure with a warning (interfaces.py); a stop must not
+                // fail on a stuck tap device.
+                tracing::warn!(vm_id, error, "cannot delete the tap interface, continuing");
+            }
         }
-        // Only the device name matters for the deletion; the addresses go
-        // with the link (a missing device is a warning inside the backend).
-        let tap = TapAssignment::new(
-            entry.vm_index,
-            entry.ipv4.clone().unwrap_or(world::IpPair {
-                address: String::new(),
-                network_cidr: "0.0.0.0/0".into(),
-                gateway: String::new(),
-            }),
-            entry.ipv6.clone().unwrap_or(world::IpPair {
-                address: String::new(),
-                network_cidr: "::/0".into(),
-                gateway: String::new(),
-            }),
-        );
-        state.taps.delete_tap(&tap).map_err(RpcError::Internal)?;
     }
 
     // The tap ASSIGNMENT stays on the entry: the Python execution keeps its
@@ -432,6 +454,10 @@ fn recreate_port_redirect_rules(state: &DaemonState, vm_id: &str) -> Result<(), 
     if entry.port_forwards.is_empty() {
         return Ok(());
     }
+    // Allocation-through-persistence and the rule batch run under the
+    // host-network lock: a reassigned host port must be persisted before
+    // any other thread allocates.
+    let _net = net_lock(state);
     let guest_ip = guest_ipv4(state, &entry);
     let ruleset = nft::fetch_ruleset(&*state.nft);
     let prefix = chain_prefix(state);
@@ -444,7 +470,8 @@ fn recreate_port_redirect_rules(state: &DaemonState, vm_id: &str) -> Result<(), 
     let mut port_changed = false;
     let mut entities = Vec::new();
     for forward in &mut forwards {
-        let protocols_to_create: Vec<&str> = [(forward.tcp, "tcp"), (forward.udp, "udp")]
+        // SUPPORTED_PROTOCOL_FOR_REDIRECT order: udp, then tcp.
+        let protocols_to_create: Vec<&str> = [(forward.udp, "udp"), (forward.tcp, "tcp")]
             .into_iter()
             .filter(|(active, _)| *active)
             .map(|(_, protocol)| protocol)
@@ -528,10 +555,12 @@ fn start_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> 
 
     if networking_enabled(state, &entry) {
         let tap = tap_assignment(state, vm_id).map_err(RpcError::Internal)?;
+        let _net = net_lock(state);
         if !state.taps.interface_exists(&tap.device_name) {
             state.taps.create_tap(&tap).map_err(RpcError::Internal)?;
             if let Some(ndp) = &state.ndp {
-                ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true);
+                ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)
+                    .map_err(RpcError::Internal)?;
             }
         }
         // Even when the interface survived, the nftables rules may have
@@ -614,7 +643,7 @@ pub fn reinstall_vm(
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
     stop_vm_execution(state, vm_id)?;
     // erase_volumes(include_rootfs=True, include_data_volumes=wipe_volumes).
-    erase_volumes(&entry, true, wipe_volumes);
+    erase_volumes(&entry, true, wipe_volumes).map_err(RpcError::Internal)?;
     // prepare(): resources rebuilt from the spec, re-stamping the
     // preparation instants.
     with_entry_mut(state, vm_id, |entry| {
@@ -627,15 +656,22 @@ pub fn reinstall_vm(
     Ok((entry, running))
 }
 
-/// Python `VmExecution.erase_volumes`.
-fn erase_volumes(entry: &VmEntry, include_rootfs: bool, include_data_volumes: bool) {
+/// Python `VmExecution.erase_volumes`: unlink errors propagate (an
+/// undeletable rootfs fails the reinstall/delete INTERNAL, exactly like
+/// the Python unlink), except where Python passes missing_ok=True (a
+/// vanished data volume is tolerated).
+fn erase_volumes(
+    entry: &VmEntry,
+    include_rootfs: bool,
+    include_data_volumes: bool,
+) -> Result<(), String> {
     if include_rootfs {
         let rootfs = std::path::Path::new(&entry.config.image_path);
         if rootfs.exists() {
             tracing::info!(path = %rootfs.display(), "deleting rootfs");
-            if let Err(error) = std::fs::remove_file(rootfs) {
-                tracing::warn!(%error, "cannot delete the rootfs");
-            }
+            std::fs::remove_file(rootfs).map_err(|error| {
+                format!("cannot delete the rootfs {}: {error}", rootfs.display())
+            })?;
         }
     }
     if include_data_volumes {
@@ -647,10 +683,14 @@ fn erase_volumes(entry: &VmEntry, include_rootfs: bool, include_data_volumes: bo
             if let Err(error) = std::fs::remove_file(&volume.path_on_host)
                 && error.kind() != std::io::ErrorKind::NotFound
             {
-                tracing::warn!(%error, "cannot delete a volume");
+                return Err(format!(
+                    "cannot delete the volume {}: {error}",
+                    volume.path_on_host
+                ));
             }
         }
     }
+    Ok(())
 }
 
 pub fn delete_vm(
@@ -692,7 +732,8 @@ pub fn delete_vm(
                 .reserved_vm_indices
                 .remove(&config.vm_index);
         }
-        controller_config::remove_controller_configuration(root, vm_id);
+        controller_config::remove_controller_configuration(root, vm_id)
+            .map_err(RpcError::Internal)?;
         return Ok(());
     };
 
@@ -700,7 +741,7 @@ pub fn delete_vm(
     state.world.blocking_write().entries.remove(vm_id);
     // Delete releases the definition: the controller config and the
     // cloud-init seed go too (stop keeps them for reattach).
-    controller_config::remove_controller_configuration(root, vm_id);
+    controller_config::remove_controller_configuration(root, vm_id).map_err(RpcError::Internal)?;
     // A delete is final unless the caller says otherwise; delete+recreate
     // cycles pass keep_port_mappings, wipe overrides it.
     if wipe || !keep_port_mappings {
@@ -713,7 +754,7 @@ pub fn delete_vm(
     }
     if wipe {
         // Mirrors operate_erase: writable data volumes go, the rootfs stays.
-        erase_volumes(&entry, false, true);
+        erase_volumes(&entry, false, true).map_err(RpcError::Internal)?;
     }
     Ok(())
 }
@@ -728,6 +769,13 @@ fn update_port_redirects(
     requested: Vec<(u32, bool, bool)>,
 ) -> Result<(), RpcError> {
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
+    // One global lock from allocation through persistence: without it, two
+    // concurrent AddPortForwards for different VMs can both allocate the
+    // same host_port (the bind probe is transient), and the loser has a
+    // live DNAT rule pointing at the wrong guest by the time its DB save
+    // fails on the partial unique index. Python's event loop makes the
+    // interleaving impossible; this lock is the blocking-thread equivalent.
+    let _net = net_lock(state);
     let device = format!("vmtap{}", entry.vm_index);
     let guest_ip = guest_ipv4(state, &entry);
     let mut forwards = entry.port_forwards.clone();
@@ -742,7 +790,8 @@ fn update_port_redirects(
             kept.push(forward);
             continue;
         }
-        for (active, protocol) in [(forward.tcp, "tcp"), (forward.udp, "udp")] {
+        // SUPPORTED_PROTOCOL_FOR_REDIRECT order: udp, then tcp.
+        for (active, protocol) in [(forward.udp, "udp"), (forward.tcp, "tcp")] {
             if active {
                 nft_remove_redirect(
                     state,
@@ -774,7 +823,8 @@ fn update_port_redirects(
                         &*state.nft,
                     )
                     .map_err(RpcError::Internal)?;
-                for (active, protocol) in [(tcp, "tcp"), (udp, "udp")] {
+                // SUPPORTED_PROTOCOL_FOR_REDIRECT order: udp, then tcp.
+                for (active, protocol) in [(udp, "udp"), (tcp, "tcp")] {
                     if active {
                         nft_add_redirect(
                             state,
@@ -797,8 +847,9 @@ fn update_port_redirects(
             }
             Some(forward) => {
                 let host_port = forward.host_port;
+                // SUPPORTED_PROTOCOL_FOR_REDIRECT order: udp, then tcp.
                 for (current, target, protocol) in
-                    [(forward.tcp, tcp, "tcp"), (forward.udp, udp, "udp")]
+                    [(forward.udp, udp, "udp"), (forward.tcp, tcp, "tcp")]
                 {
                     if current == target {
                         continue;
@@ -1004,7 +1055,9 @@ fn check_memory_backstop(state: &DaemonState, required_memory_mib: u64) -> Resul
     let physical =
         crate::host::memory_total_mib().map_err(|error| RpcError::Internal(error.to_string()))?;
     let cap = physical.saturating_sub(state.host.settings.host_memory_reserved_mib);
-    if committed + required_memory_mib > cap {
+    // saturating_add: a hostile memory_mib request must fail the backstop,
+    // not overflow the sum (Python ints are unbounded).
+    if committed.saturating_add(required_memory_mib) > cap {
         return Err(RpcError::InsufficientResources(format!(
             "Insufficient memory to create VM: required {required_memory_mib} MiB, \
              committed {committed} MiB, cap {cap} MiB (physical {physical} MiB, \
@@ -1015,12 +1068,27 @@ fn check_memory_backstop(state: &DaemonState, required_memory_mib: u64) -> Resul
     Ok(())
 }
 
-/// The rootfs disk of the spec, Python `CreateVmSpec.require_rootfs`.
+/// The rootfs disk of the spec, Python `CreateVmSpec.require_rootfs`:
+/// exactly one ROOTFS disk. A missing or duplicated rootfs raises
+/// InvalidBackendError there (types.py), which the wire maps to
+/// INVALID_ARGUMENT with the INVALID_BACKEND ErrorDetail trailer; message
+/// texts are byte-identical.
 fn require_rootfs(spec: &pb::VmSpec) -> Result<&pb::DiskConfig, RpcError> {
-    spec.disks
+    let rootfs_disks: Vec<&pb::DiskConfig> = spec
+        .disks
         .iter()
-        .find(|disk| disk.role == pb::disk_config::DiskRole::Rootfs as i32)
-        .ok_or_else(|| RpcError::Internal("the spec carries no rootfs disk".to_string()))
+        .filter(|disk| disk.role == pb::disk_config::DiskRole::Rootfs as i32)
+        .collect();
+    if rootfs_disks.len() > 1 {
+        return Err(RpcError::InvalidBackend(format!(
+            "CreateVmSpec has {} ROOTFS disks, expected at most one",
+            rootfs_disks.len()
+        )));
+    }
+    rootfs_disks
+        .first()
+        .copied()
+        .ok_or_else(|| RpcError::InvalidBackend("CreateVmSpec has no ROOTFS disk".to_string()))
 }
 
 /// Build the controller Configuration for a spec create, the Python
@@ -1177,11 +1245,12 @@ fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, 
         port_forwards,
         gpus,
         spec: None,
+        ordinal: 0, // assigned by insert_entry
     };
     {
         let mut world = state.world.blocking_write();
         world.reserved_vm_indices.remove(&entry.vm_index);
-        world.entries.insert(vm_id.to_string(), entry);
+        world.insert_entry(entry);
     }
 
     // _restore_network + started_at + recreate_port_redirect_rules; a
@@ -1190,15 +1259,16 @@ fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, 
     let restore = (|| -> Result<(), String> {
         if state.host.settings.allow_vm_networking {
             let tap = tap_assignment(state, vm_id)?;
+            let _net = net_lock(state);
             if !state.taps.interface_exists(&tap.device_name) {
                 state.taps.create_tap(&tap)?;
                 if let Some(ndp) = &state.ndp {
-                    ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true);
+                    ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
                 }
             } else if let Some(ndp) = &state.ndp {
                 // Prime the ndppd map without touching the service: the
                 // on-disk config already covers this running VM.
-                ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, false);
+                ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, false)?;
             }
             nft_setup_vm(state, tap.vm_index, &tap.device_name)?;
         }
@@ -1216,7 +1286,56 @@ fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, 
     entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))
 }
 
-pub fn create_vm(state: &DaemonState, request: pb::VmSpec) -> Result<(VmEntry, bool), RpcError> {
+/// `str(PurePosixPath(text))` with the wire convention "." -> ""
+/// (proto_convert.py path_from_wire/path_to_wire): purely lexical, like
+/// pathlib. Collapses duplicate slashes (preserving POSIX's special
+/// exactly-two leading slashes), drops "." components and trailing
+/// slashes, keeps "..".
+fn normalize_wire_path(text: &str) -> String {
+    let root = if text.starts_with("//") && !text.starts_with("///") {
+        "//"
+    } else if text.starts_with('/') {
+        "/"
+    } else {
+        ""
+    };
+    let parts: Vec<&str> = text
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect();
+    // PurePosixPath("") and PurePosixPath(".") both render "."; the wire
+    // convention (path_to_wire) sends "." back as the empty string.
+    format!("{root}{}", parts.join("/"))
+}
+
+/// Python passes every wire path through pathlib.Path at spec ingestion
+/// (create_vm_spec_from_pb), so lexically equivalent spellings compare
+/// equal for create-retry idempotency and normalize in the written
+/// controller config; apply the same normalization here.
+fn normalize_spec_paths(spec: &mut pb::VmSpec) {
+    spec.kernel_path = normalize_wire_path(&spec.kernel_path);
+    spec.initrd_path = normalize_wire_path(&spec.initrd_path);
+    for disk in &mut spec.disks {
+        disk.path = normalize_wire_path(&disk.path);
+    }
+}
+
+/// A readable message out of a caught panic payload.
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = panic.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = panic.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "non-string panic payload".to_string()
+    }
+}
+
+pub fn create_vm(
+    state: &DaemonState,
+    mut request: pb::VmSpec,
+) -> Result<(VmEntry, bool), RpcError> {
+    normalize_spec_paths(&mut request);
     match request.backend() {
         pb::Backend::Qemu => {}
         pb::Backend::Firecracker => {
@@ -1299,6 +1418,9 @@ pub fn create_vm(state: &DaemonState, request: pb::VmSpec) -> Result<(VmEntry, b
     // Mechanism backstops, atomic with the registration below.
     check_memory_backstop(state, request.memory_mib)?;
     let validated_gpus = validate_spec_gpus(state, &request.gpus)?;
+    // Rootfs-disk validation, after the backstops like the Python order
+    // (prepare() raises it from require_rootfs) and before any side effect.
+    require_rootfs(&request)?;
 
     // Register the entry (Python registers the execution before prepare so
     // duplicate creates and Health see it), allocating the vm_index and the
@@ -1306,8 +1428,9 @@ pub fn create_vm(state: &DaemonState, request: pb::VmSpec) -> Result<(VmEntry, b
     let (vm_index, assignment, written) = {
         let mut world = state.world.blocking_write();
         // A stale stopped entry is replaced, like the Python
-        // `self.executions[vm_id] = execution` overwrite.
-        world.entries.remove(&vm_id);
+        // `self.executions[vm_id] = execution` overwrite; a dict overwrite
+        // keeps the key's insertion position, so the ordinal survives.
+        let stale_ordinal = world.entries.remove(&vm_id).map(|stale| stale.ordinal);
         let vm_index = world
             .unique_vm_index(state.host.settings.start_id_index)
             .map_err(RpcError::Internal)?;
@@ -1332,47 +1455,66 @@ pub fn create_vm(state: &DaemonState, request: pb::VmSpec) -> Result<(VmEntry, b
             ));
         };
         let now = now_ns();
-        world.entries.insert(
-            vm_id.clone(),
-            VmEntry {
-                vm_hash: vm_id.clone(),
-                vm_index,
-                config: *qemu,
-                settings_slice: parsed.settings,
-                times: VmTimes {
-                    defined_at_ns: now,
-                    preparing_at_ns: now,
-                    prepared_at_ns: now,
-                    ..VmTimes::default()
-                },
-                adopted_running: false,
-                ipv4: assignment.as_ref().map(|(ipv4, _)| ipv4.clone()),
-                ipv6: assignment.as_ref().map(|(_, ipv6)| ipv6.clone()),
-                port_forwards: Vec::new(),
-                gpus: validated_gpus,
-                spec: Some(request.clone()),
+        let mut entry = VmEntry {
+            vm_hash: vm_id.clone(),
+            vm_index,
+            config: *qemu,
+            settings_slice: parsed.settings,
+            times: VmTimes {
+                defined_at_ns: now,
+                preparing_at_ns: now,
+                prepared_at_ns: now,
+                ..VmTimes::default()
             },
-        );
+            adopted_running: false,
+            ipv4: assignment.as_ref().map(|(ipv4, _)| ipv4.clone()),
+            ipv6: assignment.as_ref().map(|(_, ipv6)| ipv6.clone()),
+            port_forwards: Vec::new(),
+            gpus: validated_gpus,
+            spec: Some(request.clone()),
+            ordinal: 0, // assigned below
+        };
+        match stale_ordinal {
+            Some(ordinal) => {
+                entry.ordinal = ordinal;
+                world.entries.insert(vm_id.clone(), entry);
+            }
+            None => world.insert_entry(entry),
+        }
         (vm_index, assignment, written)
     };
 
     let tap = assignment.map(|(ipv4, ipv6)| TapAssignment::new(vm_index, ipv4, ipv6));
 
-    let boot = (|| -> Result<(), String> {
+    // qemu_build.py appends settings.DEVELOPER_SSH_KEYS when
+    // USE_DEVELOPER_SSH_KEYS is truthy.
+    let ssh_authorized_keys = cloudinit::merged_ssh_keys(
+        &request.ssh_authorized_keys,
+        state.host.settings.use_developer_ssh_keys,
+        &state.host.settings.developer_ssh_keys,
+    );
+
+    // catch_unwind: a panic inside the boot must take the same cleanup path
+    // as an error (tap, nftables and the entry would otherwise leak) and
+    // re-report as an internal error. AssertUnwindSafe: the state the
+    // closure touches is either re-read under locks afterwards or removed
+    // by the cleanup below.
+    let boot = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
         if let Some(tap) = &tap {
+            let _net = net_lock(state);
             // A leftover interface from a previous life of this vm_index is
             // recreated from scratch, like the create path's
             // interface_exists -> delete -> create_tap sequence.
             if state.taps.interface_exists(&tap.device_name) {
                 std::thread::sleep(state.pacing.tap_delete_delay);
                 if let Some(ndp) = &state.ndp {
-                    ndp.delete_range(&tap.device_name, true);
+                    ndp.delete_range(&tap.device_name, true)?;
                 }
                 state.taps.delete_tap(tap)?;
             }
             state.taps.create_tap(tap)?;
             if let Some(ndp) = &state.ndp {
-                ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true);
+                ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
             }
             nft_setup_vm(state, vm_index, &tap.device_name)?;
         }
@@ -1384,7 +1526,7 @@ pub fn create_vm(state: &DaemonState, request: pb::VmSpec) -> Result<(VmEntry, b
             vm_hash: &vm_id,
             vm_index,
             tap: tap.as_ref(),
-            ssh_authorized_keys: &request.ssh_authorized_keys,
+            ssh_authorized_keys: &ssh_authorized_keys,
             hostname: &request.hostname,
             has_gpu: !request.gpus.is_empty(),
             dns_nameservers: state.host.dns_nameservers.as_deref(),
@@ -1416,17 +1558,21 @@ pub fn create_vm(state: &DaemonState, request: pb::VmSpec) -> Result<(VmEntry, b
             recreate_port_redirect_rules(state, &vm_id)?;
         }
         Ok(())
-    })();
+    }))
+    .unwrap_or_else(|panic| Err(format!("CreateVm panicked: {}", panic_message(&*panic))));
 
     if let Err(error) = boot {
         // The Python create's except branch: teardown networking, forget
         // the execution, propagate. The controller config and cloud-init
         // seed are left behind, exactly like Python.
         if let Some(tap) = &tap {
+            let _net = net_lock(state);
             nft_teardown_vm(state, vm_index);
             std::thread::sleep(state.pacing.tap_delete_delay);
-            if let Some(ndp) = &state.ndp {
-                ndp.delete_range(&tap.device_name, true);
+            if let Some(ndp) = &state.ndp
+                && let Err(ndp_error) = ndp.delete_range(&tap.device_name, true)
+            {
+                tracing::warn!(ndp_error, "failed to drop the ndp range during cleanup");
             }
             if let Err(delete_error) = state.taps.delete_tap(tap) {
                 tracing::warn!(delete_error, "failed to delete the tap during cleanup");
@@ -1450,12 +1596,12 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
     tracing::info!("Starting network recreation process");
 
     // Step 1: running VMs with a tap (Python: execution.is_running and
-    // execution.vm.tap_interface).
+    // execution.vm.tap_interface), in pool insertion order.
     let entries: Vec<VmEntry> = state
         .world
         .blocking_read()
-        .entries
-        .values()
+        .ordered_entries()
+        .into_iter()
         .cloned()
         .collect();
     let unit_names: Vec<String> = entries.iter().map(|entry| entry.unit_name()).collect();
@@ -1482,42 +1628,53 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
         "found running VMs to recreate network rules for"
     );
 
-    // Step 2: remove every aleph chain (per-VM and supervisor), refetching
-    // per chain like the Python remove_chain loop.
-    let prefix = chain_prefix(state).to_string();
-    let all_chains = nft::get_all_aleph_chains(&nft::fetch_ruleset(&*state.nft), &prefix);
-    let mut removed_chains = Vec::new();
-    for chain in &all_chains {
-        let ruleset = nft::fetch_ruleset(&*state.nft);
-        let commands = nft::remove_chain_commands(&ruleset, chain);
-        nft::run_commands_logged(&*state.nft, &commands);
-        removed_chains.push(chain.clone());
-    }
+    // Steps 2-4 hold the host-network lock: the flush-and-rebuild must
+    // never interleave with a concurrent create/start's chain setup, which
+    // could leave a freshly booted VM with no chains at all (Python's
+    // event loop cannot interleave these sections). Released before step 5:
+    // recreate_port_redirect_rules takes the same lock itself.
+    let (removed_chains, recreated_vms, failed_vms) = {
+        let _net = net_lock(state);
 
-    // Step 3: re-initialize the base ruleset.
-    initialize_nftables(state)
-        .map_err(|error| RpcError::Internal(format!("Failed to initialize network: {error}")))?;
+        // Step 2: remove every aleph chain (per-VM and supervisor),
+        // refetching per chain like the Python remove_chain loop.
+        let prefix = chain_prefix(state).to_string();
+        let all_chains = nft::get_all_aleph_chains(&nft::fetch_ruleset(&*state.nft), &prefix);
+        let mut removed_chains = Vec::new();
+        for chain in &all_chains {
+            let ruleset = nft::fetch_ruleset(&*state.nft);
+            let commands = nft::remove_chain_commands(&ruleset, chain);
+            nft::run_commands_logged(&*state.nft, &commands);
+            removed_chains.push(chain.clone());
+        }
 
-    // Step 4: per-VM chains and rules.
-    let mut recreated_vms: Vec<String> = Vec::new();
-    let mut failed_vms: Vec<serde_json::Value> = Vec::new();
-    for entry in &running {
-        let device = format!("vmtap{}", entry.vm_index);
-        match nft_setup_vm(state, entry.vm_index, &device) {
-            Ok(()) => recreated_vms.push(entry.vm_hash.clone()),
-            Err(error) => {
-                tracing::error!(
-                    vm_hash = entry.vm_hash,
-                    error,
-                    "failed to recreate VM network"
-                );
-                failed_vms.push(serde_json::json!({
-                    "vm_hash": entry.vm_hash,
-                    "error": error,
-                }));
+        // Step 3: re-initialize the base ruleset.
+        initialize_nftables(state).map_err(|error| {
+            RpcError::Internal(format!("Failed to initialize network: {error}"))
+        })?;
+
+        // Step 4: per-VM chains and rules.
+        let mut recreated_vms: Vec<String> = Vec::new();
+        let mut failed_vms: Vec<serde_json::Value> = Vec::new();
+        for entry in &running {
+            let device = format!("vmtap{}", entry.vm_index);
+            match nft_setup_vm(state, entry.vm_index, &device) {
+                Ok(()) => recreated_vms.push(entry.vm_hash.clone()),
+                Err(error) => {
+                    tracing::error!(
+                        vm_hash = entry.vm_hash,
+                        error,
+                        "failed to recreate VM network"
+                    );
+                    failed_vms.push(serde_json::json!({
+                        "vm_hash": entry.vm_hash,
+                        "error": error,
+                    }));
+                }
             }
         }
-    }
+        (removed_chains, recreated_vms, failed_vms)
+    };
 
     // Step 5: reapply persisted port redirects (instances only; every
     // adopted VM is one). Failures only log, like Python.
@@ -1579,29 +1736,32 @@ pub fn reconcile_boot(state: &DaemonState) {
     let running: Vec<String> = state
         .world
         .blocking_read()
-        .entries
-        .values()
+        .ordered_entries()
+        .into_iter()
         .filter(|entry| entry.adopted_running)
         .map(|entry| entry.vm_hash.clone())
         .collect();
     for vm_id in running {
         let result = (|| -> Result<(), String> {
             let tap = tap_assignment(state, &vm_id)?;
-            if !state.taps.interface_exists(&tap.device_name) {
-                state.taps.create_tap(&tap)?;
-                if let Some(ndp) = &state.ndp {
-                    ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true);
-                }
-            }
-            if let Some(ndp) = &state.ndp
-                && state.taps.interface_exists(&tap.device_name)
             {
-                // Prime the in-memory map without a config rewrite or
-                // service restart: the on-disk ndppd.conf already covers
-                // running VMs (update_service=False in Python).
-                ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, false);
+                let _net = net_lock(state);
+                if !state.taps.interface_exists(&tap.device_name) {
+                    state.taps.create_tap(&tap)?;
+                    if let Some(ndp) = &state.ndp {
+                        ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
+                    }
+                }
+                if let Some(ndp) = &state.ndp
+                    && state.taps.interface_exists(&tap.device_name)
+                {
+                    // Prime the in-memory map without a config rewrite or
+                    // service restart: the on-disk ndppd.conf already covers
+                    // running VMs (update_service=False in Python).
+                    ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, false)?;
+                }
+                nft_setup_vm(state, tap.vm_index, &tap.device_name)?;
             }
-            nft_setup_vm(state, tap.vm_index, &tap.device_name)?;
             recreate_port_redirect_rules(state, &vm_id)?;
             Ok(())
         })();
@@ -1657,6 +1817,19 @@ mod tests {
     }
 
     fn harness() -> Harness {
+        harness_with_ruleset(bare_host_ruleset())
+    }
+
+    /// The typical-node ruleset of the fixture (aleph chains + one VM).
+    fn typical_ruleset() -> Vec<Value> {
+        let fixture: Value = serde_json::from_str(
+            &std::fs::read_to_string(test_fixtures::fixtures_dir().join("nftables.json")).unwrap(),
+        )
+        .unwrap();
+        fixture["rulesets"]["typical"].as_array().unwrap().clone()
+    }
+
+    fn harness_with_ruleset(ruleset: Vec<Value>) -> Harness {
         let tmp = tempfile::tempdir().unwrap();
         let mut settings = Settings::from_vars(
             [(
@@ -1679,7 +1852,7 @@ mod tests {
         };
         let systemd = Arc::new(FakeSystemd::new());
         let taps = Arc::new(FakeTapBackend::new());
-        let nft_executor = Arc::new(nft::StaticRuleset::new(bare_host_ruleset()));
+        let nft_executor = Arc::new(nft::StaticRuleset::new(ruleset));
         let mut state = crate::service::DaemonState::hermetic(
             host,
             world::WorldView::default(),
@@ -2177,5 +2350,579 @@ mod tests {
             }
             other => panic!("expected Internal, got {other:?}"),
         }
+    }
+
+    // ── Review-fix regression tests (increment 3 batch) ──────────────────
+
+    #[test]
+    fn concurrent_port_forward_adds_allocate_distinct_host_ports() {
+        // B1: with per-VM locks only, two concurrent AddPortForwards for
+        // DIFFERENT VMs could both allocate the same host_port (the bind
+        // probe is transient); the net_lock serializes allocation through
+        // persistence, so the ports must always be distinct.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_a = hash('2');
+        let vm_b = hash('3');
+        create_vm(state, spec(&vm_a, &root)).unwrap();
+        create_vm(state, spec(&vm_b, &root)).unwrap();
+
+        let barrier = std::sync::Barrier::new(2);
+        let (port_a, port_b) = std::thread::scope(|scope| {
+            let handle_a = scope.spawn(|| {
+                barrier.wait();
+                add_port_forward(
+                    state,
+                    &pb::AddPortForwardRequest {
+                        vm_id: vm_a.clone(),
+                        host_port: 0,
+                        vm_port: 22,
+                        protocol: pb::Protocol::Tcp as i32,
+                    },
+                )
+                .unwrap()
+                .host_port
+            });
+            let handle_b = scope.spawn(|| {
+                barrier.wait();
+                add_port_forward(
+                    state,
+                    &pb::AddPortForwardRequest {
+                        vm_id: vm_b.clone(),
+                        host_port: 0,
+                        vm_port: 22,
+                        protocol: pb::Protocol::Tcp as i32,
+                    },
+                )
+                .unwrap()
+                .host_port
+            });
+            (handle_a.join().unwrap(), handle_b.join().unwrap())
+        });
+        assert_ne!(port_a, port_b, "concurrent allocations must never collide");
+    }
+
+    #[test]
+    fn a_panicking_boot_takes_the_cleanup_path() {
+        // B4: a panic inside the boot closure must clean up like an error
+        // (no leaked entry) and report INTERNAL, not unwind past cleanup.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        harness.taps.panic_on_create();
+        match create_vm(state, spec(&hash('4'), &root)) {
+            Err(RpcError::Internal(message)) => {
+                assert!(message.contains("panicked"), "got: {message}");
+                assert!(message.contains("injected tap creation panic"));
+            }
+            other => panic!("expected Internal, got {other:?}"),
+        }
+        assert!(state.world.blocking_read().is_empty(), "the entry leaked");
+        assert!(harness.taps.devices().is_empty());
+    }
+
+    #[test]
+    fn a_hostile_memory_request_saturates_instead_of_overflowing() {
+        // B5: committed + required must saturate; with one VM committed,
+        // a u64::MAX request overflowed the sum before the fix.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        create_vm(state, spec(&hash('5'), &root)).unwrap();
+        let mut request = spec(&hash('6'), &root);
+        request.memory_mib = u64::MAX;
+        match create_vm(state, request) {
+            Err(RpcError::InsufficientResources(_)) => {}
+            other => panic!("expected InsufficientResources, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rootfs_disk_validation_matches_the_python_messages() {
+        // C1: missing rootfs and duplicate rootfs are InvalidBackendError
+        // (INVALID_ARGUMENT + INVALID_BACKEND trailer) with types.py's
+        // exact messages, before any side effect.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+
+        let mut request = spec(&hash('7'), &root);
+        request.disks.clear();
+        match create_vm(state, request) {
+            Err(RpcError::InvalidBackend(message)) => {
+                assert_eq!(message, "CreateVmSpec has no ROOTFS disk");
+            }
+            other => panic!("expected InvalidBackend, got {other:?}"),
+        }
+
+        let mut request = spec(&hash('7'), &root);
+        let duplicate = request.disks[0].clone();
+        request.disks.push(duplicate);
+        match create_vm(state, request) {
+            Err(RpcError::InvalidBackend(message)) => {
+                assert_eq!(
+                    message,
+                    "CreateVmSpec has 2 ROOTFS disks, expected at most one"
+                );
+            }
+            other => panic!("expected InvalidBackend, got {other:?}"),
+        }
+
+        // No side effects: nothing registered, no tap, no artifacts.
+        assert!(state.world.blocking_read().is_empty());
+        assert!(harness.taps.devices().is_empty());
+        assert!(!root.join(format!("{}-controller.json", hash('7'))).exists());
+    }
+
+    #[test]
+    fn vms_enumerate_in_creation_order_not_hash_order() {
+        // C4: Python iterates executions in insertion order; create 'b'
+        // then 'a' and the enumeration must stay [b, a] where a BTreeMap
+        // walk would flip it.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        create_vm(state, spec(&hash('b'), &root)).unwrap();
+        create_vm(state, spec(&hash('a'), &root)).unwrap();
+        let order: Vec<String> = state
+            .world
+            .blocking_read()
+            .ordered_entries()
+            .iter()
+            .map(|entry| entry.vm_hash.clone())
+            .collect();
+        assert_eq!(order, vec![hash('b'), hash('a')]);
+    }
+
+    #[test]
+    fn wire_paths_normalize_like_pathlib() {
+        // C6: str(PurePosixPath(...)) semantics with "." -> "" on the wire.
+        for (input, expected) in [
+            ("/a//b/./c/", "/a/b/c"),
+            ("a/./b//", "a/b"),
+            ("/a/../b", "/a/../b"),
+            ("//a//b", "//a/b"),
+            ("///a", "/a"),
+            ("/", "/"),
+            ("//", "//"),
+            ("", ""),
+            (".", ""),
+            ("./a", "a"),
+            ("/tmp/rootfs.qcow2", "/tmp/rootfs.qcow2"),
+        ] {
+            assert_eq!(normalize_wire_path(input), expected, "input {input:?}");
+        }
+    }
+
+    #[test]
+    fn messy_disk_paths_normalize_in_the_config_and_the_idempotency_check() {
+        // C6: Python passes proto paths through pathlib.Path, so
+        // "/a//b/./c/" spellings normalize in the written controller
+        // config and compare equal on a create retry.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('c');
+        let clean = root.join("rootfs.qcow2").to_string_lossy().into_owned();
+
+        let mut request = spec(&vm_id, &root);
+        request.disks[0].path = format!("{}//./rootfs.qcow2", root.display());
+        let (entry, _) = create_vm(state, request).unwrap();
+        assert_eq!(entry.config.image_path, clean, "config path normalized");
+        let written =
+            std::fs::read_to_string(root.join(format!("{vm_id}-controller.json"))).unwrap();
+        assert!(written.contains(&format!("\"image_path\": \"{clean}\"")));
+        assert!(!written.contains("//./"));
+
+        // A retry with a DIFFERENT messy spelling of the same path is the
+        // same spec: idempotent, not AlreadyExists.
+        let mut retry = spec(&vm_id, &root);
+        retry.disks[0].path = format!("{}/./rootfs.qcow2/", root.display());
+        let (again, running) = create_vm(state, retry).unwrap();
+        assert!(running);
+        assert_eq!(again.vm_index, entry.vm_index);
+    }
+
+    #[test]
+    fn stop_tolerates_a_failing_tap_delete_like_python() {
+        // C9: Python's TapInterface.delete swallows deletion failures with
+        // a warning; StopVm (and the delete that follows) must succeed.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('8');
+        create_vm(state, spec(&vm_id, &root)).unwrap();
+        harness
+            .taps
+            .fail_delete("injected: Device or resource busy");
+        let entry = stop_vm(state, &vm_id).unwrap();
+        assert_ne!(entry.times.stopped_at_ns, 0);
+        // The fake still holds the device (delete failed), like a stuck tap.
+        assert!(harness.taps.interface_exists("vmtap4"));
+        // The follow-up delete also succeeds (stop is already done).
+        delete_vm(state, &vm_id, false, false).unwrap();
+        assert!(state.world.blocking_read().is_empty());
+    }
+
+    #[test]
+    fn reinstall_propagates_an_undeletable_rootfs_like_python() {
+        // C11: Python's rootfs.unlink() propagates; an immutable rootfs
+        // (here: a directory at the path) makes ReinstallVm INTERNAL
+        // instead of logging and pretending success.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('d');
+        create_vm(state, spec(&vm_id, &root)).unwrap();
+        // remove_file on a directory fails whatever the euid.
+        std::fs::create_dir(root.join("rootfs.qcow2")).unwrap();
+        match reinstall_vm(state, &vm_id, true) {
+            Err(RpcError::Internal(message)) => {
+                assert!(message.contains("cannot delete the rootfs"), "{message}");
+            }
+            other => panic!("expected Internal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reboot_of_a_stopped_vm_keeps_the_stop_stamps_and_empty_forwards() {
+        // C14: Python's reboot_vm restarts the unit and stamps started_at
+        // but never clears stopped_at/stopping_at nor reloads
+        // mapped_ports, so a rebooted stopped VM still reports STOPPED
+        // with no forwards (the shared wart is ledgered).
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('e');
+        create_vm(state, spec(&vm_id, &root)).unwrap();
+        add_port_forward(
+            state,
+            &pb::AddPortForwardRequest {
+                vm_id: vm_id.clone(),
+                host_port: 0,
+                vm_port: 22,
+                protocol: pb::Protocol::Tcp as i32,
+            },
+        )
+        .unwrap();
+        stop_vm(state, &vm_id).unwrap();
+
+        let (entry, running) = reboot_vm(state, &vm_id).unwrap();
+        assert!(running, "the unit itself was restarted");
+        assert_ne!(entry.times.stopped_at_ns, 0, "stopped_at survives");
+        assert_ne!(entry.times.stopping_at_ns, 0, "stopping_at survives");
+        assert_ne!(entry.times.started_at_ns, 0);
+        assert!(
+            entry.port_forwards.is_empty(),
+            "mapped_ports are not reloaded on this path"
+        );
+        // _status_of checks stopped_at first: still STOPPED on the wire.
+        let info = crate::service::vm_info_message(&entry, running, now_ns());
+        assert_eq!(info.status, pb::VmStatus::Stopped as i32);
+        // The tap was NOT recreated (restart-without-network, both daemons).
+        assert!(!harness.taps.interface_exists("vmtap4"));
+    }
+
+    #[test]
+    fn recreate_network_rebuilds_running_vms_and_skips_stopped_ones() {
+        // E1: chains of running VMs are rebuilt, stopped VMs are skipped,
+        // and the summary carries the Python dict's shape.
+        let harness = harness_with_ruleset(typical_ruleset());
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let running_vm = hash('a');
+        let stopped_vm = hash('b');
+        create_vm(state, spec(&running_vm, &root)).unwrap();
+        create_vm(state, spec(&stopped_vm, &root)).unwrap();
+        stop_vm(state, &stopped_vm).unwrap();
+        // Only the batches recreate_network itself emits matter below.
+        harness
+            .nft
+            .batches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+
+        let summary = recreate_network(state).unwrap();
+        assert_eq!(summary["success"], serde_json::json!(true));
+        assert_eq!(
+            summary["recreated_vms"],
+            serde_json::json!([running_vm.clone()])
+        );
+        assert_eq!(summary["recreated_count"], serde_json::json!(1));
+        assert_eq!(summary["failed_count"], serde_json::json!(0));
+        assert_eq!(summary["failed_vms"], serde_json::json!([]));
+        // The typical fixture carries the supervisor chains and VM 3's; all
+        // of them were flushed.
+        let removed: Vec<&str> = summary["removed_chains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect();
+        assert!(removed.contains(&"aleph-supervisor-nat"));
+        assert!(removed.contains(&"aleph-vm-nat-3"));
+        assert_eq!(
+            summary["removed_chains_count"],
+            serde_json::json!(removed.len())
+        );
+
+        // The rebuild emitted the running VM's chains (vm_index 4) and not
+        // the stopped one's (vm_index 5).
+        let batches = harness
+            .nft
+            .batches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let text = serde_json::to_string(&batches).unwrap();
+        assert!(text.contains("aleph-vm-nat-4"));
+        assert!(!text.contains("aleph-vm-nat-5"));
+    }
+
+    #[test]
+    fn recreate_network_reapplies_persisted_redirects_of_running_vms() {
+        // E1: step 5 reloads the store and re-emits the DNAT entities.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('f');
+        create_vm(state, spec(&vm_id, &root)).unwrap();
+        let info = add_port_forward(
+            state,
+            &pb::AddPortForwardRequest {
+                vm_id: vm_id.clone(),
+                host_port: 0,
+                vm_port: 8080,
+                protocol: pb::Protocol::Tcp as i32,
+            },
+        )
+        .unwrap();
+
+        let summary = recreate_network(state).unwrap();
+        assert_eq!(summary["recreated_vms"], serde_json::json!([vm_id.clone()]));
+        let batches = harness
+            .nft
+            .batches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let text = serde_json::to_string(batches.last().unwrap()).unwrap();
+        assert!(
+            text.contains(&info.host_port.to_string()),
+            "the persisted redirect was re-emitted: {text}"
+        );
+        // The in-memory mapping survived the reload.
+        let entry = entry_snapshot(state, &vm_id).unwrap();
+        assert_eq!(entry.port_forwards.len(), 1);
+        assert_eq!(entry.port_forwards[0].host_port, info.host_port);
+    }
+
+    #[test]
+    fn start_creates_the_tap_and_chains_before_starting_the_unit() {
+        // E2: the shared event log interleaves the fakes; a unit started
+        // before its tap exists must fail this ordering assertion.
+        let harness = harness();
+        let log = crate::test_fixtures::EventLog::new();
+        harness.systemd.set_event_log(log.clone());
+        harness.taps.set_event_log(log.clone());
+        harness.nft.set_event_log(log.clone());
+
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('1');
+        create_vm(state, spec(&vm_id, &root)).unwrap();
+
+        // The create itself must order tap -> nft -> unit start.
+        let events = log.events();
+        let tap_created = log.position("tap: create vmtap4");
+        let unit_started = log.position("systemd: start ");
+        let first_batch = log.position("nft: batch ");
+        assert!(
+            tap_created < first_batch && first_batch < unit_started,
+            "create ordering broken: {events:?}"
+        );
+
+        // Stop, then start: the tap and chains must again precede the
+        // unit restart.
+        stop_vm(state, &vm_id).unwrap();
+        let before = log.events().len();
+        start_vm(state, &vm_id).unwrap();
+        let events: Vec<String> = log.events().split_off(before);
+        let tap_created = events
+            .iter()
+            .position(|event| event.starts_with("tap: create vmtap4"))
+            .expect("start must recreate the tap");
+        let restarted = events
+            .iter()
+            .position(|event| event.starts_with("systemd: restart "))
+            .expect("start must restart the unit");
+        let nft_batch = events
+            .iter()
+            .position(|event| event.starts_with("nft: batch "))
+            .expect("start must reapply the chains");
+        assert!(
+            tap_created < nft_batch && nft_batch < restarted,
+            "start ordering broken: {events:?}"
+        );
+    }
+
+    #[test]
+    fn reinstall_without_wipe_keeps_the_data_volumes() {
+        // E5: wipe_volumes=false erases the rootfs only; the writable data
+        // volume survives.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('2');
+        let data = root.join("data.img");
+        std::fs::write(root.join("rootfs.qcow2"), b"disk").unwrap();
+        std::fs::write(&data, b"data").unwrap();
+        let mut request = spec(&vm_id, &root);
+        request.disks.push(pb::DiskConfig {
+            path: data.to_string_lossy().into_owned(),
+            readonly: false,
+            format: pb::disk_config::Format::Raw as i32,
+            role: pb::disk_config::DiskRole::Extra as i32,
+        });
+        create_vm(state, request).unwrap();
+
+        let (_, running) = reinstall_vm(state, &vm_id, false).unwrap();
+        assert!(running);
+        assert!(!root.join("rootfs.qcow2").exists(), "rootfs erased");
+        assert!(data.exists(), "wipe_volumes=false keeps the data volume");
+    }
+
+    #[test]
+    fn the_erase_loop_skips_read_only_volumes_and_tolerates_missing_files() {
+        // E5: erase_volumes(include_data_volumes=True) removes writable
+        // volumes, skips read-only ones, and tolerates a vanished file
+        // (Python's missing_ok=True).
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('3');
+        let writable = root.join("data.img");
+        let read_only = root.join("blob.img");
+        let vanished = root.join("gone.img");
+        std::fs::write(root.join("rootfs.qcow2"), b"disk").unwrap();
+        std::fs::write(&writable, b"data").unwrap();
+        std::fs::write(&read_only, b"blob").unwrap();
+        let mut request = spec(&vm_id, &root);
+        for (path, readonly) in [(&writable, false), (&read_only, true), (&vanished, false)] {
+            request.disks.push(pb::DiskConfig {
+                path: path.to_string_lossy().into_owned(),
+                readonly,
+                format: pb::disk_config::Format::Raw as i32,
+                role: pb::disk_config::DiskRole::Extra as i32,
+            });
+        }
+        create_vm(state, request).unwrap();
+
+        // DeleteVm(wipe=true) drives erase_volumes(false, true).
+        delete_vm(state, &vm_id, true, false).unwrap();
+        assert!(!writable.exists(), "writable volume erased");
+        assert!(read_only.exists(), "read-only volume kept");
+        assert!(
+            root.join("rootfs.qcow2").exists(),
+            "wipe never touches the rootfs"
+        );
+    }
+
+    #[test]
+    fn a_boot_reconcile_failure_hides_the_vm() {
+        // E5: reconcile_boot's failure branch parks the VM like a failed
+        // Python reattach: removed from the world, its vm_index reserved.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('5');
+        create_vm(state, spec(&vm_id, &root)).unwrap();
+        // Reshape the entry as an adopted-running one whose tap vanished.
+        with_entry_mut(state, &vm_id, |entry| {
+            entry.adopted_running = true;
+        });
+        let tap = TapAssignment::new(
+            4,
+            state.world.blocking_read().entries[&vm_id]
+                .ipv4
+                .clone()
+                .unwrap(),
+            state.world.blocking_read().entries[&vm_id]
+                .ipv6
+                .clone()
+                .unwrap(),
+        );
+        harness.taps.delete_tap(&tap).unwrap();
+        harness.taps.fail_create("injected: cannot create tap");
+
+        reconcile_boot(state);
+        let world = state.world.blocking_read();
+        assert!(
+            !world.entries.contains_key(&vm_id),
+            "the failed VM is hidden"
+        );
+        assert!(
+            world.reserved_vm_indices.contains(&4),
+            "its vm_index claim is kept out of the allocator"
+        );
+    }
+
+    #[test]
+    fn recreate_redirects_replay_the_python_both_protocols_batch() {
+        // C3: the udp-then-tcp protocol order of
+        // SUPPORTED_PROTOCOL_FOR_REDIRECT, pinned byte-for-byte against
+        // the batch VmExecution.recreate_port_redirect_rules emits for a
+        // both-protocols mapping (fixture scenario captured from the real
+        // Python code).
+        let fixture: Value = serde_json::from_str(
+            &std::fs::read_to_string(test_fixtures::fixtures_dir().join("nftables.json")).unwrap(),
+        )
+        .unwrap();
+        let scenario = &fixture["scenarios"]["recreate-redirects-both-protocols"];
+        let expected = scenario["batches"].as_array().unwrap().clone();
+
+        let harness = harness_with_ruleset(typical_ruleset());
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        // vm_index 3 == the fixture's VM: give this entry the fixture's
+        // index by pre-claiming nothing and creating at START_ID_INDEX=4,
+        // then overriding the snapshot the recreate reads.
+        let vm_id = hash('9');
+        create_vm(state, spec(&vm_id, &root)).unwrap();
+        with_entry_mut(state, &vm_id, |entry| {
+            entry.vm_index = 3;
+            entry.ipv4 = None; // rederive 172.16.3.2 from vm_index 3
+            entry.ipv6 = None;
+            entry.port_forwards = vec![ports::PortForward {
+                vm_port: 8080,
+                host_port: 24610,
+                tcp: true,
+                udp: true,
+            }];
+        });
+        {
+            // Only the recreate batch matters for the comparison.
+            harness
+                .nft
+                .batches
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
+        }
+        recreate_port_redirect_rules(state, &vm_id).unwrap();
+        let batches = harness
+            .nft
+            .batches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let batches: Vec<Value> = batches.into_iter().map(Value::Array).collect();
+        assert_eq!(
+            batches, expected,
+            "the recreate batch must match the Python capture exactly \
+             (protocol order included)"
+        );
     }
 }

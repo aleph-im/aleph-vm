@@ -274,6 +274,87 @@ pub fn save_port_mappings(
         .map_err(|error| format!("cannot commit port mappings: {error}"))
 }
 
+/// Python `migrate_port_mappings_from_legacy_db` (networking_db.py), the
+/// one-time pre-split upgrade migration run by pool.setup() before
+/// adoption: copy the ACTIVE rows of the pre-split agent DB
+/// ({EXECUTION_DATABASE}) into the supervisor DB so a node upgraded from
+/// the pre-split layout keeps its live VMs' host-port forwards.
+///
+/// Idempotent and self-skipping, exactly like Python: nothing happens when
+/// the two paths are the same file, the legacy DB is absent, either table
+/// is missing, or the supervisor table already holds rows (even
+/// soft-deleted ones). created_at is preserved verbatim; id autoincrements
+/// fresh. Returns the number of rows copied.
+pub fn migrate_port_mappings_from_legacy_db(legacy: &Path, target: &Path) -> Result<usize, String> {
+    if legacy == target || !legacy.exists() {
+        return Ok(0);
+    }
+    let mut target_connection = open_rw(target)?;
+    // Python: `SELECT 1 FROM port_mappings LIMIT 1` -- any row (active or
+    // soft-deleted) means already migrated/populated; a missing table means
+    // the supervisor schema is not created yet, nothing to copy into.
+    match target_connection.query_row("SELECT 1 FROM port_mappings LIMIT 1", [], |_| Ok(())) {
+        Ok(()) => return Ok(0),
+        Err(rusqlite::Error::QueryReturnedNoRows) => {}
+        Err(error) if error.to_string().to_lowercase().contains("no such table") => {
+            return Ok(0);
+        }
+        Err(error) => return Err(format!("cannot inspect {}: {error}", target.display())),
+    }
+
+    let legacy_connection =
+        rusqlite::Connection::open_with_flags(legacy, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| format!("cannot open {}: {error}", legacy.display()))?;
+    let mut statement = match legacy_connection.prepare(
+        "SELECT vm_hash, vm_port, host_port, tcp, udp, created_at, deleted_at \
+         FROM port_mappings WHERE deleted_at IS NULL",
+    ) {
+        Ok(statement) => statement,
+        // The legacy DB predates the port_mappings table: nothing to copy.
+        Err(error) if error.to_string().to_lowercase().contains("no such table") => {
+            return Ok(0);
+        }
+        Err(error) => return Err(format!("cannot query {}: {error}", legacy.display())),
+    };
+    // Values are copied verbatim (rusqlite Value passthrough), like the
+    // Python sqlite3 row copy: whatever SQLAlchemy stored is what lands.
+    let rows: Vec<Vec<rusqlite::types::Value>> = statement
+        .query_map([], |row| {
+            (0..7)
+                .map(|index| row.get::<_, rusqlite::types::Value>(index))
+                .collect()
+        })
+        .map_err(|error| format!("cannot read {}: {error}", legacy.display()))?
+        .collect::<Result<_, _>>()
+        .map_err(|error| format!("cannot read {}: {error}", legacy.display()))?;
+    if rows.is_empty() {
+        return Ok(0);
+    }
+
+    // One transaction, like the Python executemany + commit.
+    let transaction = target_connection
+        .transaction()
+        .map_err(|error| format!("cannot begin a transaction: {error}"))?;
+    for row in &rows {
+        transaction
+            .execute(
+                "INSERT INTO port_mappings \
+                 (vm_hash, vm_port, host_port, tcp, udp, created_at, deleted_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params_from_iter(row.iter()),
+            )
+            .map_err(|error| format!("cannot copy a legacy port mapping: {error}"))?;
+    }
+    transaction
+        .commit()
+        .map_err(|error| format!("cannot commit the legacy migration: {error}"))?;
+    tracing::info!(
+        count = rows.len(),
+        "migrated port mappings from the legacy agent DB into the supervisor DB"
+    );
+    Ok(rows.len())
+}
+
 /// Python `delete_port_mappings`: soft-delete every active row of a VM.
 pub fn delete_port_mappings(database: &Path, vm_hash: &str, now: &str) -> Result<(), String> {
     let connection = open_rw(database)?;
@@ -317,14 +398,38 @@ fn active_host_ports(database: &Path) -> Result<std::collections::HashSet<u32>, 
         .map_err(|error| format!("cannot read host ports: {error}"))
 }
 
+/// One transient bind(2) probe on 0.0.0.0 WITHOUT SO_REUSEADDR: Python's
+/// plain `socket.socket()` sets no options, so a port held in TIME_WAIT is
+/// refused there; `std::net::TcpListener::bind` sets SO_REUSEADDR and would
+/// grant it. Raw libc keeps the probe option-free.
+fn bind_probe(port: u16, socket_type: libc::c_int) -> bool {
+    // SAFETY: plain socket/bind/close syscalls on a local address struct.
+    unsafe {
+        let fd = libc::socket(libc::AF_INET, socket_type, 0);
+        if fd < 0 {
+            return false;
+        }
+        let mut address: libc::sockaddr_in = std::mem::zeroed();
+        address.sin_family = libc::AF_INET as libc::sa_family_t;
+        address.sin_port = port.to_be();
+        address.sin_addr.s_addr = libc::INADDR_ANY;
+        let result = libc::bind(
+            fd,
+            std::ptr::addr_of!(address).cast::<libc::sockaddr>(),
+            std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+        );
+        libc::close(fd);
+        result == 0
+    }
+}
+
 /// Python `is_host_port_available`: a short-lived TCP+UDP bind probe on
 /// 0.0.0.0 (no nftables check).
 pub fn is_host_port_available(port: u32) -> bool {
     let Ok(port) = u16::try_from(port) else {
         return false;
     };
-    std::net::TcpListener::bind(("0.0.0.0", port)).is_ok()
-        && std::net::UdpSocket::bind(("0.0.0.0", port)).is_ok()
+    bind_probe(port, libc::SOCK_STREAM) && bind_probe(port, libc::SOCK_DGRAM)
 }
 
 /// Python `get_available_host_port`: first port from `start_port` that is
@@ -651,6 +756,130 @@ mod tests {
         let first = cursor.fast_get_available_host_port(&db, &executor).unwrap();
         let second = cursor.fast_get_available_host_port(&db, &executor).unwrap();
         assert!(second > first, "the cursor advances past the last grant");
+    }
+
+    #[test]
+    fn the_legacy_migration_copies_active_rows_once() {
+        // C2 parity: the fixture legacy DB is generated by the real Python
+        // SQLAlchemy models (scripts/generate_rust_fixtures.py) with two
+        // active rows and one soft-deleted row.
+        let tmp = tempfile::tempdir().unwrap();
+        let legacy = tmp.path().join("executions.sqlite3");
+        std::fs::copy(
+            test_fixtures::fixtures_dir().join("legacy-executions.sqlite3"),
+            &legacy,
+        )
+        .unwrap();
+        let target = tmp.path().join("supervisor.sqlite3");
+        ensure_schema(&target).unwrap();
+
+        let copied = migrate_port_mappings_from_legacy_db(&legacy, &target).unwrap();
+        assert_eq!(copied, 2, "active rows only; the soft-deleted one stays");
+        let forwards = load_port_forwards(&target, test_fixtures::QEMU_HASH).unwrap();
+        assert_eq!(
+            forwards,
+            vec![
+                PortForward {
+                    vm_port: 22,
+                    host_port: 24200,
+                    tcp: true,
+                    udp: false,
+                },
+                PortForward {
+                    vm_port: 8080,
+                    host_port: 24201,
+                    tcp: true,
+                    udp: true,
+                },
+            ]
+        );
+        // created_at is preserved verbatim (the SQLAlchemy rendering).
+        let connection = rusqlite::Connection::open(&target).unwrap();
+        let created: String = connection
+            .query_row(
+                "SELECT created_at FROM port_mappings WHERE vm_port = 22",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(created, "2026-01-01 00:00:00.000000");
+
+        // Idempotent: a second run copies nothing (rows already present).
+        assert_eq!(
+            migrate_port_mappings_from_legacy_db(&legacy, &target).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn the_legacy_migration_self_skips_like_python() {
+        let tmp = tempfile::tempdir().unwrap();
+        let legacy = tmp.path().join("executions.sqlite3");
+        let target = tmp.path().join("supervisor.sqlite3");
+        ensure_schema(&target).unwrap();
+
+        // Absent legacy DB.
+        assert_eq!(
+            migrate_port_mappings_from_legacy_db(&legacy, &target).unwrap(),
+            0
+        );
+        // Same file.
+        assert_eq!(
+            migrate_port_mappings_from_legacy_db(&target, &target).unwrap(),
+            0
+        );
+        // Legacy DB without the table.
+        rusqlite::Connection::open(&legacy).unwrap();
+        assert_eq!(
+            migrate_port_mappings_from_legacy_db(&legacy, &target).unwrap(),
+            0
+        );
+        // Supervisor schema not created yet.
+        let bare_target = tmp.path().join("bare.sqlite3");
+        rusqlite::Connection::open(&bare_target).unwrap();
+        let populated_legacy = tmp.path().join("populated.sqlite3");
+        std::fs::copy(
+            test_fixtures::fixtures_dir().join("legacy-executions.sqlite3"),
+            &populated_legacy,
+        )
+        .unwrap();
+        assert_eq!(
+            migrate_port_mappings_from_legacy_db(&populated_legacy, &bare_target).unwrap(),
+            0
+        );
+        // A target that already holds rows (even for another VM) skips.
+        let seeded = tmp.path().join("seeded.sqlite3");
+        ensure_schema(&seeded).unwrap();
+        save_port_mappings(
+            &seeded,
+            "zz",
+            &[PortForward {
+                vm_port: 1,
+                host_port: 24300,
+                tcp: true,
+                udp: false,
+            }],
+            &sqlalchemy_utc_now(),
+        )
+        .unwrap();
+        assert_eq!(
+            migrate_port_mappings_from_legacy_db(&populated_legacy, &seeded).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn the_bind_probe_refuses_a_port_a_plain_socket_holds() {
+        // C8: the probe must bind WITHOUT SO_REUSEADDR, like Python's plain
+        // socket.socket(); a port held by a listener (which std creates
+        // with SO_REUSEADDR) reads unavailable either way, and a free port
+        // reads available.
+        let holder = std::net::TcpListener::bind(("0.0.0.0", 0)).unwrap();
+        let held = u32::from(holder.local_addr().unwrap().port());
+        assert!(!is_host_port_available(held));
+        drop(holder);
+        assert!(is_host_port_available(held));
+        assert!(!is_host_port_available(70_000), "out of u16 range");
     }
 
     #[test]

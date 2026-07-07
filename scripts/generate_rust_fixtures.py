@@ -7,6 +7,8 @@ Writes, under rust/crates/supervisor-daemon/tests/fixtures/:
 - ``supervisor.sqlite3``, a port-mapping store created and populated by the
   SQLAlchemy ``PortMapping`` model (same schema, same datetime encoding as
   a live node's database);
+- ``legacy-executions.sqlite3``, a pre-split agent DB (EXECUTION_DATABASE)
+  for the legacy port-mapping migration;
 - ``nftables.json``, the firewall.py oracle: canned input rulesets and the
   exact nftables JSON command batches the Python firewall functions emit
   for them (captured by stubbing the fetch/execute edges), plus predicate
@@ -156,6 +158,14 @@ def build_configurations() -> None:
 
 
 def build_database() -> None:
+    # Determinism note: the committed sqlite bytes (and the DDL the Rust
+    # ensure_schema test compares by name) depend on the SQLAlchemy version
+    # emitting the table and its two indexes; index-creation ORDER inside
+    # the file may differ across SQLAlchemy releases. Regenerate with the
+    # repository venv's pinned SQLAlchemy and commit the result; the Rust
+    # comparison sorts sqlite_master by name, so it is order-insensitive,
+    # but the committed file must stay byte-stable across reruns of THIS
+    # script in THAT venv.
     db_path = FIXTURES_DIR / "supervisor.sqlite3"
     db_path.unlink(missing_ok=True)
     engine = create_engine(f"sqlite:///{db_path}")
@@ -195,15 +205,45 @@ def build_database() -> None:
     print(f"wrote {db_path}")
 
 
+def build_legacy_database() -> None:
+    """The pre-split agent DB (EXECUTION_DATABASE) fixture for the Rust
+    port of migrate_port_mappings_from_legacy_db: the same SQLAlchemy
+    models the legacy layout used, two active rows plus one soft-deleted
+    row that the migration must leave behind."""
+    db_path = FIXTURES_DIR / "legacy-executions.sqlite3"
+    db_path.unlink(missing_ok=True)
+    engine = create_engine(f"sqlite:///{db_path}")
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    with Session(engine) as session:
+        session.add(PortMapping(vm_hash=QEMU_HASH, vm_port=22, host_port=24200, tcp=True, udp=False, created_at=now))
+        session.add(PortMapping(vm_hash=QEMU_HASH, vm_port=8080, host_port=24201, tcp=True, udp=True, created_at=now))
+        session.add(
+            PortMapping(
+                vm_hash=QEMU_HASH,
+                vm_port=443,
+                host_port=24202,
+                tcp=True,
+                udp=False,
+                created_at=now,
+                deleted_at=now,
+            )
+        )
+        session.commit()
+    print(f"wrote {db_path}")
+
+
 CREATED_HASH = fixture_hash("created")
 
 
-def build_written_controller_config() -> None:
+def written_controller_config_payload() -> str:
     """The exact bytes save_controller_configuration writes for a VM created
     through the spec path (build_qemu_configuration inputs, pydantic
     serialization). The Rust controller-config writer must reproduce them
     byte-for-byte so a rollback to the Python daemon reparses its files
-    unchanged."""
+    unchanged. Also imported by the conformance drift guard
+    (tests/conformance) to detect a pydantic-model change without fixture
+    regeneration."""
     session_dir = EXECUTION_ROOT / "jailer"
     settings_slice = ControllerSettings(
         JAILER_BASE_DIR=session_dir,
@@ -229,8 +269,12 @@ def build_written_controller_config() -> None:
         ),
         hypervisor=HypervisorType.qemu,
     )
+    return configuration.model_dump_json(by_alias=True, exclude_none=True, indent=4)
+
+
+def build_written_controller_config() -> None:
     path = FIXTURES_DIR / "written-controller-config.json"
-    path.write_text(configuration.model_dump_json(by_alias=True, exclude_none=True, indent=4))
+    path.write_text(written_controller_config_payload())
     print(f"wrote {path}")
 
 
@@ -366,6 +410,33 @@ def _tap(vm_index: int) -> TapInterface:
     )
 
 
+def _recreate_both_protocols(vm_index: int, host_port: int, vm_port: int) -> None:
+    """Drive the REAL VmExecution.recreate_port_redirect_rules over a
+    minimal execution shell: the protocol iteration order
+    (SUPPORTED_PROTOCOL_FOR_REDIRECT = ["udp", "tcp"]) and the single
+    entity batch it emits are the parity targets for the Rust
+    recreate_port_redirect_rules. The chosen host_port must be bindable at
+    capture time (and at Rust test time) so no reassignment kicks in."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from aleph.vm import models
+    from aleph.vm.models import VmExecution
+
+    execution = object.__new__(VmExecution)
+    execution.mapped_ports = {vm_port: {"host": host_port, "tcp": True, "udp": True}}
+    execution.vm = SimpleNamespace(tap_interface=_tap(vm_index), vm_index=vm_index)
+    execution.vm_id = QEMU_HASH
+    # models.py binds the firewall names at import; rebind them to the
+    # (currently stubbed, see _capture) firewall module functions so the
+    # capture sees the batch instead of a real nft subprocess.
+    with (
+        mock.patch.object(models, "get_existing_nftables_ruleset", firewall.get_existing_nftables_ruleset),
+        mock.patch.object(models, "execute_json_nft_commands", firewall.execute_json_nft_commands),
+    ):
+        asyncio.run(execution.recreate_port_redirect_rules())
+
+
 def _capture(ruleset: list[dict], call) -> list[list[dict]]:
     """Run one firewall.py call with the fetch/execute edges stubbed on a
     frozen ruleset; return every command batch handed to execute."""
@@ -409,6 +480,12 @@ def nftables_fixture_payload() -> dict:
         "remove-redirect": ("typical", lambda: firewall.remove_port_redirect_rule(_tap(3), 24000, 22, "tcp")),
         "teardown-vm": ("typical", lambda: firewall.teardown_nftables_for_vm(3)),
         "remove-all-aleph-chains": ("typical", firewall.remove_all_aleph_chains),
+        # A both-protocols mapping through the REAL recreate loop: pins the
+        # udp-then-tcp SUPPORTED_PROTOCOL_FOR_REDIRECT order in the batch.
+        "recreate-redirects-both-protocols": (
+            "typical",
+            lambda: _recreate_both_protocols(3, 24610, 8080),
+        ),
     }
     scenarios = {
         name: {"ruleset": ruleset_name, "batches": _capture(rulesets[ruleset_name], call)}
@@ -475,6 +552,7 @@ def main() -> None:
     FIXTURES_DIR.mkdir(parents=True, exist_ok=True)
     build_configurations()
     build_database()
+    build_legacy_database()
     build_written_controller_config()
     build_nftables_fixture()
 

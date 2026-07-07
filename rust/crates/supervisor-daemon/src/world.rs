@@ -156,6 +156,13 @@ pub struct VmEntry {
     /// VMs, where the reconstruction stands in (the restarted-Python
     /// behavior).
     pub spec: Option<supervisor_proto::pb::VmSpec>,
+    /// Insertion position, the Python dict order: adoption in sorted config
+    /// order, then creation order. ListVms/ListPortForwards/RecreateNetwork
+    /// enumerate by it (a BTreeMap walk would sort by hash instead, an
+    /// observable difference after a post-boot create). Assigned by
+    /// [`WorldView::insert_entry`]; a replacement keeps the old position,
+    /// like a Python dict assignment to an existing key.
+    pub ordinal: u64,
 }
 
 impl VmEntry {
@@ -185,6 +192,8 @@ pub struct WorldView {
     /// The dynamic IPv6 allocator's position: the Python generator advances
     /// once per prepare_tap (adoption and create), never rewinds.
     pub ipv6_dynamic_ordinal: usize,
+    /// The next [`VmEntry::ordinal`] to hand out.
+    pub next_ordinal: u64,
 }
 
 impl WorldView {
@@ -194,6 +203,29 @@ impl WorldView {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Insert (or replace) an entry, maintaining the Python dict insertion
+    /// order: a new key goes last, an existing key keeps its position
+    /// (`self.executions[vm_id] = execution` in the pool).
+    pub fn insert_entry(&mut self, mut entry: VmEntry) {
+        entry.ordinal = match self.entries.get(&entry.vm_hash) {
+            Some(existing) => existing.ordinal,
+            None => {
+                let ordinal = self.next_ordinal;
+                self.next_ordinal += 1;
+                ordinal
+            }
+        };
+        self.entries.insert(entry.vm_hash.clone(), entry);
+    }
+
+    /// Entries in insertion order, the Python `pool.executions.values()`
+    /// enumeration.
+    pub fn ordered_entries(&self) -> Vec<&VmEntry> {
+        let mut entries: Vec<&VmEntry> = self.entries.values().collect();
+        entries.sort_by_key(|entry| entry.ordinal);
+        entries
     }
 
     /// Python `get_unique_vm_index`: the first free index from
@@ -308,7 +340,7 @@ pub fn build_world_view(
         }
     }
 
-    let mut entries = BTreeMap::new();
+    let mut world = WorldView::default();
     // The dynamic IPv6 allocator hands out pool subnets in allocation order
     // (first subnet reserved for the host); adoption order is the sorted
     // config order, running VMs only, like the Python generator.
@@ -458,22 +490,20 @@ pub fn build_world_view(
             Vec::new()
         };
 
-        entries.insert(
-            vm_hash.clone(),
-            VmEntry {
-                vm_hash,
-                vm_index: config.vm_index,
-                config: qemu,
-                settings_slice: config.settings,
-                times,
-                adopted_running: running == Some(true),
-                ipv4,
-                ipv6,
-                port_forwards,
-                gpus,
-                spec: None,
-            },
-        );
+        world.insert_entry(VmEntry {
+            vm_hash,
+            vm_index: config.vm_index,
+            config: qemu,
+            settings_slice: config.settings,
+            times,
+            adopted_running: running == Some(true),
+            ipv4,
+            ipv6,
+            port_forwards,
+            gpus,
+            spec: None,
+            ordinal: 0, // assigned by insert_entry
+        });
     }
 
     // Claims without an entry are hidden VMs whose LIVE controllers still
@@ -481,18 +511,15 @@ pub fn build_world_view(
     // configs); vm_index allocation must never hand these out (the Python
     // `_failed_reattach` protection).
     let adopted: std::collections::HashSet<i64> =
-        entries.values().map(|entry| entry.vm_index).collect();
-    let reserved_vm_indices: std::collections::HashSet<i64> = claimed_vm_indices
+        world.entries.values().map(|entry| entry.vm_index).collect();
+    world.reserved_vm_indices = claimed_vm_indices
         .into_iter()
         .filter(|index| !adopted.contains(index))
         .collect();
+    world.ipv6_dynamic_ordinal = dynamic_ordinal;
 
-    tracing::info!(count = entries.len(), "world view built");
-    WorldView {
-        entries,
-        reserved_vm_indices,
-        ipv6_dynamic_ordinal: dynamic_ordinal,
-    }
+    tracing::info!(count = world.len(), "world view built");
+    world
 }
 
 /// Sanity cap on one controller config file: real configs are KB-sized, so
@@ -998,6 +1025,57 @@ mod tests {
             );
             assert_eq!(world.len(), 2, "the other fixtures are unaffected");
         }
+    }
+
+    #[test]
+    fn entries_enumerate_in_insertion_order_like_the_python_dict() {
+        // Adoption is sorted config order; the fixture hashes sort as
+        // 1806... (confidential), c110... (qemu), f2fb... (gpu). The
+        // ordinals must pin that order for enumeration even though the
+        // BTreeMap would give it anyway; a replacement keeps its position
+        // (Python dict assignment to an existing key).
+        let tmp = tempfile::tempdir().unwrap();
+        populate_execution_root(tmp.path());
+        let settings = test_settings(tmp.path());
+        let units = StaticUnitStates::with_active_vms(&[test_fixtures::QEMU_HASH]);
+        let mut world = build_world_view(&settings, &units, &[]);
+
+        let order: Vec<&str> = world
+            .ordered_entries()
+            .iter()
+            .map(|entry| entry.vm_hash.as_str())
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                test_fixtures::CONFIDENTIAL_HASH,
+                test_fixtures::QEMU_HASH,
+                test_fixtures::GPU_HASH,
+            ]
+        );
+
+        // A new key goes last, whatever its hash sorts like.
+        let mut newcomer = world.entries[test_fixtures::QEMU_HASH].clone();
+        newcomer.vm_hash = "0".repeat(64);
+        newcomer.vm_index = 9;
+        world.insert_entry(newcomer);
+        let order: Vec<&str> = world
+            .ordered_entries()
+            .iter()
+            .map(|entry| entry.vm_hash.as_str())
+            .collect();
+        assert_eq!(order.last().copied(), Some("0".repeat(64)).as_deref());
+        assert_eq!(order.len(), 4);
+
+        // Replacing an existing key keeps its position.
+        let replacement = world.entries[test_fixtures::QEMU_HASH].clone();
+        world.insert_entry(replacement);
+        let order: Vec<&str> = world
+            .ordered_entries()
+            .iter()
+            .map(|entry| entry.vm_hash.as_str())
+            .collect();
+        assert_eq!(order[1], test_fixtures::QEMU_HASH);
     }
 
     #[test]

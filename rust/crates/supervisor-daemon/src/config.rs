@@ -45,6 +45,10 @@ pub struct Settings {
     pub enable_gpu_support: bool,
     /// conf.py SUPERVISOR_DATABASE, default {EXECUTION_ROOT}/supervisor.sqlite3.
     pub supervisor_database: PathBuf,
+    /// conf.py EXECUTION_DATABASE, default {EXECUTION_ROOT}/executions.sqlite3:
+    /// the pre-split agent store, read once at boot by the legacy
+    /// port-mapping migration.
+    pub execution_database: PathBuf,
     /// conf.py IPV4_ADDRESS_POOL, default "172.16.0.0/12".
     pub ipv4_address_pool: String,
     /// conf.py IPV4_NETWORK_PREFIX_LENGTH, default 24.
@@ -84,6 +88,16 @@ pub struct Settings {
     pub dns_nameservers: Option<Vec<String>>,
     /// conf.py DNS_RESOLUTION, default detect.
     pub dns_resolution: DnsResolution,
+    /// conf.py DEVELOPER_SSH_KEYS, default [] (pydantic parses the env
+    /// value as a JSON list).
+    pub developer_ssh_keys: Vec<String>,
+    /// conf.py USE_DEVELOPER_SSH_KEYS, default False. The pydantic type is
+    /// `Literal[False] | object`, so bool-shaped env values coerce and
+    /// anything else stays a string whose TRUTHINESS gates the key merge:
+    /// unset, "" and false spellings are off, everything else is on
+    /// (ALEPH_VM_USE_DEVELOPER_SSH_KEYS=true IS truthy despite the conf.py
+    /// comment claiming env vars cannot set it).
+    pub use_developer_ssh_keys: bool,
 }
 
 /// conf.py DnsResolver: how DNS_NAMESERVERS is derived when unset.
@@ -147,6 +161,12 @@ impl Settings {
             Some(path) if !path.is_empty() => PathBuf::from(path),
             _ => execution_root.join("supervisor.sqlite3"),
         };
+        // conf.py setup(): EXECUTION_DATABASE defaults to
+        // EXECUTION_ROOT/executions.sqlite3 when unset (or emptied).
+        let execution_database = match env.get("EXECUTION_DATABASE") {
+            Some(path) if !path.is_empty() => PathBuf::from(path),
+            _ => execution_root.join("executions.sqlite3"),
+        };
         let ipv4_address_pool = env
             .get("IPV4_ADDRESS_POOL")
             .unwrap_or_else(|| "172.16.0.0/12".to_string());
@@ -206,6 +226,23 @@ impl Settings {
                 }
             })?),
         };
+        // pydantic list-typed setting: JSON, `null` reads as the [] default
+        // (a None DEVELOPER_SSH_KEYS would crash Python's `keys += None`).
+        let developer_ssh_keys = match env.get("DEVELOPER_SSH_KEYS") {
+            None => Vec::new(),
+            Some(value) => serde_json::from_str::<Option<Vec<String>>>(&value)
+                .map_err(|_| DaemonError::InvalidSetting {
+                    key: format!("{ENV_PREFIX}DEVELOPER_SSH_KEYS"),
+                    value,
+                    expected: "a JSON list of SSH public keys",
+                })?
+                .unwrap_or_default(),
+        };
+        // `Literal[False] | object` truthiness (see the field comment).
+        let use_developer_ssh_keys = match env.get("USE_DEVELOPER_SSH_KEYS") {
+            None => false,
+            Some(value) => parse_bool(&value).unwrap_or(!value.is_empty()),
+        };
         let dns_resolution = match env.get("DNS_RESOLUTION") {
             None => DnsResolution::Detect,
             Some(value) if value == "detect" => DnsResolution::Detect,
@@ -228,6 +265,7 @@ impl Settings {
             network_interface,
             enable_gpu_support,
             supervisor_database,
+            execution_database,
             ipv4_address_pool,
             ipv4_network_prefix_length,
             ipv6_address_pool,
@@ -245,6 +283,8 @@ impl Settings {
             jailer_base_dir,
             dns_nameservers,
             dns_resolution,
+            developer_ssh_keys,
+            use_developer_ssh_keys,
         })
     }
 }
@@ -387,6 +427,73 @@ mod tests {
         );
         assert_eq!(settings.dns_nameservers, None);
         assert_eq!(settings.dns_resolution, DnsResolution::Detect);
+        assert_eq!(
+            settings.execution_database,
+            PathBuf::from("/var/lib/aleph/vm/executions.sqlite3")
+        );
+        assert!(settings.developer_ssh_keys.is_empty());
+        assert!(!settings.use_developer_ssh_keys);
+    }
+
+    #[test]
+    fn developer_ssh_key_settings_follow_the_pydantic_semantics() {
+        let settings = Settings::from_vars(vars(&[
+            ("ALEPH_VM_DEVELOPER_SSH_KEYS", "[\"ssh-ed25519 AAAA dev\"]"),
+            ("ALEPH_VM_USE_DEVELOPER_SSH_KEYS", "true"),
+        ]))
+        .unwrap();
+        assert_eq!(
+            settings.developer_ssh_keys,
+            vec!["ssh-ed25519 AAAA dev".to_string()]
+        );
+        assert!(
+            settings.use_developer_ssh_keys,
+            "env true IS truthy despite the conf.py comment"
+        );
+
+        // False spellings and the empty string are off (bool coercion and
+        // Python string falsiness respectively); other strings land in the
+        // `object` branch and are truthy.
+        for (value, expected) in [
+            ("false", false),
+            ("0", false),
+            ("", false),
+            ("banana", true),
+        ] {
+            let settings =
+                Settings::from_vars(vars(&[("ALEPH_VM_USE_DEVELOPER_SSH_KEYS", value)])).unwrap();
+            assert_eq!(settings.use_developer_ssh_keys, expected, "{value:?}");
+        }
+
+        // JSON null reads as the [] default; invalid JSON is a startup error.
+        let settings =
+            Settings::from_vars(vars(&[("ALEPH_VM_DEVELOPER_SSH_KEYS", "null")])).unwrap();
+        assert!(settings.developer_ssh_keys.is_empty());
+        let error =
+            Settings::from_vars(vars(&[("ALEPH_VM_DEVELOPER_SSH_KEYS", "not-json")])).unwrap_err();
+        assert!(error.to_string().contains("DEVELOPER_SSH_KEYS"));
+    }
+
+    #[test]
+    fn execution_database_default_follows_execution_root() {
+        let settings = Settings::from_vars(vars(&[
+            ("ALEPH_VM_EXECUTION_ROOT", "/tmp/exec"),
+            ("ALEPH_VM_EXECUTION_DATABASE", ""),
+        ]))
+        .unwrap();
+        assert_eq!(
+            settings.execution_database,
+            PathBuf::from("/tmp/exec/executions.sqlite3")
+        );
+        let settings = Settings::from_vars(vars(&[(
+            "ALEPH_VM_EXECUTION_DATABASE",
+            "/tmp/legacy.sqlite3",
+        )]))
+        .unwrap();
+        assert_eq!(
+            settings.execution_database,
+            PathBuf::from("/tmp/legacy.sqlite3")
+        );
     }
 
     #[test]

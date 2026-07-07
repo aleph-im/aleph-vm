@@ -207,8 +207,10 @@ pub fn initialize_ipv4_commands(ruleset: &[Value], prefix: &str) -> Result<Vec<V
                 .collect();
             match nat_chains.last() {
                 Some(entry) => (*entry).clone(),
-                // Python raises a bare Exception here; the daemon boot (or
-                // the RecreateNetwork RPC) fails the same way.
+                // Python raises a bare Exception here and its daemon dies
+                // at boot; the Rust boot logs and serves instead (ledger
+                // entry 22) while the RecreateNetwork RPC fails the same
+                // way as Python's.
                 None => return Err("Failed to find or create a 'nat' type prerouting chain".into()),
             }
         } else {
@@ -840,11 +842,13 @@ impl NftExecutor for NftCli {
     }
 }
 
-/// Test executor: a frozen ruleset, recorded command batches.
+/// Test executor: a frozen ruleset, recorded command batches, an optional
+/// shared event log interleaving nft batches with the other fakes' calls.
 #[derive(Default)]
 pub struct StaticRuleset {
     pub entries: Vec<Value>,
     pub batches: std::sync::Mutex<Vec<Vec<Value>>>,
+    event_log: std::sync::OnceLock<crate::test_fixtures::EventLog>,
 }
 
 impl StaticRuleset {
@@ -852,7 +856,13 @@ impl StaticRuleset {
         Self {
             entries,
             batches: std::sync::Mutex::new(Vec::new()),
+            event_log: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Attach a shared chronological event log.
+    pub fn set_event_log(&self, log: crate::test_fixtures::EventLog) {
+        let _ = self.event_log.set(log);
     }
 }
 
@@ -876,6 +886,12 @@ impl NftExecutor for StaticRuleset {
     }
 
     fn run_commands(&self, commands: &[Value]) -> Result<(), String> {
+        if let Some(log) = self.event_log.get() {
+            log.record(&format!(
+                "nft: batch {}",
+                serde_json::to_string(commands).unwrap_or_default()
+            ));
+        }
         self.batches
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -908,8 +924,14 @@ mod tests {
         let prefix = fixture["chain_prefix"].as_str().unwrap();
 
         let scenarios = fixture["scenarios"].as_object().unwrap();
-        assert_eq!(scenarios.len(), 11, "update this test with new scenarios");
+        assert_eq!(scenarios.len(), 12, "update this test with new scenarios");
         for (name, scenario) in scenarios {
+            if name == "recreate-redirects-both-protocols" {
+                // Captured through VmExecution.recreate_port_redirect_rules,
+                // not a bare firewall.py call; replayed by the lifecycle test
+                // recreate_redirects_replay_the_python_both_protocols_batch.
+                continue;
+            }
             let input = ruleset(&fixture, scenario["ruleset"].as_str().unwrap());
             let expected = scenario["batches"].as_array().unwrap().clone();
             let batches: Vec<Vec<Value>> = match name.as_str() {

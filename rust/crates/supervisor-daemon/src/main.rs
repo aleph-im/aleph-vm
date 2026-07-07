@@ -107,9 +107,18 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
     checks::check(&host.settings, host.network_interface.as_deref())
         .map_err(DaemonError::Internal)?;
 
-    // pool.setup() counterparts: the port-mapping store schema, the
-    // forwarding sysctls, the NDP proxy, the base nftables ruleset.
+    // pool.setup() counterparts: the port-mapping store schema, the legacy
+    // port-mapping migration, the forwarding sysctls, the NDP proxy, the
+    // base nftables ruleset.
     ports::ensure_schema(&host.settings.supervisor_database).map_err(DaemonError::Internal)?;
+    // Before adoption, like pool.setup(): a node upgraded from the
+    // pre-split layout and flipped straight to this daemon must adopt its
+    // VMs with their persisted forwards, not with zero forwards.
+    ports::migrate_port_mappings_from_legacy_db(
+        &host.settings.execution_database,
+        &host.settings.supervisor_database,
+    )
+    .map_err(DaemonError::Internal)?;
     let ndp = if host.settings.allow_vm_networking {
         enable_forwarding_sysctls(&host.settings);
         host.settings.use_ndp_proxy.then(|| {
@@ -141,6 +150,7 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
         port_cursor: Default::default(),
         creation_lock: std::sync::Mutex::new(()),
         vm_locks: std::sync::Mutex::new(Default::default()),
+        net_lock: std::sync::Mutex::new(()),
         pacing: Pacing::default(),
     });
 
@@ -176,26 +186,44 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
 }
 
 /// The `Network.setup()` sysctl half: enable IPv4 (always) and IPv6 (when
-/// configured) forwarding. Failures are logged, not fatal: the Python
-/// daemon dies here without CAP_NET_ADMIN, which would break the
-/// container/CI boots increment 2 deliberately supports (ledgered).
+/// configured) forwarding. Python writes "1" only when the CURRENT value
+/// parses as int 0 (`if not get_ipv6_forwarding_state()`), so a host whose
+/// IPv6 forwarding sysctl is "2" (forwarding with RA acceptance) is left
+/// alone; clobbering it to "1" would silently drop the host's accept-RA
+/// behavior. Failures (unreadable, unparseable or unwritable files) are
+/// logged, not fatal: the Python daemon dies here without CAP_NET_ADMIN,
+/// which would break the container/CI boots increment 2 deliberately
+/// supports (ledger entry 20).
 fn enable_forwarding_sysctls(settings: &Settings) {
-    let enable = |path: &str| {
-        match std::fs::read_to_string(path) {
-            Ok(current) if current.trim() == "1" => {}
-            Ok(_) => {
-                if let Err(error) = std::fs::write(path, "1") {
-                    tracing::error!(path, %error, "cannot enable forwarding");
-                }
-            }
-            Err(error) => tracing::error!(path, %error, "cannot read the forwarding state"),
-        };
-    };
-    enable("/proc/sys/net/ipv4/ip_forward");
+    enable_forwarding_sysctl(std::path::Path::new("/proc/sys/net/ipv4/ip_forward"));
     if settings.ipv6_forwarding_enabled {
-        enable("/proc/sys/net/ipv6/conf/all/forwarding");
+        enable_forwarding_sysctl(std::path::Path::new(
+            "/proc/sys/net/ipv6/conf/all/forwarding",
+        ));
     } else {
         tracing::warn!("IPv6 forwarding is disabled, VMs will not have internet access on IPv6");
+    }
+}
+
+/// One sysctl: write "1" only when the current value parses as int 0.
+fn enable_forwarding_sysctl(path: &std::path::Path) {
+    match std::fs::read_to_string(path) {
+        // Python: int(value); only a current value of exactly 0 is
+        // "disabled" and gets the write.
+        Ok(current) => match current.trim().parse::<i64>() {
+            Ok(0) => {
+                if let Err(error) = std::fs::write(path, "1") {
+                    tracing::error!(path = %path.display(), %error, "cannot enable forwarding");
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::error!(path = %path.display(), %error, "cannot parse the forwarding state");
+            }
+        },
+        Err(error) => {
+            tracing::error!(path = %path.display(), %error, "cannot read the forwarding state");
+        }
     }
 }
 
@@ -231,4 +259,32 @@ fn spawn_signal_task(
         std::process::exit(0);
     });
     Ok(shutdown_rx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_forwarding_sysctl_write_matches_the_python_falsy_gate() {
+        // Python enable_ipv6_forwarding: write "1" only when int(current)
+        // is 0. A value of "2" (forwarding with RA acceptance) must be
+        // LEFT ALONE; clobbering it to "1" turns off the host's accept-RA.
+        let tmp = tempfile::tempdir().unwrap();
+        let sysctl = tmp.path().join("forwarding");
+        for (current, expected) in [("0\n", "1"), ("1\n", "1\n"), ("2\n", "2\n")] {
+            std::fs::write(&sysctl, current).unwrap();
+            enable_forwarding_sysctl(&sysctl);
+            assert_eq!(
+                std::fs::read_to_string(&sysctl).unwrap(),
+                expected,
+                "current {current:?}"
+            );
+        }
+        // Unparseable values are logged and left alone (the Python int()
+        // would raise and kill the daemon; graceful here, ledger entry 20).
+        std::fs::write(&sysctl, "garbage").unwrap();
+        enable_forwarding_sysctl(&sysctl);
+        assert_eq!(std::fs::read_to_string(&sysctl).unwrap(), "garbage");
+    }
 }

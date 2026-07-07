@@ -486,10 +486,13 @@ impl UnitStateSource for UnreachableBus {
 }
 
 /// Mutable in-memory systemd for lifecycle tests: unit states flip on
-/// start/stop/restart, every mutation is recorded in call order.
+/// start/stop/restart, every mutation is recorded in call order (and in
+/// the optional shared [`crate::test_fixtures::EventLog`], interleaved
+/// with the other fakes' events for cross-seam ordering assertions).
 #[derive(Debug, Default)]
 pub struct FakeSystemd {
     inner: Mutex<FakeSystemdState>,
+    event_log: std::sync::OnceLock<crate::test_fixtures::EventLog>,
 }
 
 #[derive(Debug, Default)]
@@ -533,6 +536,18 @@ impl FakeSystemd {
     pub fn actions(&self) -> Vec<String> {
         self.lock().actions.clone()
     }
+
+    /// Attach a shared chronological event log.
+    pub fn set_event_log(&self, log: crate::test_fixtures::EventLog) {
+        let _ = self.event_log.set(log);
+    }
+
+    fn record_action(&self, action: String) {
+        if let Some(log) = self.event_log.get() {
+            log.record(&format!("systemd: {action}"));
+        }
+        self.lock().actions.push(action);
+    }
 }
 
 impl UnitStateSource for FakeSystemd {
@@ -566,37 +581,34 @@ impl UnitStateSource for FakeSystemd {
     }
 
     fn start(&self, unit: &str) -> Result<(), String> {
-        let mut inner = self.lock();
-        inner.actions.push(format!("start {unit}"));
-        inner.states.insert(unit.into(), "active".to_string());
+        self.record_action(format!("start {unit}"));
+        self.lock().states.insert(unit.into(), "active".to_string());
         Ok(())
     }
 
     fn stop(&self, unit: &str) -> Result<(), String> {
-        let mut inner = self.lock();
-        inner.actions.push(format!("stop {unit}"));
-        inner.states.insert(unit.into(), "inactive".to_string());
+        self.record_action(format!("stop {unit}"));
+        self.lock()
+            .states
+            .insert(unit.into(), "inactive".to_string());
         Ok(())
     }
 
     fn restart(&self, unit: &str) -> Result<(), String> {
-        let mut inner = self.lock();
-        inner.actions.push(format!("restart {unit}"));
-        inner.states.insert(unit.into(), "active".to_string());
+        self.record_action(format!("restart {unit}"));
+        self.lock().states.insert(unit.into(), "active".to_string());
         Ok(())
     }
 
     fn enable(&self, unit: &str) -> Result<(), String> {
-        let mut inner = self.lock();
-        inner.actions.push(format!("enable {unit}"));
-        inner.enabled.insert(unit.into());
+        self.record_action(format!("enable {unit}"));
+        self.lock().enabled.insert(unit.into());
         Ok(())
     }
 
     fn disable(&self, unit: &str) -> Result<(), String> {
-        let mut inner = self.lock();
-        inner.actions.push(format!("disable {unit}"));
-        inner.enabled.remove(unit);
+        self.record_action(format!("disable {unit}"));
+        self.lock().enabled.remove(unit);
         Ok(())
     }
 

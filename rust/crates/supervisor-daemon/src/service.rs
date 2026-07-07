@@ -132,6 +132,17 @@ pub struct DaemonState {
     pub creation_lock: std::sync::Mutex<()>,
     /// Per-VM mutation locks (the Python per-execution lock granularity).
     pub vm_locks: std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<()>>>>,
+    /// One coarse lock over every host-network mutation: host-port
+    /// allocation-through-persistence (two concurrent AddPortForwards for
+    /// different VMs must never both allocate the same host_port and leave
+    /// a live DNAT rule behind when the loser's DB save hits the partial
+    /// unique index), tap/nftables setup and teardown, and RecreateNetwork's
+    /// flush-and-rebuild (which must never race a create/start's chain
+    /// setup). Python needs none of this: its event loop serializes these
+    /// sections between awaits. Lock order: creation_lock, then a vm_lock,
+    /// then net_lock; net_lock is innermost and never held while acquiring
+    /// the others, and never held across the long systemd waits.
+    pub net_lock: std::sync::Mutex<()>,
     /// Poll/sleep pacing for the lifecycle waits; tests shrink it.
     pub pacing: crate::lifecycle::Pacing,
 }
@@ -156,6 +167,7 @@ impl DaemonState {
             port_cursor: crate::ports::PortCursor::default(),
             creation_lock: std::sync::Mutex::new(()),
             vm_locks: std::sync::Mutex::new(HashMap::new()),
+            net_lock: std::sync::Mutex::new(()),
             pacing: crate::lifecycle::Pacing::instant(),
         }
     }
@@ -645,10 +657,11 @@ impl Supervisor for SupervisorService {
         _request: Request<pb::ListVmsRequest>,
     ) -> Result<Response<pb::ListVmsResponse>, Status> {
         // Snapshot the entries and release the lock BEFORE the batched
-        // unit-state query (see get_vm); BTreeMap order is preserved.
+        // unit-state query (see get_vm). Insertion order (sorted adoption,
+        // then creation order), like the Python pool's dict.
         let entries: Vec<VmEntry> = {
             let world = self.state.world.read().await;
-            world.entries.values().cloned().collect()
+            world.ordered_entries().into_iter().cloned().collect()
         };
         let unit_names: Vec<String> = entries.iter().map(|entry| entry.unit_name()).collect();
         let states = self.units_running(unit_names).await?;
@@ -781,9 +794,10 @@ impl Supervisor for SupervisorService {
         let vm_id = request.into_inner().vm_id;
         let world = self.state.world.read().await;
         let forwards = if vm_id.is_empty() {
+            // Insertion order, like the Python pool.executions.values() walk.
             world
-                .entries
-                .values()
+                .ordered_entries()
+                .into_iter()
                 .flat_map(port_forward_messages)
                 .collect()
         } else {
@@ -939,6 +953,12 @@ impl Supervisor for SupervisorService {
 /// error vocabulary onto the wire statuses. Mirrors the Python daemon,
 /// where these flows run on the event loop but block it only at await
 /// points; here they own a thread for their whole duration.
+///
+/// Thread budget: a long-poll lifecycle RPC (the 60s boot wait, the 75s
+/// graceful-stop wait) occupies one blocking-pool thread for its whole
+/// duration. Tokio's blocking pool defaults to 512 threads, and the agent
+/// serializes per VM, so the realistic concurrency (a handful of VMs in
+/// transition) never approaches the bound; accepted for increment 3.
 async fn run_lifecycle<T: Send + 'static>(
     operation: impl FnOnce() -> Result<T, crate::lifecycle::RpcError> + Send + 'static,
 ) -> Result<T, Status> {
@@ -1002,6 +1022,7 @@ mod tests {
             },
             gpus: Vec::new(),
             spec: None,
+            ordinal: 0,
         }
     }
 

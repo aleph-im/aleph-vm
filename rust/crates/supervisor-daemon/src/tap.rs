@@ -87,6 +87,30 @@ pub trait TapBackend: Send + Sync {
 /// Production backend over `ip(8)`.
 pub struct IpCommand;
 
+/// The tolerance classes of the Python interfaces.py error handling.
+#[derive(Debug, PartialEq, Eq)]
+enum IpFailure {
+    /// EEXIST: pyroute2's NetlinkError code 17 is a warning in both
+    /// create_tap_interface and add_ip_address; the create is idempotent.
+    AlreadyExists,
+    /// EBUSY on tap creation: NetlinkError 16 / OSError EBUSY is a warning
+    /// in create_tap_interface ("is there another process using it?").
+    Busy,
+    /// Everything else propagates from the tap creation (and only there).
+    Other,
+}
+
+/// Classify one failed `ip(8)` stderr like the pyroute2 error codes.
+fn classify_ip_failure(stderr: &str) -> IpFailure {
+    if stderr.contains("File exists") || stderr.contains("already exists") {
+        IpFailure::AlreadyExists
+    } else if stderr.contains("Device or resource busy") || stderr.contains("busy") {
+        IpFailure::Busy
+    } else {
+        IpFailure::Other
+    }
+}
+
 fn run_ip(args: &[&str]) -> Result<(), String> {
     let output = Command::new("ip")
         .args(args)
@@ -96,13 +120,23 @@ fn run_ip(args: &[&str]) -> Result<(), String> {
         return Ok(());
     }
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    // pyroute2 parity: EEXIST (device or address already there) is a
-    // warning, never a failure; the create path is idempotent.
-    if stderr.contains("File exists") || stderr.contains("already exists") {
-        tracing::warn!(?args, stderr, "ip reported the object already exists");
-        return Ok(());
+    // Python create_tap_interface tolerance: EEXIST and EBUSY are
+    // warnings, never failures.
+    match classify_ip_failure(&stderr) {
+        IpFailure::AlreadyExists => {
+            tracing::warn!(?args, stderr, "ip reported the object already exists");
+            Ok(())
+        }
+        IpFailure::Busy => {
+            tracing::warn!(
+                ?args,
+                stderr,
+                "ip reported the object busy; is another process using it?"
+            );
+            Ok(())
+        }
+        IpFailure::Other => Err(format!("ip {} failed: {stderr}", args.join(" "))),
     }
-    Err(format!("ip {} failed: {stderr}", args.join(" ")))
 }
 
 impl TapBackend for IpCommand {
@@ -126,7 +160,16 @@ impl TapBackend for IpCommand {
                 );
             }
         }
-        run_ip(&["link", "set", &tap.device_name, "up"])?;
+        // Python set_link_up logs NetlinkError/OSError and proceeds
+        // (interfaces.py:84-89); a link that stays down is a warning, not
+        // a failed create.
+        if let Err(error) = run_ip(&["link", "set", &tap.device_name, "up"]) {
+            tracing::error!(
+                device = tap.device_name,
+                error,
+                "cannot set the tap interface up"
+            );
+        }
         Ok(())
     }
 
@@ -140,21 +183,35 @@ impl TapBackend for IpCommand {
         }
         // `ip link del` removes the device with its addresses; Python
         // deletes the addresses one by one first, a netlink detail with no
-        // observable difference.
-        run_ip(&["link", "del", &tap.device_name])
+        // observable difference. Python's TapInterface.delete swallows
+        // every deletion failure with a warning (interfaces.py:214-217).
+        if let Err(error) = run_ip(&["link", "del", &tap.device_name]) {
+            tracing::warn!(
+                device = tap.device_name,
+                error,
+                "interface cannot be deleted"
+            );
+        }
+        Ok(())
     }
 }
 
-/// Test backend: an in-memory device set, every call recorded.
+/// Test backend: an in-memory device set, every call recorded. Failures
+/// are injectable per operation, and an optional shared [`EventLog`]
+/// interleaves the tap calls with the other fakes' for ordering checks.
 #[derive(Debug, Default)]
 pub struct FakeTapBackend {
     inner: std::sync::Mutex<FakeTapState>,
+    event_log: std::sync::OnceLock<crate::test_fixtures::EventLog>,
 }
 
 #[derive(Debug, Default)]
 struct FakeTapState {
     devices: std::collections::HashSet<String>,
     pub actions: Vec<String>,
+    fail_create: Option<String>,
+    fail_delete: Option<String>,
+    panic_on_create: bool,
 }
 
 impl FakeTapBackend {
@@ -181,6 +238,32 @@ impl FakeTapBackend {
     pub fn devices(&self) -> std::collections::HashSet<String> {
         self.lock().devices.clone()
     }
+
+    /// Every create_tap fails with this message until cleared.
+    pub fn fail_create(&self, message: &str) {
+        self.lock().fail_create = Some(message.to_string());
+    }
+
+    /// Every delete_tap fails with this message until cleared.
+    pub fn fail_delete(&self, message: &str) {
+        self.lock().fail_delete = Some(message.to_string());
+    }
+
+    /// The next create_tap panics (for unwind-safety tests).
+    pub fn panic_on_create(&self) {
+        self.lock().panic_on_create = true;
+    }
+
+    /// Attach a shared chronological event log.
+    pub fn set_event_log(&self, log: crate::test_fixtures::EventLog) {
+        let _ = self.event_log.set(log);
+    }
+
+    fn record(&self, event: String) {
+        if let Some(log) = self.event_log.get() {
+            log.record(&event);
+        }
+    }
 }
 
 impl TapBackend for FakeTapBackend {
@@ -190,6 +273,14 @@ impl TapBackend for FakeTapBackend {
 
     fn create_tap(&self, tap: &TapAssignment) -> Result<(), String> {
         let mut inner = self.lock();
+        if inner.panic_on_create {
+            inner.panic_on_create = false;
+            drop(inner);
+            panic!("injected tap creation panic");
+        }
+        if let Some(message) = &inner.fail_create {
+            return Err(message.clone());
+        }
         inner.actions.push(format!(
             "create {} {} {}",
             tap.device_name,
@@ -197,13 +288,20 @@ impl TapBackend for FakeTapBackend {
             tap.host_ipv6_cidr()
         ));
         inner.devices.insert(tap.device_name.clone());
+        drop(inner);
+        self.record(format!("tap: create {}", tap.device_name));
         Ok(())
     }
 
     fn delete_tap(&self, tap: &TapAssignment) -> Result<(), String> {
         let mut inner = self.lock();
+        if let Some(message) = &inner.fail_delete {
+            return Err(message.clone());
+        }
         inner.actions.push(format!("delete {}", tap.device_name));
         inner.devices.remove(&tap.device_name);
+        drop(inner);
+        self.record(format!("tap: delete {}", tap.device_name));
         Ok(())
     }
 }
@@ -247,5 +345,24 @@ mod tests {
         assert!(backend.interface_exists("vmtap3"));
         backend.delete_tap(&tap).unwrap();
         assert!(!backend.interface_exists("vmtap3"));
+    }
+
+    #[test]
+    fn ip_failures_classify_like_the_pyroute2_error_codes() {
+        // interfaces.py tolerance: EEXIST (NetlinkError 17) and EBUSY
+        // (NetlinkError 16 / OSError EBUSY) are warnings on tap creation;
+        // everything else propagates.
+        assert_eq!(
+            classify_ip_failure("RTNETLINK answers: File exists"),
+            IpFailure::AlreadyExists
+        );
+        assert_eq!(
+            classify_ip_failure("ioctl(TUNSETIFF): Device or resource busy"),
+            IpFailure::Busy
+        );
+        assert_eq!(
+            classify_ip_failure("RTNETLINK answers: Operation not permitted"),
+            IpFailure::Other
+        );
     }
 }

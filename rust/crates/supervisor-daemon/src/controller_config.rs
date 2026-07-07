@@ -420,8 +420,13 @@ pub fn save_controller_config(
 
 /// Python `remove_controller_configuration`: the on-disk artifacts that
 /// define a VM across restarts (config, cloud-init seed, dead qemu control
-/// sockets). Delete-path only; a stopped VM keeps them.
-pub fn remove_controller_configuration(execution_root: &std::path::Path, vm_hash: &str) {
+/// sockets). Delete-path only; a stopped VM keeps them. A missing file is
+/// tolerated (Python's `unlink(missing_ok=True)`); any other unlink error
+/// propagates and fails the caller, exactly like the Python unlink.
+pub fn remove_controller_configuration(
+    execution_root: &std::path::Path,
+    vm_hash: &str,
+) -> Result<(), String> {
     let mut paths = vec![
         controller_config_path(execution_root, vm_hash),
         execution_root.join(format!("cloud-init-{vm_hash}.img")),
@@ -433,9 +438,13 @@ pub fn remove_controller_configuration(execution_root: &std::path::Path, vm_hash
         if let Err(error) = std::fs::remove_file(&path)
             && error.kind() != std::io::ErrorKind::NotFound
         {
-            tracing::warn!(path = %path.display(), %error, "cannot remove a VM artifact");
+            return Err(format!(
+                "cannot remove the VM artifact {}: {error}",
+                path.display()
+            ));
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -727,7 +736,7 @@ mod tests {
 
         std::fs::write(tmp.path().join("cloud-init-ab.img"), b"seed").unwrap();
         std::fs::write(tmp.path().join("ab-qmp.socket"), b"dead").unwrap();
-        remove_controller_configuration(tmp.path(), hash);
+        remove_controller_configuration(tmp.path(), hash).unwrap();
         assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
     }
 

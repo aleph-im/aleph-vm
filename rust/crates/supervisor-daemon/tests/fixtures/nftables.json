@@ -1605,6 +1605,167 @@
         ]
       ]
     },
+    "recreate-redirects-both-protocols": {
+      "ruleset": "typical",
+      "batches": [
+        [
+          {
+            "add": {
+              "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "aleph-supervisor-prerouting",
+                "expr": [
+                  {
+                    "match": {
+                      "op": "==",
+                      "left": {
+                        "meta": {
+                          "key": "iifname"
+                        }
+                      },
+                      "right": "eth0"
+                    }
+                  },
+                  {
+                    "match": {
+                      "op": "==",
+                      "left": {
+                        "payload": {
+                          "protocol": "udp",
+                          "field": "dport"
+                        }
+                      },
+                      "right": 24610
+                    }
+                  },
+                  {
+                    "dnat": {
+                      "addr": "172.16.3.2",
+                      "port": 8080
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "aleph-vm-filter-3",
+                "expr": [
+                  {
+                    "match": {
+                      "op": "==",
+                      "left": {
+                        "meta": {
+                          "key": "iifname"
+                        }
+                      },
+                      "right": "eth0"
+                    }
+                  },
+                  {
+                    "match": {
+                      "op": "==",
+                      "left": {
+                        "payload": {
+                          "protocol": "udp",
+                          "field": "dport"
+                        }
+                      },
+                      "right": 8080
+                    }
+                  },
+                  {
+                    "accept": null
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip",
+                "table": "nat",
+                "chain": "aleph-supervisor-prerouting",
+                "expr": [
+                  {
+                    "match": {
+                      "op": "==",
+                      "left": {
+                        "meta": {
+                          "key": "iifname"
+                        }
+                      },
+                      "right": "eth0"
+                    }
+                  },
+                  {
+                    "match": {
+                      "op": "==",
+                      "left": {
+                        "payload": {
+                          "protocol": "tcp",
+                          "field": "dport"
+                        }
+                      },
+                      "right": 24610
+                    }
+                  },
+                  {
+                    "dnat": {
+                      "addr": "172.16.3.2",
+                      "port": 8080
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "add": {
+              "rule": {
+                "family": "ip",
+                "table": "filter",
+                "chain": "aleph-vm-filter-3",
+                "expr": [
+                  {
+                    "match": {
+                      "op": "==",
+                      "left": {
+                        "meta": {
+                          "key": "iifname"
+                        }
+                      },
+                      "right": "eth0"
+                    }
+                  },
+                  {
+                    "match": {
+                      "op": "==",
+                      "left": {
+                        "payload": {
+                          "protocol": "tcp",
+                          "field": "dport"
+                        }
+                      },
+                      "right": 8080
+                    }
+                  },
+                  {
+                    "accept": null
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      ]
+    },
     "initialize-empty-no-ipv6": {
       "ruleset": "empty",
       "batches": [

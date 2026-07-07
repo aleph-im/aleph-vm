@@ -17,6 +17,30 @@ use serde_json::{Value, json};
 
 use crate::tap::TapAssignment;
 
+/// The qemu_build.py key merge: the spec's keys plus, when
+/// USE_DEVELOPER_SSH_KEYS is truthy, settings.DEVELOPER_SSH_KEYS.
+pub fn merged_ssh_keys(
+    spec_keys: &[String],
+    use_developer_ssh_keys: bool,
+    developer_ssh_keys: &[String],
+) -> Vec<String> {
+    let mut keys = spec_keys.to_vec();
+    if use_developer_ssh_keys {
+        keys.extend(developer_ssh_keys.iter().cloned());
+    }
+    keys
+}
+
+/// The Python `vm_hash[:63]` hostname fallback: a CHARACTER slice
+/// (hostnames are capped at 63 characters per label). Byte slicing would
+/// panic on a vm_id whose 63rd boundary splits a multibyte character.
+pub fn fallback_hostname(vm_hash: &str) -> &str {
+    match vm_hash.char_indices().nth(63) {
+        Some((offset, _)) => &vm_hash[..offset],
+        None => vm_hash,
+    }
+}
+
 /// Python `encode_user_data` (is_confidential=False,
 /// install_guest_agent=True: the plain-instance create path).
 pub fn user_data(hostname: &str, ssh_authorized_keys: &[String], has_gpu: bool) -> String {
@@ -131,9 +155,10 @@ impl CloudInitDrive<'_> {
     /// cloud-localds. Blocking (subprocess + temp files).
     pub fn create_image(&self) -> Result<PathBuf, String> {
         // Hostnames are capped at 63 characters per label; the 64-hex-char
-        // vm_hash is truncated to fit.
+        // vm_hash is truncated to fit (by characters, like Python's
+        // vm_hash[:63]; see fallback_hostname).
         let hostname = if self.hostname.is_empty() {
-            &self.vm_hash[..self.vm_hash.len().min(63)]
+            fallback_hostname(self.vm_hash)
         } else {
             self.hostname
         };
@@ -284,5 +309,39 @@ mod tests {
         // The 63-character cap itself is exercised through the fixture
         // parity test in tests/conformance (hostname derivation is inside
         // create_image, which needs cloud-localds).
+    }
+
+    #[test]
+    fn the_hostname_fallback_slices_characters_not_bytes() {
+        // Python vm_hash[:63] slices characters. A vm_id whose byte 63 sits
+        // inside a multibyte character must not panic: U+00E9 ("é") is two
+        // bytes, so 62 ASCII chars + "é" spans bytes 62..64.
+        let ascii = "a".repeat(64);
+        assert_eq!(fallback_hostname(&ascii), "a".repeat(63));
+        let short = "abc";
+        assert_eq!(fallback_hostname(short), "abc");
+        let multibyte = format!("{}\u{00e9}x", "a".repeat(62)); // 64 chars, 65 bytes
+        assert_eq!(
+            fallback_hostname(&multibyte),
+            format!("{}\u{00e9}", "a".repeat(62))
+        );
+        let boundary = format!("{}\u{00e9}", "a".repeat(63)); // char 63 is multibyte
+        assert_eq!(fallback_hostname(&boundary), "a".repeat(63));
+    }
+
+    #[test]
+    fn developer_keys_are_appended_only_when_enabled() {
+        // qemu_build.py:83-85: keys += settings.DEVELOPER_SSH_KEYS when
+        // settings.USE_DEVELOPER_SSH_KEYS is truthy.
+        let spec_keys = vec!["ssh-ed25519 AAAA user@host".to_string()];
+        let developer = vec!["ssh-ed25519 BBBB dev@host".to_string()];
+        assert_eq!(merged_ssh_keys(&spec_keys, false, &developer), spec_keys);
+        assert_eq!(
+            merged_ssh_keys(&spec_keys, true, &developer),
+            vec![
+                "ssh-ed25519 AAAA user@host".to_string(),
+                "ssh-ed25519 BBBB dev@host".to_string(),
+            ]
+        );
     }
 }

@@ -17,11 +17,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from conftest import cargo_missing
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -37,6 +37,7 @@ from aleph.vm.supervisor_interface.configuration import (
 from aleph.vm.supervisor_interface.errors import (
     InsufficientResourcesError,
     InternalSupervisorError,
+    InvalidBackendError,
     NotImplementedSupervisorError,
     VmNotFoundError,
 )
@@ -64,7 +65,7 @@ pytestmark = [
         os.environ.get("ALEPH_VM_CONFORMANCE") != "1",
         reason="conformance suite is opt-in: set ALEPH_VM_CONFORMANCE=1",
     ),
-    pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is not on PATH"),
+    pytest.mark.skipif(cargo_missing(), reason="cargo is not on PATH"),
 ]
 
 
@@ -208,6 +209,22 @@ async def test_create_vm_rejections_carry_the_python_error_vocabulary(lifecycle_
         # NotImplementedError from AlephQemuInstance.start()).
         with pytest.raises(InternalSupervisorError):
             await client.create_vm(_spec(UNKNOWN_HASH, persistent=False))
+
+        # Rootfs-disk validation: InvalidBackendError (INVALID_ARGUMENT +
+        # the INVALID_BACKEND ErrorDetail trailer, which is what the client
+        # keys the exception type on) with types.py's exact messages, before
+        # any side effect.
+        with pytest.raises(InvalidBackendError) as excinfo:
+            await client.create_vm(_spec(UNKNOWN_HASH, disks=[]))
+        assert str(excinfo.value) == "CreateVmSpec has no ROOTFS disk"
+
+        rootfs = DiskSpec(path=Path("/tmp/rootfs.qcow2"), readonly=False, format=DiskFormat.QCOW2, role=DiskRole.ROOTFS)
+        with pytest.raises(InvalidBackendError) as excinfo:
+            await client.create_vm(_spec(UNKNOWN_HASH, disks=[rootfs, rootfs]))
+        assert str(excinfo.value) == "CreateVmSpec has 2 ROOTFS disks, expected at most one"
+        # No side effect: the rejected VM does not exist.
+        with pytest.raises(VmNotFoundError):
+            await client.get_vm(VmId(UNKNOWN_HASH))
     finally:
         await client.close()
 
@@ -327,6 +344,27 @@ async def test_delete_with_keep_port_mappings_preserves_the_rows(start_daemon, e
     (row,) = _rows(execution_root, KEPT_HASH)
     assert row.deleted_at is None, "keep_port_mappings must preserve the persisted rows"
     assert row.host_port == 24501
+
+
+def test_the_committed_written_config_fixture_matches_the_live_models():
+    """Drift guard: the committed written-controller-config fixture must be
+    exactly what the current pydantic Configuration model serializes (the
+    Rust config writer reproduces the fixture byte-for-byte, so a model
+    change without regeneration would hide a divergence)."""
+    import importlib.util
+
+    repo_root = Path(__file__).resolve().parents[2]
+    script = repo_root / "scripts" / "generate_rust_fixtures.py"
+    spec = importlib.util.spec_from_file_location("generate_rust_fixtures", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    committed = (repo_root / "rust/crates/supervisor-daemon/tests/fixtures/written-controller-config.json").read_text()
+    assert module.written_controller_config_payload() == committed, (
+        "the pydantic Configuration model and the committed fixture diverged; "
+        "run scripts/generate_rust_fixtures.py and commit the result"
+    )
 
 
 def test_the_committed_nftables_fixture_matches_firewall_py():

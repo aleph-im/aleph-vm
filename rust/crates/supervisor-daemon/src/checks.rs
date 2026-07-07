@@ -86,6 +86,15 @@ pub fn check(settings: &Settings, resolved_interface: Option<&str>) -> Result<()
                     .to_string(),
             );
         }
+        // StaticIPv6Allocator.__init__ (hostnetwork.py): an IPV6_SUBNET_PREFIX
+        // below 124 aborts the Python daemon at Network construction (the
+        // static scheme reserves exactly the last 4 bits for the guest; the
+        // allocated networks are always /124 regardless of the setting).
+        if settings.ipv6_allocation_policy == crate::config::Ipv6AllocationPolicy::Static
+            && settings.ipv6_subnet_prefix < 124
+        {
+            return Err("The IPv6 subnet prefix cannot be larger than /124.".to_string());
+        }
     }
 
     if !is_command_available("setfacl") {
@@ -193,6 +202,37 @@ mod tests {
         // /26 pool cannot be split into /24 VM networks; `lo` always exists.
         let error = check(&settings, Some("lo")).unwrap_err();
         assert!(error.contains("IPv4 address pool prefix"));
+    }
+
+    #[test]
+    fn the_static_policy_rejects_a_subnet_prefix_below_124() {
+        // StaticIPv6Allocator.__init__: subnet_prefix < 124 aborts the
+        // Python daemon; message identical.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut settings = settings_with_stub_hypervisors(tmp.path());
+        settings.allow_vm_networking = true;
+        settings.ipv6_subnet_prefix = 120;
+        if !Path::new("/dev/kvm").exists() {
+            // The KVM precondition fires first on kvm-less machines, like
+            // the Python assert order.
+            return;
+        }
+        let error = check(&settings, Some("lo")).unwrap_err();
+        assert_eq!(error, "The IPv6 subnet prefix cannot be larger than /124.");
+
+        // The dynamic policy accepts it (Python builds a DynamicIPv6Allocator
+        // without the check); /124 and above pass under static.
+        settings.ipv6_allocation_policy = crate::config::Ipv6AllocationPolicy::Dynamic;
+        assert!(!matches!(
+            check(&settings, Some("lo")),
+            Err(error) if error.contains("IPv6 subnet prefix")
+        ));
+        settings.ipv6_allocation_policy = crate::config::Ipv6AllocationPolicy::Static;
+        settings.ipv6_subnet_prefix = 124;
+        assert!(!matches!(
+            check(&settings, Some("lo")),
+            Err(error) if error.contains("IPv6 subnet prefix")
+        ));
     }
 
     #[test]
