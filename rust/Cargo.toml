@@ -4,6 +4,7 @@ members = [
     "crates/supervisor-proto",
     "crates/supervisor-daemon",
     "crates/supervisor-controller",
+    "crates/aleph-tee",
 ]
 
 [workspace.package]
@@ -14,6 +15,7 @@ repository = "https://github.com/aleph-im/aleph-vm"
 [workspace.dependencies]
 supervisor-proto = { path = "crates/supervisor-proto" }
 
+anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 libc = "0.2"
 prost = "0.13"
@@ -43,3 +45,18 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # test-only
 hyper-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
+
+# aleph-tee (B0): SEV-SNP attestation stack ported from aleph-cvm.
+# Versions reconciled with the aleph-cvm donor workspace. reqwest uses the
+# rustls-tls backend (matching the donor) so the crate's AMD KDS fetches do not
+# pull system OpenSSL for TLS transport; the openssl crate is still needed for
+# the report/cert cryptographic verification (ECDSA-P384, X.509 chain checks).
+sev = { version = "7", features = ["snp", "openssl"] }
+rcgen = "0.14"
+x509-parser = "0.16"
+# alloc: needed for der::Encode::to_der (returns Vec<u8>); the donor workspace
+# got this feature transitively via x509-cert, which we do not port here.
+der = { version = "0.7", features = ["alloc"] }
+openssl = "0.10"
+hex = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "charset", "http2"] }
