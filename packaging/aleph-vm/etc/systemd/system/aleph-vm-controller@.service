@@ -9,13 +9,20 @@ RestartSec=5s
 PrivateTmp=yes
 NoNewPrivileges=true
 WorkingDirectory=/opt/aleph-vm
+# PYTHONPATH is required by the python controller fallback (the Rust controller
+# is a native binary and ignores it).
 Environment=PYTHONPATH=/opt/aleph-vm/:$PYTHONPATH
-ExecStart=/usr/bin/python3 -m aleph.vm.supervisor.controllers --config=/var/lib/aleph/vm/%i-controller.json
+EnvironmentFile=/etc/aleph-vm/supervisor.env
+# The launcher picks the controller implementation from ALEPH_VM_SUPERVISOR_IMPL
+# (default python), carried by the EnvironmentFile above: the SAME file and flag
+# the supervisor daemon reads, so one env change switches both together.
+ExecStart=/opt/aleph-vm/bin/controller-launcher --config=/var/lib/aleph/vm/%i-controller.json
 Restart=on-failure
-# KillMode=Mixed is used so initially only the Python controller process receives the SIGTERM signal.
+# KillMode=Mixed is used so initially only the controller process receives the SIGTERM signal.
 # The controller catches it and sends an ACPI powerdown to the Guest VM, giving it time to shut down
 # cleanly. If the guest does not respond within 50s, the controller sends QMP "quit" which makes
 # QEMU flush its disk caches before exiting. The 60s SIGKILL is a last resort to avoid hung processes.
+# Both controller implementations honor this timing (GRACEFUL_SHUTDOWN_TIMEOUT = 50).
 KillMode=mixed
 TimeoutStopSec=60
 
