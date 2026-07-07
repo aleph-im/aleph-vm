@@ -64,6 +64,25 @@ INTEGRATION = os.environ.get("AVM_ITEST") == "1"
 IS_ROOT = os.geteuid() == 0
 HAS_KVM = os.access("/dev/kvm", os.R_OK | os.W_OK)
 
+# Which supervisor daemon the suite drives: the same selector the packaged
+# launcher reads (design doc section 5). The tests themselves are
+# implementation-agnostic; only the spawn differs. Unknown values fail
+# loudly at collection: silently falling back to python would run the CI
+# matrix's rust leg against the wrong daemon.
+SUPERVISOR_IMPL = os.environ.get("ALEPH_VM_SUPERVISOR_IMPL", "python")
+if SUPERVISOR_IMPL not in ("python", "rust"):
+    msg = (
+        f"unknown ALEPH_VM_SUPERVISOR_IMPL={SUPERVISOR_IMPL!r}: "
+        "expected 'python' or 'rust' (refusing to silently test the python daemon)"
+    )
+    raise RuntimeError(msg)
+RUST_DAEMON_BINARY = Path(
+    os.environ.get(
+        "AVM_ITEST_RUST_BINARY",
+        REPO_ROOT / "rust" / "target" / "debug" / "aleph-vm-supervisor",
+    )
+)
+
 FC_KERNEL = Path(os.environ.get("AVM_ITEST_FC_KERNEL", "/opt/firecracker/vmlinux.bin"))
 FC_RUNTIME = Path(
     os.environ.get(
@@ -88,12 +107,18 @@ def _default_qemu_image() -> Path | None:
 _qemu_image_env = os.environ.get("AVM_ITEST_QEMU_IMAGE")
 QEMU_IMAGE: Path | None = Path(_qemu_image_env) if _qemu_image_env else _default_qemu_image()
 
-FC_READY = HAS_KVM and FC_KERNEL.exists() and FC_RUNTIME.exists()
+# Ephemeral Firecracker programs are increment 4 of the Rust port; until it
+# lands, the rust leg only exercises the persistent QEMU surface.
+FC_READY = HAS_KVM and FC_KERNEL.exists() and FC_RUNTIME.exists() and SUPERVISOR_IMPL != "rust"
 QEMU_READY = HAS_KVM and IS_ROOT and QEMU_IMAGE is not None and QEMU_IMAGE.exists()
 
 requires_fc = pytest.mark.skipif(
     not FC_READY,
-    reason=f"needs /dev/kvm, a kernel ({FC_KERNEL}) and a runtime squashfs ({FC_RUNTIME})",
+    reason=(
+        "Firecracker programs are not ported to the Rust daemon yet (increment 4)"
+        if SUPERVISOR_IMPL == "rust"
+        else f"needs /dev/kvm, a kernel ({FC_KERNEL}) and a runtime squashfs ({FC_RUNTIME})"
+    ),
 )
 requires_qemu = pytest.mark.skipif(
     not QEMU_READY,
@@ -101,14 +126,41 @@ requires_qemu = pytest.mark.skipif(
 )
 requires_root = pytest.mark.skipif(not IS_ROOT, reason="needs root (TAP networking / nftables)")
 
+# Tests of RPC surfaces the Rust daemon does not serve yet, beyond what the
+# requires_fc gate already covers (see the design doc's increment table).
+_RUST_UNPORTED_FILES = {"test_backup_restore.py"}  # increment 5
+_RUST_UNPORTED_TESTS = {
+    # WatchEvents (and its ephemeral-program subject) is increment 4.
+    "test_watch_events_streams_full_lifecycle_to_all_subscribers",
+}
+
 
 def pytest_collection_modifyitems(config, items):
-    if INTEGRATION:
+    if not INTEGRATION:
+        skip = pytest.mark.skip(reason="integration suite is opt-in: set AVM_ITEST=1")
+        for item in items:
+            if Path(item.fspath).parent == HERE:
+                item.add_marker(skip)
         return
-    skip = pytest.mark.skip(reason="integration suite is opt-in: set AVM_ITEST=1")
-    for item in items:
-        if Path(item.fspath).parent == HERE:
-            item.add_marker(skip)
+    if os.environ.get("CI") == "true" and any(Path(item.fspath).parent == HERE for item in items):
+        # In CI an all-skipped suite passes silently and hides a broken
+        # droplet image; a missing /dev/kvm or QEMU binary must FAIL the job.
+        problems = []
+        if not HAS_KVM:
+            problems.append("/dev/kvm is missing or not accessible")
+        if shutil.which("qemu-system-x86_64") is None:
+            problems.append("qemu-system-x86_64 is not on PATH")
+        if problems:
+            msg = f"CI=true but the integration prerequisites are broken: {'; '.join(problems)}"
+            raise RuntimeError(msg)
+    if SUPERVISOR_IMPL == "rust":
+        skip = pytest.mark.skip(reason="not ported to the Rust daemon yet (increments 4-5)")
+        for item in items:
+            if Path(item.fspath).parent != HERE:
+                continue
+            name = getattr(item, "originalname", None) or item.name
+            if Path(item.fspath).name in _RUST_UNPORTED_FILES or name in _RUST_UNPORTED_TESTS:
+                item.add_marker(skip)
 
 
 def pytest_sessionfinish(session, exitstatus):
@@ -195,6 +247,11 @@ def _remove_controller_unit(created: list[Path]) -> None:
     override. Order matters: a still-running (or auto-restarting) unit that
     outlives the drop-in restarts with the packaged ExecStart and crash-loops
     against a config path that does not exist."""
+    if not IS_ROOT:
+        # Unprivileged sessions never installed the override nor started
+        # units; an unprivileged systemctl stop of someone else's controller
+        # would only hang on polkit until it times out.
+        return
     for unit in _active_controller_units():
         subprocess.run(["systemctl", "stop", unit], check=False)
         subprocess.run(["systemctl", "reset-failed", unit], check=False)
@@ -268,11 +325,24 @@ class Daemon:
         return "\n".join(self.log_path.read_text(errors="replace").splitlines()[-lines:])
 
 
+def _daemon_argv(socket_path: Path) -> list[str]:
+    """The daemon command for the selected implementation. Both daemons
+    read the same ALEPH_VM_* environment and --socket override."""
+    if SUPERVISOR_IMPL == "rust":
+        if not RUST_DAEMON_BINARY.exists():
+            pytest.fail(
+                f"ALEPH_VM_SUPERVISOR_IMPL=rust but {RUST_DAEMON_BINARY} does not exist; "
+                "build it first (cargo build, in rust/) or set AVM_ITEST_RUST_BINARY"
+            )
+        return [str(RUST_DAEMON_BINARY), "--socket", str(socket_path)]
+    return [sys.executable, "-m", "aleph.vm.supervisor", "--socket", str(socket_path)]
+
+
 def _spawn_daemon_process(daemon_env: dict[str, str], socket_path: Path, log_path: Path):
     """Start a supervisor daemon process; returns (process, log_handle)."""
     log_file = log_path.open("ab")
     process = subprocess.Popen(
-        [sys.executable, "-m", "aleph.vm.supervisor", "--socket", str(socket_path)],
+        _daemon_argv(socket_path),
         env=daemon_env,
         stdout=log_file,
         stderr=subprocess.STDOUT,
@@ -375,10 +445,13 @@ def daemon(tmp_path_factory):
         max_socket_path = len(str(exec_root)) + 1 + 64 + len("-monitor.socket")
         assert max_socket_path <= 108, f"execution root too long for qemu control sockets: {exec_root}"
     else:
-        root = tmp_path_factory.mktemp("avm-itest")
-        # Unprivileged runs never start QEMU (no systemd units), so the
-        # sun_path limit does not bite and the verbose path is fine.
-        exec_root = root / "exec"
+        # Unprivileged runs never start QEMU, but the daemon's
+        # settings.check() enforces the sun_path bound regardless (both
+        # implementations), and pytest's tmp roots
+        # (/tmp/pytest-of-<user>/...) blow it; keep the root short here too
+        # (removed on teardown below).
+        root = Path(tempfile.mkdtemp(prefix="avm-", dir="/tmp"))
+        exec_root = root / "e"
     exec_root.mkdir()
     (root / "cache").mkdir()
     socket_path = root / "supervisor.sock"
@@ -458,7 +531,9 @@ def daemon(tmp_path_factory):
         # no taps of ours pre-existed beyond this snapshot).
         for tap in list_tap_interfaces() - taps_before:
             subprocess.run(["ip", "link", "del", tap], check=False)
-        shutil.rmtree(root, ignore_errors=True)
+    # Both branches allocate their root with mkdtemp, outside pytest's
+    # auto-cleaned tmp tree.
+    shutil.rmtree(root, ignore_errors=True)
 
 
 @pytest_asyncio.fixture
@@ -659,6 +734,33 @@ def nftables_ruleset() -> str:
         return ""
     nft = shutil.which("nft") or "/usr/sbin/nft"
     return subprocess.run([nft, "list", "ruleset"], check=True, capture_output=True, text=True).stdout
+
+
+def nftables_dnat_rules(host_port: int) -> list[dict]:
+    """The DNAT rule expressions for a host port, from `nft -j list ruleset`.
+
+    Structural (JSON) matching instead of text: nft's text rendering of dnat
+    varies across versions ("dnat to" vs "dnat ip to")."""
+    if not IS_ROOT:
+        return []
+    nft = shutil.which("nft") or "/usr/sbin/nft"
+    payload = subprocess.run([nft, "-j", "list", "ruleset"], check=True, capture_output=True, text=True).stdout
+    rules = []
+    for item in json.loads(payload).get("nftables", []):
+        expr = item.get("rule", {}).get("expr", [])
+        has_port = any(
+            match.get("match", {}).get("right") == host_port
+            and match.get("match", {}).get("left", {}).get("payload", {}).get("field") == "dport"
+            for match in expr
+        )
+        if has_port and any("dnat" in step for step in expr):
+            rules.append(item["rule"])
+    return rules
+
+
+def default_route_interface() -> str:
+    route = subprocess.run(["ip", "route", "show", "default"], check=True, capture_output=True, text=True).stdout
+    return route.split(" dev ")[1].split()[0]
 
 
 def vm_processes(vm_id: VmId) -> list[str]:

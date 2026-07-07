@@ -1,0 +1,2 @@
+#cloud-config
+{"bootcmd":[["sed","-i","s/^GRUB_CMDLINE_LINUX_DEFAULT=\"\\(.*\\)\"/GRUB_CMDLINE_LINUX_DEFAULT=\"\\1 pci=realloc=off pci=noaer\"/","/etc/default/grub"],["sh","-c","command -v update-grub >/dev/null 2>&1 && update-grub || true"],["sh","-c","command -v grub2-mkconfig >/dev/null 2>&1 && grub2-mkconfig -o /boot/grub2/grub.cfg || true"]],"disable_root":false,"hostname":"my-host","package_update":true,"packages":["qemu-guest-agent"],"resize_rootfs":true,"runcmd":["systemctl start qemu-guest-agent.service"],"ssh_authorized_keys":[],"ssh_pwauth":false}

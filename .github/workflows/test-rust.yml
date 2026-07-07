@@ -12,9 +12,10 @@ on:
       - "src/aleph/vm/supervisor_interface/**"
       - "src/aleph/vm/conf.py"
       - "src/aleph/vm/resources.py"
-      - "src/aleph/vm/network/get_interface_ipv4.py"
+      - "src/aleph/vm/network/**"
       - "src/aleph/vm/supervisor/networking_db.py"
       - "src/aleph/vm/supervisor/qemu_build.py"
+      - "src/aleph/vm/supervisor/controllers/qemu/cloudinit.py"
       - "scripts/generate_rust_fixtures.py"
       - "pyproject.toml"
       - ".github/workflows/test-rust.yml"
@@ -29,9 +30,10 @@ on:
       - "src/aleph/vm/supervisor_interface/**"
       - "src/aleph/vm/conf.py"
       - "src/aleph/vm/resources.py"
-      - "src/aleph/vm/network/get_interface_ipv4.py"
+      - "src/aleph/vm/network/**"
       - "src/aleph/vm/supervisor/networking_db.py"
       - "src/aleph/vm/supervisor/qemu_build.py"
+      - "src/aleph/vm/supervisor/controllers/qemu/cloudinit.py"
       - "scripts/generate_rust_fixtures.py"
       - "pyproject.toml"
       - ".github/workflows/test-rust.yml"
@@ -49,10 +51,14 @@ jobs:
       - name: Workaround github issue https://github.com/actions/runner-images/issues/7192
         run: sudo echo RESET grub-efi/install_devices | sudo debconf-communicate grub-pc
 
-      - name: Install protoc and lspci
+      - name: Install protoc, lspci and the lifecycle tool dependencies
+        # acl/cloud-image-utils/qemu/ndppd: the cargo lifecycle tests run
+        # cloud-localds and resolve qemu-system-x86_64, and the daemon's
+        # settings.check() port requires the toolchain the Python check()
+        # requires.
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler pciutils
+          sudo apt-get install -y protobuf-compiler pciutils acl cloud-image-utils qemu-utils qemu-system-x86 ndppd
 
       - name: Install the pinned Rust toolchain
         # rustup reads rust/rust-toolchain.toml when invoked from inside rust/.
@@ -79,7 +85,7 @@ jobs:
       # Python client, so it needs the same Python setup as the pytest job.
       - name: Install required system packages for the Python conformance suite
         run: |
-          sudo apt-get install -y python3 python3-pip python3-aiohttp python3-msgpack python3-aiodns python3-alembic python3-sqlalchemy python3-setproctitle redis python3-psutil python3-netifaces sudo acl curl systemd-container squashfs-tools debootstrap python3-packaging python3-cpuinfo python3-nftables python3-jsonschema nftables libsystemd-dev cmake libdbus-1-dev libglib2.0-dev lshw python3-jwcrypto
+          sudo apt-get install -y python3 python3-pip python3-aiohttp python3-msgpack python3-aiodns python3-alembic python3-sqlalchemy python3-setproctitle redis python3-psutil python3-netifaces sudo acl curl systemd-container squashfs-tools debootstrap python3-packaging python3-cpuinfo python3-nftables python3-jsonschema nftables libsystemd-dev cmake libdbus-1-dev libglib2.0-dev lshw python3-jwcrypto ndppd cloud-image-utils qemu-utils qemu-system-x86
 
       - name: Install hatch
         run: |

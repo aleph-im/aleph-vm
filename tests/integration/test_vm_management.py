@@ -7,10 +7,13 @@ import asyncio
 
 import pytest
 from conftest import (
+    SUPERVISOR_IMPL,
+    default_route_interface,
     eventually,
     fc_program_spec,
     fresh_vm_id,
     make_qemu_rootfs,
+    nftables_dnat_rules,
     nftables_ruleset,
     qemu_instance_spec,
     requires_fc,
@@ -157,15 +160,21 @@ async def test_qemu_stop_start_reboot_cycle(supervisor, daemon, ssh_keypair):
     spec = qemu_instance_spec(vm_id, make_qemu_rootfs(daemon, vm_id), ssh_pubkey=pubkey)
     info = await supervisor.create_vm(spec)
 
+    # The Rust daemon answers WatchEvents UNIMPLEMENTED until increment 4;
+    # only the event subscription and its assertions are gated on the
+    # implementation, the stop/start/reboot cycle itself runs on both legs.
+    watch_events = SUPERVISOR_IMPL != "rust"
     events: list = []
+    consumer = None
 
     async def consume():
         async for event in supervisor.watch_events():
             if event.vm_id == vm_id:
                 events.append((event.old_status, event.new_status))
 
-    consumer = asyncio.ensure_future(consume())
-    await asyncio.sleep(0.5)  # let the stream subscribe server-side
+    if watch_events:
+        consumer = asyncio.ensure_future(consume())
+        await asyncio.sleep(0.5)  # let the stream subscribe server-side
     try:
         await wait_for_tcp_banner(info.ipv4.address, 22)
 
@@ -188,15 +197,94 @@ async def test_qemu_stop_start_reboot_cycle(supervisor, daemon, ssh_keypair):
         assert rebooted.status is VmStatus.RUNNING
         await wait_for_tcp_banner(rebooted.ipv4.address, 22)
 
-        # Persistent transitions are observable: stop, start, reboot pair.
-        await eventually(lambda: len(events) >= 4, timeout=10, message=f"missing lifecycle events: {events}")
-        assert events == [
-            (VmStatus.RUNNING, VmStatus.STOPPED),  # stop_vm
-            (VmStatus.STOPPED, VmStatus.RUNNING),  # start_vm
-            (VmStatus.RUNNING, VmStatus.STOPPED),  # reboot, down
-            (VmStatus.STOPPED, VmStatus.RUNNING),  # reboot, up
-        ]
+        if watch_events:
+            # Persistent transitions are observable: stop, start, reboot pair.
+            await eventually(lambda: len(events) >= 4, timeout=10, message=f"missing lifecycle events: {events}")
+            assert events == [
+                (VmStatus.RUNNING, VmStatus.STOPPED),  # stop_vm
+                (VmStatus.STOPPED, VmStatus.RUNNING),  # start_vm
+                (VmStatus.RUNNING, VmStatus.STOPPED),  # reboot, down
+                (VmStatus.STOPPED, VmStatus.RUNNING),  # reboot, up
+            ]
     finally:
-        consumer.cancel()
-        await asyncio.gather(consumer, return_exceptions=True)
+        if consumer is not None:
+            consumer.cancel()
+            await asyncio.gather(consumer, return_exceptions=True)
+        await supervisor.delete_vm(vm_id)
+
+
+@requires_qemu
+async def test_qemu_port_forward_lands_in_the_host_firewall(supervisor, daemon, ssh_keypair):
+    """AddPortForward on a running QEMU VM must install a real DNAT rule
+    (visible in `nft list ruleset`) pointing at the guest, and
+    RemovePortForward must take it out again. Runs on both matrix legs."""
+    _, pubkey = ssh_keypair
+    vm_id = fresh_vm_id()
+    spec = qemu_instance_spec(vm_id, make_qemu_rootfs(daemon, vm_id), ssh_pubkey=pubkey)
+    info = await supervisor.create_vm(spec)
+    try:
+        await wait_for_tcp_banner(info.ipv4.address, 22)
+
+        forward = await supervisor.add_port_forward(
+            PortForwardSpec(vm_id=vm_id, host_port=HostPort(0), vm_port=GuestPort(22), protocol=Protocol.TCP)
+        )
+        assert forward.vm_port == 22
+        # The rule matches ingress on the host's external interface
+        # (iifname == NETWORK_INTERFACE), so no single-host probe can
+        # traverse it: locally generated traffic takes the OUTPUT hook and
+        # never reaches the PREROUTING chain, whatever address it targets.
+        # Assert the full rule structure against the live kernel instead;
+        # end-to-end traffic through the redirect is exercised externally by
+        # the aleph-testnets upgrade checks, whose client connects through
+        # the node's public interface.
+        rules = nftables_dnat_rules(forward.host_port)
+        assert rules, "DNAT rule missing from the host firewall"
+        (rule,) = rules
+        expr = rule["expr"]
+        iif_values = [
+            match["match"]["right"]
+            for match in expr
+            if match.get("match", {}).get("left", {}).get("meta", {}).get("key") == "iifname"
+        ]
+        assert iif_values == [default_route_interface()]
+        dnat = next(step["dnat"] for step in expr if "dnat" in step)
+        assert (dnat["addr"], dnat["port"]) == (info.ipv4.address, 22)
+
+        await supervisor.remove_port_forward(vm_id, forward.host_port, Protocol.TCP)
+        assert not nftables_dnat_rules(forward.host_port), "the DNAT rule survived RemovePortForward"
+        assert await supervisor.list_port_forwards(vm_id) == []
+    finally:
+        await supervisor.delete_vm(vm_id)
+
+
+@requires_qemu
+async def test_recreate_network_keeps_a_running_vm_reachable(supervisor, daemon, ssh_keypair):
+    """RecreateNetwork flushes and rebuilds every aleph chain; a running VM
+    must stay reachable afterwards and its port forwards must survive."""
+    _, pubkey = ssh_keypair
+    vm_id = fresh_vm_id()
+    spec = qemu_instance_spec(vm_id, make_qemu_rootfs(daemon, vm_id), ssh_pubkey=pubkey)
+    info = await supervisor.create_vm(spec)
+    try:
+        await wait_for_tcp_banner(info.ipv4.address, 22)
+        forward = await supervisor.add_port_forward(
+            PortForwardSpec(vm_id=vm_id, host_port=HostPort(0), vm_port=GuestPort(22), protocol=Protocol.TCP)
+        )
+
+        summary = await supervisor.recreate_network()
+        assert summary["success"] is True
+        assert vm_id in summary["recreated_vms"]
+
+        # The guest survived the flush-and-rebuild and the persisted
+        # redirect was reapplied.
+        await wait_for_tcp_banner(info.ipv4.address, 22, timeout=60)
+        ruleset = nftables_ruleset()
+        dport = f"tcp dport {forward.host_port} "
+        dnat_target = f"to {info.ipv4.address}:22"
+        assert [
+            line for line in ruleset.splitlines() if dport in line and dnat_target in line
+        ], f"the redirect vanished after RecreateNetwork:\n{ruleset}"
+        listed = await supervisor.list_port_forwards(vm_id)
+        assert [(f.vm_port, f.host_port) for f in listed] == [(22, forward.host_port)]
+    finally:
         await supervisor.delete_vm(vm_id)
