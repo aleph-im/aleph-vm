@@ -12,12 +12,12 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 from ipaddress import IPv6Network
 from pathlib import Path
 
 import pytest
 import yaml
+from conftest import cargo_missing
 
 from aleph.vm.network.interfaces import TapInterface
 from aleph.vm.network.ipaddresses import IPv4NetworkWithInterfaces
@@ -32,7 +32,7 @@ pytestmark = [
         os.environ.get("ALEPH_VM_CONFORMANCE") != "1",
         reason="conformance suite is opt-in: set ALEPH_VM_CONFORMANCE=1",
     ),
-    pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is not on PATH"),
+    pytest.mark.skipif(cargo_missing(), reason="cargo is not on PATH"),
 ]
 
 FIXTURES = Path(__file__).resolve().parents[2] / "rust/crates/supervisor-daemon/tests/fixtures/cloudinit"

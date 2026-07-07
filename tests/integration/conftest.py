@@ -66,8 +66,16 @@ HAS_KVM = os.access("/dev/kvm", os.R_OK | os.W_OK)
 
 # Which supervisor daemon the suite drives: the same selector the packaged
 # launcher reads (design doc section 5). The tests themselves are
-# implementation-agnostic; only the spawn differs.
+# implementation-agnostic; only the spawn differs. Unknown values fail
+# loudly at collection: silently falling back to python would run the CI
+# matrix's rust leg against the wrong daemon.
 SUPERVISOR_IMPL = os.environ.get("ALEPH_VM_SUPERVISOR_IMPL", "python")
+if SUPERVISOR_IMPL not in ("python", "rust"):
+    msg = (
+        f"unknown ALEPH_VM_SUPERVISOR_IMPL={SUPERVISOR_IMPL!r}: "
+        "expected 'python' or 'rust' (refusing to silently test the python daemon)"
+    )
+    raise RuntimeError(msg)
 RUST_DAEMON_BINARY = Path(
     os.environ.get(
         "AVM_ITEST_RUST_BINARY",
@@ -134,6 +142,17 @@ def pytest_collection_modifyitems(config, items):
             if Path(item.fspath).parent == HERE:
                 item.add_marker(skip)
         return
+    if os.environ.get("CI") == "true" and any(Path(item.fspath).parent == HERE for item in items):
+        # In CI an all-skipped suite passes silently and hides a broken
+        # droplet image; a missing /dev/kvm or QEMU binary must FAIL the job.
+        problems = []
+        if not HAS_KVM:
+            problems.append("/dev/kvm is missing or not accessible")
+        if shutil.which("qemu-system-x86_64") is None:
+            problems.append("qemu-system-x86_64 is not on PATH")
+        if problems:
+            msg = f"CI=true but the integration prerequisites are broken: {'; '.join(problems)}"
+            raise RuntimeError(msg)
     if SUPERVISOR_IMPL == "rust":
         skip = pytest.mark.skip(reason="not ported to the Rust daemon yet (increments 4-5)")
         for item in items:

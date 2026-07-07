@@ -20,6 +20,7 @@ from pathlib import Path
 
 import psutil
 import pytest
+from conftest import cargo_missing
 
 from aleph.vm.supervisor_interface.client import GrpcSupervisor
 from aleph.vm.supervisor_interface.errors import NotImplementedSupervisorError
@@ -32,7 +33,7 @@ pytestmark = [
         os.environ.get("ALEPH_VM_CONFORMANCE") != "1",
         reason="conformance suite is opt-in: set ALEPH_VM_CONFORMANCE=1",
     ),
-    pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is not on PATH"),
+    pytest.mark.skipif(cargo_missing(), reason="cargo is not on PATH"),
 ]
 
 # Exercise the lspci inventory whenever the tool exists; without vfio

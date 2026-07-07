@@ -24,6 +24,25 @@ RUST_DIR = REPO_ROOT / "rust"
 DAEMON_BINARY = RUST_DIR / "target" / "debug" / "aleph-vm-supervisor"
 
 
+def cargo_missing() -> bool:
+    """Skip predicate for the per-module pytestmarks.
+
+    Locally a missing cargo skips the suite; in CI (CI=true) with the
+    conformance suite explicitly requested (ALEPH_VM_CONFORMANCE=1) it
+    FAILS collection instead: an all-skipped suite would pass the job
+    silently while covering nothing.
+    """
+    if shutil.which("cargo") is not None:
+        return False
+    if os.environ.get("CI") == "true" and os.environ.get("ALEPH_VM_CONFORMANCE") == "1":
+        msg = (
+            "CI=true and ALEPH_VM_CONFORMANCE=1 but cargo is not on PATH; "
+            "refusing to skip-pass the conformance suite"
+        )
+        raise RuntimeError(msg)
+    return True
+
+
 @pytest.fixture(scope="session")
 def daemon_binary() -> Path:
     # cwd=RUST_DIR so rustup picks up rust/rust-toolchain.toml; the target

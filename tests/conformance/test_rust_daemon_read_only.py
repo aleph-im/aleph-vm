@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from conftest import cargo_missing
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -56,7 +57,7 @@ pytestmark = [
         os.environ.get("ALEPH_VM_CONFORMANCE") != "1",
         reason="conformance suite is opt-in: set ALEPH_VM_CONFORMANCE=1",
     ),
-    pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is not on PATH"),
+    pytest.mark.skipif(cargo_missing(), reason="cargo is not on PATH"),
 ]
 
 
