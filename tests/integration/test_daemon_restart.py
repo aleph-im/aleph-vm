@@ -4,6 +4,7 @@ and must survive a daemon stop/start; the new daemon reattaches them
 
 import pytest
 from conftest import (
+    assert_controller_matches_impl,
     eventually,
     fresh_vm_id,
     make_qemu_rootfs,
@@ -34,6 +35,10 @@ async def test_daemon_restart_reattaches_persistent_vm(daemon, ssh_keypair):
     try:
         info = await client.create_vm(spec)
         await wait_for_tcp_banner(info.ipv4.address, 22)
+        # The persistent controller is the selected implementation (task A3:
+        # under impl=rust the Rust controller owns this launch), and the same
+        # unit is what the restarted daemon reattaches to below.
+        assert_controller_matches_impl(vm_id)
         qemu_before = vm_processes(vm_id)
         assert qemu_before
 
