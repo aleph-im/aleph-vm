@@ -5,12 +5,39 @@ use actix_web::{HttpRequest, HttpResponse};
 use aleph_tee::traits::TeeBackend;
 use serde::Deserialize;
 
-use crate::attestation::get_nonce_bound_report;
+use crate::attestation::get_fresh_report;
+
+/// Hop-by-hop headers (RFC 7230 6.1, plus the `Proxy-*` family). These are
+/// connection-scoped and MUST NOT be forwarded by a proxy: relaying a client's
+/// `Transfer-Encoding` alongside reqwest's own `Content-Length`, for instance,
+/// is a request-smuggling / response-desync vector. Compared case-insensitively.
+const HOP_BY_HOP_HEADERS: &[&str] = &[
+    "connection",
+    "keep-alive",
+    "transfer-encoding",
+    "te",
+    "trailer",
+    "upgrade",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "proxy-connection",
+];
+
+/// Returns true if `name` is a hop-by-hop header that must not cross the proxy.
+fn is_hop_by_hop(name: &str) -> bool {
+    HOP_BY_HOP_HEADERS
+        .iter()
+        .any(|h| name.eq_ignore_ascii_case(h))
+}
 
 /// Shared application state for the attestation agent.
 pub struct AppState {
     /// TEE backend used to generate attestation reports.
     pub backend: Arc<dyn TeeBackend>,
+    /// Raw bytes of the agent's served TLS public key. The fresh-attestation
+    /// endpoint binds this into every report (channel binding), so a relayed
+    /// fresh report cannot be reused against a different key.
+    pub served_public_key_raw: Vec<u8>,
     /// Upstream application URL (e.g., "http://127.0.0.1:8080").
     pub upstream: String,
     /// HTTP client for proxying requests to the upstream application.
@@ -26,8 +53,11 @@ pub struct AttestationQuery {
 
 /// GET `/.well-known/attestation?nonce=<hex>`
 ///
-/// Decodes the hex nonce, requests a nonce-bound attestation report from the
-/// TEE backend, and returns the report as JSON.
+/// Decodes the hex nonce and requests a fresh attestation report bound to BOTH
+/// the agent's served TLS public key AND the nonce (canonical `fresh_report_data`
+/// scheme). Binding the served key prevents a relayed fresh report from being
+/// reused for a different TLS channel, and the domain tag prevents any collision
+/// with the key-bound report scheme. Returns the report as JSON.
 pub async fn attestation_endpoint(
     state: web::Data<AppState>,
     query: web::Query<AttestationQuery>,
@@ -41,8 +71,8 @@ pub async fn attestation_endpoint(
         }
     };
 
-    // Request an attestation report bound to this nonce.
-    match get_nonce_bound_report(state.backend.as_ref(), &nonce) {
+    // Request a fresh report bound to the agent's real served key and the nonce.
+    match get_fresh_report(state.backend.as_ref(), &state.served_public_key_raw, &nonce) {
         Ok(report) => HttpResponse::Ok().json(report),
         Err(e) => {
             tracing::error!("attestation report failed: {e:#}");
@@ -75,9 +105,13 @@ pub async fn proxy_handler(
         .unwrap_or(reqwest::Method::GET);
     let mut proxy_req = state.http_client.request(method, &upstream_url);
 
-    // Forward relevant headers (skip Host since reqwest sets it).
+    // Forward end-to-end headers only. Skip Host (reqwest sets it) and all
+    // hop-by-hop headers: relaying a client Transfer-Encoding next to reqwest's
+    // own Content-Length is a request-smuggling / desync vector, so we let
+    // reqwest frame the request itself.
     for (name, value) in req.headers() {
         if name != actix_web::http::header::HOST
+            && !is_hop_by_hop(name.as_str())
             && let Ok(v) = value.to_str()
         {
             proxy_req = proxy_req.header(name.as_str(), v);
@@ -94,9 +128,13 @@ pub async fn proxy_handler(
 
             let mut resp = HttpResponse::build(status);
 
-            // Forward response headers from upstream.
+            // Forward end-to-end response headers only. Dropping hop-by-hop
+            // headers (e.g. Transfer-Encoding) lets actix frame the response and
+            // avoids a Content-Length / Transfer-Encoding desync to the client.
             for (name, value) in upstream_resp.headers() {
-                if let Ok(v) = value.to_str() {
+                if !is_hop_by_hop(name.as_str())
+                    && let Ok(v) = value.to_str()
+                {
                     resp.insert_header((name.as_str(), v));
                 }
             }

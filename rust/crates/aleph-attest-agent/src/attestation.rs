@@ -1,47 +1,45 @@
+use aleph_tee::report_data::{fresh_report_data, key_bound_report_data};
 use aleph_tee::traits::TeeBackend;
 use aleph_tee::types::AttestationReport;
 use anyhow::{Context, Result};
-use sha2::{Digest, Sha384};
 
-/// Request an attestation report with REPORT_DATA = SHA-384(public_key_bytes),
-/// zero-padded to 64 bytes.
+/// Request a key-bound attestation report for the served TLS public key.
 ///
-/// This binds the attestation report to a specific public key, proving that the
-/// holder of the corresponding private key is running inside this specific TEE.
+/// REPORT_DATA is the canonical `key_bound_report_data` scheme (domain-separated
+/// SHA-384 of the raw public key), defined once in `aleph_tee::report_data` so
+/// the constructing agent and the verifying CLI cannot drift. This binds the
+/// report to a specific public key, proving that the holder of the corresponding
+/// private key is running inside this specific TEE.
 pub fn get_key_bound_report(
     backend: &dyn TeeBackend,
     public_key_bytes: &[u8],
 ) -> Result<AttestationReport> {
-    // SHA-384 produces 48 bytes; we pad to 64 bytes (the report_data size).
-    let hash = Sha384::digest(public_key_bytes);
-
-    let mut report_data = [0u8; 64];
-    report_data[..48].copy_from_slice(&hash);
+    let report_data = key_bound_report_data(public_key_bytes);
 
     backend
         .get_report(&report_data)
         .context("failed to get key-bound attestation report")
 }
 
-/// Request an attestation report with the caller's nonce in REPORT_DATA (for Layer 3).
+/// Request a fresh (liveness) attestation report bound to BOTH the agent's
+/// served TLS public key AND the caller's nonce.
 ///
-/// If the nonce is longer than 64 bytes, it is hashed with SHA-384 and the result
-/// is zero-padded to 64 bytes. Otherwise, the nonce is placed directly into
-/// report_data and zero-padded.
-pub fn get_nonce_bound_report(backend: &dyn TeeBackend, nonce: &[u8]) -> Result<AttestationReport> {
-    let mut report_data = [0u8; 64];
-
-    if nonce.len() > 64 {
-        // Hash the nonce if it exceeds 64 bytes.
-        let hash = Sha384::digest(nonce);
-        report_data[..48].copy_from_slice(&hash);
-    } else {
-        report_data[..nonce.len()].copy_from_slice(nonce);
-    }
+/// REPORT_DATA is the canonical `fresh_report_data` scheme (domain-separated
+/// SHA-384 of the served public key concatenated with the nonce). Because the
+/// served key is mixed in, a relayed fresh report cannot be reused for a
+/// different TLS channel; because of the distinct domain tag, it can never
+/// collide with a key-bound report. The raw nonce is never placed into
+/// REPORT_DATA verbatim, closing the donor's attested-key-confusion / MITM hole.
+pub fn get_fresh_report(
+    backend: &dyn TeeBackend,
+    served_public_key_raw: &[u8],
+    nonce: &[u8],
+) -> Result<AttestationReport> {
+    let report_data = fresh_report_data(served_public_key_raw, nonce);
 
     backend
         .get_report(&report_data)
-        .context("failed to get nonce-bound attestation report")
+        .context("failed to get fresh attestation report")
 }
 
 #[cfg(test)]
@@ -80,54 +78,66 @@ mod tests {
     }
 
     #[test]
-    fn test_key_bound_report_uses_sha384_hash() {
+    fn test_key_bound_report_uses_canonical_scheme() {
         let backend = MockBackend;
         let pubkey = b"test-public-key-bytes";
 
         let report = get_key_bound_report(&backend, pubkey).unwrap();
 
-        // Verify that report_data contains SHA-384(pubkey) padded to 64 bytes.
-        let expected_hash = Sha384::digest(pubkey);
-        assert_eq!(&report.report_data[..48], expected_hash.as_slice());
-        assert_eq!(&report.report_data[48..], &[0u8; 16]);
-    }
-
-    #[test]
-    fn test_nonce_bound_report_short_nonce() {
-        let backend = MockBackend;
-        let nonce = b"short-nonce";
-
-        let report = get_nonce_bound_report(&backend, nonce).unwrap();
-
-        // Short nonce should be placed directly, then zero-padded.
-        assert_eq!(&report.report_data[..nonce.len()], nonce.as_slice());
+        // report_data must be exactly the canonical key-bound scheme.
         assert_eq!(
-            &report.report_data[nonce.len()..],
-            &vec![0u8; 64 - nonce.len()]
+            report.report_data,
+            aleph_tee::report_data::key_bound_report_data(pubkey)
         );
     }
 
     #[test]
-    fn test_nonce_bound_report_exact_64_bytes() {
+    fn test_fresh_report_binds_key_and_nonce() {
         let backend = MockBackend;
-        let nonce = [0x42u8; 64];
+        let served_key = b"agent-served-public-key";
+        let nonce = b"caller-nonce";
 
-        let report = get_nonce_bound_report(&backend, &nonce).unwrap();
+        let report = get_fresh_report(&backend, served_key, nonce).unwrap();
 
-        // Exactly 64 bytes should be placed directly without hashing.
-        assert_eq!(report.report_data, nonce);
+        // report_data must be exactly the canonical fresh scheme (key + nonce).
+        assert_eq!(
+            report.report_data,
+            aleph_tee::report_data::fresh_report_data(served_key, nonce)
+        );
     }
 
     #[test]
-    fn test_nonce_bound_report_long_nonce_is_hashed() {
+    fn test_fresh_report_is_channel_bound() {
         let backend = MockBackend;
-        let nonce = [0xFF_u8; 100]; // > 64 bytes
+        let nonce = b"same-nonce";
 
-        let report = get_nonce_bound_report(&backend, &nonce).unwrap();
+        // Changing the served key changes the report_data (channel binding).
+        let a = get_fresh_report(&backend, b"key-A", nonce)
+            .unwrap()
+            .report_data;
+        let b = get_fresh_report(&backend, b"key-B", nonce)
+            .unwrap()
+            .report_data;
+        assert_ne!(a, b);
+    }
 
-        // Long nonce should be hashed with SHA-384, then zero-padded.
-        let expected_hash = Sha384::digest(nonce);
-        assert_eq!(&report.report_data[..48], expected_hash.as_slice());
-        assert_eq!(&report.report_data[48..], &[0u8; 16]);
+    /// The donor's attested-key-confusion attack is impossible even through the
+    /// agent: a fresh report requested with nonce = SHA-384(attacker_key) against
+    /// the honest served key never matches the attacker's key-bound report.
+    #[test]
+    fn test_fresh_report_cannot_forge_key_binding() {
+        use sha2::{Digest, Sha384};
+        let backend = MockBackend;
+        let served_key = b"honest-served-key";
+        let attacker_key = b"attacker-key";
+
+        let malicious_nonce = Sha384::digest(attacker_key);
+        let fresh = get_fresh_report(&backend, served_key, &malicious_nonce)
+            .unwrap()
+            .report_data;
+        let attacker_key_bound = get_key_bound_report(&backend, attacker_key)
+            .unwrap()
+            .report_data;
+        assert_ne!(fresh, attacker_key_bound);
     }
 }
