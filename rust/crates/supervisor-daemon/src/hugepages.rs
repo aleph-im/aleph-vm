@@ -35,7 +35,10 @@ const SYSFS_NODE_ROOT: &str = "/sys/devices/system/node";
 /// `node_cap = min(per_node_cap, node_ram - headroom)`; the memory already held
 /// by 1 GiB pages is subtracted before dividing into 2 MiB pages. Saturating
 /// throughout, so an oversized headroom or 1G reservation yields 0 (never
-/// underflows), matching the donor.
+/// underflows). The donor multiplies the 1G reservation with a plain `*`; the
+/// port uses `saturating_mul`, which is strictly safer (an absurd
+/// `existing_1g_pages` cannot overflow) and agrees with the donor on every
+/// realistic input, so this is not a byte-for-byte copy of that line.
 pub fn compute_2m_budget(
     node_ram_mb: u64,
     existing_1g_pages: u32,
