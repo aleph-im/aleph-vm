@@ -856,6 +856,13 @@ fn erase_volumes(
     // disks for ephemeral programs (SpecProgramResources: the ROOTFS disk
     // plus the EXTRA disks, none of which reach a controller config).
     let (rootfs_path, volumes): (String, Vec<(String, bool)>) = if entry.is_program {
+        // The Python erase_volumes crashes on programs before reaching the
+        // extra disks: `self.resources.volumes` does not exist on
+        // SpecProgramResources (models.py:653), so the AttributeError
+        // answers INTERNAL after the rootfs step already ran. The Rust
+        // daemon keeps Python's disk outcome (rootfs erased when asked,
+        // extra disks never touched) but answers success instead of
+        // reproducing the crash (ledger entry 43, fix-in-python-later).
         let spec_disks = entry
             .spec
             .as_ref()
@@ -866,12 +873,7 @@ fn erase_volumes(
             .find(|disk| disk.role == pb::disk_config::DiskRole::Rootfs as i32)
             .map(|disk| disk.path.clone())
             .unwrap_or_default();
-        let extra = spec_disks
-            .iter()
-            .filter(|disk| disk.role == pb::disk_config::DiskRole::Extra as i32)
-            .map(|disk| (disk.path.clone(), disk.readonly))
-            .collect();
-        (rootfs, extra)
+        (rootfs, Vec::new())
     } else {
         (
             entry.config.image_path.clone(),
@@ -2023,14 +2025,29 @@ fn create_program_vm(
                 nft_setup_vm(state, vm_index, &tap.device_name).map_err(RpcError::Internal)?;
             }
 
+            // config.py MachineConfig: vcpu_count and mem_size_mib are
+            // pydantic PositiveInt, so a non-positive value raises the
+            // ValidationError in setup(), after the tap exists and before
+            // any spawn. Same point, same INTERNAL outcome, no spawn.
+            if request.vcpus == 0 || request.memory_mib == 0 {
+                return Err(RpcError::Internal(format!(
+                    "invalid machine config: vcpu_count and mem_size_mib must be positive \
+                     (got {} vcpus, {} MiB)",
+                    request.vcpus, request.memory_mib
+                )));
+            }
+
             with_entry_mut(state, &vm_id, |entry| entry.times.starting_at_ns = now_ns());
             // The ready-wait bound is workload policy carried by the spec;
             // settings.INIT_TIMEOUT only covers channels that state none
-            // (SpecFirecrackerProgram.__init__).
+            // (SpecFirecrackerProgram.__init__). Clamped: a huge configured
+            // float must behave like Python's wait_for, not panic.
             let init_timeout = if guest_channel.ready_timeout_secs != 0 {
                 Duration::from_secs(u64::from(guest_channel.ready_timeout_secs))
             } else {
-                Duration::from_secs_f64(state.host.settings.init_timeout.max(0.0))
+                crate::firecracker::duration_from_secs_clamped(
+                    state.host.settings.init_timeout.max(0.0),
+                )
             };
             let boot_request = ProgramBootRequest {
                 vm_index,
@@ -2110,6 +2127,11 @@ pub fn run_program_code(
     scope_msgpack: &[u8],
     timeout_secs: f64,
 ) -> Result<Vec<u8>, RpcError> {
+    // grpc_server.py:158 msgpack.unpackb-validates the scope BEFORE touching
+    // the VM (invalid msgpack aborts INTERNAL even for unknown vm_ids); on
+    // success the original bytes are still forwarded untouched (the
+    // pass-through of ledger entry 38 is shape-checked, never re-encoded).
+    crate::firecracker::validate_msgpack(scope_msgpack).map_err(RpcError::Internal)?;
     // The vm_lock stands in for the Python `becomes_ready` wait: CreateVm
     // holds it through the whole boot, so acquiring it means the boot
     // finished (or failed and removed the entry). Released before the
@@ -2239,8 +2261,20 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
         for chain in &all_chains {
             let ruleset = nft::fetch_ruleset(&*state.nft);
             let commands = nft::remove_chain_commands(&ruleset, chain);
-            nft::run_commands_logged(&*state.nft, &commands);
-            removed_chains.push(chain.clone());
+            // Python remove_all_aleph_chains: a failed removal lands in
+            // failed_chains (a WARN) and is EXCLUDED from removed_chains;
+            // only failed_chains stays out of the summary in both daemons.
+            let result = if commands.is_empty() {
+                Ok(())
+            } else {
+                state.nft.run_commands(&commands)
+            };
+            match result {
+                Ok(()) => removed_chains.push(chain.clone()),
+                Err(error) => {
+                    tracing::warn!(chain, error, "failed to remove chain");
+                }
+            }
         }
 
         // Step 3: re-initialize the base ruleset.
@@ -3428,6 +3462,37 @@ mod tests {
     }
 
     #[test]
+    fn recreate_network_excludes_failed_removals_from_removed_chains() {
+        // Python remove_all_aleph_chains: a chain whose removal errors goes
+        // to failed_chains (a WARN) and must NOT be counted as removed.
+        let harness = harness_with_ruleset(typical_ruleset());
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        create_vm(state, spec(&hash('a'), &root)).unwrap();
+        harness.nft.fail_batches_containing("aleph-vm-nat-3");
+
+        let summary = recreate_network(state).unwrap();
+        let removed: Vec<&str> = summary["removed_chains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect();
+        assert!(
+            !removed.contains(&"aleph-vm-nat-3"),
+            "a failed removal must not be reported as removed: {removed:?}"
+        );
+        assert!(removed.contains(&"aleph-supervisor-nat"));
+        assert_eq!(
+            summary["removed_chains_count"],
+            serde_json::json!(removed.len())
+        );
+        // Like Python, failed REMOVALS do not flip the success flag (only
+        // failed per-VM rebuilds do).
+        assert_eq!(summary["success"], serde_json::json!(true));
+    }
+
+    #[test]
     fn recreate_network_reapplies_persisted_redirects_of_running_vms() {
         // E1: step 5 reloads the store and re-emits the DNAT entities.
         let harness = harness();
@@ -4009,7 +4074,11 @@ mod tests {
     }
 
     #[test]
-    fn ephemeral_reinstall_erases_and_returns_the_stopped_vm() {
+    fn ephemeral_reinstall_erases_the_rootfs_and_preserves_extra_disks() {
+        // Python's erase_volumes crashes on programs after the rootfs step
+        // (SpecProgramResources has no `volumes`, models.py:653); the Rust
+        // daemon pins the same disk outcome (rootfs gone, extra disks
+        // untouched) but answers success (ledger entry 43).
         let harness = harness();
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -4022,10 +4091,67 @@ mod tests {
         assert!(!running);
         assert_ne!(entry.times.stopped_at_ns, 0);
         assert!(!root.join("rootfs.squashfs").exists());
-        assert!(!root.join("data.img").exists());
+        assert!(
+            root.join("data.img").exists(),
+            "extra disks are never reached by the Python erase"
+        );
         // The agent re-creates through the create path; the VM is gone.
         assert!(state.world.blocking_read().is_empty());
         assert_eq!(harness.programs.teardowns(), vec![vm_id]);
+    }
+
+    #[test]
+    fn ephemeral_delete_with_wipe_leaves_every_disk_alone() {
+        // DeleteVm(wipe=true) on a program: Python crashes before touching
+        // any disk (erase_volumes starts at the data volumes for a delete);
+        // the Rust daemon succeeds with the same disk outcome.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('4');
+        std::fs::write(root.join("rootfs.squashfs"), b"squash").unwrap();
+        std::fs::write(root.join("data.img"), b"data").unwrap();
+        create_vm(state, fc_spec(&vm_id, &root, false)).unwrap();
+
+        delete_vm(state, &vm_id, true, false).unwrap();
+        assert!(state.world.blocking_read().is_empty());
+        assert!(
+            root.join("rootfs.squashfs").exists(),
+            "a delete-wipe never includes the rootfs"
+        );
+        assert!(
+            root.join("data.img").exists(),
+            "extra disks are never reached by the Python erase"
+        );
+    }
+
+    #[test]
+    fn a_non_positive_machine_config_fails_before_any_spawn() {
+        // config.py MachineConfig vcpu_count/mem_size_mib are PositiveInt:
+        // pydantic raises in setup(), after the tap and before the spawn.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        for (vcpus, memory_mib) in [(0u32, 128u64), (1, 0)] {
+            let mut request = fc_spec(&hash('5'), &root, true);
+            request.vcpus = vcpus;
+            request.memory_mib = memory_mib;
+            match create_vm(state, request) {
+                Err(RpcError::Internal(message)) => {
+                    assert!(message.contains("must be positive"), "got {message:?}");
+                }
+                other => panic!("expected Internal, got {other:?}"),
+            }
+        }
+        assert!(
+            harness.programs.boots().is_empty(),
+            "the validation must fire before the launcher"
+        );
+        assert!(state.world.blocking_read().is_empty(), "the entry leaked");
+        assert!(
+            !harness.taps.interface_exists("vmtap4"),
+            "the tap was cleaned up like any failed boot"
+        );
     }
 
     #[test]
@@ -4063,6 +4189,75 @@ mod tests {
             }
             other => panic!("expected Internal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn run_program_code_validates_the_scope_before_touching_the_vm() {
+        // grpc_server.py:158: msgpack.unpackb runs before the VM lookup, so
+        // an invalid scope aborts INTERNAL even for an unknown vm_id (not
+        // NOT_FOUND), and the VM is never touched.
+        let harness = harness();
+        let state = &harness.state;
+        for scope in [
+            &b"\x81\xa4path"[..], // truncated map
+            &b"\x80\x80"[..],     // ExtraData: trailing bytes
+            &b"\x81\x01\x01"[..], // strict_map_key: int key
+            &b""[..],             // no object at all
+        ] {
+            match run_program_code(state, &hash('9'), scope, 5.0) {
+                Err(RpcError::Internal(message)) => {
+                    assert!(
+                        message.starts_with("invalid msgpack payload"),
+                        "got {message:?}"
+                    );
+                }
+                other => panic!("expected Internal for {scope:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn run_program_code_round_trips_over_a_live_guest_channel() {
+        // End-to-end at the cargo tier: a created program whose fake vsock
+        // path is served by a fake runtime speaking the real wire shape
+        // (Firecracker's "OK <port>\n" vsock ack, then the reply until
+        // EOF). The CI Firecracker leg is the real gate; this pins the
+        // daemon half of the exchange against a live socket.
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixListener;
+
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let program_id = hash('6');
+        create_vm(state, fc_spec(&program_id, &root, false)).unwrap();
+        let channel = state.world.blocking_read().entries[&program_id]
+            .program
+            .as_ref()
+            .unwrap()
+            .vsock_path
+            .clone();
+        let _ = std::fs::remove_file(&channel);
+        let listener = UnixListener::bind(&channel).unwrap();
+        let runtime = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = vec![0u8; 4096];
+            let read = stream.read(&mut request).unwrap();
+            request.truncate(read);
+            stream.write_all(b"OK 52\n").unwrap();
+            stream.write_all(b"program-reply").unwrap();
+            request
+        });
+
+        let scope = b"\x81\xa4path\xa1/";
+        let reply = run_program_code(state, &program_id, scope, 5.0).unwrap();
+        assert_eq!(reply, b"program-reply");
+        let request = runtime.join().unwrap();
+        let mut expected = b"CONNECT 52\n".to_vec();
+        expected.extend_from_slice(b"\x81\xa5scope");
+        expected.extend_from_slice(scope);
+        assert_eq!(request, expected, "the scope bytes pass through raw");
+        let _ = std::fs::remove_file(&channel);
     }
 
     // ── WatchEvents emissions ────────────────────────────────────────────
