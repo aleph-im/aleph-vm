@@ -1733,11 +1733,17 @@ fn confidential_config_slice(
 /// spec's `tee.policy` is empty.
 const DEFAULT_SNP_POLICY: u32 = 0x30000;
 
+/// Upper bound on the dm-verity roothash sidecar read. A real roothash is a
+/// ~64-hex-char digest; 4 KiB is generous headroom while capping a pathological
+/// sidecar so it cannot load unbounded into RAM.
+const MAX_ROOTHASH_SIDECAR_BYTES: u64 = 4096;
+
 /// The SEV-SNP measured-boot slice `build_written_config` fills, or `None` when
 /// the spec is not SNP. A measured SNP launch must present the EXACT OVMF +
 /// kernel + initrd + cmdline the B2a Nix image's `sev-snp-measure` covered, or
 /// attestation will not match, so all inputs are required and a missing one is
 /// InvalidBackend (fail closed, never boot a mismeasured SNP VM).
+#[derive(Debug)]
 struct SnpSlice {
     ovmf_path: String,
     kernel_path: String,
@@ -1774,14 +1780,33 @@ fn snp_config_slice(_state: &DaemonState, spec: &pb::VmSpec) -> Result<Option<Sn
     // does. See divergence 68.
     let rootfs_path = require_rootfs(spec)?.path.clone();
     let roothash_path = format!("{rootfs_path}.roothash");
-    let roothash = std::fs::read_to_string(&roothash_path)
-        .map_err(|error| {
+    // Bound the sidecar read: a real dm-verity roothash is ~64 hex chars, so a
+    // 4 KiB cap is generous. A pathological sidecar (the node builds its own
+    // image, but defense in depth) cannot then load unbounded into RAM; an
+    // over-cap file fails closed (InvalidBackend), never a mismeasured boot.
+    let roothash = {
+        use std::io::Read as _;
+        let mut reader = std::fs::File::open(&roothash_path)
+            .map_err(|error| {
+                RpcError::InvalidBackend(format!(
+                    "cannot read the dm-verity roothash sidecar {roothash_path}: {error}"
+                ))
+            })?
+            .take(MAX_ROOTHASH_SIDECAR_BYTES + 1);
+        let mut contents = String::new();
+        reader.read_to_string(&mut contents).map_err(|error| {
             RpcError::InvalidBackend(format!(
                 "cannot read the dm-verity roothash sidecar {roothash_path}: {error}"
             ))
-        })?
-        .trim()
-        .to_string();
+        })?;
+        if contents.len() as u64 > MAX_ROOTHASH_SIDECAR_BYTES {
+            return Err(RpcError::InvalidBackend(format!(
+                "the dm-verity roothash sidecar {roothash_path} exceeds \
+                 {MAX_ROOTHASH_SIDECAR_BYTES} bytes"
+            )));
+        }
+        contents.trim().to_string()
+    };
     // The roothash goes verbatim into the kernel cmdline; reject anything that
     // is not a bare hex string so it cannot inject extra kernel parameters.
     if roothash.is_empty() || !roothash.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -3432,6 +3457,79 @@ mod tests {
             create_vm(state, request),
             Err(RpcError::InvalidBackend(_))
         ));
+    }
+
+    #[test]
+    fn snp_config_slice_rejects_a_malformed_roothash_so_it_cannot_reach_append() {
+        // The roothash is spliced verbatim into `-append ...roothash={roothash}`,
+        // so the hex-validation guard is the cmdline-injection barrier. Each
+        // malformed sidecar must fail closed (InvalidBackend, no SnpSlice), so
+        // the injected/partial string can never reach -append. Disabling the
+        // guard makes one of these return Ok and this test bites.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+
+        for (label, malformed) in [
+            ("injection", "abc ro init=/bin/sh"),
+            ("internally-spaced", "dead beef"),
+            ("empty-but-present", ""),
+        ] {
+            let vm_id = hash('g');
+            let spec = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+            let rootfs = root.join(format!("{vm_id}-rootfs.ext4"));
+            std::fs::write(format!("{}.roothash", rootfs.display()), malformed).unwrap();
+            match snp_config_slice(state, &spec) {
+                Err(RpcError::InvalidBackend(_)) => {}
+                other => {
+                    panic!("malformed roothash ({label}) must be InvalidBackend, got {other:?}")
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn snp_config_slice_rejects_an_empty_initrd_path() {
+        // The kernel_path side of the `kernel_path.is_empty() ||
+        // initrd_path.is_empty()` guard is covered elsewhere; pin the initrd
+        // side so a mismeasured (initrd-less) boot fails closed.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+
+        let vm_id = hash('h');
+        let mut spec = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+        spec.initrd_path = String::new();
+        match snp_config_slice(state, &spec) {
+            Err(RpcError::InvalidBackend(_)) => {}
+            other => panic!("an empty initrd_path must be InvalidBackend, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn snp_config_slice_rejects_an_oversized_roothash_sidecar() {
+        // A sidecar larger than the read cap fails closed rather than loading
+        // unbounded into RAM. The content is all-hex, so only the size guard can
+        // reject it.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+
+        let vm_id = hash('i');
+        let spec = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+        let rootfs = root.join(format!("{vm_id}-rootfs.ext4"));
+        let oversized = "a".repeat(MAX_ROOTHASH_SIDECAR_BYTES as usize + 1);
+        std::fs::write(format!("{}.roothash", rootfs.display()), oversized).unwrap();
+        match snp_config_slice(state, &spec) {
+            Err(RpcError::InvalidBackend(_)) => {}
+            other => panic!("an oversized roothash sidecar must be InvalidBackend, got {other:?}"),
+        }
     }
 
     #[test]
