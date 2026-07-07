@@ -100,10 +100,20 @@ async fn main() -> Result<()> {
                 client::fresh_attestation(&args.url, &args.amd_product, expected.as_deref())
                     .await?;
 
+            // Derive display values from the AMD-signed blob (the report carries
+            // no standalone measurement / report_data copies).
+            let parsed = aleph_tee::sev_snp::report::parse_sev_snp_report(&report.data)
+                .context("failed to parse verified report blob for display")?;
             println!("Fresh attestation verified successfully!");
             println!("  TEE type:     {:?}", report.tee_type);
-            println!("  Measurement:  {}", hex::encode(&report.measurement));
-            println!("  Report data:  {}", hex::encode(report.report_data));
+            println!(
+                "  Measurement:  {}",
+                hex::encode(aleph_tee::sev_snp::report::extract_measurement(&parsed))
+            );
+            println!(
+                "  Report data:  {}",
+                hex::encode(aleph_tee::sev_snp::report::extract_report_data(&parsed))
+            );
         }
         Command::InjectSecret { common, secrets } => {
             let expected = common.parse_expected_measurement()?;
