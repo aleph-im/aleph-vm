@@ -119,6 +119,12 @@ pub struct Settings {
     /// (ALEPH_VM_USE_DEVELOPER_SSH_KEYS=true IS truthy despite the conf.py
     /// comment claiming env vars cannot set it).
     pub use_developer_ssh_keys: bool,
+
+    /// Directory that holds systemd unit files and per-instance `.service.d`
+    /// drop-in directories (default `/etc/systemd/system`). The supervisor
+    /// writes each VM's NUMA `AllowedCPUs=` drop-in under here; tests point
+    /// it at a temporary directory. Rust-only (NUMA has no Python oracle).
+    pub systemd_unit_dir: PathBuf,
 }
 
 /// conf.py DnsResolver: how DNS_NAMESERVERS is derived when unset.
@@ -286,6 +292,10 @@ impl Settings {
             None => false,
             Some(value) => parse_bool(&value).unwrap_or(!value.is_empty()),
         };
+        let systemd_unit_dir = match env.get("SYSTEMD_UNIT_DIR") {
+            Some(path) if !path.is_empty() => PathBuf::from(path),
+            _ => PathBuf::from("/etc/systemd/system"),
+        };
         let dns_resolution = match env.get("DNS_RESOLUTION") {
             None => DnsResolution::Detect,
             Some(value) if value == "detect" => DnsResolution::Detect,
@@ -335,6 +345,7 @@ impl Settings {
             dns_resolution,
             developer_ssh_keys,
             use_developer_ssh_keys,
+            systemd_unit_dir,
         })
     }
 }

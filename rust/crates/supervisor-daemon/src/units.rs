@@ -81,6 +81,15 @@ pub trait UnitStateSource: Send + Sync {
     /// Python `is_service_enabled`: `GetUnitFileState(unit) == "enabled"`,
     /// false on any bus error.
     fn is_enabled(&self, unit: &str) -> bool;
+
+    /// `Reload()`: reread unit files and drop-ins, so a freshly written
+    /// per-instance `.service.d` drop-in (the NUMA `AllowedCPUs=` pin) is
+    /// picked up even when systemd already had the unit loaded. NUMA-only;
+    /// the default is a no-op for the in-memory test fakes, which have no
+    /// on-disk unit files to reread.
+    fn reload(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// Python `SystemDManager.stop_and_disable`: stop gated on the actual
@@ -340,6 +349,24 @@ impl UnitStateSource for ZbusUnitStates {
                 .map(|_| ())
         })
         .map_err(|error| format!("DisableUnitFiles({unit}) failed: {error}"))
+    }
+
+    fn reload(&self) -> Result<(), String> {
+        // Manager.Reload(): reread unit files + drop-ins. Applied after a
+        // NUMA AllowedCPUs drop-in is written so an already-loaded unit
+        // picks it up before start.
+        self.with_connection(|connection| {
+            connection
+                .call_method(
+                    Some("org.freedesktop.systemd1"),
+                    "/org/freedesktop/systemd1",
+                    Some("org.freedesktop.systemd1.Manager"),
+                    "Reload",
+                    &(),
+                )
+                .map(|_| ())
+        })
+        .map_err(|error| format!("Reload() failed: {error}"))
     }
 
     fn is_enabled(&self, unit: &str) -> bool {
@@ -614,6 +641,11 @@ impl UnitStateSource for FakeSystemd {
 
     fn is_enabled(&self, unit: &str) -> bool {
         self.lock().enabled.contains(unit)
+    }
+
+    fn reload(&self) -> Result<(), String> {
+        self.record_action("daemon-reload".to_string());
+        Ok(())
     }
 }
 
