@@ -35,6 +35,18 @@ pub enum AllocationPolicy {
     Dynamic,
 }
 
+/// The `HypervisorType` str-enum. `Configuration.hypervisor` defaults to
+/// `firecracker` in the pydantic model, so a config with the field absent is
+/// treated as Firecracker (which the A1 dispatcher rejects, matching Python's
+/// firecracker-first precedence in `execute_persistent_vm`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum HypervisorType {
+    #[serde(rename = "qemu")]
+    Qemu,
+    #[serde(rename = "firecracker")]
+    Firecracker,
+}
+
 /// `ControllerSettings`: the node-settings slice a controller reads. Defaults
 /// mirror conf.py so a key absent from an old dump falls back instead of
 /// failing (`extra="ignore"`, defaulted fields). The field order and names
@@ -168,23 +180,72 @@ impl QemuConfig {
 }
 
 /// `MemSizeMib` reads with the coercion of the Python `_coerce_mib`
-/// (`MiB(int(value))`): an integer, a float JSON number (Python's `int()`
-/// truncates) or an INTEGER string. A float STRING like "2048.5" raises in
-/// `int(value)` and makes the whole config unparseable; it is rejected here
-/// too.
+/// (`MiB(int(value))` then `MiB.__post_init__`).
+///
+/// Reproduced:
+///   - an integer JSON number;
+///   - a float JSON number, truncated toward zero like Python's `int()`
+///     (`int(2048.7) == 2048`);
+///   - an integer string, with single underscores stripped between digits
+///     like Python's `int("2_048") == 2048`.
+///
+/// Fail-closed, NOT reproducing the C-cast footguns:
+///   - a NEGATIVE number or string is rejected (Python's `MiB.__post_init__`
+///     raises `ValueError` on negatives); it never saturates to 0, where a
+///     naive `-2048 as u64` would silently yield `-m 0`;
+///   - a non-finite number (NaN/inf) is rejected, never coerced to 0;
+///   - a float STRING like "2048.5" is rejected (Python's `int("2048.5")`
+///     raises), and so is any string with mis-placed underscores.
 fn deserialize_mem_size_mib<'de, D>(deserializer: D) -> Result<u64, D::Error>
 where
     D: Deserializer<'de>,
 {
     let value = serde_json::Value::deserialize(deserializer)?;
     let parsed = match &value {
-        serde_json::Value::Number(number) => number
-            .as_u64()
-            .or_else(|| number.as_f64().map(|float| float as u64)),
-        serde_json::Value::String(text) => text.trim().parse::<u64>().ok(),
+        serde_json::Value::Number(number) => coerce_mib_number(number),
+        serde_json::Value::String(text) => coerce_mib_string(text.trim()),
         _ => None,
     };
     parsed.ok_or_else(|| serde::de::Error::custom(format!("cannot coerce {value} to MiB")))
+}
+
+/// Coerce a JSON number to a MiB count, failing closed on negatives and
+/// non-finite values instead of saturating to 0.
+fn coerce_mib_number(number: &serde_json::Number) -> Option<u64> {
+    // A non-negative integer that fits u64 is the common case.
+    if let Some(unsigned) = number.as_u64() {
+        return Some(unsigned);
+    }
+    // Otherwise it is a float or a negative: truncate toward zero like Python
+    // `int()`, but reject negatives (MiB rejects them) and NaN/inf.
+    match number.as_f64() {
+        Some(float) if float.is_finite() && float >= 0.0 => Some(float as u64),
+        _ => None,
+    }
+}
+
+/// Coerce a string to a MiB count with Python `int()`'s base-10 grammar for
+/// the underscore case: single underscores are allowed only BETWEEN digits.
+/// Anything else (a float string, a sign-only string, doubled/edge
+/// underscores, a negative) fails, matching `int(value)` raising.
+fn coerce_mib_string(text: &str) -> Option<u64> {
+    let bytes = text.as_bytes();
+    let mut digits = String::with_capacity(text.len());
+    for (index, &byte) in bytes.iter().enumerate() {
+        if byte == b'_' {
+            let prev_is_digit = index > 0 && bytes[index - 1].is_ascii_digit();
+            let next_is_digit = bytes.get(index + 1).is_some_and(u8::is_ascii_digit);
+            // Python raises on a leading/trailing/doubled underscore.
+            if !(prev_is_digit && next_is_digit) {
+                return None;
+            }
+            continue;
+        }
+        digits.push(byte as char);
+    }
+    // u64 parse rejects a float string, a negative (`-5`) and stray characters,
+    // matching `int()` raising / MiB rejecting a negative.
+    digits.parse::<u64>().ok()
 }
 
 /// The resolved `vm_configuration` union member.
@@ -216,6 +277,10 @@ pub struct Configuration {
     /// `Configuration.vm_hash`: the VM item hash (drives the journal tags).
     pub vm_hash: String,
     pub settings: ControllerSettings,
+    /// `Configuration.hypervisor`: the declared backend. The A1 dispatcher
+    /// checks this FIRST (Python precedence), before the vm_configuration
+    /// shape, so a QEMU-shaped payload labelled firecracker fails closed.
+    pub hypervisor: HypervisorType,
     pub vm_configuration: VmConfiguration,
 }
 
@@ -246,13 +311,16 @@ impl Configuration {
         let raw: RawConfiguration = serde_json::from_str(json)
             .map_err(|error| ConfigError(format!("invalid Configuration JSON: {error}")))?;
         // The hypervisor field is validated like the pydantic HypervisorType
-        // enum, but it does not pick the union member: the shape does.
-        if raw.hypervisor != "qemu" && raw.hypervisor != "firecracker" {
-            return Err(ConfigError(format!(
-                "unknown hypervisor {:?}",
-                raw.hypervisor
-            )));
-        }
+        // enum. It does not pick the union member (the shape does), but the
+        // dispatcher checks it first (Python's firecracker-first precedence),
+        // so it is carried through, not just validated.
+        let hypervisor = match raw.hypervisor.as_str() {
+            "qemu" => HypervisorType::Qemu,
+            "firecracker" => HypervisorType::Firecracker,
+            other => {
+                return Err(ConfigError(format!("unknown hypervisor {other:?}")));
+            }
+        };
         let vm_configuration =
             match serde_json::from_value::<QemuConfig>(raw.vm_configuration.clone()) {
                 Ok(config) => VmConfiguration::Qemu(Box::new(config)),
@@ -272,6 +340,7 @@ impl Configuration {
             vm_id: raw.vm_id,
             vm_hash: raw.vm_hash,
             settings: raw.settings,
+            hypervisor,
             vm_configuration,
         })
     }
@@ -306,6 +375,58 @@ mod tests {
             "qmp_socket_path":"p","vcpu_count":1,"mem_size_mb":"2048.5",
             "host_volumes":[],"gpus":[]}"#;
         assert!(QemuConfig::from_json(json).is_err());
+    }
+
+    fn config_with_mem(raw: &str) -> String {
+        format!(
+            r#"{{"qemu_bin_path":"q","image_path":"i","monitor_socket_path":"m",
+                "qmp_socket_path":"p","vcpu_count":1,"mem_size_mb":{raw},
+                "host_volumes":[],"gpus":[]}}"#
+        )
+    }
+
+    #[test]
+    fn a_negative_mem_size_is_rejected_not_saturated_to_zero() {
+        // A naive `-2048 as u64` yields 0 (`-m 0`); fail closed instead.
+        assert!(QemuConfig::from_json(&config_with_mem("-2048")).is_err());
+        assert!(QemuConfig::from_json(&config_with_mem("-2048.0")).is_err());
+        assert!(QemuConfig::from_json(&config_with_mem("\"-2048\"")).is_err());
+    }
+
+    #[test]
+    fn a_non_finite_mem_size_is_rejected() {
+        // serde_json refuses the bare NaN/Infinity tokens outright (fail
+        // closed at the JSON layer); the coercion's is_finite guard is the
+        // in-code backstop.
+        assert!(QemuConfig::from_json(&config_with_mem("NaN")).is_err());
+        assert!(QemuConfig::from_json(&config_with_mem("Infinity")).is_err());
+    }
+
+    #[test]
+    fn an_underscored_integer_string_matches_python_int() {
+        // Python `int("2_048") == 2048`.
+        let config = QemuConfig::from_json(&config_with_mem("\"2_048\"")).unwrap();
+        assert_eq!(config.mem_size_mb, 2048);
+        // Edge/doubled underscores raise in Python `int()`; reject them too.
+        assert!(QemuConfig::from_json(&config_with_mem("\"_2048\"")).is_err());
+        assert!(QemuConfig::from_json(&config_with_mem("\"2048_\"")).is_err());
+        assert!(QemuConfig::from_json(&config_with_mem("\"2__048\"")).is_err());
+    }
+
+    #[test]
+    fn a_plain_positive_mem_size_still_works() {
+        assert_eq!(
+            QemuConfig::from_json(&config_with_mem("2048"))
+                .unwrap()
+                .mem_size_mb,
+            2048
+        );
+        assert_eq!(
+            QemuConfig::from_json(&config_with_mem("2048.7"))
+                .unwrap()
+                .mem_size_mb,
+            2048
+        );
     }
 
     #[test]

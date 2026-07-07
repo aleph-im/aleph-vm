@@ -127,6 +127,16 @@ def _cases() -> dict[str, QemuVMConfiguration]:
                 _volume(f"{data}/b.qcow2", True),
             ],
         ),
+        # Falsy corners that pin the truthiness branches (mutation coverage):
+        # qga_socket_path=None renders the literal "path=None" in the qga
+        # chardev arg (the known Python f-string wart).
+        "qga_socket_none": _base(qga_socket_path=None),
+        # interface_name="" is Python-falsy, so the NIC block is skipped (not
+        # just for None).
+        "interface_empty": _base(interface_name=""),
+        # cloud_init_drive_path="" is Python-falsy, so the cloud-init drive is
+        # skipped (not just for None).
+        "cloud_init_empty": _base(cloud_init_drive_path=""),
         # GPU kitchen sink: NIC + cloud-init + volume + GPUs (pins the q35
         # machine, the absence of the balloon and second -machine, and the
         # GPU args appended last).

@@ -27,6 +27,14 @@ pub const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(50);
 /// budget after the ACPI wait is what QEMU gets to exit after a QMP `quit`.
 pub const UNIT_STOP_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Hard ceiling on a single QMP round-trip during the escalation. The blocking
+/// client bounds itself to `qmp::COMMAND_DEADLINE`; this outer wrap guarantees
+/// the escalation still advances (ACPI wait -> quit -> final wait) even if the
+/// blocking-pool task were somehow slow to return, so a wedged or chatty
+/// monitor can never eat into the 50s process-exit wait, let alone the 60s
+/// systemd SIGKILL deadline this code exists to beat.
+const QMP_CALL_BUDGET: Duration = Duration::from_secs(qmp::COMMAND_DEADLINE.as_secs() + 3);
+
 /// Build the QEMU argv for a non-confidential persistent VM, byte-identical
 /// to `QemuVM.start()`. `argv[0]` is the qemu binary path (the exec target).
 pub fn build_argv(config: &QemuConfig) -> Vec<String> {
@@ -227,10 +235,42 @@ async fn stop(vm_hash: &str, config: &QemuConfig, child: &mut Child) {
 /// (the escalation continues regardless).
 async fn send_qmp(qmp_socket_path: &str, command: &'static str) {
     let path = qmp_socket_path.to_string();
-    let result = tokio::task::spawn_blocking(move || qmp::send_command(&path, command)).await;
-    match result {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => tracing::warn!("QMP {command} failed: {error}"),
-        Err(error) => tracing::warn!("QMP {command} task panicked: {error}"),
+    let task = tokio::task::spawn_blocking(move || qmp::send_command(&path, command));
+    // Cap the await so a hung monitor cannot stall the escalation: the blocking
+    // client is self-bounded, and the orphaned task (if any) finishes on its
+    // own deadline without holding up the next escalation step.
+    match tokio::time::timeout(QMP_CALL_BUDGET, task).await {
+        Ok(Ok(Ok(()))) => {}
+        Ok(Ok(Err(error))) => tracing::warn!("QMP {command} failed: {error}"),
+        Ok(Err(error)) => tracing::warn!("QMP {command} task panicked: {error}"),
+        Err(_) => tracing::warn!(
+            "QMP {command} did not complete within {}s, continuing escalation",
+            QMP_CALL_BUDGET.as_secs()
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The remaining post-`quit` wait is the unit stop budget minus the ACPI
+    /// wait: 60s - 50s = 10s. Pins the escalation arithmetic (`stop()` uses
+    /// `UNIT_STOP_TIMEOUT.saturating_sub(GRACEFUL_SHUTDOWN_TIMEOUT)`). The full
+    /// escalation against a real qemu is deferred to A3.
+    #[test]
+    fn the_post_quit_wait_is_ten_seconds() {
+        assert_eq!(
+            UNIT_STOP_TIMEOUT.saturating_sub(GRACEFUL_SHUTDOWN_TIMEOUT),
+            Duration::from_secs(10)
+        );
+    }
+
+    /// The per-command QMP budget must stay well under the process-exit wait so
+    /// a wedged monitor cannot eat into the graceful-stop window.
+    #[test]
+    fn the_qmp_call_budget_is_well_under_the_graceful_wait() {
+        assert!(QMP_CALL_BUDGET < GRACEFUL_SHUTDOWN_TIMEOUT);
+        assert!(QMP_CALL_BUDGET >= qmp::COMMAND_DEADLINE);
     }
 }
