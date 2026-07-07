@@ -1,0 +1,74 @@
+{
+  "config_json": {
+    "qemu_bin_path": "/usr/bin/qemu-system-x86_64",
+    "cloud_init_drive_path": "/var/lib/aleph/vm/cloud-init-testhash.img",
+    "image_path": "/var/lib/aleph/vm/volumes/persistent/testhash/rootfs.qcow2",
+    "monitor_socket_path": "/var/lib/aleph/vm/testhash-monitor.socket",
+    "qmp_socket_path": "/var/lib/aleph/vm/testhash-qmp.socket",
+    "qga_socket_path": "/var/lib/aleph/vm/testhash-qga.socket",
+    "vcpu_count": 2,
+    "mem_size_mb": 2048,
+    "interface_name": "vmtap6",
+    "host_volumes": [
+      {
+        "mount": "",
+        "path_on_host": "/var/lib/aleph/vm/volumes/persistent/testhash/data.qcow2",
+        "read_only": false
+      }
+    ],
+    "gpus": [
+      {
+        "pci_host": "0000:01:00.0",
+        "supports_x_vga": true
+      },
+      {
+        "pci_host": "0000:02:00.0",
+        "supports_x_vga": false
+      }
+    ]
+  },
+  "expected_argv": [
+    "/usr/bin/qemu-system-x86_64",
+    "-machine",
+    "q35",
+    "-enable-kvm",
+    "-nodefaults",
+    "-m",
+    "2048",
+    "-smp",
+    "2",
+    "-drive",
+    "file=/var/lib/aleph/vm/volumes/persistent/testhash/rootfs.qcow2,media=disk,if=virtio,file.locking=off",
+    "-display",
+    "none",
+    "-monitor",
+    "unix:/var/lib/aleph/vm/testhash-monitor.socket,server,nowait",
+    "-device",
+    "virtio-serial",
+    "-chardev",
+    "socket,path=/var/lib/aleph/vm/testhash-qga.socket,server=on,wait=off,id=qga0",
+    "-device",
+    "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0",
+    "-qmp",
+    "unix:/var/lib/aleph/vm/testhash-qmp.socket,server,nowait",
+    "-serial",
+    "stdio",
+    "-nographic",
+    "-boot",
+    "order=c,reboot-timeout=1",
+    "-device",
+    "virtio-net-pci,netdev=net0,rombar=0",
+    "-netdev",
+    "tap,id=net0,ifname=vmtap6,script=no,downscript=no",
+    "-drive",
+    "file=/var/lib/aleph/vm/cloud-init-testhash.img,media=cdrom,readonly=on,if=virtio",
+    "-drive",
+    "file=/var/lib/aleph/vm/volumes/persistent/testhash/data.qcow2,format=raw,readonly=off,media=disk,if=virtio",
+    "-cpu",
+    "host,host-phys-bits-limit=0x28",
+    "-device",
+    "vfio-pci,host=0000:01:00.0,rombar=0,x-vga=on",
+    "-device",
+    "vfio-pci,host=0000:02:00.0,rombar=0"
+  ]
+}
