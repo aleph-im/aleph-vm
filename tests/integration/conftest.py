@@ -107,18 +107,14 @@ def _default_qemu_image() -> Path | None:
 _qemu_image_env = os.environ.get("AVM_ITEST_QEMU_IMAGE")
 QEMU_IMAGE: Path | None = Path(_qemu_image_env) if _qemu_image_env else _default_qemu_image()
 
-# Ephemeral Firecracker programs are increment 4 of the Rust port; until it
-# lands, the rust leg only exercises the persistent QEMU surface.
-FC_READY = HAS_KVM and FC_KERNEL.exists() and FC_RUNTIME.exists() and SUPERVISOR_IMPL != "rust"
+# Both daemons serve the Firecracker surface since increment 4 of the Rust
+# port; the suite is implementation-agnostic here.
+FC_READY = HAS_KVM and FC_KERNEL.exists() and FC_RUNTIME.exists()
 QEMU_READY = HAS_KVM and IS_ROOT and QEMU_IMAGE is not None and QEMU_IMAGE.exists()
 
 requires_fc = pytest.mark.skipif(
     not FC_READY,
-    reason=(
-        "Firecracker programs are not ported to the Rust daemon yet (increment 4)"
-        if SUPERVISOR_IMPL == "rust"
-        else f"needs /dev/kvm, a kernel ({FC_KERNEL}) and a runtime squashfs ({FC_RUNTIME})"
-    ),
+    reason=f"needs /dev/kvm, a kernel ({FC_KERNEL}) and a runtime squashfs ({FC_RUNTIME})",
 )
 requires_qemu = pytest.mark.skipif(
     not QEMU_READY,
@@ -126,13 +122,11 @@ requires_qemu = pytest.mark.skipif(
 )
 requires_root = pytest.mark.skipif(not IS_ROOT, reason="needs root (TAP networking / nftables)")
 
-# Tests of RPC surfaces the Rust daemon does not serve yet, beyond what the
-# requires_fc gate already covers (see the design doc's increment table).
+# Tests of RPC surfaces the Rust daemon does not serve yet (see the design
+# doc's increment table). Increment 4 un-skipped the Firecracker surface,
+# WatchEvents and StreamLogs; only the backup surface remains.
 _RUST_UNPORTED_FILES = {"test_backup_restore.py"}  # increment 5
-_RUST_UNPORTED_TESTS = {
-    # WatchEvents (and its ephemeral-program subject) is increment 4.
-    "test_watch_events_streams_full_lifecycle_to_all_subscribers",
-}
+_RUST_UNPORTED_TESTS: set[str] = set()
 
 
 def pytest_collection_modifyitems(config, items):
@@ -144,12 +138,19 @@ def pytest_collection_modifyitems(config, items):
         return
     if os.environ.get("CI") == "true" and any(Path(item.fspath).parent == HERE for item in items):
         # In CI an all-skipped suite passes silently and hides a broken
-        # droplet image; a missing /dev/kvm or QEMU binary must FAIL the job.
+        # droplet image; a missing /dev/kvm or QEMU binary must FAIL the
+        # job. The Firecracker surface is mandatory on BOTH matrix legs
+        # since increment 4: a leg silently skipping the FC tests would
+        # pass while covering nothing.
         problems = []
         if not HAS_KVM:
             problems.append("/dev/kvm is missing or not accessible")
         if shutil.which("qemu-system-x86_64") is None:
             problems.append("qemu-system-x86_64 is not on PATH")
+        if not FC_KERNEL.exists():
+            problems.append(f"the Firecracker guest kernel {FC_KERNEL} is missing")
+        if not FC_RUNTIME.exists():
+            problems.append(f"the Firecracker runtime squashfs {FC_RUNTIME} is missing")
         if problems:
             msg = f"CI=true but the integration prerequisites are broken: {'; '.join(problems)}"
             raise RuntimeError(msg)

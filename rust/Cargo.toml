@@ -13,6 +13,9 @@ supervisor-proto = { path = "crates/supervisor-proto" }
 clap = { version = "4", features = ["derive"] }
 libc = "0.2"
 prost = "0.13"
+# msgpack shape validation only (Python msgpack.unpackb parity); validated
+# payloads are still forwarded as the client's raw bytes, never re-encoded.
+rmpv = "1"
 # bundled: link a vendored libsqlite3 so cargo builds and tests are hermetic
 # (no libsqlite3-dev needed on CI runners or in build containers). The
 # on-disk format is plain sqlite3, shared with SQLAlchemy.

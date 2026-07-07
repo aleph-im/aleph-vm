@@ -159,6 +159,30 @@ pub struct QemuVmConfig {
 }
 
 impl QemuVmConfig {
+    /// The synthesized record an ephemeral program's world entry carries
+    /// (see `VmEntry::config`): only the fields the shared accounting
+    /// paths read (memory backstop, networking_enabled, GPU exclusion)
+    /// are meaningful. Never written to disk.
+    pub fn for_program(mem_size_mb: u64, interface_name: Option<String>) -> Self {
+        Self {
+            qemu_bin_path: String::new(),
+            cloud_init_drive_path: None,
+            image_path: String::new(),
+            monitor_socket_path: String::new(),
+            qmp_socket_path: String::new(),
+            qga_socket_path: None,
+            vcpu_count: 0,
+            mem_size_mb,
+            interface_name,
+            host_volumes: Vec::new(),
+            gpus: Vec::new(),
+            ovmf_path: None,
+            sev_session_file: None,
+            sev_dh_cert_file: None,
+            sev_policy: None,
+        }
+    }
+
     /// The confidential slice when this is a
     /// `QemuConfidentialVMConfiguration`, `None` for a plain QEMU config.
     pub fn confidential(&self) -> Option<ConfidentialConfig> {
