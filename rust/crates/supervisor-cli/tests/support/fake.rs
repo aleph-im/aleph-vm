@@ -193,9 +193,16 @@ impl Supervisor for FakeSupervisor {
 
     async fn list_port_forwards(
         &self,
-        _request: Request<pb::ListPortForwardsRequest>,
+        request: Request<pb::ListPortForwardsRequest>,
     ) -> Result<Response<pb::ListPortForwardsResponse>, Status> {
-        Err(Status::unimplemented("not faked"))
+        let vm_id = request.into_inner().vm_id;
+        let forwards = self
+            .forwards
+            .iter()
+            .filter(|forward| vm_id.is_empty() || forward.vm_id == vm_id)
+            .cloned()
+            .collect();
+        Ok(Response::new(pb::ListPortForwardsResponse { forwards }))
     }
 
     async fn get_logs(

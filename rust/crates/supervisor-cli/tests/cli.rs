@@ -289,3 +289,35 @@ async fn vm_delete_with_yes_skips_the_prompt() {
     assert_eq!(String::from_utf8(out).unwrap(), "deleted vm-1\n");
     assert_eq!(*deleted.lock().unwrap(), vec!["vm-1".to_string()]);
 }
+
+#[tokio::test]
+async fn ports_list_filters_by_vm_and_renders_a_table() {
+    let fake = FakeSupervisor {
+        forwards: vec![
+            pb::PortForwardInfo {
+                vm_id: "vm-1".to_string(),
+                host_port: 24001,
+                vm_port: 22,
+                protocol: pb::Protocol::Tcp as i32,
+            },
+            pb::PortForwardInfo {
+                vm_id: "vm-2".to_string(),
+                host_port: 24002,
+                vm_port: 80,
+                protocol: pb::Protocol::Tcp as i32,
+            },
+        ],
+        ..Default::default()
+    };
+    let (_dir, socket) = spawn(fake).await;
+    let mut client = client::connect(&socket).await.unwrap();
+    let mut out = Vec::new();
+    commands::ports::list(&mut client, &mut out, Some("vm-1".to_string()), false)
+        .await
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "VM ID  HOST PORT  VM PORT  PROTOCOL\n\
+         vm-1   24001      22       TCP\n"
+    );
+}
