@@ -397,20 +397,6 @@ pub fn build_confidential_argv(config: &QemuConfig, sev: SevHostInfo) -> Vec<Str
     args
 }
 
-/// The SEV-SNP guest C-bit position, hardcoded to 51 to match BOTH the
-/// aleph-tee `sev_snp_qemu_args` generator (the byte-parity oracle) and the
-/// B2a launch measurement, which was computed for `--vcpu-type EPYC-v4`. On an
-/// AMD EPYC part the CPUID-reported C-bit position IS 51, so this is not a
-/// guess: it is the fixed value the measurement assumes. Reading it from host
-/// CPUID (as the SEV/SEV-ES path does via `SevHostInfo`) would produce the same
-/// 51 on the measured target but break byte-parity with the generator, which
-/// hardcodes it. See divergence 68.
-const SNP_CBITPOS: u32 = 51;
-
-/// The SEV-SNP guest reduced-phys-bits, hardcoded to 1 to match the generator
-/// and the measurement (same rationale as [`SNP_CBITPOS`]).
-const SNP_REDUCED_PHYS_BITS: u32 = 1;
-
 /// The TEE machine/object fragment for an SEV-SNP launch, byte-identical to
 /// `aleph_tee::sev_snp::qemu::sev_snp_qemu_args` for the B1 (no NUMA, no
 /// hugepage) case. Emitted self-contained here so the controller does not take
@@ -420,9 +406,18 @@ const SNP_REDUCED_PHYS_BITS: u32 = 1;
 ///   -cpu EPYC-v4
 ///   -machine q35,confidential-guest-support=sev0,memory-backend=ram1,vmport=off
 ///   -object memory-backend-memfd,id=ram1,size={mem}M,share=true
-///   -object sev-snp-guest,id=sev0,cbitpos=51,reduced-phys-bits=1,kernel-hashes=on,policy={policy}
+///   -object sev-snp-guest,id=sev0,cbitpos={cbitpos},reduced-phys-bits={reduced_phys_bits},kernel-hashes=on,policy={policy}
 ///   -nodefaults
 ///   -bios {ovmf}
+///
+/// `cbitpos` / `reduced_phys_bits` are HOST hardware properties read from CPUID
+/// leaf `0x8000001F` at launch (via [`SevHostInfo`]), NOT hardcoded and NOT
+/// measurement inputs: they configure memory encryption, not the launch digest,
+/// so reading them from the host keeps the supervisor architecture-agnostic
+/// without affecting the measurement. On the current EPYC target CPUID reports
+/// `cbitpos=51, reduced_phys_bits=1`. `-cpu EPYC-v4` (a fixed vcpu-type that IS
+/// a measurement input via the VMSA) stays fixed so measurements are
+/// host-independent. See divergence 68.
 ///
 /// `kernel-hashes=on` makes OVMF hash-verify the -kernel/-initrd/-append blobs;
 /// `policy` is rendered `hex()`-style (`0x{:x}`) from the daemon-carried u32,
@@ -444,6 +439,8 @@ pub fn snp_tee_fragment(
     ovmf_path: &str,
     numa_node: Option<u32>,
     hugepage_size: Option<&str>,
+    cbitpos: u32,
+    reduced_phys_bits: u32,
 ) -> Vec<String> {
     let policy = format!("0x{sev_policy:x}");
     let suffix = memory_backend_suffix(numa_node, hugepage_size);
@@ -456,7 +453,7 @@ pub fn snp_tee_fragment(
         format!("memory-backend-memfd,id=ram1,size={mem_size_mb}M,share=true{suffix}"),
         "-object".into(),
         format!(
-            "sev-snp-guest,id=sev0,cbitpos={SNP_CBITPOS},reduced-phys-bits={SNP_REDUCED_PHYS_BITS},\
+            "sev-snp-guest,id=sev0,cbitpos={cbitpos},reduced-phys-bits={reduced_phys_bits},\
              kernel-hashes=on,policy={policy}"
         ),
         "-nodefaults".into(),
@@ -489,7 +486,14 @@ pub fn snp_tee_fragment(
 /// guest is not supported yet. The daemon fails closed on an SNP spec that
 /// carries GPUs (`snp_config_slice`), so an SNP config reaching here always has
 /// an empty `gpus`; nothing is silently dropped.
-pub fn build_snp_argv(config: &QemuConfig) -> Vec<String> {
+///
+/// `sev` carries the host-CPUID-derived `cbitpos` / `reduced-phys-bits`,
+/// injected (not read here) so the builder is testable off-SEV and the argv is
+/// architecture-agnostic. These are memory-encryption parameters, NOT
+/// measurement inputs, so reading them from the host does not affect the launch
+/// measurement (which pins `-cpu EPYC-v4`, the OVMF, kernel, initrd, cmdline and
+/// vcpu count).
+pub fn build_snp_argv(config: &QemuConfig, sev: SevHostInfo) -> Vec<String> {
     debug_assert!(
         config.is_snp(),
         "build_snp_argv requires an SNP config (sev_snp marker set)"
@@ -587,6 +591,8 @@ pub fn build_snp_argv(config: &QemuConfig) -> Vec<String> {
         ovmf_path,
         config.numa_node,
         config.hugepage_size.as_deref(),
+        sev.cbitpos,
+        sev.reduced_phys_bits,
     ));
 
     args
@@ -614,14 +620,21 @@ pub async fn run_confidential(vm_hash: &str, config: &QemuConfig) -> Result<i32,
     spawn_and_supervise(vm_hash, config, argv).await
 }
 
-/// Launch an SEV-SNP measured-boot VM (increment B1). Unlike the SEV/SEV-ES
-/// path there is NO host-CPUID read (cbitpos/reduced-phys-bits are the fixed
-/// EPYC-v4 values the measurement assumes) and NO owner-certificate pre-launch
-/// guard (SNP has no session/godh handshake): the VM boots directly and its
-/// secrets are injected at runtime over the attested TLS channel by the in-guest
-/// attest-agent.
+/// Launch an SEV-SNP measured-boot VM (increment B1). There is NO
+/// owner-certificate pre-launch guard (SNP has no session/godh handshake): the
+/// VM boots directly and its secrets are injected at runtime over the attested
+/// TLS channel by the in-guest attest-agent.
+///
+/// Like the SEV/SEV-ES path, `cbitpos` / `reduced-phys-bits` are read from the
+/// host at launch via `SevHostInfo::read()` (CPUID leaf 0x8000001F), keeping the
+/// supervisor architecture-agnostic. These are memory-encryption parameters, not
+/// measurement inputs, so the host-derived value does not change the launch
+/// measurement (which pins the fixed `-cpu EPYC-v4`). An SNP VM cannot run off
+/// an AMD SEV platform, so a `None` read is refused up front.
 pub async fn run_snp(vm_hash: &str, config: &QemuConfig) -> Result<i32, String> {
-    let argv = build_snp_argv(config);
+    let sev =
+        SevHostInfo::read().ok_or_else(|| "Not running on an AMD SEV platform?".to_string())?;
+    let argv = build_snp_argv(config, sev);
     spawn_and_supervise(vm_hash, config, argv).await
 }
 
@@ -1031,9 +1044,18 @@ mod tests {
         config
     }
 
+    /// The EPYC target's host CPUID values, injected into the SNP builder in
+    /// tests (the real launch path reads these from `SevHostInfo::read()`).
+    fn epyc_sev_host_info() -> SevHostInfo {
+        SevHostInfo {
+            cbitpos: 51,
+            reduced_phys_bits: 1,
+        }
+    }
+
     #[test]
     fn snp_without_numa_leaves_the_ram1_memfd_bare() {
-        let argv = build_snp_argv(&snp_config(None, None));
+        let argv = build_snp_argv(&snp_config(None, None), epyc_sev_host_info());
         assert!(
             argv.contains(&"memory-backend-memfd,id=ram1,size=2048M,share=true".to_string()),
             "{argv:?}"
@@ -1042,10 +1064,33 @@ mod tests {
 
     #[test]
     fn snp_with_numa_and_hugepages_binds_the_ram1_memfd() {
-        let argv = build_snp_argv(&snp_config(Some(1), Some("2M")));
+        let argv = build_snp_argv(&snp_config(Some(1), Some("2M")), epyc_sev_host_info());
         assert!(
             argv.contains(&"memory-backend-memfd,id=ram1,size=2048M,share=true,hugetlb=on,hugetlbsize=2M,host-nodes=1,policy=bind".to_string()),
             "{argv:?}"
+        );
+    }
+
+    #[test]
+    fn snp_cbit_params_come_from_the_injected_host_info() {
+        // Inject a non-EPYC (cbitpos, reduced_phys_bits) pair and confirm the
+        // SNP object reflects the host-derived values, not a hardcoded 51/1.
+        let argv = build_snp_argv(
+            &snp_config(None, None),
+            SevHostInfo {
+                cbitpos: 47,
+                reduced_phys_bits: 2,
+            },
+        );
+        assert!(
+            argv.iter().any(|a| a.contains("sev-snp-guest")
+                && a.contains("cbitpos=47")
+                && a.contains("reduced-phys-bits=2")),
+            "{argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|a| a.contains("cbitpos=51")),
+            "cbitpos=51 must not be hardcoded: {argv:?}"
         );
     }
 }
