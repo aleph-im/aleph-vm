@@ -96,3 +96,106 @@ async fn host_info_prints_a_key_value_block() {
          numa0: 8 cpus, 16384 MiB\n"
     );
 }
+
+fn fake_spec(vm_id: &str) -> pb::VmSpec {
+    pb::VmSpec {
+        vm_id: vm_id.to_string(),
+        backend: pb::Backend::Qemu as i32,
+        vcpus: 2,
+        memory_mib: 2048,
+        persistent: true,
+        disks: vec![pb::DiskConfig {
+            path: "/data/root.qcow2".to_string(),
+            readonly: false,
+            format: pb::disk_config::Format::Qcow2 as i32,
+            role: pb::disk_config::DiskRole::Rootfs as i32,
+        }],
+        network: Some(pb::NetworkConfig {
+            internet_access: true,
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn vm_list_renders_an_aligned_table() {
+    let fake = FakeSupervisor {
+        vms: vec![running_vm("vm-1")],
+        ..Default::default()
+    };
+    let (_dir, socket) = spawn(fake).await;
+    let mut client = client::connect(&socket).await.unwrap();
+    let mut out = Vec::new();
+    commands::vm::list(&mut client, &mut out, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "VM ID  STATUS   BACKEND  IPV4        UPTIME\n\
+         vm-1   RUNNING  QEMU     172.16.3.2  2m 5s\n"
+    );
+}
+
+#[tokio::test]
+async fn vm_get_renders_a_key_value_block() {
+    let fake = FakeSupervisor {
+        vms: vec![running_vm("vm-1")],
+        ..Default::default()
+    };
+    let (_dir, socket) = spawn(fake).await;
+    let mut client = client::connect(&socket).await.unwrap();
+    let mut out = Vec::new();
+    commands::vm::get(&mut client, &mut out, "vm-1", false)
+        .await
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "vm_id: vm-1\n\
+         status: RUNNING\n\
+         backend: QEMU\n\
+         ipv4: 172.16.3.2 (gw 172.16.3.1)\n\
+         uptime: 2m 5s\n\
+         confidential_mode: NONE\n"
+    );
+}
+
+#[tokio::test]
+async fn vm_get_unknown_id_maps_the_error_trailer() {
+    let fake = FakeSupervisor::default();
+    let (_dir, socket) = spawn(fake).await;
+    let mut client = client::connect(&socket).await.unwrap();
+    let mut out = Vec::new();
+    let error = commands::vm::get(&mut client, &mut out, "ghost", false)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "NotFound: no VM with id ghost [ERROR_CODE_VM_NOT_FOUND]"
+    );
+}
+
+#[tokio::test]
+async fn vm_spec_renders_disks_and_network() {
+    let fake = FakeSupervisor {
+        spec: Some(fake_spec("vm-1")),
+        ..Default::default()
+    };
+    let (_dir, socket) = spawn(fake).await;
+    let mut client = client::connect(&socket).await.unwrap();
+    let mut out = Vec::new();
+    commands::vm::spec(&mut client, &mut out, "vm-1", false)
+        .await
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "vm_id: vm-1\n\
+         backend: QEMU\n\
+         vcpus: 2\n\
+         memory_mib: 2048\n\
+         persistent: true\n\
+         kernel: -\n\
+         disk: /data/root.qcow2 (QCOW2, ROOTFS, rw)\n\
+         internet_access: true\n"
+    );
+}
