@@ -25,7 +25,7 @@ use prost::Message;
 use supervisor_proto::ERROR_TRAILER_KEY;
 use supervisor_proto::pb;
 use supervisor_proto::pb::supervisor_server::Supervisor;
-use tokio_stream::Stream;
+use tokio_stream::{Stream, StreamExt};
 use tonic::metadata::{MetadataMap, MetadataValue};
 use tonic::{Code, Request, Response, Status};
 
@@ -145,6 +145,9 @@ pub struct DaemonState {
     pub net_lock: std::sync::Mutex<()>,
     /// Poll/sleep pacing for the lifecycle waits; tests shrink it.
     pub pacing: crate::lifecycle::Pacing,
+    /// Lifecycle event fan-out behind WatchEvents (the Python
+    /// `_event_queues` set).
+    pub events: crate::events::EventHub,
 }
 
 impl DaemonState {
@@ -169,6 +172,7 @@ impl DaemonState {
             vm_locks: std::sync::Mutex::new(HashMap::new()),
             net_lock: std::sync::Mutex::new(()),
             pacing: crate::lifecycle::Pacing::instant(),
+            events: crate::events::EventHub::default(),
         }
     }
 }
@@ -302,7 +306,7 @@ fn gpu_json(gpus: &[GpuDevice]) -> Result<String, DaemonError> {
 // ── World view to wire mapping ──────────────────────────────────────────
 
 /// `_status_of`, ported literally: the times short-circuit the live flag.
-fn vm_status(times: &VmTimes, running: bool) -> pb::VmStatus {
+pub(crate) fn vm_status(times: &VmTimes, running: bool) -> pb::VmStatus {
     if times.stopped_at_ns != 0 {
         pb::VmStatus::Stopped
     } else if times.stopping_at_ns != 0 {
@@ -809,14 +813,19 @@ impl Supervisor for SupervisorService {
         Ok(Response::new(pb::ListPortForwardsResponse { forwards }))
     }
 
-    // ── Events (increment 4) ──
-    type WatchEventsStream = UnimplementedStream<pb::VmEvent>;
+    // ── Events ──
+    type WatchEventsStream = Pin<Box<dyn Stream<Item = Result<pb::VmEvent, Status>> + Send>>;
 
     async fn watch_events(
         &self,
         _request: Request<pb::WatchEventsRequest>,
     ) -> Result<Response<Self::WatchEventsStream>, Status> {
-        Err(unimplemented_status("WatchEvents"))
+        // Python watch_events: register a queue and stream it until the
+        // client disconnects; no replay (snapshot with ListVms first, as
+        // the proto documents). Dropping the stream unsubscribes.
+        let receiver = self.state.events.subscribe();
+        let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(receiver).map(Ok);
+        Ok(Response::new(Box::pin(stream)))
     }
 
     // ── Logs (StreamLogs lands in increment 4) ──

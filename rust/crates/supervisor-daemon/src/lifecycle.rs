@@ -162,6 +162,13 @@ fn network_interface(state: &DaemonState) -> String {
     state.host.network_interface.clone().unwrap_or_default()
 }
 
+/// Python `_status_snapshot`: the wire status of an entry right now, with a
+/// live unit query for the running flag. Every mutation snapshots it before
+/// acting so the emitted event carries the pre-mutation status.
+fn status_snapshot(state: &DaemonState, entry: &VmEntry) -> pb::VmStatus {
+    crate::service::vm_status(&entry.times, unit_active(state, &entry.unit_name()))
+}
+
 fn chain_prefix(state: &DaemonState) -> &str {
     &state.host.settings.nftables_chain_prefix
 }
@@ -592,10 +599,12 @@ pub fn stop_vm(state: &DaemonState, vm_id: &str) -> Result<VmEntry, RpcError> {
     let _guard = lock
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if entry_snapshot(state, vm_id).is_none() {
-        return Err(RpcError::NotFound(vm_id.into()));
-    }
+    let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
+    let old_status = status_snapshot(state, &entry);
     stop_vm_execution(state, vm_id)?;
+    // Python stop_vm: the event fires on every successful stop, including
+    // the idempotent already-stopped one (old = STOPPED there).
+    state.events.emit(vm_id, old_status, pb::VmStatus::Stopped);
     entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))
 }
 
@@ -606,11 +615,18 @@ pub fn start_vm(state: &DaemonState, vm_id: &str) -> Result<(VmEntry, bool), Rpc
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
     if unit_active(state, &entry.unit_name()) {
+        // Python start_vm: the already-running short circuit emits nothing.
         return Ok((entry, true));
     }
+    let old_status = status_snapshot(state, &entry);
     start_vm_execution(state, vm_id)?;
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
     let running = unit_active(state, &entry.unit_name());
+    state.events.emit(
+        vm_id,
+        old_status,
+        crate::service::vm_status(&entry.times, running),
+    );
     Ok((entry, running))
 }
 
@@ -620,6 +636,7 @@ pub fn reboot_vm(state: &DaemonState, vm_id: &str) -> Result<(VmEntry, bool), Rp
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
+    let old_status = status_snapshot(state, &entry);
     let unit = entry.unit_name();
     // RestartUnit only queues a job: wait until the unit is confirmed
     // active so the reported status is truthful.
@@ -628,6 +645,14 @@ pub fn reboot_vm(state: &DaemonState, vm_id: &str) -> Result<(VmEntry, bool), Rp
     with_entry_mut(state, vm_id, |entry| entry.times.started_at_ns = now_ns());
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
     let running = unit_active(state, &unit);
+    // A reboot is a down-then-up pair; watchers that drop per-VM state on
+    // "down" must see the down (the Python reboot_vm comment).
+    state.events.emit(vm_id, old_status, pb::VmStatus::Stopped);
+    state.events.emit(
+        vm_id,
+        pb::VmStatus::Stopped,
+        crate::service::vm_status(&entry.times, running),
+    );
     Ok((entry, running))
 }
 
@@ -641,7 +666,9 @@ pub fn reinstall_vm(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
+    let old_status = status_snapshot(state, &entry);
     stop_vm_execution(state, vm_id)?;
+    state.events.emit(vm_id, old_status, pb::VmStatus::Stopped);
     // erase_volumes(include_rootfs=True, include_data_volumes=wipe_volumes).
     erase_volumes(&entry, true, wipe_volumes).map_err(RpcError::Internal)?;
     // prepare(): resources rebuilt from the spec, re-stamping the
@@ -653,6 +680,10 @@ pub fn reinstall_vm(
     start_vm_execution(state, vm_id)?;
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
     let running = unit_active(state, &entry.unit_name());
+    let new_status = crate::service::vm_status(&entry.times, running);
+    if new_status != pb::VmStatus::Stopped {
+        state.events.emit(vm_id, pb::VmStatus::Stopped, new_status);
+    }
     Ok((entry, running))
 }
 
@@ -768,7 +799,9 @@ fn delete_tracked_vm(
     let root = &state.host.settings.execution_root;
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
 
+    let old_status = status_snapshot(state, &entry);
     stop_vm_execution(state, vm_id)?;
+    state.events.emit(vm_id, old_status, pb::VmStatus::Stopped);
     state.world.blocking_write().entries.remove(vm_id);
     // Delete releases the definition: the controller config and the
     // cloud-init seed go too (stop keeps them for reattach).
@@ -1366,7 +1399,21 @@ fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
-pub fn create_vm(
+/// CreateVm at the LocalSupervisor layer: the pool-level create plus the
+/// event the Python create_vm emits after `_to_vm_info` (DEFINED to the
+/// created VM's status, on every successful create INCLUDING the
+/// idempotent-retry and readopt returns).
+pub fn create_vm(state: &DaemonState, request: pb::VmSpec) -> Result<(VmEntry, bool), RpcError> {
+    let (entry, running) = create_vm_inner(state, request)?;
+    state.events.emit(
+        &entry.vm_hash,
+        pb::VmStatus::Defined,
+        crate::service::vm_status(&entry.times, running),
+    );
+    Ok((entry, running))
+}
+
+fn create_vm_inner(
     state: &DaemonState,
     mut request: pb::VmSpec,
 ) -> Result<(VmEntry, bool), RpcError> {
@@ -3128,6 +3175,76 @@ mod tests {
             "the recreate batch must match the Python capture exactly \
              (protocol order included)"
         );
+    }
+
+    // ── WatchEvents emissions ────────────────────────────────────────────
+
+    #[test]
+    fn lifecycle_mutations_emit_the_python_event_sequence() {
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('e');
+        let mut events = state.events.subscribe();
+
+        create_vm(state, spec(&vm_id, &root)).unwrap();
+        stop_vm(state, &vm_id).unwrap();
+        // Idempotent stop: Python emits (STOPPED, STOPPED).
+        stop_vm(state, &vm_id).unwrap();
+        start_vm(state, &vm_id).unwrap();
+        // Start while running: the short circuit emits nothing.
+        start_vm(state, &vm_id).unwrap();
+        reboot_vm(state, &vm_id).unwrap();
+        delete_vm(state, &vm_id, false, false).unwrap();
+
+        let mut seen = Vec::new();
+        let mut timestamps = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            assert_eq!(event.vm_id, vm_id);
+            seen.push((event.old_status, event.new_status));
+            timestamps.push(event.timestamp_ns);
+        }
+        use pb::VmStatus::{Defined, Running, Stopped};
+        let pair = |old: pb::VmStatus, new: pb::VmStatus| (old as i32, new as i32);
+        assert_eq!(
+            seen,
+            vec![
+                pair(Defined, Running), // create
+                pair(Running, Stopped), // stop
+                pair(Stopped, Stopped), // idempotent stop
+                pair(Stopped, Running), // start
+                pair(Running, Stopped), // reboot, down
+                pair(Stopped, Running), // reboot, up
+                pair(Running, Stopped), // delete
+            ]
+        );
+        let mut sorted = timestamps.clone();
+        sorted.sort_unstable();
+        assert_eq!(timestamps, sorted, "event timestamps are monotone");
+    }
+
+    #[test]
+    fn an_idempotent_create_retry_also_emits() {
+        // Python create_vm emits after every successful pool return,
+        // including the idempotent retry of a live VM.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('f');
+        let request = spec(&vm_id, &root);
+        create_vm(state, request.clone()).unwrap();
+
+        let mut events = state.events.subscribe();
+        create_vm(state, request.clone()).unwrap();
+        let event = events.try_recv().unwrap();
+        assert_eq!(event.old_status, pb::VmStatus::Defined as i32);
+        assert_eq!(event.new_status, pb::VmStatus::Running as i32);
+
+        // A failed create (conflicting spec) emits nothing.
+        let mut different = request;
+        different.memory_mib = 512;
+        assert!(create_vm(state, different).is_err());
+        assert!(events.try_recv().is_err());
     }
 
     // ── Reattach retry loop (ledger entry 23, closed with increment 4) ──

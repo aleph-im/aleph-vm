@@ -152,6 +152,7 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
         vm_locks: std::sync::Mutex::new(Default::default()),
         net_lock: std::sync::Mutex::new(()),
         pacing: Pacing::default(),
+        events: supervisor_daemon::events::EventHub::default(),
     });
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
