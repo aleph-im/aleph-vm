@@ -190,8 +190,11 @@ async def test_create_vm_rejections_carry_the_python_error_vocabulary(lifecycle_
                 )
             )
 
-        # Confidential creation is increment 6.
-        with pytest.raises(NotImplementedSupervisorError):
+        # Confidential creation (increment 6) rides the QEMU create path, but
+        # a confidential spec without a resolved firmware_path is refused
+        # (InvalidBackendError) before any side effect: a confidential VM must
+        # never boot under a weaker configuration.
+        with pytest.raises(InvalidBackendError) as excinfo:
             await client.create_vm(
                 _spec(
                     UNKNOWN_HASH,
@@ -199,10 +202,11 @@ async def test_create_vm_rejections_carry_the_python_error_vocabulary(lifecycle_
                         backend=TeeBackend.SEV,
                         policy="0x1",
                         session_dir=DirectoryPath("/tmp"),
-                        firmware_path=Path("/tmp/OVMF.fd"),
+                        firmware_path=None,
                     ),
                 )
             )
+        assert str(excinfo.value) == "Confidential spec has no resolved firmware_path; refusing to build configuration"
 
         # The physical-memory backstop, with the Python message shape.
         with pytest.raises(InsufficientResourcesError) as excinfo:

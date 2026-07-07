@@ -9,8 +9,9 @@
 //! cannot create taps has no use for either, and requiring them would
 //! break the container/CI boots that increment 2 deliberately supports.
 //! Agent-side settings the daemon does not model (CONNECTOR_URL, the
-//! FAKE_DATA_* fixtures) and the confidential-computing checks (increment
-//! 6) are out of scope.
+//! FAKE_DATA_* fixtures) are out of scope. The confidential-computing gates
+//! (SEV_CTL_PATH, the SEV/SEV-ES kernel modules) are ported, gated on
+//! ENABLE_CONFIDENTIAL_COMPUTING (increment 6).
 
 use std::path::Path;
 
@@ -123,11 +124,57 @@ pub fn check(settings: &Settings, resolved_interface: Option<&str>) -> Result<()
         }
     }
 
+    // Confidential computing (increment 6): the sevctl tool plus the SEV /
+    // SEV-ES kernel-module gates, only when the feature is enabled. Ported
+    // from conf.py check(); SEV-SNP is intentionally left commented out
+    // there, so it is not checked here either.
+    if settings.enable_confidential_computing {
+        if !settings.sev_ctl_path.is_file() {
+            return Err(format!(
+                "File not found {}",
+                settings.sev_ctl_path.display()
+            ));
+        }
+        if !check_amd_sev_supported() {
+            return Err("SEV feature isn't enabled, enable it in BIOS".to_string());
+        }
+        if !check_amd_sev_es_supported() {
+            return Err("SEV-ES feature isn't enabled, enable it in BIOS".to_string());
+        }
+        if !settings.enable_qemu_support {
+            return Err(
+                "Qemu Support is needed for confidential computing and it's disabled, ".to_string(),
+            );
+        }
+    }
+
     if settings.enable_gpu_support && !settings.enable_qemu_support {
         return Err("Qemu Support is needed for GPU support and it's disabled, ".to_string());
     }
 
     Ok(())
+}
+
+/// Python `check_system_module`: the value of a `/sys/module/<path>`
+/// parameter, or None when absent.
+fn check_system_module(module_path: &str) -> Option<String> {
+    std::fs::read_to_string(Path::new("/sys/module").join(module_path))
+        .ok()
+        .map(|value| value.trim().to_string())
+}
+
+/// Python `check_amd_sev_supported`: the SEV module parameter is "Y" and
+/// /dev/sev exists.
+fn check_amd_sev_supported() -> bool {
+    check_system_module("kvm_amd/parameters/sev").as_deref() == Some("Y")
+        && Path::new("/dev/sev").exists()
+}
+
+/// Python `check_amd_sev_es_supported`: the SEV-ES module parameter is "Y"
+/// and /dev/sev exists.
+fn check_amd_sev_es_supported() -> bool {
+    check_system_module("kvm_amd/parameters/sev_es").as_deref() == Some("Y")
+        && Path::new("/dev/sev").exists()
 }
 
 #[cfg(test)]
