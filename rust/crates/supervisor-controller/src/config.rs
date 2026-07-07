@@ -162,6 +162,23 @@ pub struct QemuConfig {
     pub sev_dh_cert_file: Option<String>,
     #[serde(default)]
     pub sev_policy: Option<u32>,
+
+    // SEV-SNP slice (increment B1). SNP is a measured DIRECT-KERNEL boot with
+    // no session/godh handshake, so it does NOT carry the SEV `is_confidential`
+    // four; `sev_snp: true` is the explicit backend marker the daemon writes.
+    // When set, `ovmf_path` (measured OVMF), `sev_policy` (SNP policy),
+    // `kernel_path`, `initrd_path` and `kernel_cmdline` (the exact measured
+    // append, roothash included) are all present. These are Rust-only fields
+    // (the Python controller has no SNP path); a Python controller reading such
+    // a config ignores them (`extra="ignore"`).
+    #[serde(default)]
+    pub sev_snp: Option<bool>,
+    #[serde(default)]
+    pub kernel_path: Option<String>,
+    #[serde(default)]
+    pub initrd_path: Option<String>,
+    #[serde(default)]
+    pub kernel_cmdline: Option<String>,
 }
 
 impl QemuConfig {
@@ -172,12 +189,23 @@ impl QemuConfig {
     }
 
     /// True when this is a `QemuConfidentialVMConfiguration` (all four
-    /// confidential fields present). The A1 dispatcher rejects these.
+    /// confidential fields present). The A1 dispatcher rejects these; A2 runs
+    /// them via `build_confidential_argv`. SNP configs are NOT confidential in
+    /// this sense (they carry no session/godh), so this stays false for them
+    /// and the two paths never overlap.
     pub fn is_confidential(&self) -> bool {
         self.ovmf_path.is_some()
             && self.sev_session_file.is_some()
             && self.sev_dh_cert_file.is_some()
             && self.sev_policy.is_some()
+    }
+
+    /// True when this is an SEV-SNP measured-boot payload (increment B1). The
+    /// daemon sets `sev_snp: true` and fills `ovmf_path`, `sev_policy`,
+    /// `kernel_path`, `initrd_path` and `kernel_cmdline`; `build_snp_argv`
+    /// relies on that invariant.
+    pub fn is_snp(&self) -> bool {
+        self.sev_snp == Some(true)
     }
 }
 

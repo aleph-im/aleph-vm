@@ -304,6 +304,177 @@ pub fn build_confidential_argv(config: &QemuConfig, sev: SevHostInfo) -> Vec<Str
     args
 }
 
+/// The SEV-SNP guest C-bit position, hardcoded to 51 to match BOTH the
+/// aleph-tee `sev_snp_qemu_args` generator (the byte-parity oracle) and the
+/// B2a launch measurement, which was computed for `--vcpu-type EPYC-v4`. On an
+/// AMD EPYC part the CPUID-reported C-bit position IS 51, so this is not a
+/// guess: it is the fixed value the measurement assumes. Reading it from host
+/// CPUID (as the SEV/SEV-ES path does via `SevHostInfo`) would produce the same
+/// 51 on the measured target but break byte-parity with the generator, which
+/// hardcodes it. See divergence 68.
+const SNP_CBITPOS: u32 = 51;
+
+/// The SEV-SNP guest reduced-phys-bits, hardcoded to 1 to match the generator
+/// and the measurement (same rationale as [`SNP_CBITPOS`]).
+const SNP_REDUCED_PHYS_BITS: u32 = 1;
+
+/// The TEE machine/object fragment for an SEV-SNP launch, byte-identical to
+/// `aleph_tee::sev_snp::qemu::sev_snp_qemu_args` for the B1 (no NUMA, no
+/// hugepage) case. Emitted self-contained here so the controller does not take
+/// a runtime dependency on `aleph-tee` (which pulls openssl/reqwest); a
+/// dev-dependency conformance test asserts this matches the generator
+/// byte-for-byte. The fragment is:
+///   -cpu EPYC-v4
+///   -machine q35,confidential-guest-support=sev0,memory-backend=ram1,vmport=off
+///   -object memory-backend-memfd,id=ram1,size={mem}M,share=true
+///   -object sev-snp-guest,id=sev0,cbitpos=51,reduced-phys-bits=1,kernel-hashes=on,policy={policy}
+///   -nodefaults
+///   -bios {ovmf}
+///
+/// `kernel-hashes=on` makes OVMF hash-verify the -kernel/-initrd/-append blobs;
+/// `policy` is rendered `hex()`-style (`0x{:x}`) from the daemon-carried u32,
+/// defaulting to 0x30000 upstream when the spec left it empty.
+///
+/// `pub` so the conformance test can assert byte-parity against the aleph-tee
+/// generator (the oracle).
+pub fn snp_tee_fragment(mem_size_mb: u64, sev_policy: u32, ovmf_path: &str) -> Vec<String> {
+    let policy = format!("0x{sev_policy:x}");
+    vec![
+        "-cpu".into(),
+        "EPYC-v4".into(),
+        "-machine".into(),
+        "q35,confidential-guest-support=sev0,memory-backend=ram1,vmport=off".into(),
+        "-object".into(),
+        format!("memory-backend-memfd,id=ram1,size={mem_size_mb}M,share=true"),
+        "-object".into(),
+        format!(
+            "sev-snp-guest,id=sev0,cbitpos={SNP_CBITPOS},reduced-phys-bits={SNP_REDUCED_PHYS_BITS},\
+             kernel-hashes=on,policy={policy}"
+        ),
+        "-nodefaults".into(),
+        "-bios".into(),
+        ovmf_path.to_string(),
+    ]
+}
+
+/// Build the QEMU argv for an SEV-SNP measured-boot persistent VM (increment
+/// B1). Unlike the SEV/SEV-ES path this is a MEASURED DIRECT-KERNEL boot: the
+/// exact OVMF + kernel + initrd + append + `EPYC-v4` + vcpu count are what the
+/// B2a Nix flake's `sev-snp-measure` covered, so they must be presented
+/// verbatim or attestation will not match. There is NO session/godh file and NO
+/// launch-secret injection (SNP secrets are injected at runtime via the in-guest
+/// attest-agent), and the VM boots DIRECTLY (no `-S`), matching the aleph-cvm
+/// donor.
+///
+/// Disk layout for the dm-verity rootfs: the rootfs (verity DATA device) is the
+/// first virtio drive (`/dev/vda`), the hash tree is the daemon-inserted first
+/// host volume (`/dev/vdb`); the guest `init` opens `veritysetup` with the
+/// roothash carried in the measured cmdline.
+///
+/// The five SNP fields (`ovmf_path`, `kernel_path`, `initrd_path`,
+/// `kernel_cmdline`, `sev_policy`) must be present; the dispatcher only routes
+/// an SNP-marked config here, so their absence is an internal invariant
+/// violation.
+pub fn build_snp_argv(config: &QemuConfig) -> Vec<String> {
+    debug_assert!(
+        config.is_snp(),
+        "build_snp_argv requires an SNP config (sev_snp marker set)"
+    );
+
+    let qga_socket_path = qga_socket_or_none(config);
+    let ovmf_path = config
+        .ovmf_path
+        .as_deref()
+        .expect("SNP config carries ovmf_path");
+    let kernel = config
+        .kernel_path
+        .as_deref()
+        .expect("SNP config carries kernel_path");
+    let initrd = config
+        .initrd_path
+        .as_deref()
+        .expect("SNP config carries initrd_path");
+    let cmdline = config
+        .kernel_cmdline
+        .as_deref()
+        .expect("SNP config carries kernel_cmdline");
+    let policy = config.sev_policy.expect("SNP config carries sev_policy");
+
+    let mut args: Vec<String> = vec![
+        config.qemu_bin_path.clone(),
+        "-enable-kvm".into(),
+        "-m".into(),
+        config.mem_size_mb.count().to_string(),
+        "-smp".into(),
+        config.vcpu_count.to_string(),
+        // Measured direct-kernel boot. OVMF (via -bios in the TEE fragment)
+        // loads and hash-verifies these exact blobs; the cmdline carries the
+        // dm-verity roothash. This trio plus the vcpu count and EPYC-v4 CPU
+        // type is precisely what sev-snp-measure covered in B2a.
+        "-kernel".into(),
+        kernel.to_string(),
+        "-initrd".into(),
+        initrd.to_string(),
+        "-append".into(),
+        cmdline.to_string(),
+        // rootfs = dm-verity DATA device (/dev/vda), read-only raw.
+        "-drive".into(),
+        format!(
+            "file={},format=raw,if=virtio,readonly=on,media=disk",
+            config.image_path
+        ),
+    ];
+
+    // dm-verity hash tree (/dev/vdb) then any further host volumes, in order.
+    args.extend(host_volume_args(&config.host_volumes));
+
+    args.extend([
+        "-display".into(),
+        "none".into(),
+        // SNP keeps --no-reboot like the SEV path.
+        "--no-reboot".into(),
+        "-monitor".into(),
+        format!("unix:{},server,nowait", config.monitor_socket_path),
+        // -qmp so the graceful-stop escalation (system_powerdown / quit) works;
+        // SNP attestation itself is direct client-to-guest, not via this socket.
+        "-qmp".into(),
+        format!("unix:{},server,nowait", config.qmp_socket_path),
+        "-chardev".into(),
+        format!("socket,path={qga_socket_path},server=on,wait=off,id=qga0"),
+        "-device".into(),
+        "virtio-serial".into(),
+        "-device".into(),
+        "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0".into(),
+        "-serial".into(),
+        "stdio".into(),
+        "-nographic".into(),
+    ]);
+
+    // NIC WITHOUT rombar=0 (like the SEV path). Python truthiness: an empty
+    // interface name is skipped. The measured cmdline carries NO `ip=`, so the
+    // guest configures the interface via DHCP (measurement determinism).
+    if let Some(interface_name) = &config.interface_name
+        && !interface_name.is_empty()
+    {
+        args.push("-device".into());
+        args.push("virtio-net-pci,netdev=net0".into());
+        args.push("-netdev".into());
+        args.push(format!(
+            "tap,id=net0,ifname={interface_name},script=no,downscript=no"
+        ));
+    }
+
+    // The SEV-SNP TEE fragment LAST (donor `build_qemu_command` appends the TEE
+    // args last), byte-identical to the aleph-tee generator.
+    args.extend(snp_tee_fragment(
+        config.mem_size_mb.count(),
+        policy,
+        ovmf_path,
+    ));
+
+    args
+}
+
 /// Spawn qemu and supervise it: block on the child, and on SIGTERM run the
 /// graceful-stop escalation. The port of `execute_persistent_vm` +
 /// `handle_persistent_vm` for the non-confidential QEMU path.
@@ -323,6 +494,17 @@ pub async fn run_confidential(vm_hash: &str, config: &QemuConfig) -> Result<i32,
     // refusal; on a real SEV host the behavior is unchanged.
     let sev = confidential_prelaunch_check(config, SevHostInfo::read())?;
     let argv = build_confidential_argv(config, sev);
+    spawn_and_supervise(vm_hash, config, argv).await
+}
+
+/// Launch an SEV-SNP measured-boot VM (increment B1). Unlike the SEV/SEV-ES
+/// path there is NO host-CPUID read (cbitpos/reduced-phys-bits are the fixed
+/// EPYC-v4 values the measurement assumes) and NO owner-certificate pre-launch
+/// guard (SNP has no session/godh handshake): the VM boots directly and its
+/// secrets are injected at runtime over the attested TLS channel by the in-guest
+/// attest-agent.
+pub async fn run_snp(vm_hash: &str, config: &QemuConfig) -> Result<i32, String> {
+    let argv = build_snp_argv(config);
     spawn_and_supervise(vm_hash, config, argv).await
 }
 
