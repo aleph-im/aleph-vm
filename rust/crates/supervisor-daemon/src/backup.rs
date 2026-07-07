@@ -432,6 +432,13 @@ fn create_tar_and_checksum(
         let file = std::fs::File::create(&staging)
             .map_err(|error| format!("cannot create the backup archive: {error}"))?;
         let mut builder = tar::Builder::new(file);
+        // Write plain regular-file members, never GNU sparse ones. The
+        // builder defaults to sparse detection, and a qemu-img converted
+        // rootfs is a sparse file on disk, so the default would emit an
+        // EntryType::GNUSparse ('S') member that restore's is_file() check
+        // rejects. Python's tarfile writes regular members too, so this is
+        // also the parity-correct format.
+        builder.sparse(false);
         for (member_name, source_path) in backup_files {
             builder
                 .append_path_with_name(source_path, member_name)
@@ -1493,6 +1500,39 @@ mod tests {
             std::fs::read(&destination).unwrap(),
             b"restored-rootfs-bytes"
         );
+    }
+
+    #[test]
+    fn extract_rootfs_member_reads_back_a_sparse_source_file() {
+        // Regression: a qemu-img converted rootfs is a sparse file on disk.
+        // The tar builder defaults to sparse detection, which would write a
+        // GNU sparse ('S') member that extract's is_file() check rejects as
+        // "not a regular file"; the archive must instead hold a plain
+        // regular member. A small non-sparse file (the other tests) never
+        // exercised this.
+        use std::io::{Seek, SeekFrom, Write};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let sparse_path = dir.join("sparse-rootfs.qcow2");
+        {
+            let mut file = std::fs::File::create(&sparse_path).unwrap();
+            file.write_all(b"head").unwrap();
+            // Punch a large hole, then write a tail: the file is now sparse.
+            file.seek(SeekFrom::Start(4 * 1024 * 1024)).unwrap();
+            file.write_all(b"tail").unwrap();
+            file.sync_all().unwrap();
+        }
+        let expected = std::fs::read(&sparse_path).unwrap();
+
+        let members = vec![(BACKUP_ROOTFS_MEMBER.to_string(), sparse_path)];
+        let tar_path =
+            create_backup_archive(VM, &members, dir, &HashMap::new(), "20260101T000000000000Z")
+                .unwrap();
+
+        let destination = dir.join("extracted.qcow2");
+        extract_rootfs_member(&tar_path, &destination).unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), expected);
     }
 
     #[test]
