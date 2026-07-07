@@ -2852,6 +2852,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
+name = "supervisor-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "hyper-util",
+ "prost",
+ "serde",
+ "serde_json",
+ "supervisor-proto",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tower 0.5.3",
+]
+
+[[package]]
 name = "supervisor-controller"
 version = "0.1.0"
 dependencies = [
