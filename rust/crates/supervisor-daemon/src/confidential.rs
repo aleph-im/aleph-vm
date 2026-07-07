@@ -220,4 +220,29 @@ mod tests {
             Err(RpcError::NotFound(_))
         ));
     }
+
+    #[test]
+    fn measurement_and_secret_report_internal_when_the_qmp_socket_is_missing() {
+        // The VM exists (past the NotFound guard) but its QMP socket does not,
+        // so the QMP connect fails with the Python "VM is not running" text,
+        // surfaced as INTERNAL. This is the pre-hardware path a real
+        // GetMeasurement/InjectSecret hits without a live confidential QEMU.
+        let tmp = tempfile::tempdir().unwrap();
+        let (state, _) = test_state(tmp.path());
+        let mut entry = crate::world::VmEntry::test_qemu(VM, "/tmp/rootfs.qcow2");
+        entry.config.qmp_socket_path = tmp.path().join("absent-qmp.socket").display().to_string();
+        state.world.blocking_write().insert_entry(entry);
+
+        for result in [
+            get_measurement(&state, VM).err(),
+            inject_secret(&state, VM, b"aGVhZGVy", b"c2VjcmV0").err(),
+        ] {
+            match result {
+                Some(RpcError::Internal(message)) => {
+                    assert_eq!(message, "VM is not running (QMP socket missing)");
+                }
+                other => panic!("expected INTERNAL for a missing QMP socket, got {other:?}"),
+            }
+        }
+    }
 }
