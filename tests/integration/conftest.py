@@ -153,6 +153,11 @@ def pytest_collection_modifyitems(config, items):
             problems.append(f"the Firecracker guest kernel {FC_KERNEL} is missing")
         if not FC_RUNTIME.exists():
             problems.append(f"the Firecracker runtime squashfs {FC_RUNTIME} is missing")
+        # The QEMU cloud image backs the persistent-VM and backup/restore
+        # tests (KVM-gated on both matrix legs since increments 5-6); a leg
+        # without it would silently skip that whole surface (T7).
+        if QEMU_IMAGE is None or not QEMU_IMAGE.exists():
+            problems.append("the QEMU cloud image (AVM_ITEST_QEMU_IMAGE) is missing")
         if problems:
             msg = f"CI=true but the integration prerequisites are broken: {'; '.join(problems)}"
             raise RuntimeError(msg)

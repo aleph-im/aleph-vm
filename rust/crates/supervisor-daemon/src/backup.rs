@@ -6,9 +6,14 @@
 //! (plus its non-read-only host volumes when `include_volumes` is set),
 //! archived into an uncompressed `tar` next to a `.tar.sha256` checksum
 //! sidecar and a `.tar.meta.json` metadata sidecar. The archive on disk is
-//! the record; only in-flight and failed runs live in memory. Completed
-//! archives are shared byte-for-byte with the Python daemon: a rollback
-//! reads whatever the Rust daemon wrote and vice versa.
+//! the record; only in-flight and failed runs live in memory. The archive is
+//! a cross-readable format (an uncompressed tar of compressed qcow2 members,
+//! a `{digest}  {name}` sha256 sidecar, a `{vm_hash,created_at,source_sizes}`
+//! meta.json): either daemon can read the other's archive, and each daemon
+//! verifies its own writes against the checksum it recorded. The exact tar
+//! bytes are NOT guaranteed identical across daemons (the Rust `tar` crate and
+//! Python `tarfile` differ in PAX header encoding); only the format contract
+//! and each daemon's self-consistency are (ledger entries 6, 47).
 //!
 //! `qemu-img` is a subprocess seam ([`DiskTools`]) so the archive-management
 //! logic is unit-testable without a live QEMU. The restore paths (which stop
@@ -18,7 +23,8 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
@@ -193,8 +199,13 @@ impl DiskTools for FakeDiskTools {
 /// Python `_backup_jobs` / `_backup_tasks` / `_backup_locks` triple.
 #[derive(Default)]
 pub struct BackupRegistry {
-    /// By backup_id, like `_backup_jobs`.
-    jobs: Mutex<HashMap<String, pb::BackupInfo>>,
+    /// By backup_id, like `_backup_jobs`. Each value carries an insertion
+    /// ordinal so `list_backups` reports the in-memory jobs in a
+    /// deterministic (insertion) order, matching Python's dict iteration
+    /// (a bare HashMap iterates in an arbitrary, run-to-run order).
+    jobs: Mutex<HashMap<String, OrderedJob>>,
+    /// Assigns the insertion ordinals for `jobs`.
+    job_seq: AtomicU64,
     /// The in-flight run per VM, like `_backup_tasks` (a done handle no
     /// longer counts as running).
     tasks: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
@@ -202,6 +213,20 @@ pub struct BackupRegistry {
     /// may touch the disks while the other converts or swaps them. Mirrors
     /// `_backup_locks`.
     locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// Serializes StartBackup's admission (the running-job check through the
+    /// job insert and task registration) so two concurrent StartBackups for
+    /// the same VM cannot both pass the "no running job" guard and both spawn
+    /// a run, orphaning a JoinHandle. Registry-wide but held only across the
+    /// lock-free registration (no disk I/O), so cross-VM contention is
+    /// negligible. Python relies on the single-threaded event loop for this.
+    admission: Mutex<()>,
+}
+
+/// A backup job with its registry insertion ordinal (see [`BackupRegistry`]).
+#[derive(Clone)]
+struct OrderedJob {
+    seq: u64,
+    info: pb::BackupInfo,
 }
 
 impl BackupRegistry {
@@ -215,22 +240,33 @@ impl BackupRegistry {
             .clone()
     }
 
+    /// Hold this across StartBackup's check-and-register critical section.
+    fn admission_guard(&self) -> MutexGuard<'_, ()> {
+        self.admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn job(&self, backup_id: &str) -> Option<pb::BackupInfo> {
         self.jobs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(backup_id)
-            .cloned()
+            .map(|entry| entry.info.clone())
     }
 
     fn jobs_for(&self, vm_id: Option<&str>) -> Vec<pb::BackupInfo> {
-        self.jobs
+        let mut matches: Vec<OrderedJob> = self
+            .jobs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
-            .filter(|job| vm_id.is_none_or(|id| job.vm_id == id))
+            .filter(|entry| vm_id.is_none_or(|id| entry.info.vm_id == id))
             .cloned()
-            .collect()
+            .collect();
+        // Deterministic (insertion) order, matching Python's dict iteration.
+        matches.sort_by_key(|entry| entry.seq);
+        matches.into_iter().map(|entry| entry.info).collect()
     }
 
     fn running_job_for(&self, vm_id: &str) -> Option<pb::BackupInfo> {
@@ -238,8 +274,10 @@ impl BackupRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
-            .find(|job| job.vm_id == vm_id && job.status == pb::BackupStatus::Running as i32)
-            .cloned()
+            .find(|entry| {
+                entry.info.vm_id == vm_id && entry.info.status == pb::BackupStatus::Running as i32
+            })
+            .map(|entry| entry.info.clone())
     }
 
     fn task_running(&self, vm_id: &str) -> bool {
@@ -251,10 +289,18 @@ impl BackupRegistry {
     }
 
     fn insert_job(&self, job: pb::BackupInfo) {
-        self.jobs
+        let mut jobs = self
+            .jobs
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(job.backup_id.clone(), job);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Updating an existing job (RUNNING -> FAILED) keeps its ordinal, like
+        // Python's `dict[key] = value` in-place update; a new id gets a fresh
+        // ordinal so it lists after the earlier ones.
+        let seq = jobs
+            .get(&job.backup_id)
+            .map(|entry| entry.seq)
+            .unwrap_or_else(|| self.job_seq.fetch_add(1, Ordering::Relaxed));
+        jobs.insert(job.backup_id.clone(), OrderedJob { seq, info: job });
     }
 
     /// This run supersedes earlier FAILED attempts for the VM (Python drops
@@ -263,8 +309,8 @@ impl BackupRegistry {
         self.jobs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|_, job| {
-                !(job.vm_id == vm_id && job.status == pb::BackupStatus::Failed as i32)
+            .retain(|_, entry| {
+                !(entry.info.vm_id == vm_id && entry.info.status == pb::BackupStatus::Failed as i32)
             });
     }
 
@@ -273,6 +319,7 @@ impl BackupRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(backup_id)
+            .map(|entry| entry.info)
     }
 
     fn set_task(&self, vm_id: &str, handle: tokio::task::JoinHandle<()>) {
@@ -284,6 +331,35 @@ impl BackupRegistry {
 
     fn clear_task(&self, vm_id: &str) {
         self.tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(vm_id);
+    }
+
+    /// Test-only: register a job directly, so tests in other modules can
+    /// exercise the reaping path (production code registers jobs through
+    /// [`start_backup`] / `run_backup`).
+    #[cfg(test)]
+    pub fn insert_job_for_test(&self, job: pb::BackupInfo) {
+        self.insert_job(job);
+    }
+
+    /// Drop all registry state for a VM being deleted: its jobs, its in-flight
+    /// task slot, and its per-VM disk lock. Called under the VM's disk lock so
+    /// no backup run is mid-flight on the same disks (DeleteVm serializes
+    /// against StartBackup via [`vm_lock`](Self::vm_lock)). A holder that
+    /// already cloned the lock Arc keeps its guard valid; a later StartBackup
+    /// creates a fresh lock.
+    pub fn reap(&self, vm_id: &str) {
+        self.jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|_, entry| entry.info.vm_id != vm_id);
+        self.tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(vm_id);
+        self.locks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(vm_id);
@@ -416,9 +492,17 @@ pub fn create_backup_archive(
     Ok(tar_path)
 }
 
-/// `cleanup_expired_backups`: drop `.tar.partial` files and `.tar` archives
-/// (plus their sidecars) older than the TTL. Returns the count of expired
-/// archives deleted.
+/// `cleanup_expired_backups`: drop `.tar.partial` files, stale intermediate
+/// `.qcow2` files (the per-disk compressed copies and restore staging files
+/// a killed run leaves behind), and `.tar` archives (plus their sidecars)
+/// older than the TTL. Returns the count of expired archives deleted.
+///
+/// The intermediate-`.qcow2` sweep is a Rust-only robustness addition: the
+/// happy path already unlinks the intermediates in `run_backup`, but a daemon
+/// killed mid-backup (or mid-restore) leaves a bare `{vm}-{ts}.qcow2` (or
+/// `{backup_id}.restore.qcow2`) that nothing else reclaims. The backup
+/// directory holds only `.tar` archives, their sidecars, and these
+/// transients, so sweeping stale `.qcow2` files there is safe.
 pub fn cleanup_expired_backups(backup_dir: &Path, ttl_hours: u64) -> u64 {
     let cutoff = now_unix_secs().saturating_sub(ttl_hours * 3600);
     let mut deleted = 0;
@@ -437,6 +521,15 @@ pub fn cleanup_expired_backups(backup_dir: &Path, ttl_hours: u64) -> u64 {
                 && std::fs::remove_file(&path).is_ok()
             {
                 tracing::info!(archive = name, "Deleted stale partial backup");
+            }
+        } else if name.ends_with(".qcow2") {
+            if file_mtime_secs(&path).is_some_and(|mtime| mtime < cutoff)
+                && std::fs::remove_file(&path).is_ok()
+            {
+                tracing::info!(
+                    intermediate = name,
+                    "Deleted stale intermediate backup disk"
+                );
             }
         } else if name.ends_with(".tar") {
             tars.push(path);
@@ -765,8 +858,9 @@ pub fn start_backup(
     let backup_dir = backup_directory(&state)?;
     cleanup_expired_backups(&backup_dir, BACKUP_TTL_HOURS);
 
-    // Idempotent: a backup already running for this VM is the answer, not a
-    // conflict.
+    // Idempotent (fast path): a backup already running for this VM is the
+    // answer, not a conflict. Rechecked under the admission lock below so the
+    // decision is atomic against a concurrent StartBackup.
     if state.backups.task_running(vm_id)
         && let Some(job) = state.backups.running_job_for(vm_id)
     {
@@ -796,6 +890,19 @@ pub fn start_backup(
             "Insufficient disk space: {free} bytes available, {needed} bytes required for {} disk(s)",
             disk_paths.len()
         )));
+    }
+
+    // Atomic admission: the running-job recheck through the job insert and
+    // the task registration run under the registry admission lock, so two
+    // StartBackups that both passed the fast-path check above cannot both
+    // spawn a run and orphan a JoinHandle. The critical section holds no disk
+    // I/O (the expensive checks above already ran unlocked). The second
+    // request returns the first's running job.
+    let _admission = state.backups.admission_guard();
+    if state.backups.task_running(vm_id)
+        && let Some(job) = state.backups.running_job_for(vm_id)
+    {
+        return Ok(job);
     }
 
     // Microsecond precision: a retry right after a failed run gets a fresh id
@@ -1362,5 +1469,373 @@ mod tests {
         let rootfs = write_source(root, "rootfs.qcow2", b"guest-disk");
         let entry = crate::world::VmEntry::test_qemu(VM, &rootfs.to_string_lossy());
         state.world.blocking_write().insert_entry(entry);
+    }
+
+    // ── Restore data path (hermetic: pure filesystem + tar, no KVM) ──
+
+    #[test]
+    fn extract_rootfs_member_streams_the_rootfs_out_of_a_good_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let rootfs = write_source(dir, "src-rootfs.qcow2", b"restored-rootfs-bytes");
+        let data = write_source(dir, "src-data.qcow2", b"volume-bytes");
+        let members = vec![
+            (BACKUP_ROOTFS_MEMBER.to_string(), rootfs),
+            ("data.qcow2".to_string(), data),
+        ];
+        let tar_path =
+            create_backup_archive(VM, &members, dir, &HashMap::new(), "20260101T000000000000Z")
+                .unwrap();
+
+        let destination = dir.join("extracted.qcow2");
+        extract_rootfs_member(&tar_path, &destination).unwrap();
+        assert_eq!(
+            std::fs::read(&destination).unwrap(),
+            b"restored-rootfs-bytes"
+        );
+    }
+
+    #[test]
+    fn extract_rootfs_member_errors_when_the_archive_has_no_rootfs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let data = write_source(dir, "src-data.qcow2", b"volume-bytes");
+        // An archive with only a data member: the rootfs member is missing.
+        let members = vec![("data.qcow2".to_string(), data)];
+        let tar_path =
+            create_backup_archive(VM, &members, dir, &HashMap::new(), "20260101T000000000000Z")
+                .unwrap();
+
+        let error = extract_rootfs_member(&tar_path, &dir.join("out.qcow2")).unwrap_err();
+        match error {
+            RpcError::Internal(message) => assert!(
+                message.contains(&format!("no {BACKUP_ROOTFS_MEMBER} member")),
+                "got: {message}"
+            ),
+            other => panic!("expected INTERNAL, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_rootfs_member_errors_on_a_non_regular_file_member() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        // A crafted archive whose rootfs.qcow2 entry is a directory, not a
+        // regular file: extract must refuse it, never write the destination.
+        let tar_path = dir.join("crafted.tar");
+        let member_dir = dir.join("member");
+        std::fs::create_dir(&member_dir).unwrap();
+        {
+            let file = std::fs::File::create(&tar_path).unwrap();
+            let mut builder = tar::Builder::new(file);
+            builder
+                .append_dir(BACKUP_ROOTFS_MEMBER, &member_dir)
+                .unwrap();
+            builder.finish().unwrap();
+        }
+        let destination = dir.join("out.qcow2");
+        let error = extract_rootfs_member(&tar_path, &destination).unwrap_err();
+        match error {
+            RpcError::Internal(message) => {
+                assert!(message.contains("is not a regular file"), "got: {message}")
+            }
+            other => panic!("expected INTERNAL, got {other:?}"),
+        }
+        assert!(!destination.exists(), "no destination written on refusal");
+    }
+
+    #[test]
+    fn restore_rootfs_swaps_and_saves_the_pre_restore_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let current = write_source(dir, "rootfs.qcow2", b"old-rootfs");
+        let new = write_source(dir, "new.qcow2", b"new-rootfs");
+
+        let old_backup = restore_rootfs(&new, &current).unwrap();
+        // The current rootfs now holds the new bytes...
+        assert_eq!(std::fs::read(&current).unwrap(), b"new-rootfs");
+        // ...and the pre-restore copy holds the original, for manual reversal.
+        assert_eq!(std::fs::read(&old_backup).unwrap(), b"old-rootfs");
+        assert!(
+            old_backup
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap()
+                .contains("pre-restore-"),
+            "the saved copy is named .pre-restore-<ts>.qcow2, got {old_backup:?}"
+        );
+    }
+
+    #[test]
+    fn restore_rootfs_preserves_the_original_when_the_new_image_is_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let current = write_source(dir, "rootfs.qcow2", b"old-rootfs");
+        let missing = dir.join("does-not-exist.qcow2");
+
+        // The staging copy fails before the current rootfs is touched: the
+        // original must survive intact and no staging file may linger.
+        let error = restore_rootfs(&missing, &current).unwrap_err();
+        assert!(matches!(error, RpcError::Internal(_)));
+        assert_eq!(std::fs::read(&current).unwrap(), b"old-rootfs");
+        let staging = current.with_extension("restore-staging.qcow2");
+        assert!(!staging.exists(), "the staging file was cleaned up");
+    }
+
+    // ── Registry concurrency and reaping (R1/R2/R3/T5) ──
+
+    /// [`DiskTools`] whose `convert_compressed` blocks until released, so a
+    /// backup run stays in-flight while the test inspects the registry.
+    struct BlockingDiskTools {
+        converts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        gate: std::sync::Arc<(Mutex<bool>, std::sync::Condvar)>,
+    }
+
+    impl BlockingDiskTools {
+        fn new() -> Self {
+            Self {
+                converts: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                gate: std::sync::Arc::new((Mutex::new(false), std::sync::Condvar::new())),
+            }
+        }
+    }
+
+    impl DiskTools for BlockingDiskTools {
+        fn convert_compressed(&self, _source: &Path, dest: &Path) -> Result<(), String> {
+            self.converts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let (lock, cvar) = &*self.gate;
+            let mut released = lock.lock().unwrap();
+            while !*released {
+                released = cvar.wait(released).unwrap();
+            }
+            std::fs::write(dest, b"fake-qcow2").map_err(|error| error.to_string())
+        }
+
+        fn check(&self, _path: &Path) -> Result<(), QemuImgError> {
+            Ok(())
+        }
+
+        fn virtual_size(&self, _path: &Path) -> Result<u64, String> {
+            Ok(1)
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_start_backups_spawn_a_single_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let disk_tools = Arc::new(BlockingDiskTools::new());
+        let converts = disk_tools.converts.clone();
+        let gate = disk_tools.gate.clone();
+        let state = state_with(disk_tools, &root);
+        {
+            // world.blocking_write() must not run on the async worker thread.
+            let setup = state.clone();
+            let setup_root = root.clone();
+            tokio::task::spawn_blocking(move || register_qemu_vm(&setup, &setup_root))
+                .await
+                .unwrap();
+        }
+
+        // Two StartBackups race for the same VM. The admission lock guarantees
+        // at most one passes the "no running job" guard and spawns a run; the
+        // other returns the first's running job.
+        let (s1, s2) = (state.clone(), state.clone());
+        let h1 = tokio::task::spawn_blocking(move || start_backup(s1, VM, false, false));
+        let h2 = tokio::task::spawn_blocking(move || start_backup(s2, VM, false, false));
+        let r1 = h1.await.unwrap().unwrap();
+        let r2 = h2.await.unwrap().unwrap();
+
+        assert_eq!(r1.backup_id, r2.backup_id, "both see the same running job");
+        assert_eq!(r1.status, pb::BackupStatus::Running as i32);
+        assert_eq!(r2.status, pb::BackupStatus::Running as i32);
+        assert_eq!(
+            state.backups.jobs_for(Some(VM)).len(),
+            1,
+            "exactly one job registered"
+        );
+        assert!(state.backups.task_running(VM), "exactly one run in flight");
+
+        // Release the blocked run and let it drain so the tempdir outlives it.
+        let (lock, cvar) = &*gate;
+        *lock.lock().unwrap() = true;
+        cvar.notify_all();
+        for _ in 0..200 {
+            if !state.backups.task_running(VM) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            converts.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the convert seam ran exactly once"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn start_backup_is_idempotent_while_a_run_is_in_flight() {
+        // T5: a still-running task plus a RUNNING job makes a second
+        // StartBackup return the in-flight job instead of spawning another.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let disk_tools = Arc::new(FakeDiskTools::default());
+        let state = state_with(disk_tools, &root);
+        {
+            let setup = state.clone();
+            let setup_root = root.clone();
+            tokio::task::spawn_blocking(move || register_qemu_vm(&setup, &setup_root))
+                .await
+                .unwrap();
+        }
+
+        let backup_id = format!("{VM}-20260101T000000000000Z");
+        state.backups.insert_job(pb::BackupInfo {
+            vm_id: VM.to_string(),
+            backup_id: backup_id.clone(),
+            status: pb::BackupStatus::Running as i32,
+            ..Default::default()
+        });
+        // A task that stays unfinished until we release it (task_running true).
+        let gate = std::sync::Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let task_gate = gate.clone();
+        let handle = tokio::runtime::Handle::current().spawn_blocking(move || {
+            let (lock, cvar) = &*task_gate;
+            let mut released = lock.lock().unwrap();
+            while !*released {
+                released = cvar.wait(released).unwrap();
+            }
+        });
+        state.backups.set_task(VM, handle);
+
+        let call_state = state.clone();
+        let info = tokio::task::spawn_blocking(move || start_backup(call_state, VM, false, false))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(info.backup_id, backup_id, "returns the in-flight job");
+        assert_eq!(
+            state.backups.jobs_for(Some(VM)).len(),
+            1,
+            "no second job spawned"
+        );
+
+        let (lock, cvar) = &*gate;
+        *lock.lock().unwrap() = true;
+        cvar.notify_all();
+    }
+
+    #[test]
+    fn rust_reads_the_python_built_backup_archive() {
+        // T3: a Python-built archive (tar + .tar.sha256 + .tar.meta.json,
+        // produced by the real qemu/backup.py _create_tar_and_checksum via
+        // scripts/generate_rust_fixtures.py) must parse with the Rust reader,
+        // proving the member name, sidecar suffixes and meta.json field names
+        // are the Python-parity bytes, not an arbitrary Rust choice. A rename
+        // of BACKUP_ROOTFS_MEMBER, a sidecar suffix, or a meta.json field
+        // fails this test.
+        let vm_hash = crate::test_fixtures::QEMU_HASH;
+        let dir = crate::test_fixtures::fixtures_dir().join("backup");
+        let tar_path = dir.join(format!("{vm_hash}-20260101T000000000000Z.tar"));
+
+        // The Python-built sidecars exist under the pinned suffixes.
+        assert!(
+            sidecar(&tar_path, ".sha256").exists(),
+            "the .tar.sha256 sidecar"
+        );
+        assert!(
+            sidecar(&tar_path, ".meta.json").exists(),
+            "the .tar.meta.json sidecar"
+        );
+
+        // backup_info_from_tar reads the Python-built archive as COMPLETE.
+        let info = backup_info_from_tar(&tar_path, vm_hash).unwrap();
+        assert_eq!(info.status, pb::BackupStatus::Complete as i32);
+        assert_eq!(info.volumes, vec![BACKUP_ROOTFS_MEMBER, "data.qcow2"]);
+        // The source_sizes field name round-trips from Python's meta.json.
+        assert_eq!(info.source_sizes.get(BACKUP_ROOTFS_MEMBER), Some(&25));
+        assert_eq!(info.source_sizes.get("data.qcow2"), Some(&23));
+
+        // The meta.json field names, pinned against a rename on either side.
+        let meta: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(sidecar(&tar_path, ".meta.json")).unwrap(),
+        )
+        .unwrap();
+        for field in ["vm_hash", "created_at", "source_sizes"] {
+            assert!(meta.get(field).is_some(), "meta.json field {field}");
+        }
+
+        // Cross-readable checksum: Rust's sha256 over Python's tar equals the
+        // digest Python recorded in the {digest}  {name} sidecar.
+        let sidecar_digest = std::fs::read_to_string(sidecar(&tar_path, ".sha256"))
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .to_string();
+        assert_eq!(info.checksum, format!("sha256:{sidecar_digest}"));
+        assert_eq!(
+            sha256_file(&tar_path).unwrap(),
+            sidecar_digest,
+            "the Rust re-hash matches the Python-recorded digest"
+        );
+
+        // extract_rootfs_member streams the exact rootfs bytes Python archived.
+        let out = tempfile::tempdir().unwrap();
+        let dest = out.path().join("restored.qcow2");
+        extract_rootfs_member(&tar_path, &dest).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"rust-fixture-rootfs-bytes");
+    }
+
+    #[test]
+    fn list_backups_reports_in_memory_jobs_in_insertion_order() {
+        // P2: the in-memory (FAILED/RUNNING) jobs must list in a deterministic
+        // insertion order, matching Python's dict iteration, not the arbitrary
+        // run-to-run order of a bare HashMap.
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_with(Arc::new(FakeDiskTools::default()), tmp.path());
+        for (vm, id) in [("zzz", "zzz-1"), ("aaa", "aaa-1"), ("zzz", "zzz-2")] {
+            state.backups.insert_job(pb::BackupInfo {
+                vm_id: vm.to_string(),
+                backup_id: id.to_string(),
+                status: pb::BackupStatus::Failed as i32,
+                ..Default::default()
+            });
+        }
+        let ids: Vec<String> = list_backups(&state, None)
+            .unwrap()
+            .into_iter()
+            .map(|info| info.backup_id)
+            .collect();
+        assert_eq!(ids, vec!["zzz-1", "aaa-1", "zzz-2"]);
+    }
+
+    #[test]
+    fn reap_drops_all_registry_state_for_a_vm() {
+        let registry = BackupRegistry::default();
+        registry.insert_job(pb::BackupInfo {
+            vm_id: VM.to_string(),
+            backup_id: format!("{VM}-1"),
+            status: pb::BackupStatus::Failed as i32,
+            ..Default::default()
+        });
+        registry.insert_job(pb::BackupInfo {
+            vm_id: "other".to_string(),
+            backup_id: "other-1".to_string(),
+            status: pb::BackupStatus::Failed as i32,
+            ..Default::default()
+        });
+        let _lock = registry.vm_lock(VM);
+        assert!(registry.locks.lock().unwrap().contains_key(VM));
+
+        registry.reap(VM);
+
+        assert!(registry.job(&format!("{VM}-1")).is_none(), "VM jobs reaped");
+        assert!(registry.job("other-1").is_some(), "other VMs untouched");
+        assert!(
+            !registry.locks.lock().unwrap().contains_key(VM),
+            "the per-VM disk lock is reaped"
+        );
     }
 }

@@ -157,6 +157,13 @@ pub struct DaemonState {
     /// far below the pool size; the excess request is rejected
     /// RESOURCE_EXHAUSTED (Rust-only bound, ledger entry 44).
     pub log_follows: Arc<tokio::sync::Semaphore>,
+    /// Bounds concurrent DownloadBackup streams. Each download pins one
+    /// blocking-pool thread reading the archive chunk by chunk; unbounded,
+    /// many parallel downloads would starve the lifecycle RPCs the same way
+    /// unbounded log follows would (the log_follows rationale). The excess
+    /// request is rejected RESOURCE_EXHAUSTED (Rust-only bound, ledger entry
+    /// 44 family); Python gates neither.
+    pub download_streams: Arc<tokio::sync::Semaphore>,
     /// The `qemu-img` seam (increment 5): backup convert/check/virtual-size.
     pub disk_tools: Arc<dyn crate::backup::DiskTools>,
     /// Backup job bookkeeping (increment 5): the Python `_backup_jobs` /
@@ -166,6 +173,9 @@ pub struct DaemonState {
 
 /// See [`DaemonState::log_follows`].
 pub const MAX_CONCURRENT_LOG_FOLLOWS: usize = 64;
+
+/// See [`DaemonState::download_streams`].
+pub const MAX_CONCURRENT_DOWNLOADS: usize = 16;
 
 impl DaemonState {
     /// State over hermetic in-memory seams: unit tests and callers that
@@ -192,6 +202,7 @@ impl DaemonState {
             events: crate::events::EventHub::default(),
             programs: Arc::new(crate::firecracker::FakeProgramLauncher::new()),
             log_follows: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_LOG_FOLLOWS)),
+            download_streams: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DOWNLOADS)),
             disk_tools: Arc::new(crate::backup::FakeDiskTools::default()),
             backups: crate::backup::BackupRegistry::default(),
         }
@@ -1138,6 +1149,23 @@ impl Supervisor for SupervisorService {
     ) -> Result<Response<Self::DownloadBackupStream>, Status> {
         let state = self.state.clone();
         let request = request.into_inner();
+        // Each download pins one blocking-pool thread; the semaphore rejects
+        // downloads beyond the cap instead of letting them starve the pool
+        // (see DaemonState::download_streams). The permit rides the streaming
+        // task and frees when it ends (EOF or the client going away).
+        let permit = match self.state.download_streams.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                return Err(status_with_error_detail(
+                    Code::ResourceExhausted,
+                    pb::ErrorCode::InsufficientResources,
+                    format!(
+                        "too many concurrent backup downloads (limit {MAX_CONCURRENT_DOWNLOADS}); \
+                         retry later"
+                    ),
+                ));
+            }
+        };
         let tar_path = {
             let state = state.clone();
             let vm_id = request.vm_id.clone();
@@ -1147,6 +1175,9 @@ impl Supervisor for SupervisorService {
         };
         let (sender, receiver) = tokio::sync::mpsc::channel::<Result<pb::BackupChunk, Status>>(16);
         tokio::task::spawn_blocking(move || {
+            // Hold the permit for the whole stream: it frees when this task
+            // ends, on EOF or when the client drops and blocking_send fails.
+            let _permit = permit;
             let mut file = match std::fs::File::open(&tar_path) {
                 Ok(file) => file,
                 Err(error) => {
@@ -1741,6 +1772,64 @@ mod tests {
         drop(first);
         let third = service.stream_logs(follow_request()).await;
         assert!(third.is_ok(), "a freed slot must serve again");
+    }
+
+    #[tokio::test]
+    async fn download_backup_rejects_streams_beyond_the_cap() {
+        // R5: each download pins one blocking-pool thread; beyond the
+        // semaphore cap the request is rejected RESOURCE_EXHAUSTED (with the
+        // InsufficientResources trailer) instead of starving the pool, and a
+        // freed slot serves again.
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = crate::config::Settings::from_vars(
+            [(
+                "ALEPH_VM_EXECUTION_ROOT".to_string(),
+                tmp.path().to_string_lossy().into_owned(),
+            )]
+            .into_iter(),
+        )
+        .unwrap();
+        let host = HostState {
+            settings,
+            host_ipv4: String::new(),
+            network_interface: None,
+            gpus: Vec::new(),
+            dns_nameservers: None,
+        };
+        let mut state = DaemonState::hermetic(
+            host,
+            WorldView::default(),
+            Arc::new(crate::units::StaticUnitStates::default()),
+            Arc::new(crate::logs::StaticLogSource::default()),
+        );
+        state.download_streams = Arc::new(tokio::sync::Semaphore::new(1));
+        let state = Arc::new(state);
+
+        // A valid on-disk archive to download.
+        let backup_dir = crate::backup::backup_directory(&state).unwrap();
+        let vm_id = "abcvm";
+        let backup_id = format!("{vm_id}-20260101T000000000000Z");
+        std::fs::write(backup_dir.join(format!("{backup_id}.tar")), b"tar-bytes").unwrap();
+
+        let service = SupervisorService::new(state.clone());
+        let request = || {
+            Request::new(pb::DownloadBackupRequest {
+                vm_id: vm_id.to_string(),
+                backup_id: backup_id.clone(),
+            })
+        };
+        // Hold the sole permit to stand in for an in-flight download.
+        let held = state.download_streams.clone().try_acquire_owned().unwrap();
+        match service.download_backup(request()).await {
+            Err(status) => assert_eq!(status.code(), Code::ResourceExhausted),
+            Ok(_) => panic!("a download beyond the cap must be rejected"),
+        }
+        // Freeing the slot lets a download through.
+        drop(held);
+        assert!(
+            service.download_backup(request()).await.is_ok(),
+            "a freed slot must serve again"
+        );
     }
 
     #[tokio::test]

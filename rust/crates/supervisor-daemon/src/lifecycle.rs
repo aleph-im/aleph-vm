@@ -1140,6 +1140,17 @@ fn delete_tracked_vm(
         stop_vm_execution(state, vm_id)?;
     }
     state.events.emit(vm_id, old_status, pb::VmStatus::Stopped);
+
+    // The per-VM backup disk lock, shared with a running StartBackup: a delete
+    // that erases writable volumes must not race a backup's qemu-img read of
+    // the same disks (a corrupt member or a spurious FAILED job), and the
+    // world-entry removal must not leave a backup run tracked for a VM that no
+    // longer exists. Lock order matches the restore paths: the lifecycle
+    // vm_lock (held by the caller) then this disk lock (ledger entry 51).
+    let disk_lock = state.backups.vm_lock(vm_id);
+    let _disk_guard = disk_lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     state.world.blocking_write().entries.remove(vm_id);
     // Delete releases the definition: the controller config and the
     // cloud-init seed go too (stop keeps them for reattach).
@@ -1158,6 +1169,10 @@ fn delete_tracked_vm(
         // Mirrors operate_erase: writable data volumes go, the rootfs stays.
         erase_volumes(&entry, false, true).map_err(RpcError::Internal)?;
     }
+    // Reap the backup registry entry (jobs, the in-flight task slot, the disk
+    // lock) for the now-deleted VM so a completed/failed run does not linger
+    // in ListBackups and a fresh create reuses no stale state (R1/R3).
+    state.backups.reap(vm_id);
     Ok(())
 }
 
@@ -1651,29 +1666,105 @@ fn confidential_config_slice(
     }))
 }
 
-/// Python `int(tee.policy, 0)`: base-prefixed or decimal. A malformed policy
-/// raises there (ValueError -> INTERNAL); mapped to INTERNAL here.
+/// Python `int(tee.policy, 0)`: base-0 integer parsing. Matches CPython's
+/// grammar exactly (see [`parse_int_base0`]), so a policy string Python
+/// rejects (`"010"`, `"07"`, `"1__0"`, `"_10"`, ...) is rejected here too and
+/// one it accepts (`"0x1_0"`, `"0X1F"`, `"0b101"`, `"00"`) parses the same.
+/// A malformed policy raises ValueError there (mapped to INTERNAL here).
+///
+/// Python's int is signed and arbitrary precision; a SEV policy is a small
+/// unsigned bitfield (`sev_policy: u32`). A syntactically valid but negative
+/// (`"-5"`) or `> u32::MAX` value, which Python would accept, cannot be
+/// represented and is rejected INTERNAL rather than silently truncated
+/// (ledger entry 49); such a policy is not reachable from a real agent.
 fn parse_sev_policy(policy: &str) -> Result<u32, RpcError> {
-    let trimmed = policy.trim();
-    let parsed = if let Some(hex) = trimmed
-        .strip_prefix("0x")
-        .or_else(|| trimmed.strip_prefix("0X"))
-    {
-        u32::from_str_radix(&hex.replace('_', ""), 16)
-    } else if let Some(octal) = trimmed
-        .strip_prefix("0o")
-        .or_else(|| trimmed.strip_prefix("0O"))
-    {
-        u32::from_str_radix(&octal.replace('_', ""), 8)
-    } else if let Some(binary) = trimmed
-        .strip_prefix("0b")
-        .or_else(|| trimmed.strip_prefix("0B"))
-    {
-        u32::from_str_radix(&binary.replace('_', ""), 2)
+    parse_int_base0(policy)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| RpcError::Internal(format!("invalid SEV policy {policy:?}")))
+}
+
+/// CPython `int(text, 0)` on `text`, as an `i128` (enough to distinguish a
+/// representable SEV policy from an out-of-range one; a value overflowing
+/// `i128`, like a bignum Python accepts, returns `None` and is rejected the
+/// same as a syntactically invalid string). Grammar: surrounding whitespace,
+/// an optional `+`/`-` sign, then either a `0x`/`0o`/`0b` (case-insensitive)
+/// prefix with base-appropriate digits, or a plain decimal with no leading
+/// zero except the value zero. Single underscores are permitted only between
+/// digits (and immediately after a base prefix), never leading, trailing, or
+/// doubled (PEP 515).
+fn parse_int_base0(text: &str) -> Option<i128> {
+    let trimmed = text.trim();
+    let (negative, unsigned) = if let Some(rest) = trimmed.strip_prefix('-') {
+        (true, rest)
+    } else if let Some(rest) = trimmed.strip_prefix('+') {
+        (false, rest)
     } else {
-        trimmed.replace('_', "").parse::<u32>()
+        (false, trimmed)
     };
-    parsed.map_err(|_| RpcError::Internal(format!("invalid SEV policy {policy:?}")))
+    fn strip_ci<'a>(body: &'a str, lower: &str, upper: &str) -> Option<&'a str> {
+        body.strip_prefix(lower)
+            .or_else(|| body.strip_prefix(upper))
+    }
+    let (radix, digits, prefixed) = if let Some(rest) = strip_ci(unsigned, "0x", "0X") {
+        (16u32, rest, true)
+    } else if let Some(rest) = strip_ci(unsigned, "0o", "0O") {
+        (8, rest, true)
+    } else if let Some(rest) = strip_ci(unsigned, "0b", "0B") {
+        (2, rest, true)
+    } else {
+        (10, unsigned, false)
+    };
+    let value = parse_int_digits(digits, radix, prefixed)?;
+    // Base-0 decimal forbids a leading zero unless the value is zero.
+    if !prefixed {
+        let pure: String = digits
+            .chars()
+            .filter(|character| *character != '_')
+            .collect();
+        if pure.len() > 1 && pure.starts_with('0') && pure.bytes().any(|byte| byte != b'0') {
+            return None;
+        }
+    }
+    if negative {
+        value.checked_neg()
+    } else {
+        Some(value)
+    }
+}
+
+/// Accumulate `digits` in `radix`, enforcing PEP 515 underscore placement.
+/// `allow_leading_underscore` permits one underscore right after a base
+/// prefix (`0x_1f`). Returns `None` for an empty run, a misplaced underscore,
+/// an out-of-radix digit, or an `i128` overflow.
+fn parse_int_digits(digits: &str, radix: u32, allow_leading_underscore: bool) -> Option<i128> {
+    if digits.is_empty() {
+        return None;
+    }
+    let mut value: i128 = 0;
+    let mut previous_was_underscore = false;
+    let mut previous_was_digit = false;
+    let mut any_digit = false;
+    for (index, character) in digits.char_indices() {
+        if character == '_' {
+            let after_prefix = index == 0 && allow_leading_underscore;
+            if previous_was_underscore || (!previous_was_digit && !after_prefix) {
+                return None;
+            }
+            previous_was_underscore = true;
+            previous_was_digit = false;
+            continue;
+        }
+        let digit = character.to_digit(radix)?;
+        value = value.checked_mul(i128::from(radix))?;
+        value = value.checked_add(i128::from(digit))?;
+        any_digit = true;
+        previous_was_digit = true;
+        previous_was_underscore = false;
+    }
+    if previous_was_underscore || !any_digit {
+        return None;
+    }
+    Some(value)
 }
 
 /// Re-adopt a live-but-untracked controller (Python
@@ -3067,15 +3158,52 @@ mod tests {
 
     #[test]
     fn sev_policy_parses_like_python_int_base_zero() {
-        assert_eq!(parse_sev_policy("0x5").unwrap(), 5);
-        assert_eq!(parse_sev_policy("5").unwrap(), 5);
-        assert_eq!(parse_sev_policy("0o17").unwrap(), 0o17);
-        assert_eq!(parse_sev_policy("0b101").unwrap(), 5);
-        assert_eq!(parse_sev_policy("  0x1_0  ").unwrap(), 16);
-        assert!(matches!(
-            parse_sev_policy("nope"),
-            Err(RpcError::Internal(_))
-        ));
+        // The accept table (each value confirmed against CPython int(x, 0)).
+        for (input, expected) in [
+            ("0x5", 5u32),
+            ("5", 5),
+            ("0o17", 0o17),
+            ("0b101", 5),
+            ("0x1_0", 16),
+            ("  0x1_0  ", 16),
+            ("0x_10", 16),
+            ("0X1F", 31),
+            ("+7", 7),
+            ("0xFF", 255),
+            ("00", 0),
+            ("0", 0),
+            ("0_0", 0),
+            ("4294967295", u32::MAX),
+        ] {
+            assert_eq!(
+                parse_sev_policy(input).unwrap(),
+                expected,
+                "parse_sev_policy({input:?})"
+            );
+        }
+        // The reject table. Python raises ValueError for the malformed forms
+        // (leading-zero decimals, misplaced underscores, non-numeric); the
+        // signed/bignum forms Python accepts but a u32 policy cannot hold.
+        for input in [
+            "010",                        // leading-zero decimal
+            "07",                         // leading-zero decimal
+            "0755",                       // leading-zero decimal
+            "1__0",                       // doubled underscore
+            "_10",                        // leading underscore
+            "10_",                        // trailing underscore
+            "-5",                         // Python: -5 (valid); not representable as u32
+            "4294967296",                 // u32::MAX + 1; Python bignum, out of range here
+            "99999999999999999999999999", // bignum
+            "0x",                         // prefix, no digits
+            "0b",                         // prefix, no digits
+            "nope",                       // not numeric
+            "",                           // empty
+        ] {
+            assert!(
+                matches!(parse_sev_policy(input), Err(RpcError::Internal(_))),
+                "parse_sev_policy({input:?}) must be rejected"
+            );
+        }
     }
 
     #[test]
@@ -3402,6 +3530,49 @@ mod tests {
         assert!(
             !state.world.blocking_read().reserved_vm_indices.contains(&3),
             "the hidden VM's index claim is released"
+        );
+    }
+
+    #[test]
+    fn delete_reaps_the_backup_registry_entry() {
+        // R1/R3: DeleteVm reaps the deleted VM's backup jobs (and its per-VM
+        // disk lock) so a completed/failed run no longer lingers in
+        // ListBackups after the VM is gone.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+        create_vm(state, spec(&vm_id, &root)).unwrap();
+
+        // A FAILED backup job for this VM is registered, and its disk lock
+        // exists in the registry.
+        state.backups.insert_job_for_test(pb::BackupInfo {
+            vm_id: vm_id.clone(),
+            backup_id: format!("{vm_id}-20260101T000000000000Z"),
+            status: pb::BackupStatus::Failed as i32,
+            ..Default::default()
+        });
+        let _lock = state.backups.vm_lock(&vm_id);
+        assert_eq!(
+            crate::backup::list_backups(state, Some(&vm_id))
+                .unwrap()
+                .len(),
+            1,
+            "the FAILED job lists before the delete"
+        );
+
+        delete_vm(state, &vm_id, true, false).unwrap();
+
+        // The VM is gone and its backup registry entry with it.
+        assert!(
+            !state.world.blocking_read().entries.contains_key(&vm_id),
+            "the world entry was removed"
+        );
+        assert!(
+            crate::backup::list_backups(state, Some(&vm_id))
+                .unwrap()
+                .is_empty(),
+            "the backup job was reaped by the delete"
         );
     }
 
