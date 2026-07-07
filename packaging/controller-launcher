@@ -12,16 +12,23 @@
 # packaging event. "$@" carries the --config=... argument through unchanged.
 set -eu
 
+# Target selection is overridable via environment purely so the dispatch can
+# be tested without an /opt/aleph-vm install (the deb never sets these). The
+# defaults are the production paths and MUST stay byte-identical: with the
+# vars unset the exec lines below are exactly what shipped before this seam.
+: "${ALEPH_VM_CONTROLLER_BIN:=/opt/aleph-vm/bin/aleph-vm-controller}"
+: "${ALEPH_VM_CONTROLLER_PYTHON:=/usr/bin/python3}"
+
 case "${ALEPH_VM_SUPERVISOR_IMPL:-python}" in
   rust)
-    exec /opt/aleph-vm/bin/aleph-vm-controller "$@"
+    exec "$ALEPH_VM_CONTROLLER_BIN" "$@"
     ;;
   python)
-    exec /usr/bin/python3 -m aleph.vm.supervisor.controllers "$@"
+    exec "$ALEPH_VM_CONTROLLER_PYTHON" -m aleph.vm.supervisor.controllers "$@"
     ;;
   *)
     # An operator typo must not brick the node: log and run the default.
     echo "controller-launcher: unknown ALEPH_VM_SUPERVISOR_IMPL='${ALEPH_VM_SUPERVISOR_IMPL}', falling back to python" >&2
-    exec /usr/bin/python3 -m aleph.vm.supervisor.controllers "$@"
+    exec "$ALEPH_VM_CONTROLLER_PYTHON" -m aleph.vm.supervisor.controllers "$@"
     ;;
 esac

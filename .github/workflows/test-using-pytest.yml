@@ -232,4 +232,7 @@ jobs:
 
       - name: Run Shellcheck on all shell scripts
         run: |-
-          find ./ -type f -name "*.sh" -exec shellcheck {} \;
+          # Also lint the extensionless packaging launchers (supervisor-launcher /
+          # controller-launcher): they carry no ".sh" suffix but ARE the scripts
+          # that flip the production cutover, so they must be shellcheck-clean.
+          find ./ -type f \( -name "*.sh" -o -name "*-launcher" \) -exec shellcheck {} \;
