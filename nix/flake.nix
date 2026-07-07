@@ -1,0 +1,172 @@
+{
+  description = "aleph-vm confidential measured-boot images (SEV-SNP)";
+
+  # Backport of aleph-cvm's nix/flake.nix, reduced to the CORE measured-boot
+  # chain (design section 6 non-goals + section 7 minimal dm-verity):
+  #   measured OVMF (AmdSev, kernel-hashing) + kernel + initrd (baking the
+  #   aleph-attest-agent static-musl binary and init.sh) + a minimal
+  #   dm-verity-protected rootfs + a precomputed, reproducible sev-snp-measure
+  #   launch measurement.
+  # Excluded from the donor: compose-rootfs / compose-demo, the encrypted-rootfs
+  # (LUKS) mode, and the fib-service demo app (replaced by a trivial busybox
+  # httpd placeholder workload). See rust-port-divergences.
+
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
+    rust-overlay.url = "github:oxalica/rust-overlay";
+    crane.url = "github:ipetkov/crane";
+  };
+
+  outputs = { self, nixpkgs, rust-overlay, crane, ... }:
+    let
+      system = "x86_64-linux";
+      pkgs = import nixpkgs {
+        inherit system;
+        overlays = [ rust-overlay.overlays.default ];
+      };
+      craneLib = crane.mkLib pkgs;
+
+      # Rust toolchain with musl target for static linking.
+      rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+        targets = [ "x86_64-unknown-linux-musl" ];
+      };
+      craneToolchain = craneLib.overrideToolchain rustToolchain;
+
+      # Musl cross-compiler for C dependencies (openssl-sys, etc.).
+      muslCC = pkgs.pkgsCross.musl64.stdenv.cc;
+
+      # This repo's Rust workspace lives at <repo>/rust; this flake lives at
+      # <repo>/nix. Point crane at the workspace root so it sees Cargo.lock and
+      # every member. The attest-agent crate does not depend on the proto/tonic
+      # crates, so no .proto files or protoc are needed (the -p filter below
+      # keeps cargo from building them).
+      workspaceSrc = craneToolchain.cleanCargoSource ../rust;
+
+      # Attestation agent (static musl binary), built from THIS repo's crate.
+      # Needs static openssl for openssl-sys (the sev crate dependency pulled in
+      # transitively via aleph-tee).
+      staticOpenssl = pkgs.pkgsStatic.openssl;
+      attest-agent = craneToolchain.buildPackage {
+        src = workspaceSrc;
+        # Build only the agent crate and its dependency subtree.
+        cargoExtraArgs = "-p aleph-attest-agent";
+        # There is no test harness to run for a musl cross build here.
+        doCheck = false;
+        CARGO_BUILD_TARGET = "x86_64-unknown-linux-musl";
+        CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+        nativeBuildInputs = [ pkgs.pkg-config muslCC ];
+        buildInputs = [ staticOpenssl.dev ];
+        OPENSSL_DIR = "${staticOpenssl.dev}";
+        OPENSSL_LIB_DIR = "${staticOpenssl.out}/lib";
+        OPENSSL_STATIC = "1";
+        OPENSSL_NO_VENDOR = "1";
+        # Use the musl-targeting C compiler for all C dependencies.
+        CC_x86_64_unknown_linux_musl = "${muslCC}/bin/x86_64-unknown-linux-musl-cc";
+        AR_x86_64_unknown_linux_musl = "${muslCC}/bin/x86_64-unknown-linux-musl-ar";
+        CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = "${muslCC}/bin/x86_64-unknown-linux-musl-cc";
+      };
+
+      # OVMF firmware built with the AmdSev variant (kernel hashing support), so
+      # the SEV-SNP launch measurement covers OVMF + kernel + initrd + cmdline.
+      ovmf = import ./ovmf.nix { inherit pkgs; };
+      ovmfFd = "${ovmf}/OVMF.fd";
+
+      # nixpkgs 24.11 ships sev-snp-measure 0.0.11 which has a measurement
+      # calculation bug. Override to 0.0.12 which produces correct results.
+      sev-snp-measure = pkgs.python3Packages.sev-snp-measure.overridePythonAttrs (old: rec {
+        version = "0.0.12";
+        src = pkgs.fetchFromGitHub {
+          owner = "virtee";
+          repo = "sev-snp-measure";
+          rev = "v${version}";
+          hash = "sha256-UcXU6rNjcRN1T+iWUNrqeJCkSa02WU1/pBwLqHVPRyw=";
+        };
+      });
+
+      kernel = pkgs.callPackage ./kernel.nix {};
+      initrd = pkgs.callPackage ./initrd.nix {
+        inherit attest-agent kernel;
+        init-script = ./init.sh;
+      };
+      rootfs = pkgs.callPackage ./rootfs.nix {};
+
+      # dm-verity hash tree + root hash for the rootfs. The root hash is baked
+      # into the kernel cmdline, binding rootfs integrity into the SEV-SNP
+      # measurement.
+      #
+      # A FIXED salt and UUID make the root hash reproducible: veritysetup format
+      # uses a random salt by default, which alone would make the measurement
+      # non-reproducible run to run even with an identical rootfs. Combined with
+      # the deterministic mkfs (rootfs.nix), this yields a stable measurement.
+      # This is a deliberate reproducibility hardening over the aleph-cvm donor
+      # (design section 8 top risk). See rust-port-divergences.
+      veritySalt = "0000000000000000000000000000000000000000000000000000000000000000";
+      verityUuid = "00000000-0000-0000-0000-000000000000";
+      verity = pkgs.runCommand "rootfs-verity" {
+        nativeBuildInputs = [ pkgs.cryptsetup ];
+      } ''
+        mkdir -p $out
+        veritysetup format \
+          --salt=${veritySalt} \
+          --uuid=${verityUuid} \
+          ${rootfs} \
+          $out/hashtree \
+          | tee /dev/stderr \
+          | grep "Root hash:" \
+          | awk '{print $NF}' \
+          | tr -d '\n' > $out/roothash
+      '';
+
+      # Parameterized SEV-SNP launch measurement builder.
+      # vcpus:    number of vCPUs (affects the launch measurement)
+      # vcpuType: QEMU CPU model ("EPYC-v4" for Genoa, "EPYC-v3" for Milan)
+      # The measurement is a function of (OVMF + kernel + initrd + cmdline +
+      # vCPU count + CPU type), so each configuration needs its own value.
+      measurementFor = { vcpus ? 2, vcpuType ? "EPYC-v4" }: let
+        kernelCmdline = "console=ttyS0 root=/dev/mapper/verity-root ro roothash=${builtins.readFile "${verity}/roothash"}";
+      in pkgs.runCommand "sev-snp-measurement-${toString vcpus}vcpus-${vcpuType}" {
+        nativeBuildInputs = [ sev-snp-measure ];
+      } ''
+        sev-snp-measure \
+          --mode snp \
+          --vcpus ${toString vcpus} \
+          --vcpu-type ${vcpuType} \
+          --ovmf ${ovmfFd} \
+          --kernel ${kernel}/bzImage \
+          --initrd ${initrd}/initrd \
+          --append "${kernelCmdline}" \
+          | tr -d '\n' > $out
+      '';
+
+      # Default measurement: 2 vCPUs, EPYC-v4 (Genoa).
+      measurement = measurementFor { vcpus = 2; vcpuType = "EPYC-v4"; };
+
+      # Convenience: all measured-image artifacts in one directory.
+      image = pkgs.runCommand "aleph-cvm-image" {} ''
+        mkdir -p $out
+        ln -s ${kernel}/bzImage $out/bzImage
+        ln -s ${initrd}/initrd $out/initrd
+        ln -s ${rootfs} $out/rootfs.ext4
+        cp ${ovmfFd} $out/OVMF.fd
+        cp ${measurement} $out/measurement.hex
+        cp ${verity}/hashtree $out/rootfs.ext4.verity
+        cp ${verity}/roothash $out/rootfs.ext4.roothash
+      '';
+    in {
+      # Only concrete derivations are exposed as packages (a function like
+      # measurementFor is not a valid flake package and would fail flake check);
+      # measurementFor stays internal for callers that import the flake directly.
+      packages.${system} = {
+        inherit
+          attest-agent
+          ovmf
+          kernel
+          initrd
+          rootfs
+          verity
+          measurement
+          image;
+        default = image;
+      };
+    };
+}
