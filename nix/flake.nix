@@ -107,6 +107,7 @@
       initrd = pkgs.callPackage ./initrd.nix {
         inherit attest-agent kernel;
         init-script = ./init.sh;
+        udhcpc-script = ./udhcpc.script;
       };
       rootfs = pkgs.callPackage ./rootfs.nix {};
 
