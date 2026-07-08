@@ -44,7 +44,10 @@ else
     else
         echo "init: bringing up ${iface} via DHCP"
         /bin/busybox ip link set "$iface" up
-        /bin/busybox udhcpc -i "$iface" -q -t 5 -A 2 2>&1 || echo "init: DHCP failed on ${iface}"
+        # -s: busybox udhcpc leases an address but only APPLIES it (ip addr/route)
+        # by running this script; without it the guest would lease from the host's
+        # per-tap dnsmasq but never configure its IP. See udhcpc.script.
+        /bin/busybox udhcpc -i "$iface" -q -t 5 -A 2 -s /bin/udhcpc.script 2>&1 || echo "init: DHCP failed on ${iface}"
     fi
 fi
 
