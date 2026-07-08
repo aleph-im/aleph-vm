@@ -25,7 +25,7 @@ cd "linux-$kversion/"
 make olddefconfig
 make menuconfig
 
-make -j$(nproc) vmlinux
+make -j"$(nproc)" vmlinux
 
 # Copy the updated config locally for documentation
 cd ../

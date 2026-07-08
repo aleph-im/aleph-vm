@@ -243,4 +243,9 @@ jobs:
           # Also lint the extensionless packaging launchers (supervisor-launcher /
           # controller-launcher): they carry no ".sh" suffix but ARE the scripts
           # that flip the production cutover, so they must be shellcheck-clean.
-          find ./ -type f \( -name "*.sh" -o -name "*-launcher" \) -exec shellcheck {} \;
+          # And the measured-guest scripts (*.script, e.g. nix/udhcpc.script):
+          # they run as PID-1-adjacent code inside SEV-SNP VMs.
+          # `-exec ... +` (not `\;`): with `\;` find swallows shellcheck's exit
+          # code, so findings never failed this job; `+` propagates a nonzero
+          # exit from any batch and makes the check an actual gate.
+          find ./ -type f \( -name "*.sh" -o -name "*-launcher" -o -name "*.script" \) -exec shellcheck {} +

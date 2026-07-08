@@ -35,6 +35,7 @@ detect_os() {
         echo "Cannot detect OS: /etc/os-release not found" >&2
         exit 1
     fi
+    # shellcheck disable=SC1091  # runtime file, not available to the linter
     . /etc/os-release
     case "${ID}-${VERSION_ID}" in
         debian-12*)  echo "debian-12" ;;
