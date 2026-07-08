@@ -12,7 +12,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::Parser;
-use supervisor_controller::config::{Configuration, HypervisorType, QemuConfig, VmConfiguration};
+use supervisor_controller::config::{
+    ConfigError, Configuration, HypervisorType, QemuConfig, VmConfiguration,
+};
 use supervisor_controller::qemu;
 
 /// The `__main__.main` network pre-check budget: wait up to 120s for the tap.
@@ -36,6 +38,36 @@ struct Cli {
     verbose: u8,
 }
 
+/// A fatal controller error. `main` logs it once and turns it into a
+/// non-zero exit; each variant is one of the `exit(1)` sites (or the
+/// uncaught-exception exit) in the Python `__main__.main`. The two `String`
+/// variants wrap helpers that already render a full, actionable message
+/// ([`select_run_target`] and [`qemu::run`]); the rest attach the context
+/// (the config path, the failing operation) that Python logged inline.
+#[derive(Debug, thiserror::Error)]
+enum ControllerError {
+    #[error("Configuration file {} not found", .0.display())]
+    ConfigNotFound(PathBuf),
+
+    #[error("cannot load {}: {source}", .path.display())]
+    ConfigLoad { path: PathBuf, source: ConfigError },
+
+    #[error("Controller config {} carries no NETWORK_INTERFACE", .0.display())]
+    NoNetworkInterface(PathBuf),
+
+    #[error("{0}")]
+    UnsupportedConfig(String),
+
+    #[error("{0}")]
+    TapUnavailable(String),
+
+    #[error("cannot start the async runtime: {0}")]
+    Runtime(#[source] std::io::Error),
+
+    #[error("{0}")]
+    Qemu(String),
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
@@ -46,18 +78,34 @@ fn main() -> ExitCode {
         .with_writer(std::io::stderr)
         .init();
 
+    // Python's `main` logs at each `exit(1)` and lets the runtime set the
+    // status; here the fallible body returns the error and this one site logs
+    // it and maps it to the exit code.
+    match run(&cli) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            tracing::error!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The controller's fallible body: the port of `__main__.main` after logging
+/// setup. Each `?` is one of Python's `exit(1)` sites. Like Python (which
+/// returns after `asyncio.run` regardless of QEMU's return code), the QEMU
+/// exit code is not propagated: a VM that boots and later exits, cleanly or
+/// not, is still a successful controller run.
+fn run(cli: &Cli) -> Result<(), ControllerError> {
     if !cli.config_path.is_file() {
-        tracing::error!("Configuration file {} not found", cli.config_path.display());
-        return ExitCode::FAILURE;
+        return Err(ControllerError::ConfigNotFound(cli.config_path.clone()));
     }
 
-    let config = match Configuration::from_file(&cli.config_path) {
-        Ok(config) => config,
-        Err(error) => {
-            tracing::error!("cannot load {}: {error}", cli.config_path.display());
-            return ExitCode::FAILURE;
+    let config = Configuration::from_file(&cli.config_path).map_err(|source| {
+        ControllerError::ConfigLoad {
+            path: cli.config_path.clone(),
+            source,
         }
-    };
+    })?;
 
     if cli.print_settings {
         println!("{}", config.settings.to_print_json());
@@ -72,42 +120,23 @@ fn main() -> ExitCode {
         .unwrap_or("")
         .is_empty()
     {
-        tracing::error!(
-            "Controller config {} carries no NETWORK_INTERFACE",
-            cli.config_path.display()
-        );
-        return ExitCode::FAILURE;
+        return Err(ControllerError::NoNetworkInterface(cli.config_path.clone()));
     }
 
     // Dispatch with Python's `execute_persistent_vm` precedence: the hypervisor
-    // field first (firecracker rejected), then the confidential-superset shape,
-    // then the plain QEMU path.
-    let target = match select_run_target(&config) {
-        Ok(target) => target,
-        Err(error) => {
-            tracing::error!("{error}");
-            return ExitCode::FAILURE;
-        }
-    };
+    // field first (firecracker rejected), then SNP, then the confidential-
+    // superset shape, then the plain QEMU path.
+    let target = select_run_target(&config).map_err(ControllerError::UnsupportedConfig)?;
 
     // Wait for the supervisor to create the tap interface. The controller
     // starts before the supervisor finishes loading persistent executions, so
     // the tap may not exist yet. Do NOT create it here.
-    if let Err(error) = wait_for_tap(config.vm_id) {
-        tracing::error!("{error}");
-        return ExitCode::FAILURE;
-    }
+    wait_for_tap(config.vm_id).map_err(ControllerError::TapUnavailable)?;
 
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-    {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            tracing::error!("cannot start the async runtime: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
+        .map_err(ControllerError::Runtime)?;
     let result = match &target {
         RunTarget::Plain(qemu_config) => runtime.block_on(qemu::run(&config.vm_hash, qemu_config)),
         RunTarget::Confidential(qemu_config) => {
@@ -117,13 +146,8 @@ fn main() -> ExitCode {
             runtime.block_on(qemu::run_snp(&config.vm_hash, qemu_config))
         }
     };
-    match result {
-        Ok(_) => ExitCode::SUCCESS,
-        Err(error) => {
-            tracing::error!("{error}");
-            ExitCode::FAILURE
-        }
-    }
+    result.map_err(ControllerError::Qemu)?;
+    Ok(())
 }
 
 /// Block until `vmtap{vm_id}` exists, up to [`MAX_TAP_WAIT`]. Port of the
@@ -227,6 +251,36 @@ mod tests {
                 "vm_configuration":{{{vm_configuration}}},"hypervisor":"{hypervisor}"}}"#
         );
         Configuration::from_json(&json).unwrap()
+    }
+
+    fn cli_for(config_path: PathBuf) -> Cli {
+        Cli {
+            config_path,
+            print_settings: false,
+            verbose: 0,
+        }
+    }
+
+    #[test]
+    fn run_reports_a_missing_config_file() {
+        // First `exit(1)` site: the path is not a file. `run` must fail with
+        // ConfigNotFound before touching anything else (no tap wait, no
+        // runtime), so this returns immediately.
+        let cli = cli_for(PathBuf::from("/definitely/not/a/real/controller.json"));
+        assert!(matches!(run(&cli), Err(ControllerError::ConfigNotFound(_))));
+    }
+
+    #[test]
+    fn run_reports_an_unparseable_config_as_config_load() {
+        // Second `exit(1)` site: the file exists but does not parse. The
+        // ConfigError source is preserved so the operator sees why.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken-controller.json");
+        std::fs::write(&path, b"{ not valid json").unwrap();
+        assert!(matches!(
+            run(&cli_for(path)),
+            Err(ControllerError::ConfigLoad { .. })
+        ));
     }
 
     #[test]
