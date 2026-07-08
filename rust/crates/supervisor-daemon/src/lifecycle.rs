@@ -665,7 +665,9 @@ fn stop_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
             // VMs never started one, so this is a no-op for them (ledger entry
             // 77).
             if entry.config.snp().is_some()
-                && let Err(dhcp_error) = state.dhcp.stop(vm_id)
+                && let Err(dhcp_error) = state
+                    .dhcp
+                    .stop(vm_id, &dhcp::lease_file_path(&dhcp_lease_dir(state), vm_id))
             {
                 tracing::warn!(vm_id, dhcp_error, "cannot stop the DHCP server, continuing");
             }
@@ -1339,6 +1341,7 @@ pub fn delete_vm(
     // entries), so releasing its vCPUs would subtract a reservation that was
     // never added and steal capacity from co-located VMs (increment C1). Its
     // drop-in is still removed below for cleanliness.
+    let mut discarded_is_snp = false;
     {
         let mut world = state.world.blocking_write();
         world.failed_reattach.remove(vm_id);
@@ -1346,7 +1349,27 @@ pub fn delete_vm(
             && let Ok(config) = parse_controller_config(&contents)
         {
             world.reserved_vm_indices.remove(&config.vm_index);
+            if let VmConfiguration::Qemu(qemu) = &config.vm {
+                discarded_is_snp = qemu.snp().is_some();
+            }
         }
+    }
+    // A still-live SNP VM whose adoption failed ran a per-tap DHCP server
+    // (increment D2, ledger 77). The tracked teardown paths stop it, but this
+    // discard path did not, orphaning aleph-vm-dhcp-<hash>.service (and leaking
+    // its lease file) on every failed-adoption delete of a live SNP VM. Stop it
+    // here too, gated on the parsed config being SNP so plain/SEV VMs (which
+    // never started one) are untouched. Best-effort, like the controller stop.
+    if discarded_is_snp
+        && let Err(dhcp_error) = state
+            .dhcp
+            .stop(vm_id, &dhcp::lease_file_path(&dhcp_lease_dir(state), vm_id))
+    {
+        tracing::warn!(
+            vm_id,
+            dhcp_error,
+            "cannot stop the DHCP server for a discarded SNP VM, continuing"
+        );
     }
     remove_numa_dropin(state, vm_id);
     controller_config::remove_controller_configuration(root, vm_id).map_err(RpcError::Internal)?;
@@ -2553,6 +2576,18 @@ fn create_vm_inner(
             // Set below once the NUMA placement is chosen (increment C1).
             numa_node: None,
         };
+        // Increment D2 (ledger 77): create starts the per-tap DHCP server on
+        // the request predicate `snp`, while every teardown path keys DHCP
+        // cleanup on `config.snp().is_some()`. They must agree, or a started
+        // server leaks. The two predicates are derived independently (request
+        // TEE backend vs the written-then-parsed config), so assert here that
+        // the freshly built config reaches the same SNP verdict; if this ever
+        // trips, create's predicate stopped being a superset of `snp()`.
+        debug_assert_eq!(
+            entry.config.snp().is_some(),
+            snp,
+            "create's SNP predicate must match the written config's snp()"
+        );
         match stale_ordinal {
             Some(ordinal) => {
                 entry.ordinal = ordinal;
@@ -2651,7 +2686,7 @@ fn create_vm_inner(
                     tap,
                     state.host.dns_nameservers.as_deref().unwrap_or(&[]),
                     &dhcp_lease_dir(state),
-                );
+                )?;
                 state.dhcp.start(&config)?;
             }
         }
@@ -2731,7 +2766,12 @@ fn create_vm_inner(
             // Tear the per-tap DHCP server down alongside the tap (SNP only,
             // idempotent): a failed SNP boot must not leave a dnsmasq bound to
             // a tap that is about to be deleted (ledger entry 77).
-            if snp && let Err(dhcp_error) = state.dhcp.stop(&vm_id) {
+            if snp
+                && let Err(dhcp_error) = state.dhcp.stop(
+                    &vm_id,
+                    &dhcp::lease_file_path(&dhcp_lease_dir(state), &vm_id),
+                )
+            {
                 tracing::warn!(dhcp_error, "failed to stop the DHCP server during cleanup");
             }
             nft_teardown_vm(state, vm_index);
@@ -3683,6 +3723,14 @@ mod tests {
             "no enable/start for a confidential VM, got {:?}",
             harness.systemd.actions()
         );
+        // Only the SNP measured image DHCPs; a SEV-ES VM keeps its cloud-init
+        // static config, so no per-tap DHCP server is stood up (this guards the
+        // startup predicate against being loosened from `snp` to `confidential`,
+        // ledger 77).
+        assert!(
+            harness.dhcp.started().is_empty(),
+            "a SEV-ES VM uses cloud-init static config, no DHCP server"
+        );
         // starting_at AND started_at are stamped (execution.start's else
         // branch); the reported status is awaiting_confidential_init.
         assert_ne!(entry.times.starting_at_ns, 0);
@@ -3879,6 +3927,55 @@ mod tests {
         assert!(
             !harness.dhcp.is_running(&vm_id),
             "delete tears the DHCP server down"
+        );
+        assert_eq!(harness.dhcp.stopped(), vec![vm_id]);
+    }
+
+    #[test]
+    fn deleting_a_plain_vm_stops_no_dhcp_server() {
+        // A plain VM never started a per-tap DHCP server, so its teardown must
+        // NOT call dhcp.stop (this guards the `snp().is_some()` teardown gate
+        // against being removed, which would spuriously stop a nonexistent
+        // server for every plain VM delete, ledger 77).
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+
+        create_vm(state, spec(&vm_id, &root)).unwrap();
+        delete_vm(state, &vm_id, false, false).unwrap();
+        assert!(
+            harness.dhcp.stopped().is_empty(),
+            "a plain VM teardown touches no DHCP server, got {:?}",
+            harness.dhcp.stopped()
+        );
+    }
+
+    #[test]
+    fn discarding_an_untracked_snp_vm_tears_down_the_dhcp_server() {
+        // A live SNP VM whose adoption failed (untracked, config still on disk)
+        // ran a per-tap DHCP server. The discard_failed_reattach delete path
+        // must stop it too, or aleph-vm-dhcp-<hash>.service (and its lease file)
+        // is orphaned (increment D2, ledger 77).
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('e');
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let request = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+
+        // Create the SNP VM (writes the config, starts the DHCP server), then
+        // simulate a failed adoption by dropping the tracked entry while its
+        // controller config stays on disk: DeleteVm now takes the discard path.
+        create_vm(state, request).unwrap();
+        assert!(harness.dhcp.is_running(&vm_id));
+        state.world.blocking_write().entries.remove(&vm_id);
+
+        delete_vm(state, &vm_id, false, false).unwrap();
+        assert!(
+            !harness.dhcp.is_running(&vm_id),
+            "the discard path tears the DHCP server down"
         );
         assert_eq!(harness.dhcp.stopped(), vec![vm_id]);
     }
