@@ -16,6 +16,10 @@ supervisor-proto = { path = "crates/supervisor-proto" }
 
 clap = { version = "4", features = ["derive"] }
 libc = "0.2"
+# type-safe memory-size newtypes (aleph-rs). MiB is a u64 newtype that
+# deserializes only from a bare integer, so serde itself rejects a
+# float/negative/string mem_size_mb.
+memsizes = { version = "1", features = ["serde"] }
 prost = "0.13"
 # msgpack shape validation only (Python msgpack.unpackb parity); validated
 # payloads are still forwarded as the client's raw bytes, never re-encoded.

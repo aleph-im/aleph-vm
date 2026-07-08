@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
+memsizes.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

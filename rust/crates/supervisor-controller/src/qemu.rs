@@ -55,7 +55,9 @@ pub fn build_argv(config: &QemuConfig) -> Vec<String> {
         "-enable-kvm".into(),
         "-nodefaults".into(),
         "-m".into(),
-        config.mem_size_mb.to_string(),
+        // .count(): the bare MiB count QEMU expects ("-m 2048"); MiB's
+        // Display would render "2048 MiB".
+        config.mem_size_mb.count().to_string(),
         "-smp".into(),
         config.vcpu_count.to_string(),
         "-drive".into(),

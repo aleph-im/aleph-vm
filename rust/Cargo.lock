@@ -934,6 +934,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "memsizes"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b8737fceea2c0392b3962ea2d12cefd60ef9b86c1a84ea82b306785984f00e1"
+dependencies = [
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1422,6 +1432,7 @@ name = "supervisor-controller"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "memsizes",
  "serde",
  "serde_json",
  "tempfile",
