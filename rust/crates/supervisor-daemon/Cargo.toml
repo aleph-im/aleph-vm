@@ -16,6 +16,7 @@ supervisor-proto.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 libc.workspace = true
+memsizes.workspace = true
 prost.workspace = true
 rmpv.workspace = true
 rusqlite.workspace = true

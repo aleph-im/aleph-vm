@@ -2875,6 +2875,7 @@ dependencies = [
  "clap",
  "hyper-util",
  "libc",
+ "memsizes",
  "prost",
  "rmpv",
  "rusqlite",

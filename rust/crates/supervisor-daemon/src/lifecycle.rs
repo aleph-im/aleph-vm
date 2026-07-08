@@ -225,7 +225,7 @@ fn apply_numa_dropin(
 /// allocator selected (`None` for regular pages). Used to return the exact
 /// pages a VM reserved on release and to re-register them at adoption.
 fn config_hugepage_backing(config: &QemuVmConfig) -> (u32, Option<crate::numa::HugePageSize>) {
-    let memory_mb = config.mem_size_mb.min(u32::MAX as u64) as u32;
+    let memory_mb = config.mem_size_mb.count().min(u32::MAX as u64) as u32;
     let hugepage_size = config
         .hugepage_size
         .as_deref()
@@ -1779,7 +1779,7 @@ fn check_memory_backstop(state: &DaemonState, required_memory_mib: u64) -> Resul
         .blocking_read()
         .entries
         .values()
-        .map(|entry| entry.config.mem_size_mb)
+        .map(|entry| entry.config.mem_size_mb.count())
         .sum();
     let physical =
         crate::host::memory_total_mib().map_err(|error| RpcError::Internal(error.to_string()))?;
@@ -3723,7 +3723,7 @@ mod tests {
             panic!("the written config must be QEMU");
         };
         assert_eq!(qemu.interface_name.as_deref(), Some("vmtap4"));
-        assert_eq!(qemu.mem_size_mb, 256);
+        assert_eq!(qemu.mem_size_mb, memsizes::MiB::from(256));
 
         // GetVmSpec serves the ORIGINAL spec (live-daemon behavior).
         assert_eq!(vm_spec_message(&entry), request);
