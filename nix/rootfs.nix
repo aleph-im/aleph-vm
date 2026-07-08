@@ -21,8 +21,23 @@ pkgs.runCommand "rootfs.ext4" {
   SOURCE_DATE_EPOCH = "0";
 } ''
   # Create a minimal ext4 image with /sbin/init entrypoint.
-  mkdir -p rootfs/sbin rootfs/bin rootfs/srv
+  mkdir -p rootfs/sbin rootfs/bin rootfs/srv rootfs/etc
   cp ${staticBusybox}/bin/busybox rootfs/bin/
+
+  # Empty resolv.conf placeholder: the rootfs is mounted read-only under
+  # dm-verity, so init.sh cannot create files in it at boot. It instead
+  # bind-mounts the initramfs /etc/resolv.conf (the DHCP-provided nameservers
+  # written by udhcpc.script) over this placeholder so the chrooted workload
+  # gets DNS. A file bind-mount needs an existing target.
+  touch rootfs/etc/resolv.conf
+
+  # Same read-only constraint for the secrets bind-mount target: init.sh's
+  # `mkdir -p /mnt/root/tmp/secrets` cannot create directories on the verity
+  # mount, so ship them in the image (mkdir -p then no-ops and the bind-mount
+  # of the initramfs /tmp/secrets finds its target).
+  mkdir -p rootfs/tmp/secrets
+  chmod 1777 rootfs/tmp
+  chmod 0700 rootfs/tmp/secrets
 
   # Placeholder workload page served by busybox httpd.
   cat > rootfs/srv/index.html <<'HTML'
