@@ -121,6 +121,13 @@ pub struct DaemonState {
     pub logs: Arc<dyn LogSource>,
     pub nft: Arc<dyn crate::nft::NftExecutor>,
     pub taps: Arc<dyn crate::tap::TapBackend>,
+    /// Per-tap DHCP for SEV-SNP measured VMs (Phase 3 increment D2, ledger
+    /// entry 77): the measured image DHCPs (nix/init.sh udhcpc) and its
+    /// cmdline omits `ip=` for measurement determinism, so the daemon serves
+    /// the guest its allocated IPv4 over a single-address dnsmasq on the tap.
+    /// Only the SNP path uses this; plain and SEV VMs keep cloud-init static
+    /// config.
+    pub dhcp: Arc<dyn crate::dhcp::DhcpBackend>,
     /// Present when host networking and USE_NDP_PROXY are both on, like the
     /// Python `Network.ndp_proxy`.
     pub ndp: Option<Arc<crate::ndppd::NdpProxy>>,
@@ -201,6 +208,7 @@ impl DaemonState {
             logs,
             nft: Arc::new(crate::nft::StaticRuleset::default()),
             taps: Arc::new(crate::tap::FakeTapBackend::new()),
+            dhcp: Arc::new(crate::dhcp::FakeDhcpBackend::new()),
             ndp: None,
             port_cursor: crate::ports::PortCursor::default(),
             creation_lock: std::sync::Mutex::new(()),

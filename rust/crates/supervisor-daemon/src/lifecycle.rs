@@ -28,7 +28,7 @@ use crate::service::DaemonState;
 use crate::tap::TapAssignment;
 use crate::units::{self, controller_unit_name};
 use crate::world::{self, AttachedGpu, ProgramEntry, VmEntry, VmTimes, VmType, now_ns};
-use crate::{checks, cloudinit, nft, ports};
+use crate::{checks, cloudinit, dhcp, nft, ports};
 
 /// The closed error vocabulary slice these RPCs can produce, mapped in
 /// service.rs onto the same gRPC status codes and ErrorDetail trailers as
@@ -376,6 +376,13 @@ fn network_interface(state: &DaemonState) -> String {
     state.host.network_interface.clone().unwrap_or_default()
 }
 
+/// Where per-tap DHCP lease files live: `{EXECUTION_ROOT}/dhcp` (increment
+/// D2). One lease file per SNP VM so concurrent per-tap servers never clobber
+/// a shared database.
+fn dhcp_lease_dir(state: &DaemonState) -> std::path::PathBuf {
+    state.host.settings.execution_root.join("dhcp")
+}
+
 /// Python `_is_running`: systemd for persistent VMs, times for ephemeral
 /// programs (`starting_at and not stopping_at`).
 pub(crate) fn entry_running(state: &DaemonState, entry: &VmEntry) -> bool {
@@ -652,6 +659,16 @@ fn stop_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
 
         // vm.teardown(): nftables chains, then the tap (with the ndp range).
         if networking_enabled(state, &entry) {
+            // SNP measured VMs ran a per-tap DHCP server; tear it down with
+            // the tap (idempotent, SNP only). Covers StopVm and
+            // delete_tracked_vm, which both route through here. Plain and SEV
+            // VMs never started one, so this is a no-op for them (ledger entry
+            // 77).
+            if entry.config.snp().is_some()
+                && let Err(dhcp_error) = state.dhcp.stop(vm_id)
+            {
+                tracing::warn!(vm_id, dhcp_error, "cannot stop the DHCP server, continuing");
+            }
             nft_teardown_vm(state, entry.vm_index);
             std::thread::sleep(state.pacing.tap_delete_delay);
             if let Some(ndp) = &state.ndp {
@@ -2622,6 +2639,21 @@ fn create_vm_inner(
                 ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
             }
             nft_setup_vm(state, vm_index, &tap.device_name)?;
+            // SNP measured VMs get their IPv4 via a per-tap DHCP server, not
+            // cloud-init static config: the measured image DHCPs and its
+            // cmdline omits `ip=` for measurement determinism (ledger entry
+            // 77). The tap already carries the gateway address (create_tap
+            // added host_ipv4_cidr), so dnsmasq can bind and route. Plain and
+            // SEV VMs skip this and keep their cloud-init static config.
+            if snp {
+                let config = dhcp::DhcpConfig::for_snp(
+                    &vm_id,
+                    tap,
+                    state.host.dns_nameservers.as_deref().unwrap_or(&[]),
+                    &dhcp_lease_dir(state),
+                );
+                state.dhcp.start(&config)?;
+            }
         }
 
         // The cloud-init seed, then the controller config (same order as
@@ -2696,6 +2728,12 @@ fn create_vm_inner(
         // seed are left behind, exactly like Python.
         if let Some(tap) = &tap {
             let _net = net_lock(state);
+            // Tear the per-tap DHCP server down alongside the tap (SNP only,
+            // idempotent): a failed SNP boot must not leave a dnsmasq bound to
+            // a tap that is about to be deleted (ledger entry 77).
+            if snp && let Err(dhcp_error) = state.dhcp.stop(&vm_id) {
+                tracing::warn!(dhcp_error, "failed to stop the DHCP server during cleanup");
+            }
             nft_teardown_vm(state, vm_index);
             std::thread::sleep(state.pacing.tap_delete_delay);
             if let Some(ndp) = &state.ndp
@@ -3439,6 +3477,7 @@ mod tests {
         state: Arc<DaemonState>,
         systemd: Arc<FakeSystemd>,
         taps: Arc<FakeTapBackend>,
+        dhcp: Arc<crate::dhcp::FakeDhcpBackend>,
         nft: Arc<nft::StaticRuleset>,
         programs: Arc<crate::firecracker::FakeProgramLauncher>,
         _tmp: tempfile::TempDir,
@@ -3480,6 +3519,7 @@ mod tests {
         };
         let systemd = Arc::new(FakeSystemd::new());
         let taps = Arc::new(FakeTapBackend::new());
+        let dhcp = Arc::new(crate::dhcp::FakeDhcpBackend::new());
         let nft_executor = Arc::new(nft::StaticRuleset::new(ruleset));
         let programs = Arc::new(crate::firecracker::FakeProgramLauncher::new());
         let mut state = crate::service::DaemonState::hermetic(
@@ -3490,11 +3530,13 @@ mod tests {
         );
         state.nft = nft_executor.clone();
         state.taps = taps.clone();
+        state.dhcp = dhcp.clone();
         state.programs = programs.clone();
         Harness {
             state: Arc::new(state),
             systemd,
             taps,
+            dhcp,
             nft: nft_executor,
             programs,
             _tmp: tmp,
@@ -3761,6 +3803,174 @@ mod tests {
             "the dm-verity hash tree is the first host volume"
         );
         assert!(qemu.host_volumes[0].read_only);
+    }
+
+    #[test]
+    fn create_snp_starts_a_per_tap_dhcp_server_for_the_allocated_ip() {
+        // Increment D2: the SNP measured image DHCPs (its cmdline omits `ip=`
+        // for measurement determinism), so the daemon stands up a per-tap
+        // dnsmasq handing the guest EXACTLY its allocated IPv4, with the host
+        // tap as the gateway and the daemon's nameservers.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('e');
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let request = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+
+        let (entry, running) = create_vm(state, request).unwrap();
+        assert!(running);
+
+        // The DHCP server was started exactly once, for this VM's tap, with
+        // the allocated guest IP/gateway/netmask and the host nameservers.
+        let started = harness.dhcp.started();
+        assert_eq!(started.len(), 1, "one DHCP server for the SNP VM");
+        let config = &started[0];
+        assert_eq!(config.vm_hash, vm_id);
+        assert_eq!(config.device_name, format!("vmtap{}", entry.vm_index));
+        assert_eq!(config.guest_ip, entry.ipv4.as_ref().unwrap().address);
+        assert_eq!(config.gateway, entry.ipv4.as_ref().unwrap().gateway);
+        assert_eq!(config.netmask, "255.255.255.0");
+        assert_eq!(config.nameservers, vec!["1.1.1.1".to_string()]);
+        // The single-address range hands out only the allocated IP.
+        assert!(
+            config.dnsmasq_args().contains(&format!(
+                "--dhcp-range={ip},{ip},255.255.255.0,1h",
+                ip = entry.ipv4.as_ref().unwrap().address
+            )),
+            "the guest can only lease its allocated IP"
+        );
+        assert!(harness.dhcp.is_running(&vm_id));
+    }
+
+    #[test]
+    fn create_plain_qemu_starts_no_dhcp_server() {
+        // A plain (non-SNP) VM keeps cloud-init static config; the daemon must
+        // NOT stand up a DHCP server for it.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+        let request = spec(&vm_id, &root);
+
+        let (_entry, running) = create_vm(state, request).unwrap();
+        assert!(running);
+        assert!(
+            harness.dhcp.started().is_empty(),
+            "a plain VM uses cloud-init static config, no DHCP server"
+        );
+    }
+
+    #[test]
+    fn deleting_an_snp_vm_tears_down_the_dhcp_server() {
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('e');
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let request = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+
+        create_vm(state, request).unwrap();
+        assert!(harness.dhcp.is_running(&vm_id));
+
+        delete_vm(state, &vm_id, false, false).unwrap();
+        assert!(
+            !harness.dhcp.is_running(&vm_id),
+            "delete tears the DHCP server down"
+        );
+        assert_eq!(harness.dhcp.stopped(), vec![vm_id]);
+    }
+
+    #[test]
+    fn stopping_an_snp_vm_tears_down_the_dhcp_server() {
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('e');
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let request = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+
+        create_vm(state, request).unwrap();
+        stop_vm(state, &vm_id).unwrap();
+        assert!(
+            !harness.dhcp.is_running(&vm_id),
+            "stop tears the DHCP server down"
+        );
+        assert_eq!(harness.dhcp.stopped(), vec![vm_id]);
+    }
+
+    #[test]
+    fn a_failed_snp_boot_stops_the_dhcp_server_during_cleanup() {
+        // The controller enters "failed": the create's cleanup path must tear
+        // the just-started DHCP server down alongside the tap.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('e');
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+
+        // A systemd whose controller reports "failed" (the same wrapper the
+        // plain failed-boot test uses), plus the fake tap and DHCP backends so
+        // the cleanup path is observable.
+        struct FailingSystemd(Arc<FakeSystemd>);
+        impl crate::units::UnitStateSource for FailingSystemd {
+            fn active_states(
+                &self,
+                units: &[String],
+            ) -> Result<std::collections::HashMap<String, bool>, String> {
+                self.0.active_states(units)
+            }
+            fn controller_units(&self) -> Result<std::collections::HashMap<String, bool>, String> {
+                self.0.controller_units()
+            }
+            fn get_active_state(&self, _unit: &str) -> String {
+                "failed".to_string()
+            }
+            fn start(&self, unit: &str) -> Result<(), String> {
+                self.0.start(unit)
+            }
+            fn stop(&self, unit: &str) -> Result<(), String> {
+                self.0.stop(unit)
+            }
+            fn restart(&self, unit: &str) -> Result<(), String> {
+                self.0.restart(unit)
+            }
+            fn enable(&self, unit: &str) -> Result<(), String> {
+                self.0.enable(unit)
+            }
+            fn disable(&self, unit: &str) -> Result<(), String> {
+                self.0.disable(unit)
+            }
+            fn is_enabled(&self, unit: &str) -> bool {
+                self.0.is_enabled(unit)
+            }
+        }
+        let dhcp = Arc::new(crate::dhcp::FakeDhcpBackend::new());
+        let mut state2 = crate::service::DaemonState::hermetic(
+            state.host.clone(),
+            world::WorldView::default(),
+            Arc::new(FailingSystemd(harness.systemd.clone())),
+            Arc::new(StaticLogSource::default()),
+        );
+        state2.nft = Arc::new(nft::StaticRuleset::new(bare_host_ruleset()));
+        state2.taps = harness.taps.clone();
+        state2.dhcp = dhcp.clone();
+        let state2 = Arc::new(state2);
+
+        let result = create_vm(
+            &state2,
+            snp_spec(&vm_id, &root, &firmware.to_string_lossy()),
+        );
+        assert!(result.is_err(), "the SNP boot must fail");
+        assert!(
+            dhcp.stopped().contains(&vm_id),
+            "the cleanup path tears the DHCP server down"
+        );
+        assert!(!dhcp.is_running(&vm_id));
     }
 
     #[test]
@@ -5859,6 +6069,7 @@ mod tests {
         let (host, tmp) = numa_host();
         let systemd = Arc::new(FakeSystemd::new());
         let taps = Arc::new(FakeTapBackend::new());
+        let dhcp = Arc::new(crate::dhcp::FakeDhcpBackend::new());
         let nft_executor = Arc::new(nft::StaticRuleset::new(bare_host_ruleset()));
         let programs = Arc::new(crate::firecracker::FakeProgramLauncher::new());
         let mut state = crate::service::DaemonState::hermetic(
@@ -5869,12 +6080,14 @@ mod tests {
         );
         state.nft = nft_executor.clone();
         state.taps = taps.clone();
+        state.dhcp = dhcp.clone();
         state.programs = programs.clone();
         state.with_numa_topology(topology);
         Harness {
             state: Arc::new(state),
             systemd,
             taps,
+            dhcp,
             nft: nft_executor,
             programs,
             _tmp: tmp,
@@ -5916,6 +6129,7 @@ mod tests {
         host.settings.numa_hugepages = true;
         let systemd = Arc::new(FakeSystemd::new());
         let taps = Arc::new(FakeTapBackend::new());
+        let dhcp = Arc::new(crate::dhcp::FakeDhcpBackend::new());
         let nft_executor = Arc::new(nft::StaticRuleset::new(bare_host_ruleset()));
         let programs = Arc::new(crate::firecracker::FakeProgramLauncher::new());
         let mut state = crate::service::DaemonState::hermetic(
@@ -5926,12 +6140,14 @@ mod tests {
         );
         state.nft = nft_executor.clone();
         state.taps = taps.clone();
+        state.dhcp = dhcp.clone();
         state.programs = programs.clone();
         state.with_numa_topology(two_node_topology_with_hugepages());
         Harness {
             state: Arc::new(state),
             systemd,
             taps,
+            dhcp,
             nft: nft_executor,
             programs,
             _tmp: tmp,
