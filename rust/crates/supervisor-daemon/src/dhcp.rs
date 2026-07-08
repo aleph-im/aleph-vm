@@ -40,6 +40,14 @@ pub fn dhcp_unit_name(vm_hash: &str) -> String {
     format!("{DHCP_UNIT_PREFIX}{vm_hash}.service")
 }
 
+/// The per-VM dnsmasq lease file under `lease_dir`, named by the VM hash. The
+/// single source of truth shared by [`DhcpConfig::for_snp`] (which passes it to
+/// dnsmasq) and the teardown (which removes it), so start and stop never
+/// disagree on the path.
+pub fn lease_file_path(lease_dir: &std::path::Path, vm_hash: &str) -> std::path::PathBuf {
+    lease_dir.join(format!("{vm_hash}.leases"))
+}
+
 /// One SNP VM's DHCP server configuration: hand the guest EXACTLY its
 /// allocated IPv4, with the correct gateway, netmask and nameservers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,19 +81,30 @@ impl DhcpConfig {
     /// nameservers. The netmask is derived from the tap's IPv4 prefix. The
     /// lease file lives under `lease_dir` (created by the backend), named by
     /// the VM hash.
+    ///
+    /// Fails (fail-closed) if the tap's IPv4 network CIDR carries no parseable
+    /// prefix length: silently falling back to `/32` would hand the guest an
+    /// unroutable single-host netmask, so the caller must surface the error
+    /// rather than boot an unreachable VM.
     pub fn for_snp(
         vm_hash: &str,
         tap: &TapAssignment,
         nameservers: &[String],
         lease_dir: &std::path::Path,
-    ) -> Self {
-        let prefix = tap
-            .ipv4
-            .network_cidr
-            .split_once('/')
-            .and_then(|(_, prefix)| prefix.parse::<u8>().ok())
-            .unwrap_or(32);
-        Self {
+    ) -> Result<Self, String> {
+        let (_, prefix_str) = tap.ipv4.network_cidr.split_once('/').ok_or_else(|| {
+            format!(
+                "tap IPv4 network CIDR {:?} has no prefix length",
+                tap.ipv4.network_cidr
+            )
+        })?;
+        let prefix = prefix_str.parse::<u8>().map_err(|error| {
+            format!(
+                "tap IPv4 network CIDR {:?} has an invalid prefix length: {error}",
+                tap.ipv4.network_cidr
+            )
+        })?;
+        Ok(Self {
             vm_hash: vm_hash.to_string(),
             device_name: tap.device_name.clone(),
             guest_ip: tap.ipv4.address.clone(),
@@ -93,11 +112,10 @@ impl DhcpConfig {
             netmask: netmask_for_prefix(prefix),
             nameservers: nameservers.to_vec(),
             lease: DEFAULT_LEASE.to_string(),
-            lease_file: lease_dir
-                .join(format!("{vm_hash}.leases"))
+            lease_file: lease_file_path(lease_dir, vm_hash)
                 .to_string_lossy()
                 .into_owned(),
-        }
+        })
     }
 
     /// The transient unit name, `aleph-vm-dhcp-{vm_hash}.service`.
@@ -110,10 +128,15 @@ impl DhcpConfig {
     /// bound to the tap alone (`--bind-interfaces` + `--except-interface=lo`),
     /// authoritative, with a SINGLE-address range so the guest can only ever
     /// lease its allocated IP. `--keep-in-foreground` keeps dnsmasq as the
-    /// unit's main process under `systemd-run` (Type=simple).
+    /// unit's main process under `systemd-run` (Type=exec). `--user=root`
+    /// suppresses the default setuid to the `dnsmasq`/`nobody` user, which need
+    /// not exist on the host: the transient unit already runs as root under
+    /// systemd-run, so this removes a missing-user failure mode.
     pub fn dnsmasq_args(&self) -> Vec<String> {
         let mut args = vec![
             "--keep-in-foreground".to_string(),
+            // Stay as root; do not setuid to a possibly-absent dnsmasq user.
+            "--user=root".to_string(),
             // DHCP only: no DNS server, so nothing binds :53 and multiple
             // per-tap dnsmasq instances never collide on the DNS port.
             "--port=0".to_string(),
@@ -140,13 +163,23 @@ impl DhcpConfig {
     }
 
     /// The full `systemd-run` invocation that launches the transient unit:
-    /// `systemd-run --unit=... --collect -- dnsmasq <args>`. `--collect`
-    /// garbage-collects the unit when it exits or fails, so a later restart
-    /// of the same VM never trips over a lingering failed unit.
+    /// `systemd-run --unit=... --collect -p Type=exec -- dnsmasq <args>`.
+    /// `--collect` garbage-collects the unit when it exits or fails, so a later
+    /// restart of the same VM never trips over a lingering failed unit.
+    ///
+    /// `-p Type=exec` is load-bearing: with the default `Type=simple`,
+    /// `systemd-run` returns success the instant the unit forks, so a missing
+    /// or unrunnable dnsmasq (bad binary, failed bind) would still report a
+    /// started job and the daemon would boot the VM with no DHCP (the guest
+    /// never leases its IP, attestation is unreachable) while claiming success.
+    /// `Type=exec` holds the start job until dnsmasq has successfully
+    /// `execve`d, so an exec failure fails the job and propagates as `Err`.
     pub fn systemd_run_args(&self) -> Vec<String> {
         let mut args = vec![
             format!("--unit={}", self.unit_name()),
             "--collect".to_string(),
+            // Fail the start job if dnsmasq cannot exec (see doc above).
+            "--property=Type=exec".to_string(),
             "--".to_string(),
             "dnsmasq".to_string(),
         ];
@@ -175,9 +208,19 @@ pub trait DhcpBackend: Send + Sync {
     /// never fails on a leftover.
     fn start(&self, config: &DhcpConfig) -> Result<(), String>;
 
-    /// Tear down the per-tap DHCP server for a VM hash. A missing unit is a
-    /// success (idempotent teardown, like the tap delete).
-    fn stop(&self, vm_hash: &str) -> Result<(), String>;
+    /// Tear down the per-tap DHCP server for a VM hash and remove its lease
+    /// file. A missing unit is a success (idempotent teardown, like the tap
+    /// delete). `lease_file` is the per-VM dnsmasq lease database
+    /// ([`lease_file_path`]); removing it stops the file leaking on persistent
+    /// storage across the VM's lifetime.
+    fn stop(&self, vm_hash: &str, lease_file: &std::path::Path) -> Result<(), String>;
+}
+
+/// Whether a `systemctl stop` stderr describes a unit systemd never knew (it
+/// was already gone), which a teardown treats as success, mirroring the
+/// tap-delete tolerance of a missing device.
+fn is_absent_unit_error(stderr: &str) -> bool {
+    stderr.contains("not loaded") || stderr.contains("not-found")
 }
 
 /// Production backend: dnsmasq as a transient systemd unit via `systemd-run`,
@@ -226,17 +269,28 @@ impl DhcpBackend for SystemdRunDhcp {
         ))
     }
 
-    fn stop(&self, vm_hash: &str) -> Result<(), String> {
+    fn stop(&self, vm_hash: &str, lease_file: &std::path::Path) -> Result<(), String> {
         let unit = dhcp_unit_name(vm_hash);
-        let output = Self::run("systemctl", &["stop".to_string(), unit.clone()])?;
+        let result = Self::run("systemctl", &["stop".to_string(), unit.clone()]);
+        // Best-effort lease-file cleanup, regardless of the stop outcome: the
+        // per-VM lease database lives on persistent storage and must not
+        // accumulate across VM lifetimes. Idempotent (a missing file is fine).
+        if let Err(error) = std::fs::remove_file(lease_file)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                lease_file = %lease_file.display(),
+                error = %error,
+                "could not remove the DHCP lease file"
+            );
+        }
+        let output = result?;
         if output.status.success() {
             tracing::info!(unit, "stopped per-tap DHCP server");
             return Ok(());
         }
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // A unit systemd never knew (already gone) is a successful teardown,
-        // mirroring the tap-delete tolerance of a missing device.
-        if stderr.contains("not loaded") || stderr.contains("not-found") {
+        if is_absent_unit_error(&stderr) {
             tracing::warn!(unit, "DHCP unit already gone, treating stop as done");
             return Ok(());
         }
@@ -323,7 +377,7 @@ impl DhcpBackend for FakeDhcpBackend {
         Ok(())
     }
 
-    fn stop(&self, vm_hash: &str) -> Result<(), String> {
+    fn stop(&self, vm_hash: &str, _lease_file: &std::path::Path) -> Result<(), String> {
         let mut inner = self.lock();
         if let Some(message) = &inner.fail_stop {
             return Err(message.clone());
@@ -373,7 +427,8 @@ mod tests {
             &snp_tap(),
             &["1.1.1.1".to_string(), "9.9.9.9".to_string()],
             std::path::Path::new("/run/aleph/dhcp"),
-        );
+        )
+        .unwrap();
         assert_eq!(config.device_name, "vmtap4");
         assert_eq!(config.guest_ip, "172.16.4.2");
         assert_eq!(config.gateway, "172.16.4.1");
@@ -395,10 +450,13 @@ mod tests {
             &snp_tap(),
             &["1.1.1.1".to_string(), "9.9.9.9".to_string()],
             std::path::Path::new("/run/aleph/dhcp"),
-        );
+        )
+        .unwrap();
         let args = config.dnsmasq_args();
         // DHCP only, bound to the tap alone, authoritative.
         assert!(args.contains(&"--port=0".to_string()));
+        // Stay as root; do not setuid to a possibly-absent dnsmasq user.
+        assert!(args.contains(&"--user=root".to_string()));
         assert!(args.contains(&"--interface=vmtap4".to_string()));
         assert!(args.contains(&"--bind-interfaces".to_string()));
         assert!(args.contains(&"--except-interface=lo".to_string()));
@@ -424,7 +482,8 @@ mod tests {
             &snp_tap(),
             &[],
             std::path::Path::new("/run/aleph/dhcp"),
-        );
+        )
+        .unwrap();
         let args = config.dnsmasq_args();
         assert!(
             !args.iter().any(|arg| arg.starts_with("--dhcp-option=6")),
@@ -441,18 +500,24 @@ mod tests {
             &snp_tap(),
             &["1.1.1.1".to_string()],
             std::path::Path::new("/run/aleph/dhcp"),
-        );
+        )
+        .unwrap();
         let args = config.systemd_run_args();
         assert_eq!(
             args[0],
             format!("--unit=aleph-vm-dhcp-{}.service", "e".repeat(64))
         );
         assert!(args.contains(&"--collect".to_string()));
+        // Type=exec so a dnsmasq that cannot exec fails the start job (and the
+        // daemon's `start` returns Err) instead of a silent no-DHCP boot.
+        assert!(args.contains(&"--property=Type=exec".to_string()));
         // The separator then the program, so the dnsmasq flags are the unit's
         // command and not consumed by systemd-run.
         let sep = args.iter().position(|arg| arg == "--").unwrap();
         assert_eq!(args[sep + 1], "dnsmasq");
         assert!(args[sep + 2..].contains(&"--keep-in-foreground".to_string()));
+        // The Type=exec property is a systemd-run flag, before the separator.
+        assert!(args[..sep].contains(&"--property=Type=exec".to_string()));
     }
 
     #[test]
@@ -463,13 +528,15 @@ mod tests {
             &snp_tap(),
             &["1.1.1.1".to_string()],
             std::path::Path::new("/run/aleph/dhcp"),
-        );
+        )
+        .unwrap();
+        let lease = std::path::Path::new(&config.lease_file);
         assert!(!backend.is_running(&"e".repeat(64)));
         backend.start(&config).unwrap();
         assert!(backend.is_running(&"e".repeat(64)));
         assert_eq!(backend.started(), vec![config.clone()]);
 
-        backend.stop(&"e".repeat(64)).unwrap();
+        backend.stop(&"e".repeat(64), lease).unwrap();
         assert!(!backend.is_running(&"e".repeat(64)));
         assert_eq!(backend.stopped(), vec!["e".repeat(64)]);
     }
@@ -482,10 +549,83 @@ mod tests {
             &snp_tap(),
             &[],
             std::path::Path::new("/run/aleph/dhcp"),
-        );
+        )
+        .unwrap();
+        let lease = std::path::Path::new(&config.lease_file);
         backend.fail_start("boom");
         assert_eq!(backend.start(&config), Err("boom".to_string()));
         backend.fail_stop("nope");
-        assert_eq!(backend.stop(&"e".repeat(64)), Err("nope".to_string()));
+        assert_eq!(
+            backend.stop(&"e".repeat(64), lease),
+            Err("nope".to_string())
+        );
+    }
+
+    #[test]
+    fn for_snp_rejects_a_cidr_without_a_prefix() {
+        // A `/`-less (or non-numeric-prefix) network CIDR must fail rather than
+        // silently yield an unroutable /32 (255.255.255.255) that leaves the
+        // guest unable to reach its gateway.
+        let mut tap = snp_tap();
+        tap.ipv4.network_cidr = "172.16.4.0".into(); // no prefix length
+        let result = DhcpConfig::for_snp(
+            &"e".repeat(64),
+            &tap,
+            &[],
+            std::path::Path::new("/run/aleph/dhcp"),
+        );
+        assert!(result.is_err(), "a CIDR with no prefix must be rejected");
+
+        let mut tap = snp_tap();
+        tap.ipv4.network_cidr = "172.16.4.0/xx".into(); // non-numeric prefix
+        assert!(
+            DhcpConfig::for_snp(
+                &"e".repeat(64),
+                &tap,
+                &[],
+                std::path::Path::new("/run/aleph/dhcp"),
+            )
+            .is_err(),
+            "a non-numeric prefix must be rejected"
+        );
+    }
+
+    #[test]
+    fn is_absent_unit_error_matches_systemd_not_found_messages() {
+        assert!(is_absent_unit_error(
+            "Failed to stop aleph-vm-dhcp-x.service: Unit aleph-vm-dhcp-x.service not loaded."
+        ));
+        assert!(is_absent_unit_error(
+            "Unit aleph-vm-dhcp-x.service not-found."
+        ));
+        assert!(!is_absent_unit_error(
+            "Failed to stop unit: Connection timed out"
+        ));
+        assert!(!is_absent_unit_error(""));
+    }
+
+    #[test]
+    fn systemd_stop_removes_the_lease_file() {
+        // The per-VM lease database must be cleaned up on teardown so it does
+        // not accumulate on persistent storage. Removal is best-effort and
+        // happens regardless of the (here irrelevant) systemctl outcome, so
+        // the test does not depend on systemd being present.
+        let dir = tempfile::tempdir().unwrap();
+        let lease = dir.path().join(format!("{}.leases", "a".repeat(64)));
+        std::fs::write(&lease, b"1 aa:bb 172.16.4.2 host *\n").unwrap();
+        assert!(lease.exists());
+        let _ = SystemdRunDhcp.stop(&"a".repeat(64), &lease);
+        assert!(!lease.exists(), "the lease file is removed on stop");
+    }
+
+    #[test]
+    fn systemd_stop_tolerates_a_missing_lease_file() {
+        // A second teardown (or one where dnsmasq never wrote a lease) must not
+        // error on the absent file.
+        let dir = tempfile::tempdir().unwrap();
+        let lease = dir.path().join("gone.leases");
+        assert!(!lease.exists());
+        // Does not panic; the missing file is silently tolerated.
+        let _ = SystemdRunDhcp.stop(&"b".repeat(64), &lease);
     }
 }
