@@ -5,11 +5,14 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil as shutil_module
 from pathlib import Path
 
 import pytest
 
+import aleph.vm.storage_pools as storage_pools_module
 from aleph.vm.conf import settings
+from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.storage_pools import (
     POOL_MARKER_NAME,
     MediaClass,
@@ -17,9 +20,15 @@ from aleph.vm.storage_pools import (
     StoragePoolConfigError,
     _device_media_class,
     detect_media_class,
+    find_existing_volume,
     get_pools,
+    iter_namespace_dirs,
+    pools_disk_usage,
     reset_pools,
+    roomiest_pool_free_bytes,
+    select_pool,
     setup_pools,
+    volume_path_for,
 )
 
 
@@ -226,3 +235,145 @@ class TestGetPools:
         monkeypatch.setattr(settings, "VOLUME_POOLS", [f"{extra}=ssd"])
         setup_pools(sys_root=sys_root)
         assert [pool.path for pool in get_pools()][1] == extra
+
+
+@pytest.fixture()
+def three_pools(pool_settings, monkeypatch):
+    """Pool 0 (default) + one NVMe + one SSD pool, module cache primed."""
+    pool1 = pool_settings / "mnt" / "nvme1"
+    pool2 = pool_settings / "mnt" / "ssd1"
+    pool1.mkdir(parents=True)
+    pool2.mkdir(parents=True)
+    pools = [
+        StoragePool(path=Path(settings.PERSISTENT_VOLUMES_DIR), media_class=MediaClass.SSD, index=0),
+        StoragePool(path=pool1, media_class=MediaClass.NVME, index=1),
+        StoragePool(path=pool2, media_class=MediaClass.SSD, index=2),
+    ]
+    monkeypatch.setattr(storage_pools_module, "_pools", pools)
+    return pools
+
+
+def _fake_disk_usage(monkeypatch, free_by_path: dict[Path, int], total: int = 10**12):
+    """shutil.disk_usage keyed by pool path; unknown paths raise OSError."""
+
+    def fake(path):
+        for pool_path, free in free_by_path.items():
+            if str(pool_path) == str(path):
+                return shutil_module._ntuple_diskusage(total, total - free, free)
+        msg = f"no fake usage for {path}"
+        raise OSError(msg)
+
+    monkeypatch.setattr(storage_pools_module.shutil, "disk_usage", fake)
+
+
+class TestSelectPool:
+    def test_picks_the_most_free_eligible_pool(self, three_pools, monkeypatch):
+        _fake_disk_usage(
+            monkeypatch,
+            {three_pools[0].path: 10 * 1024**3, three_pools[1].path: 50 * 1024**3, three_pools[2].path: 30 * 1024**3},
+        )
+        assert select_pool(size_mib=1024) == three_pools[1]
+
+    def test_tie_break_is_lowest_index(self, three_pools, monkeypatch):
+        _fake_disk_usage(
+            monkeypatch,
+            {three_pools[0].path: 50 * 1024**3, three_pools[1].path: 50 * 1024**3, three_pools[2].path: 50 * 1024**3},
+        )
+        assert select_pool(size_mib=1024) == three_pools[0]
+
+    def test_no_pool_fits_raises(self, three_pools, monkeypatch):
+        _fake_disk_usage(
+            monkeypatch,
+            {three_pools[0].path: 1 * 1024**3, three_pools[1].path: 2 * 1024**3, three_pools[2].path: 1 * 1024**3},
+        )
+        with pytest.raises(InsufficientResourcesError):
+            select_pool(size_mib=10 * 1024)  # 10 GiB > every pool's free space
+
+    def test_unreachable_pool_is_skipped(self, three_pools, monkeypatch):
+        # Pool 1 raises OSError (dead disk): placement falls to the others.
+        _fake_disk_usage(
+            monkeypatch,
+            {three_pools[0].path: 10 * 1024**3, three_pools[2].path: 30 * 1024**3},
+        )
+        assert select_pool(size_mib=1024) == three_pools[2]
+
+
+class TestLookup:
+    def test_find_existing_scans_pools_in_order(self, three_pools):
+        (three_pools[2].path / "vmhash").mkdir()
+        (three_pools[2].path / "vmhash" / "rootfs.qcow2").touch()
+        assert find_existing_volume("vmhash", "rootfs.qcow2") == three_pools[2].path / "vmhash" / "rootfs.qcow2"
+        assert find_existing_volume("vmhash", "other.qcow2") is None
+
+    def test_duplicate_uses_lowest_index_and_warns(self, three_pools, caplog):
+        for pool in (three_pools[1], three_pools[2]):
+            (pool.path / "vmhash").mkdir()
+            (pool.path / "vmhash" / "vol.ext4").touch()
+        with caplog.at_level("WARNING"):
+            found = find_existing_volume("vmhash", "vol.ext4")
+        assert found == three_pools[1].path / "vmhash" / "vol.ext4"
+        assert any("found in 2 pools" in record.message for record in caplog.records)
+
+    def test_volume_path_for_prefers_existing_over_placement(self, three_pools, monkeypatch):
+        _fake_disk_usage(monkeypatch, {pool.path: 50 * 1024**3 for pool in three_pools})
+        (three_pools[2].path / "vmhash").mkdir()
+        (three_pools[2].path / "vmhash" / "vol.ext4").touch()
+        assert volume_path_for("vmhash", "vol.ext4", size_mib=1024) == three_pools[2].path / "vmhash" / "vol.ext4"
+
+    def test_volume_path_for_places_and_creates_the_namespace_dir(self, three_pools, monkeypatch):
+        _fake_disk_usage(
+            monkeypatch,
+            {three_pools[0].path: 1 * 1024**3, three_pools[1].path: 50 * 1024**3, three_pools[2].path: 2 * 1024**3},
+        )
+        path = volume_path_for("vmhash", "new.ext4", size_mib=1024)
+        assert path == three_pools[1].path / "vmhash" / "new.ext4"
+        assert path.parent.is_dir()
+        assert not path.exists()
+
+    def test_iter_namespace_dirs(self, three_pools):
+        (three_pools[0].path / "vm-a").mkdir()
+        (three_pools[1].path / "vm-a").mkdir()
+        (three_pools[1].path / "vm-b").mkdir()
+        (three_pools[1].path / "stray-file").touch()
+        assert list(iter_namespace_dirs("vm-a")) == [
+            three_pools[0].path / "vm-a",
+            three_pools[1].path / "vm-a",
+        ]
+        every = list(iter_namespace_dirs())
+        assert three_pools[1].path / "vm-b" in every
+        assert len(every) == 3  # dirs only, the stray file is skipped
+
+
+class TestPooledAccounting:
+    def test_sums_and_dedups_by_st_dev(self, three_pools, monkeypatch):
+        _fake_disk_usage(monkeypatch, {pool.path: 10 * 1024**3 for pool in three_pools})
+        fake_devs = {
+            str(three_pools[0].path): 1,
+            str(three_pools[1].path): 2,
+            str(three_pools[2].path): 2,  # same filesystem as pool 1
+        }
+        real_stat = storage_pools_module.os.stat
+
+        def fake_stat(path, *args, **kwargs):
+            if str(path) in fake_devs:
+                result = list(real_stat(path, *args, **kwargs))
+                result[2] = fake_devs[str(path)]  # st_dev
+                return storage_pools_module.os.stat_result(result)
+            return real_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(storage_pools_module.os, "stat", fake_stat)
+        total, free = pools_disk_usage()
+        # Pools 1 and 2 share a filesystem: counted once → 2 filesystems.
+        assert free == 2 * 10 * 1024**3
+
+    def test_unreachable_pool_contributes_zero(self, three_pools, monkeypatch):
+        _fake_disk_usage(monkeypatch, {three_pools[0].path: 10 * 1024**3})
+        total, free = pools_disk_usage()
+        assert free == 10 * 1024**3
+
+    def test_roomiest_pool_free_bytes(self, three_pools, monkeypatch):
+        _fake_disk_usage(
+            monkeypatch,
+            {three_pools[0].path: 10 * 1024**3, three_pools[1].path: 50 * 1024**3, three_pools[2].path: 30 * 1024**3},
+        )
+        assert roomiest_pool_free_bytes() == 50 * 1024**3

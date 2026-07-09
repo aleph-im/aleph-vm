@@ -17,11 +17,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
+from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
 from aleph.vm.conf import settings
+from aleph.vm.resources import InsufficientResourcesError
 
 logger = logging.getLogger(__name__)
 
@@ -222,3 +225,108 @@ def reset_pools() -> None:
     """Drop the setup_pools() result (tests)."""
     global _pools  # noqa: PLW0603
     _pools = None
+
+
+def _pool_free_bytes(pool: StoragePool) -> int | None:
+    try:
+        return shutil.disk_usage(str(pool.path)).free
+    except OSError:
+        logger.error("Volume pool %s not accessible, skipping", pool.path)
+        return None
+
+
+def select_pool(size_mib: int) -> StoragePool:
+    """The eligible pool with the most free bytes that fits ``size_mib``.
+
+    Ties break on the lowest pool index (dict iteration is stable and pools
+    are scanned in index order, so the first max wins). Unreachable pools are
+    skipped: a dead disk stops receiving placements without failing the agent.
+    """
+    required_bytes = size_mib * 1024 * 1024
+    best: StoragePool | None = None
+    best_free = -1
+    for pool in get_pools():
+        if not pool.vm_eligible:
+            continue
+        free = _pool_free_bytes(pool)
+        if free is None:
+            continue
+        if free > best_free:
+            best, best_free = pool, free
+    if best is None or best_free < required_bytes:
+        msg = f"No volume pool has {size_mib} MiB free"
+        raise InsufficientResourcesError(
+            msg,
+            required={"disk_mib": size_mib},
+            available={"disk_mib": max(best_free, 0) // (1024 * 1024)},
+        )
+    return best
+
+
+def find_existing_volume(namespace: str, filename: str) -> Path | None:
+    """The first ``{pool}/{namespace}/{filename}`` that exists, in pool order."""
+    matches = [pool.path / namespace / filename for pool in get_pools() if (pool.path / namespace / filename).is_file()]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        logger.warning("Volume %s/%s found in %d pools; using %s", namespace, filename, len(matches), matches[0])
+    return matches[0]
+
+
+def volume_path_for(namespace: str, filename: str, size_mib: int) -> Path:
+    """The host path for a volume: its existing file when one pool already
+    holds it (sticky), else a fresh placement on the best pool. The namespace
+    directory is created; the volume file itself is not."""
+    existing = find_existing_volume(namespace, filename)
+    if existing is not None:
+        return existing
+    pool = select_pool(size_mib)
+    parent = pool.path / namespace
+    parent.mkdir(parents=True, exist_ok=True)
+    return parent / filename
+
+
+def iter_namespace_dirs(namespace: str | None = None) -> Iterator[Path]:
+    """Existing per-namespace dirs across pools: ``{pool}/{namespace}``, or
+    every namespace dir in every pool when ``namespace`` is None."""
+    for pool in get_pools():
+        if namespace is not None:
+            candidate = pool.path / namespace
+            if candidate.is_dir():
+                yield candidate
+            continue
+        try:
+            entries = sorted(pool.path.iterdir())
+        except OSError:
+            logger.error("Volume pool %s not accessible, skipping", pool.path)
+            continue
+        for entry in entries:
+            if entry.is_dir():
+                yield entry
+
+
+def pools_disk_usage() -> tuple[int, int]:
+    """(total, free) bytes across pools, filesystems deduplicated by st_dev
+    so two pool directories on one filesystem count once."""
+    seen_devices: set[int] = set()
+    total = free = 0
+    for pool in get_pools():
+        try:
+            st_dev = os.stat(pool.path).st_dev
+            usage = shutil.disk_usage(str(pool.path))
+        except OSError:
+            logger.warning("Volume pool %s not accessible, ignoring in accounting", pool.path)
+            continue
+        if st_dev in seen_devices:
+            continue
+        seen_devices.add(st_dev)
+        total += usage.total
+        free += usage.free
+    return total, free
+
+
+def roomiest_pool_free_bytes() -> int:
+    """Free bytes on the emptiest eligible pool (the largest single volume
+    that could still be placed); 0 when no pool is reachable."""
+    frees = [free for pool in get_pools() if pool.vm_eligible and (free := _pool_free_bytes(pool)) is not None]
+    return max(frees, default=0)
