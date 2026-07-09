@@ -14,6 +14,7 @@ from aleph_message.models.execution.volume import PersistentVolume, VolumePersis
 
 import aleph.vm.storage as storage_module
 import aleph.vm.storage_pools as storage_pools_module
+from aleph.vm.agent.migration.reaper import reap_orphan_migration_files
 from aleph.vm.conf import settings
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.storage_pools import (
@@ -412,3 +413,19 @@ class TestStorageWiring:
         mocker.patch.object(storage_module, "create_ext4", new_callable=AsyncMock)
         path = await storage_module.get_volume_path(_persistent_volume(), namespace="vmhash")
         assert path == existing / "data.ext4"
+
+
+class TestMigrationPools:
+    @pytest.mark.asyncio
+    async def test_reaper_sweeps_every_pool(self, three_pools):
+        # An aborted import (.part) in pool 1, an orphan export in pool 2.
+        aborted = three_pools[1].path / "dead-vm"
+        aborted.mkdir()
+        (aborted / "rootfs.qcow2.part").touch()
+        exported = three_pools[2].path / "live-vm"
+        exported.mkdir()
+        (exported / "rootfs.qcow2.export.qcow2").touch()
+        await reap_orphan_migration_files(known_vm_ids={"live-vm"})
+        assert not aborted.exists()
+        assert not (exported / "rootfs.qcow2.export.qcow2").exists()
+        assert exported.exists()

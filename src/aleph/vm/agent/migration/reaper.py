@@ -3,7 +3,7 @@
 import logging
 import shutil
 
-from aleph.vm.conf import settings
+from aleph.vm.storage_pools import iter_namespace_dirs
 
 logger = logging.getLogger(__name__)
 
@@ -19,24 +19,17 @@ async def reap_orphan_migration_files(known_vm_ids: set[str]) -> None:
     agent's own in-flight imports do not yet exist, so any ``.part`` is genuinely
     an aborted prior run.
 
-    On each <vm_hash> directory under PERSISTENT_VOLUMES_DIR:
+    On each <vm_hash> directory in every volume pool:
       - Always delete *.qcow2.export.qcow2 (orphan exports — never reused).
       - If the vm_hash is not a known live VM AND the dir contains *.part files:
           → rmtree the directory (clear evidence of an aborted import).
       - If not known AND the dir has only completed .qcow2 files:
           → keep, log warning. A subsequent import retry can detect the existing files.
     """
-    base = settings.PERSISTENT_VOLUMES_DIR
-    if not base.exists():
-        return
-
     n_exports = 0
     n_dirs = 0
 
-    for entry in base.iterdir():
-        if not entry.is_dir():
-            continue
-
+    for entry in iter_namespace_dirs():
         # Pass 1: orphan .export.qcow2 files always go.
         for export_file in entry.glob("*.qcow2.export.qcow2"):
             try:

@@ -36,6 +36,7 @@ from aleph.vm.agent.run import finish_instance_create
 from aleph.vm.agent.translate import build_create_vm_spec
 from aleph.vm.conf import settings
 from aleph.vm.storage import get_rootfs_base_path
+from aleph.vm.storage_pools import iter_namespace_dirs, select_pool
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
 
 if TYPE_CHECKING:
@@ -108,12 +109,14 @@ async def run_export(
             # step is needed. The volumes dir is the same settings-derived path
             # the import runner stages into.
             await supervisor.stop_vm(job.vm_hash)
-            volumes_dir = settings.PERSISTENT_VOLUMES_DIR / str(job.vm_hash)
-            job.volumes_dir = volumes_dir
+            # A VM's volumes may span pools (each volume is placed
+            # independently); export from every namespace dir.
+            volume_dirs = list(iter_namespace_dirs(str(job.vm_hash)))
+            job.volumes_dir = volume_dirs[0] if volume_dirs else None
 
             disk_files: list[DiskFileInfo] = []
 
-            if volumes_dir.exists():
+            for volumes_dir in volume_dirs:
                 for qcow2_file in sorted(volumes_dir.glob("*.qcow2")):
                     export_path = qcow2_file.with_suffix(".qcow2.export.qcow2")
                     await compress_disk(qcow2_file, export_path)
@@ -239,7 +242,11 @@ async def run_import(
             parent_path = await get_rootfs_base_path(parent_ref)
             parent_format = await detect_parent_format(parent_path)
 
-            dest_dir = settings.PERSISTENT_VOLUMES_DIR / str(job.vm_hash)
+            # Stage onto the pool with the most room for the whole transfer;
+            # build_create_vm_spec later adopts the staged overlay wherever it
+            # is (the downloader's volume lookup scans every pool).
+            incoming_mib = sum(df.size_bytes for df in disk_files) // (1024 * 1024)
+            dest_dir = select_pool(incoming_mib).path / str(job.vm_hash)
             dest_dir.mkdir(parents=True, exist_ok=True)
             job.dest_dir = dest_dir
             job.total_bytes_expected = sum(df.size_bytes for df in disk_files)
@@ -282,11 +289,12 @@ async def run_import(
             job.current_step = "creating_vm"
             # The standard instance-create path: build the same spec a normal
             # persistent-instance create uses (run.create_vm_execution ->
-            # build_create_vm_spec). The spec's rootfs path is
-            # PERSISTENT_VOLUMES_DIR/<vm_hash>/rootfs.qcow2, exactly where the
-            # download+rebase staged the overlay, and build_create_vm_spec adopts
-            # an already-present host-persistence overlay rather than recreating
-            # it, so create_vm reuses the staged disk (no re-download).
+            # build_create_vm_spec). The spec's rootfs path resolves through
+            # the pool-aware volume lookup, which finds the overlay exactly
+            # where the download+rebase staged it, and build_create_vm_spec
+            # adopts an already-present host-persistence overlay rather than
+            # recreating it, so create_vm reuses the staged disk (no
+            # re-download).
             spec = await build_create_vm_spec(job.vm_hash, message.content)
             # Same agent-side admission as the normal create: bucket from the
             # message type, GPU requests resolved to concrete host cards on
