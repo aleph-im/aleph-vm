@@ -1,0 +1,72 @@
+{
+  "config_json": {
+    "qemu_bin_path": "/usr/bin/qemu-system-x86_64",
+    "cloud_init_drive_path": "/var/lib/aleph/vm/cloud-init-testhash.img",
+    "image_path": "/var/lib/aleph/vm/volumes/persistent/testhash/rootfs.qcow2",
+    "monitor_socket_path": "/var/lib/aleph/vm/testhash-monitor.socket",
+    "qmp_socket_path": "/var/lib/aleph/vm/testhash-qmp.socket",
+    "qga_socket_path": "/var/lib/aleph/vm/testhash-qga.socket",
+    "vcpu_count": 2,
+    "mem_size_mb": 2048,
+    "interface_name": "vmtap5",
+    "host_volumes": [
+      {
+        "mount": "",
+        "path_on_host": "/var/lib/aleph/vm/volumes/persistent/testhash/a.qcow2",
+        "read_only": false
+      },
+      {
+        "mount": "",
+        "path_on_host": "/var/lib/aleph/vm/volumes/persistent/testhash/b.qcow2",
+        "read_only": true
+      }
+    ],
+    "gpus": []
+  },
+  "expected_argv": [
+    "/usr/bin/qemu-system-x86_64",
+    "-machine",
+    "pc",
+    "-enable-kvm",
+    "-nodefaults",
+    "-m",
+    "2048",
+    "-smp",
+    "2",
+    "-drive",
+    "file=/var/lib/aleph/vm/volumes/persistent/testhash/rootfs.qcow2,media=disk,if=virtio,file.locking=off",
+    "-display",
+    "none",
+    "-monitor",
+    "unix:/var/lib/aleph/vm/testhash-monitor.socket,server,nowait",
+    "-device",
+    "virtio-serial",
+    "-chardev",
+    "socket,path=/var/lib/aleph/vm/testhash-qga.socket,server=on,wait=off,id=qga0",
+    "-device",
+    "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0",
+    "-qmp",
+    "unix:/var/lib/aleph/vm/testhash-qmp.socket,server,nowait",
+    "-serial",
+    "stdio",
+    "-nographic",
+    "-boot",
+    "order=c,reboot-timeout=1",
+    "-device",
+    "virtio-net-pci,netdev=net0,rombar=0",
+    "-netdev",
+    "tap,id=net0,ifname=vmtap5,script=no,downscript=no",
+    "-drive",
+    "file=/var/lib/aleph/vm/cloud-init-testhash.img,media=cdrom,readonly=on,if=virtio",
+    "-device",
+    "virtio-balloon-pci,free-page-reporting=on",
+    "-drive",
+    "file=/var/lib/aleph/vm/volumes/persistent/testhash/a.qcow2,format=raw,readonly=off,media=disk,if=virtio",
+    "-drive",
+    "file=/var/lib/aleph/vm/volumes/persistent/testhash/b.qcow2,format=raw,readonly=on,media=disk,if=virtio",
+    "-machine",
+    "pc-i440fx-6.2",
+    "-cpu",
+    "host,migratable=on"
+  ]
+}
