@@ -25,8 +25,15 @@ class HostVolume:
     size_mib: int | None
 
 
-async def host_volumes_from_message(message_content: ExecutableContent, namespace: str) -> list[HostVolume]:
-    """Resolve the extra (non-rootfs) volumes declared in a message to on-host paths."""
+async def host_volumes_from_message(
+    message_content: ExecutableContent, namespace: str, *, pool0_only: bool = False
+) -> list[HostVolume]:
+    """Resolve the extra (non-rootfs) volumes declared in a message to on-host paths.
+
+    ``pool0_only`` pins writable volumes to the first storage pool; Firecracker
+    VMs need it because the jailer hardlink-copies drive files across
+    filesystems, losing guest writes (see ``storage_pools.volume_path_for``).
+    """
     volumes = []
     # TODO: Download in parallel and prevent duplicated volume names
     volume: MachineVolume
@@ -40,7 +47,7 @@ async def host_volumes_from_message(message_content: ExecutableContent, namespac
         volumes.append(
             HostVolume(
                 mount=volume.mount,
-                path_on_host=(await get_volume_path(volume=volume, namespace=namespace)),
+                path_on_host=(await get_volume_path(volume=volume, namespace=namespace, pool0_only=pool0_only)),
                 read_only=volume.is_read_only(),
                 size_mib=getattr(volume, "size_mib", None),
             )

@@ -113,7 +113,7 @@ class QemuDownloader:
         self.rootfs_path = await self.make_writable_volume(parent_image_path, volume)
 
     async def download_volumes(self) -> None:
-        self.volumes = await host_volumes_from_message(self.message_content, self.namespace)
+        self.volumes = await host_volumes_from_message(self.message_content, self.namespace, pool0_only=False)
 
     async def download_all(self) -> None:
         await asyncio.gather(
@@ -172,7 +172,10 @@ class ProgramDownloader:
         assert self.rootfs_path.is_file(), f"Runtime not found on {self.rootfs_path}"
 
     async def download_volumes(self) -> None:
-        self.volumes = await host_volumes_from_message(self.message_content, self.namespace)
+        # Programs run under Firecracker, whose jailer hardlink-copies drive
+        # files across filesystems (losing guest writes): writable volumes
+        # must stay on pool 0.
+        self.volumes = await host_volumes_from_message(self.message_content, self.namespace, pool0_only=True)
 
     async def download_data(self) -> None:
         if self.message_content.data:

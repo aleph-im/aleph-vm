@@ -133,7 +133,11 @@ def _parse_pool_entry(entry: str) -> tuple[Path, MediaClass | None]:
                 "(expected nvme, ssd or hdd)"
             )
             raise StoragePoolConfigError(msg) from error
-    return Path(path_part.strip()), override
+    path = Path(path_part.strip())
+    if not path_part.strip() or not path.is_absolute():
+        msg = f"VOLUME_POOLS entry {entry!r} needs an absolute pool path, e.g. /mnt/nvme1/aleph-volumes"
+        raise StoragePoolConfigError(msg)
+    return path, override
 
 
 def _adoption_registry_path() -> Path:
@@ -141,16 +145,36 @@ def _adoption_registry_path() -> Path:
 
 
 def _load_adopted() -> set[str]:
+    registry = _adoption_registry_path()
     try:
-        return set(json.loads(_adoption_registry_path().read_text()))
-    except (OSError, ValueError):
-        return set()
+        content = registry.read_text()
+    except FileNotFoundError:
+        return set()  # first boot: nothing adopted yet
+    try:
+        adopted = json.loads(content)
+    except ValueError as error:
+        msg = (
+            f"The pool adoption registry {registry} is not valid JSON. It guards against "
+            "writing into unmounted pool directories, so it must not be ignored: restore it "
+            "from backup or rebuild it as a JSON list of the adopted pool paths."
+        )
+        raise StoragePoolConfigError(msg) from error
+    if not isinstance(adopted, list):
+        msg = (
+            f"The pool adoption registry {registry} must contain a JSON list of pool paths, "
+            f"not {type(adopted).__name__}"
+        )
+        raise StoragePoolConfigError(msg)
+    return set(adopted)
 
 
 def _record_adopted(path: Path) -> None:
     adopted = _load_adopted()
     adopted.add(str(path))
-    _adoption_registry_path().write_text(json.dumps(sorted(adopted)) + "\n")
+    registry = _adoption_registry_path()
+    tmp_path = registry.with_name(registry.name + ".tmp")
+    tmp_path.write_text(json.dumps(sorted(adopted)) + "\n")
+    os.replace(tmp_path, registry)
 
 
 def _adopt_pool(path: Path, media_class: MediaClass) -> None:
@@ -210,6 +234,16 @@ def setup_pools(sys_root: Path = Path("/sys")) -> list[StoragePool]:
         _adopt_pool(path, media_class)
         pools.append(StoragePool(path=path, media_class=media_class, index=position))
 
+    orphaned = _load_adopted() - {str(pool.path) for pool in pools}
+    if orphaned:
+        msg = (
+            f"Pool(s) {', '.join(sorted(orphaned))} were adopted as volume pools but are no longer "
+            "configured; they hold (or held) VM volumes, so dropping them from VOLUME_POOLS would "
+            "silently orphan those volumes. To really remove a pool: migrate its volumes off, then "
+            f"remove its entry from {_adoption_registry_path()}."
+        )
+        raise StoragePoolConfigError(msg)
+
     _pools = pools
     return pools
 
@@ -236,17 +270,17 @@ def _pool_free_bytes(pool: StoragePool) -> int | None:
         return None
 
 
-def select_pool(size_mib: int) -> StoragePool:
-    """The eligible pool with the most free bytes that fits ``size_mib``.
+def _select_from(candidates: list[StoragePool], size_mib: int) -> StoragePool:
+    """The eligible candidate with the most free bytes that fits ``size_mib``.
 
-    Ties break on the lowest pool index (dict iteration is stable and pools
-    are scanned in index order, so the first max wins). Unreachable pools are
-    skipped: a dead disk stops receiving placements without failing the agent.
+    Ties break on the lowest pool index (candidates are scanned in index
+    order, so the first max wins). Unreachable pools are skipped: a dead disk
+    stops receiving placements without failing the agent.
     """
     required_bytes = size_mib * 1024 * 1024
     best: StoragePool | None = None
     best_free = -1
-    for pool in get_pools():
+    for pool in candidates:
         if not pool.vm_eligible:
             continue
         free = _pool_free_bytes(pool)
@@ -264,6 +298,11 @@ def select_pool(size_mib: int) -> StoragePool:
     return best
 
 
+def select_pool(size_mib: int) -> StoragePool:
+    """The eligible pool with the most free bytes that fits ``size_mib``."""
+    return _select_from(get_pools(), size_mib)
+
+
 def find_existing_volume(namespace: str, filename: str) -> Path | None:
     """The first ``{pool}/{namespace}/{filename}`` that exists, in pool order."""
     matches = [pool.path / namespace / filename for pool in get_pools() if (pool.path / namespace / filename).is_file()]
@@ -274,14 +313,32 @@ def find_existing_volume(namespace: str, filename: str) -> Path | None:
     return matches[0]
 
 
-def volume_path_for(namespace: str, filename: str, size_mib: int) -> Path:
+def volume_path_for(namespace: str, filename: str, size_mib: int, *, pool0_only: bool = False) -> Path:
     """The host path for a volume: its existing file when one pool already
     holds it (sticky), else a fresh placement on the best pool. The namespace
-    directory is created; the volume file itself is not."""
+    directory is created; the volume file itself is not.
+
+    ``pool0_only`` pins fresh placements to pool 0. Firecracker's jailer
+    hardlinks drive files into its chroot and silently *copies* across
+    filesystems, so a writable Firecracker volume off pool 0 would lose every
+    guest write to the chroot copy. Lookup still scans all pools (a legacy
+    volume must keep booting), but a hit off pool 0 logs an error.
+    """
+    pool0 = get_pools()[0]
     existing = find_existing_volume(namespace, filename)
     if existing is not None:
+        if pool0_only and existing.parent.parent != pool0.path:
+            logger.error(
+                "Writable Firecracker volume %s/%s lives on pool %s, not on pool 0 (%s). The jailer "
+                "hardlink turns into a copy across filesystems, so guest writes to this volume will "
+                "be LOST when the VM stops. Move the file to pool 0 to persist writes.",
+                namespace,
+                filename,
+                existing.parent.parent,
+                pool0.path,
+            )
         return existing
-    pool = select_pool(size_mib)
+    pool = _select_from([pool0], size_mib) if pool0_only else select_pool(size_mib)
     parent = pool.path / namespace
     parent.mkdir(parents=True, exist_ok=True)
     return parent / filename

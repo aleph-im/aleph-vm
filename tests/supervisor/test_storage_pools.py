@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil as shutil_module
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -16,7 +18,9 @@ import aleph.vm.storage as storage_module
 import aleph.vm.storage_pools as storage_pools_module
 from aleph.vm.agent.migration.reaper import reap_orphan_migration_files
 from aleph.vm.agent.migration.runner import _collect_export_disks
+from aleph.vm.agent.vm.downloader import ProgramDownloader, QemuDownloader
 from aleph.vm.conf import settings
+from aleph.vm.host_volumes import host_volumes_from_message
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.storage_pools import (
     POOL_MARKER_NAME,
@@ -226,6 +230,64 @@ class TestSetupPools:
         registry = json.loads((Path(settings.EXECUTION_ROOT) / "volume-pools.json").read_text())
         assert str(extra) in registry
 
+    def test_dropping_an_adopted_pool_from_config_is_a_hard_error(self, pool_settings, monkeypatch):
+        """A pool that holds (or held) VM volumes must not silently vanish
+        from the active set when its VOLUME_POOLS entry is removed."""
+        sys_root = _fake_ssd_sysfs(pool_settings)
+        extra = pool_settings / "mnt" / "nvme1"
+        extra.mkdir(parents=True)
+        monkeypatch.setattr(settings, "VOLUME_POOLS", [f"{extra}=nvme"])
+        setup_pools(sys_root=sys_root)
+        reset_pools()
+        monkeypatch.setattr(settings, "VOLUME_POOLS", [])
+        with pytest.raises(StoragePoolConfigError, match=re.escape(str(extra))):
+            setup_pools(sys_root=sys_root)
+
+    @pytest.mark.parametrize("entry", ["=ssd", "relative/path=ssd"])
+    def test_empty_or_relative_pool_path_is_a_hard_error(self, pool_settings, monkeypatch, entry):
+        sys_root = _fake_ssd_sysfs(pool_settings)
+        monkeypatch.setattr(settings, "VOLUME_POOLS", [entry])
+        with pytest.raises(StoragePoolConfigError, match="absolute"):
+            setup_pools(sys_root=sys_root)
+
+
+class TestAdoptionRegistry:
+    def test_corrupt_registry_json_is_a_hard_error(self, pool_settings):
+        (Path(settings.EXECUTION_ROOT) / "volume-pools.json").write_text("{not json")
+        with pytest.raises(StoragePoolConfigError, match="volume-pools.json"):
+            setup_pools(sys_root=_fake_ssd_sysfs(pool_settings))
+
+    def test_non_list_registry_json_is_a_hard_error(self, pool_settings):
+        (Path(settings.EXECUTION_ROOT) / "volume-pools.json").write_text('{"pool": "/mnt/nvme1"}')
+        with pytest.raises(StoragePoolConfigError, match="volume-pools.json"):
+            setup_pools(sys_root=_fake_ssd_sysfs(pool_settings))
+
+    def test_missing_registry_is_first_boot(self, pool_settings):
+        assert not (Path(settings.EXECUTION_ROOT) / "volume-pools.json").exists()
+        setup_pools(sys_root=_fake_ssd_sysfs(pool_settings))  # must not raise
+
+    def test_record_adopted_writes_atomically(self, pool_settings, monkeypatch):
+        """The registry is written via a temp file + os.replace so a crash
+        mid-write cannot leave a truncated (corrupt) registry behind."""
+        sys_root = _fake_ssd_sysfs(pool_settings)
+        extra = pool_settings / "mnt" / "nvme1"
+        extra.mkdir(parents=True)
+        monkeypatch.setattr(settings, "VOLUME_POOLS", [f"{extra}=nvme"])
+
+        registry = Path(settings.EXECUTION_ROOT) / "volume-pools.json"
+        replaced: list[tuple[str, str]] = []
+        real_replace = storage_pools_module.os.replace
+
+        def spying_replace(src, dst, *args, **kwargs):
+            replaced.append((str(src), str(dst)))
+            return real_replace(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(storage_pools_module.os, "replace", spying_replace)
+        setup_pools(sys_root=sys_root)
+        assert any(dst == str(registry) for _src, dst in replaced)
+        assert not Path(str(registry) + ".tmp").exists()
+        assert str(extra) in json.loads(registry.read_text())
+
 
 class TestGetPools:
     def test_get_pools_without_setup_falls_back_to_pool_zero(self, pool_settings):  # noqa: ARG002 (pool_settings is a fixture)
@@ -335,6 +397,44 @@ class TestLookup:
         assert path.parent.is_dir()
         assert not path.exists()
 
+    def test_pool0_only_placement_ignores_freer_extra_pools(self, three_pools, monkeypatch):
+        """Firecracker writable volumes: the jailer hardlink-copies across
+        filesystems, so placement must stay on pool 0 even when an extra pool
+        has more free space."""
+        _fake_disk_usage(
+            monkeypatch,
+            {three_pools[0].path: 10 * 1024**3, three_pools[1].path: 50 * 1024**3, three_pools[2].path: 30 * 1024**3},
+        )
+        path = volume_path_for("vmhash", "vol.ext4", size_mib=1024, pool0_only=True)
+        assert path == three_pools[0].path / "vmhash" / "vol.ext4"
+
+    def test_pool0_only_raises_when_pool0_cannot_fit(self, three_pools, monkeypatch):
+        # An extra pool could fit the volume, but it must not be used.
+        _fake_disk_usage(
+            monkeypatch,
+            {three_pools[0].path: 1 * 1024**3, three_pools[1].path: 50 * 1024**3, three_pools[2].path: 30 * 1024**3},
+        )
+        with pytest.raises(InsufficientResourcesError):
+            volume_path_for("vmhash", "vol.ext4", size_mib=10 * 1024, pool0_only=True)
+
+    def test_pool0_only_sticky_reuse_off_pool0_logs_an_error(self, three_pools, caplog):
+        """A legacy volume already living on an extra pool must still boot
+        (returning its path), but the lost-writes hazard is logged loudly."""
+        (three_pools[2].path / "vmhash").mkdir()
+        (three_pools[2].path / "vmhash" / "vol.ext4").touch()
+        with caplog.at_level(logging.ERROR, logger="aleph.vm.storage_pools"):
+            path = volume_path_for("vmhash", "vol.ext4", size_mib=1024, pool0_only=True)
+        assert path == three_pools[2].path / "vmhash" / "vol.ext4"
+        assert any("lost" in record.message.lower() for record in caplog.records)
+
+    def test_pool0_only_sticky_reuse_on_pool0_is_silent(self, three_pools, caplog):
+        (three_pools[0].path / "vmhash").mkdir()
+        (three_pools[0].path / "vmhash" / "vol.ext4").touch()
+        with caplog.at_level(logging.ERROR, logger="aleph.vm.storage_pools"):
+            path = volume_path_for("vmhash", "vol.ext4", size_mib=1024, pool0_only=True)
+        assert path == three_pools[0].path / "vmhash" / "vol.ext4"
+        assert not caplog.records
+
     def test_iter_namespace_dirs(self, three_pools):
         (three_pools[0].path / "vm-a").mkdir()
         (three_pools[1].path / "vm-a").mkdir()
@@ -414,6 +514,86 @@ class TestStorageWiring:
         mocker.patch.object(storage_module, "create_ext4", new_callable=AsyncMock)
         path = await storage_module.get_volume_path(_persistent_volume(), namespace="vmhash")
         assert path == existing / "data.ext4"
+
+
+class TestFirecrackerPool0Wiring:
+    """Firecracker writable volumes must stay on pool 0 (the jailer
+    hardlink-copies drive files across filesystems, losing guest writes)."""
+
+    @pytest.mark.asyncio
+    async def test_get_volume_path_pool0_only_places_ext4_on_pool0(self, three_pools, monkeypatch, mocker):
+        _fake_disk_usage(
+            monkeypatch,
+            {three_pools[0].path: 10 * 1024**3, three_pools[1].path: 50 * 1024**3, three_pools[2].path: 2 * 1024**3},
+        )
+        create_ext4 = mocker.patch.object(storage_module, "create_ext4", new_callable=AsyncMock)
+        path = await storage_module.get_volume_path(_persistent_volume(), namespace="vmhash", pool0_only=True)
+        assert path == three_pools[0].path / "vmhash" / "data.ext4"
+        create_ext4.assert_awaited_once_with(path, 1024)
+
+    @pytest.mark.asyncio
+    async def test_host_volumes_from_message_threads_pool0_only(self, mocker):
+        get_path = mocker.patch(
+            "aleph.vm.host_volumes.get_volume_path", new_callable=AsyncMock, return_value=Path("/pool0/vm/data.ext4")
+        )
+        message_content = SimpleNamespace(volumes=[_persistent_volume()])
+        await host_volumes_from_message(message_content, "vmhash", pool0_only=True)
+        assert get_path.await_args.kwargs["pool0_only"] is True
+
+    @pytest.mark.asyncio
+    async def test_program_downloader_pins_volumes_to_pool0(self, mocker):
+        resolver = mocker.patch(
+            "aleph.vm.agent.vm.downloader.host_volumes_from_message", new_callable=AsyncMock, return_value=[]
+        )
+        message_content = SimpleNamespace(
+            volumes=[], code=SimpleNamespace(encoding="zip", entrypoint="main:app", interface=None)
+        )
+        downloader = ProgramDownloader(message_content, "vmhash")
+        await downloader.download_volumes()
+        assert resolver.await_args.kwargs["pool0_only"] is True
+
+    @pytest.mark.asyncio
+    async def test_qemu_downloader_keeps_all_pools(self, mocker):
+        resolver = mocker.patch(
+            "aleph.vm.agent.vm.downloader.host_volumes_from_message", new_callable=AsyncMock, return_value=[]
+        )
+        downloader = QemuDownloader(SimpleNamespace(volumes=[]), "vmhash")
+        await downloader.download_volumes()
+        assert resolver.await_args.kwargs["pool0_only"] is False
+
+
+class TestDaemonStartup:
+    """The standalone Python supervisor daemon must run setup_pools() so its
+    capacity accounting sees every configured pool (and misconfigurations
+    abort startup instead of degrading silently)."""
+
+    @pytest.fixture()
+    def daemon_main(self, monkeypatch, tmp_path):
+        from aleph.vm.supervisor import daemon
+
+        fake_settings = SimpleNamespace(
+            setup=lambda: None,
+            check=lambda: None,
+            SUPERVISOR_GRPC_SOCKET=str(tmp_path / "supervisor.sock"),
+        )
+        monkeypatch.setattr(daemon, "settings", fake_settings)
+        monkeypatch.setattr(daemon.asyncio, "run", lambda coro: coro.close())
+        return daemon
+
+    def test_daemon_main_runs_setup_pools(self, daemon_main, monkeypatch):
+        calls: list[bool] = []
+        monkeypatch.setattr(storage_pools_module, "setup_pools", lambda: calls.append(True))
+        assert daemon_main.main([]) == 0
+        assert calls == [True]
+
+    def test_daemon_main_aborts_on_pool_config_error(self, daemon_main, monkeypatch):
+        def broken_setup_pools():
+            msg = "pool misconfigured"
+            raise StoragePoolConfigError(msg)
+
+        monkeypatch.setattr(storage_pools_module, "setup_pools", broken_setup_pools)
+        with pytest.raises(StoragePoolConfigError):
+            daemon_main.main([])
 
 
 class TestMigrationPools:

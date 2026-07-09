@@ -431,7 +431,7 @@ async def get_existing_file(ref: str) -> Path:
     return cache_path
 
 
-async def get_volume_path(volume: MachineVolume, namespace: str) -> Path:
+async def get_volume_path(volume: MachineVolume, namespace: str, *, pool0_only: bool = False) -> Path:
     if isinstance(volume, ImmutableVolume):
         ref = volume.ref
         return await get_existing_file(ref)
@@ -450,7 +450,7 @@ async def get_volume_path(volume: MachineVolume, namespace: str) -> Path:
             # create_volume_file, which is pool-aware.
             return await create_devmapper(volume, namespace)
         else:
-            volume_path = volume_path_for(namespace, f"{volume_name}.ext4", volume.size_mib)
+            volume_path = volume_path_for(namespace, f"{volume_name}.ext4", volume.size_mib, pool0_only=pool0_only)
             await create_ext4(volume_path, volume.size_mib)
             return volume_path
     else:
