@@ -1,0 +1,34 @@
+#!/bin/sh
+# Per-VM controller implementation dispatch (phase 3 aleph-cvm backport,
+# implementation plan 2026-07-07, task A3).
+#
+# aleph-vm-controller@{hash}.service execs this script; the implementation
+# is selected by ALEPH_VM_SUPERVISOR_IMPL from /etc/aleph-vm/supervisor.env
+# (loaded by the unit's EnvironmentFile, the same file the supervisor daemon
+# reads). One env flag switches BOTH the daemon and the controller, so a node
+# never runs the Rust daemon with the Python controller or vice versa.
+#
+# The deb ships both controllers; cutover is a one-line env change, not a
+# packaging event. "$@" carries the --config=... argument through unchanged.
+set -eu
+
+# Target selection is overridable via environment purely so the dispatch can
+# be tested without an /opt/aleph-vm install (the deb never sets these). The
+# defaults are the production paths and MUST stay byte-identical: with the
+# vars unset the exec lines below are exactly what shipped before this seam.
+: "${ALEPH_VM_CONTROLLER_BIN:=/opt/aleph-vm/bin/aleph-vm-controller}"
+: "${ALEPH_VM_CONTROLLER_PYTHON:=/usr/bin/python3}"
+
+case "${ALEPH_VM_SUPERVISOR_IMPL:-python}" in
+  rust)
+    exec "$ALEPH_VM_CONTROLLER_BIN" "$@"
+    ;;
+  python)
+    exec "$ALEPH_VM_CONTROLLER_PYTHON" -m aleph.vm.supervisor.controllers "$@"
+    ;;
+  *)
+    # An operator typo must not brick the node: log and run the default.
+    echo "controller-launcher: unknown ALEPH_VM_SUPERVISOR_IMPL='${ALEPH_VM_SUPERVISOR_IMPL}', falling back to python" >&2
+    exec "$ALEPH_VM_CONTROLLER_PYTHON" -m aleph.vm.supervisor.controllers "$@"
+    ;;
+esac
