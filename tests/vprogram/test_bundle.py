@@ -5,9 +5,17 @@ import tarfile
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
-from aleph.vm.vprogram.bundle import BUNDLE_INFO_NAME, BUNDLE_NAME, BundleInfo, build_bundle
-from aleph.vm.vprogram.manifest import SourceInfo
+from aleph.vm.vprogram.bundle import (
+    BUNDLE_INFO_NAME,
+    BUNDLE_NAME,
+    BundleInfo,
+    build_bundle,
+    make_manifest,
+    verify_bundle_info,
+)
+from aleph.vm.vprogram.manifest import RuntimeManifest, SourceInfo
 
 ROOTHASH = "cb121a317be7dc7969dd633ca9b6c3718ffe9ea6715b64e0e35a871d484b56b8"
 MEASUREMENT = "de" * 48
@@ -97,3 +105,49 @@ def test_malformed_roothash_is_an_error(image_dir: Path, tmp_path: Path) -> None
     (image_dir / "rootfs.ext4.roothash").write_text("not a hash\n")
     with pytest.raises(ValueError, match="roothash"):
         build_bundle(image_dir=image_dir, out_dir=_out(tmp_path, "out"), source_epoch=EPOCH, source=SOURCE)
+
+
+BUNDLE_REF = "87287e4a5c8d7554a50f982cd681b64b2600c0bbb1c0b1e618465e022e01b977"
+
+
+def test_make_manifest_from_bundle_info(image_dir: Path, tmp_path: Path) -> None:
+    out = _out(tmp_path, "out")
+    info = build_bundle(image_dir=image_dir, out_dir=out, source_epoch=EPOCH, source=SOURCE)
+    manifest = make_manifest(info=info, bundle_ref=BUNDLE_REF, name="aleph-snp-attest", runtime_version="2026.07.08")
+    # The result re-validates from its own canonical JSON.
+    reparsed = RuntimeManifest.model_validate_json(manifest.to_canonical_json())
+    assert reparsed == manifest
+    assert manifest.bundle.ref == BUNDLE_REF
+    assert manifest.bundle.sha256 == info.sha256
+    assert manifest.bundle.size == info.size
+    assert manifest.bundle.members == info.members
+    assert manifest.boot.platform_roothash == info.platform_roothash
+    expected_cmdline = "console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash}"
+    assert manifest.boot.cmdline_template == expected_cmdline
+    assert manifest.boot.cpu_models == ["EPYC-v4"]
+    assert manifest.attestation[0].protocol == "aleph.ra-tls"
+    assert manifest.attestation[0].transport.port == 8443
+    assert manifest.workload.contract == "aleph.builtin/1"
+    assert manifest.workload.upstream_port == 8080
+    assert manifest.source == SOURCE
+
+
+def test_make_manifest_rejects_bad_ref(image_dir: Path, tmp_path: Path) -> None:
+    info = build_bundle(image_dir=image_dir, out_dir=_out(tmp_path, "out"), source_epoch=EPOCH, source=SOURCE)
+    with pytest.raises(ValidationError):
+        make_manifest(info=info, bundle_ref="not-a-hash", name="x", runtime_version="1")
+
+
+def test_verify_bundle_info_accepts_untampered(image_dir: Path, tmp_path: Path) -> None:
+    out = _out(tmp_path, "out")
+    info = build_bundle(image_dir=image_dir, out_dir=out, source_epoch=EPOCH, source=SOURCE)
+    verify_bundle_info(info, out / BUNDLE_NAME)  # must not raise
+
+
+def test_verify_bundle_info_rejects_tampered(image_dir: Path, tmp_path: Path) -> None:
+    out = _out(tmp_path, "out")
+    info = build_bundle(image_dir=image_dir, out_dir=out, source_epoch=EPOCH, source=SOURCE)
+    tar_path = out / BUNDLE_NAME
+    tar_path.write_bytes(tar_path.read_bytes() + b"x")
+    with pytest.raises(ValueError, match="does not match"):
+        verify_bundle_info(info, tar_path)

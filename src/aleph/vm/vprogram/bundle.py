@@ -20,9 +20,15 @@ from pydantic import Field
 
 from aleph.vm.vprogram.manifest import (
     SHA256_HEX_PATTERN,
+    AttestationProtocol,
+    AttestationTransport,
+    BootSpec,
     BundleMembers,
+    RuntimeBundle,
+    RuntimeManifest,
     SourceInfo,
     StrictModel,
+    WorkloadSpec,
 )
 
 BUNDLE_NAME = "snp-image.tar.gz"
@@ -107,3 +113,50 @@ def build_bundle(image_dir: Path, out_dir: Path, source_epoch: int, source: Sour
     info_path = out_dir / BUNDLE_INFO_NAME
     info_path.write_text(json.dumps(info.model_dump(mode="json"), indent=2, sort_keys=True) + "\n")
     return info
+
+
+# Fixed format-version-1 values describing what the current image implements
+# (nix/init.sh hardcodes the agent on tcp/8443 proxying 127.0.0.1:8080, and
+# its init parses only roothash=). Changing these is a runtime/format
+# evolution, not a CLI flag.
+CMDLINE_TEMPLATE_V1 = "console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash}"
+DEFAULT_CPU_MODELS = ["EPYC-v4"]
+DEFAULT_ATTESTATION = [
+    AttestationProtocol(protocol="aleph.ra-tls", version="1", transport=AttestationTransport(type="tcp", port=8443))
+]
+DEFAULT_WORKLOAD = WorkloadSpec(contract="aleph.builtin/1", upstream_port=8080)
+
+
+def make_manifest(info: BundleInfo, bundle_ref: str, name: str, runtime_version: str) -> RuntimeManifest:
+    """Build the manifest for an uploaded bundle. Validation is the
+    constructor: any inconsistency raises pydantic ValidationError."""
+    return RuntimeManifest(
+        format="aleph-vprogram-runtime",
+        format_version=1,
+        name=name,
+        version=runtime_version,
+        platform="sev_snp",
+        bundle=RuntimeBundle(ref=bundle_ref, sha256=info.sha256, size=info.size, members=info.members),
+        boot=BootSpec(
+            method="qemu-direct-kernel",
+            kernel_hashes=True,
+            cpu_models=list(DEFAULT_CPU_MODELS),
+            platform_roothash=info.platform_roothash,
+            cmdline_template=CMDLINE_TEMPLATE_V1,
+        ),
+        attestation=list(DEFAULT_ATTESTATION),
+        workload=DEFAULT_WORKLOAD,
+        source=info.source,
+    )
+
+
+def verify_bundle_info(info: BundleInfo, tar_path: Path) -> None:
+    """Cross-check a bundle-info sidecar against the tarball on disk."""
+    data = tar_path.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != info.sha256 or len(data) != info.size:
+        msg = (
+            f"bundle {tar_path} does not match bundle-info: "
+            f"sha256 {digest} != {info.sha256} or size {len(data)} != {info.size}"
+        )
+        raise ValueError(msg)
