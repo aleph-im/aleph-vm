@@ -15,6 +15,7 @@ from aleph_message.models.execution.volume import PersistentVolume, VolumePersis
 import aleph.vm.storage as storage_module
 import aleph.vm.storage_pools as storage_pools_module
 from aleph.vm.agent.migration.reaper import reap_orphan_migration_files
+from aleph.vm.agent.migration.runner import _collect_export_disks
 from aleph.vm.conf import settings
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.storage_pools import (
@@ -429,3 +430,20 @@ class TestMigrationPools:
         assert not aborted.exists()
         assert not (exported / "rootfs.qcow2.export.qcow2").exists()
         assert exported.exists()
+
+    def test_export_collects_each_volume_from_one_pool_only(self, three_pools, caplog):
+        """A duplicated basename (e.g. a preserved orphan from a failed import
+        plus a retried staging in another pool) must export exactly one copy:
+        the lowest-index pool's, matching the boot-time volume lookup rule."""
+        for pool in (three_pools[1], three_pools[2]):
+            namespace = pool.path / "vm-x"
+            namespace.mkdir()
+            (namespace / "rootfs.qcow2").touch()
+        (three_pools[2].path / "vm-x" / "extra.qcow2").touch()
+        with caplog.at_level("WARNING"):
+            disks = _collect_export_disks("vm-x")
+        assert disks == [
+            three_pools[1].path / "vm-x" / "rootfs.qcow2",
+            three_pools[2].path / "vm-x" / "extra.qcow2",
+        ]
+        assert any("multiple pools" in record.message for record in caplog.records)

@@ -48,6 +48,32 @@ EXPORT_TTL_SECONDS = 1800  # 30 minutes — matches today's behaviour
 IMPORT_TTL_SECONDS = 1800
 
 
+def _collect_export_disks(vm_hash: str) -> list[Path]:
+    """The qcow2 files to export for a VM, one per basename across all pools.
+
+    A basename can legitimately appear in several pools (e.g. a complete
+    orphan preserved by the reaper after a failed import, plus a retried
+    staging in another pool). The boot-time volume lookup resolves such
+    duplicates to the lowest-index pool's copy, so export must ship exactly
+    that copy: duplicates from higher-index pools are skipped with a warning.
+    """
+    disks: list[Path] = []
+    seen_names: set[str] = set()
+    for volumes_dir in iter_namespace_dirs(vm_hash):
+        for qcow2_file in sorted(volumes_dir.glob("*.qcow2")):
+            if qcow2_file.name in seen_names:
+                logger.warning(
+                    "Volume %s for %s found in multiple pools; exporting the copy from %s",
+                    qcow2_file.name,
+                    vm_hash,
+                    next(disk.parent for disk in disks if disk.name == qcow2_file.name),
+                )
+                continue
+            seen_names.add(qcow2_file.name)
+            disks.append(qcow2_file)
+    return disks
+
+
 async def _export_ttl_cleanup(job: ExportJob, timeout: int) -> None:
     """Background task: delete export files and forget the job after TTL."""
     try:
@@ -110,26 +136,26 @@ async def run_export(
             # the import runner stages into.
             await supervisor.stop_vm(job.vm_hash)
             # A VM's volumes may span pools (each volume is placed
-            # independently); export from every namespace dir.
+            # independently); export from every namespace dir, one copy per
+            # basename (lowest-index pool wins, like the boot-time lookup).
             volume_dirs = list(iter_namespace_dirs(str(job.vm_hash)))
             job.volumes_dir = volume_dirs[0] if volume_dirs else None
 
             disk_files: list[DiskFileInfo] = []
 
-            for volumes_dir in volume_dirs:
-                for qcow2_file in sorted(volumes_dir.glob("*.qcow2")):
-                    export_path = qcow2_file.with_suffix(".qcow2.export.qcow2")
-                    await compress_disk(qcow2_file, export_path)
-                    export_paths.append(export_path)
-                    sha256 = await compute_sha256(export_path)
-                    disk_files.append(
-                        DiskFileInfo(
-                            name=qcow2_file.name,
-                            size_bytes=export_path.stat().st_size,
-                            sha256=sha256,
-                            download_path=f"/control/machine/{job.vm_hash}/migration/disk/{qcow2_file.name}",
-                        )
+            for qcow2_file in _collect_export_disks(str(job.vm_hash)):
+                export_path = qcow2_file.with_suffix(".qcow2.export.qcow2")
+                await compress_disk(qcow2_file, export_path)
+                export_paths.append(export_path)
+                sha256 = await compute_sha256(export_path)
+                disk_files.append(
+                    DiskFileInfo(
+                        name=qcow2_file.name,
+                        size_bytes=export_path.stat().st_size,
+                        sha256=sha256,
+                        download_path=f"/control/machine/{job.vm_hash}/migration/disk/{qcow2_file.name}",
                     )
+                )
 
             if not disk_files:
                 msg = "No disk files found to export"
