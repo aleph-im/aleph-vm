@@ -31,6 +31,7 @@ from aleph_message.models.execution.volume import (
 )
 
 from aleph.vm.conf import settings
+from aleph.vm.storage_pools import volume_path_for
 from aleph.vm.utils import fix_message_validation, run_in_subprocess
 
 logger = logging.getLogger(__name__)
@@ -325,11 +326,9 @@ async def create_ext4(path: Path, size_mib: int) -> bool:
 async def create_volume_file(volume: PersistentVolume | RootfsVolume, namespace: str) -> Path:
     volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
     # Assume that the main filesystem format is BTRFS
-    path = settings.PERSISTENT_VOLUMES_DIR / namespace / f"{volume_name}.btrfs"
+    path = volume_path_for(namespace, f"{volume_name}.btrfs", volume.size_mib)
     if not path.is_file():
         logger.debug(f"Creating {volume.size_mib}MB volume")
-        # Ensure that the parent directory exists
-        path.parent.mkdir(exist_ok=True)
         # Create an empty file the right size
         await run_in_subprocess(["fallocate", "-l", f"{volume.size_mib}M", str(path)])
         await chown_to_jailman(path)
@@ -446,11 +445,12 @@ async def get_volume_path(volume: MachineVolume, namespace: str) -> Path:
             # Sanitize volume names
             logger.debug(f"Invalid values for volume name: {volume_name!r} detected, sanitizing")
             volume_name = re.sub(r"[^\w\-_]", "_", volume_name)
-        (Path(settings.PERSISTENT_VOLUMES_DIR) / namespace).mkdir(exist_ok=True)
         if volume.parent:
+            # create_devmapper resolves its volume file through
+            # create_volume_file, which is pool-aware.
             return await create_devmapper(volume, namespace)
         else:
-            volume_path = Path(settings.PERSISTENT_VOLUMES_DIR) / namespace / f"{volume_name}.ext4"
+            volume_path = volume_path_for(namespace, f"{volume_name}.ext4", volume.size_mib)
             await create_ext4(volume_path, volume.size_mib)
             return volume_path
     else:

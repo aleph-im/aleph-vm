@@ -7,9 +7,12 @@ import json
 import logging
 import shutil as shutil_module
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
+from aleph_message.models.execution.volume import PersistentVolume, VolumePersistence
 
+import aleph.vm.storage as storage_module
 import aleph.vm.storage_pools as storage_pools_module
 from aleph.vm.conf import settings
 from aleph.vm.resources import InsufficientResourcesError
@@ -377,3 +380,35 @@ class TestPooledAccounting:
             {three_pools[0].path: 10 * 1024**3, three_pools[1].path: 50 * 1024**3, three_pools[2].path: 30 * 1024**3},
         )
         assert roomiest_pool_free_bytes() == 50 * 1024**3
+
+
+def _persistent_volume(name: str = "data", size_mib: int = 1024) -> PersistentVolume:
+    return PersistentVolume(
+        mount=f"/{name}",
+        name=name,
+        persistence=VolumePersistence.host,
+        size_mib=size_mib,
+    )
+
+
+class TestStorageWiring:
+    @pytest.mark.asyncio
+    async def test_get_volume_path_places_a_new_ext4_on_the_best_pool(self, three_pools, monkeypatch, mocker):
+        _fake_disk_usage(
+            monkeypatch,
+            {three_pools[0].path: 1 * 1024**3, three_pools[1].path: 50 * 1024**3, three_pools[2].path: 2 * 1024**3},
+        )
+        create_ext4 = mocker.patch.object(storage_module, "create_ext4", new_callable=AsyncMock)
+        path = await storage_module.get_volume_path(_persistent_volume(), namespace="vmhash")
+        assert path == three_pools[1].path / "vmhash" / "data.ext4"
+        create_ext4.assert_awaited_once_with(path, 1024)
+
+    @pytest.mark.asyncio
+    async def test_get_volume_path_reuses_an_existing_volume_wherever_it_lives(self, three_pools, monkeypatch, mocker):
+        _fake_disk_usage(monkeypatch, {pool.path: 50 * 1024**3 for pool in three_pools})
+        existing = three_pools[2].path / "vmhash"
+        existing.mkdir()
+        (existing / "data.ext4").touch()
+        mocker.patch.object(storage_module, "create_ext4", new_callable=AsyncMock)
+        path = await storage_module.get_volume_path(_persistent_volume(), namespace="vmhash")
+        assert path == existing / "data.ext4"
