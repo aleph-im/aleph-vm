@@ -1,6 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["crates/supervisor-proto", "crates/supervisor-daemon"]
+members = [
+    "crates/supervisor-proto",
+    "crates/supervisor-daemon",
+    "crates/supervisor-controller",
+]
 
 [workspace.package]
 edition = "2024"
@@ -12,6 +16,10 @@ supervisor-proto = { path = "crates/supervisor-proto" }
 
 clap = { version = "4", features = ["derive"] }
 libc = "0.2"
+# type-safe memory-size newtypes (aleph-rs). MiB is a u64 newtype that
+# deserializes only from a bare integer, so serde itself rejects a
+# float/negative/string mem_size_mb.
+memsizes = { version = "1", features = ["serde"] }
 prost = "0.13"
 # msgpack shape validation only (Python msgpack.unpackb parity); validated
 # payloads are still forwarded as the client's raw bytes, never re-encoded.
@@ -28,7 +36,7 @@ sha2 = "0.10"
 tar = "0.4"
 thiserror = "2"
 zbus = "5"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "fs", "sync"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "fs", "sync", "process", "time"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tonic = "0.12"
 tonic-build = "0.12"
