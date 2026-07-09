@@ -129,7 +129,7 @@ mod tests {
     fn pooled_disk_dedups_same_filesystem_and_skips_dead_pools() {
         let root = PathBuf::from("/");
         // The same filesystem listed twice counts once...
-        let once = available_disk_bytes_pooled(&[root.clone()]);
+        let once = available_disk_bytes_pooled(std::slice::from_ref(&root));
         let twice = available_disk_bytes_pooled(&[root.clone(), PathBuf::from("/etc")]);
         // ("/" and "/etc" are usually one filesystem; when they are, the sums
         // match. Different-filesystem hosts still satisfy the >= invariant.)
