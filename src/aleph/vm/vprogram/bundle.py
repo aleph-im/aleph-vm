@@ -144,8 +144,8 @@ def make_manifest(info: BundleInfo, bundle_ref: str, name: str, runtime_version:
             platform_roothash=info.platform_roothash,
             cmdline_template=CMDLINE_TEMPLATE_V1,
         ),
-        attestation=list(DEFAULT_ATTESTATION),
-        workload=DEFAULT_WORKLOAD,
+        attestation=[protocol.model_copy(deep=True) for protocol in DEFAULT_ATTESTATION],
+        workload=DEFAULT_WORKLOAD.model_copy(deep=True),
         source=info.source,
     )
 

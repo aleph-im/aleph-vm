@@ -132,6 +132,16 @@ def test_make_manifest_from_bundle_info(image_dir: Path, tmp_path: Path) -> None
     assert manifest.source == SOURCE
 
 
+def test_make_manifest_does_not_alias_module_defaults(image_dir: Path, tmp_path: Path) -> None:
+    info = build_bundle(image_dir=image_dir, out_dir=_out(tmp_path, "out"), source_epoch=EPOCH, source=SOURCE)
+    first = make_manifest(info=info, bundle_ref=BUNDLE_REF, name="x", runtime_version="1")
+    second = make_manifest(info=info, bundle_ref=BUNDLE_REF, name="x", runtime_version="1")
+    assert first.workload == second.workload
+    assert first.workload is not second.workload
+    assert first.attestation[0] == second.attestation[0]
+    assert first.attestation[0] is not second.attestation[0]
+
+
 def test_make_manifest_rejects_bad_ref(image_dir: Path, tmp_path: Path) -> None:
     info = build_bundle(image_dir=image_dir, out_dir=_out(tmp_path, "out"), source_epoch=EPOCH, source=SOURCE)
     with pytest.raises(ValidationError):
