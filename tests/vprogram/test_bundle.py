@@ -77,6 +77,12 @@ def test_tarball_layout_and_metadata(image_dir: Path, tmp_path: Path) -> None:
     with tarfile.open(out / BUNDLE_NAME, "r:gz") as tar:
         names = tar.getnames()
         members = tar.getmembers()
+        extracted_kernel = tar.extractfile("image/bzImage")
+        assert extracted_kernel is not None
+        assert extracted_kernel.read() == b"kernel"
+        extracted_roothash = tar.extractfile("image/rootfs.ext4.roothash")
+        assert extracted_roothash is not None
+        assert extracted_roothash.read() == (ROOTHASH + "\n").encode()
     assert names == [
         "image",
         "image/OVMF.fd",

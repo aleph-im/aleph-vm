@@ -98,6 +98,8 @@ def cmd_manifest(args: argparse.Namespace) -> int:
     tar_path = args.bundle_info.parent / BUNDLE_NAME
     if tar_path.is_file():
         verify_bundle_info(info, tar_path)
+    else:
+        print(f"note: {tar_path} not found, skipping bundle cross-check")  # noqa: T201
     manifest = make_manifest(
         info=info, bundle_ref=args.bundle_ref, name=args.name, runtime_version=args.runtime_version
     )

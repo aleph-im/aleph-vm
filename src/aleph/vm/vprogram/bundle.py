@@ -4,7 +4,9 @@ bundle, plus manifest construction from the recorded build facts.
 The bundle is ONE tar.gz pinned by ONE STORE message. Determinism matters:
 independently rebuilding the same image must yield the same tarball bytes,
 so entries are sorted, ownership is zeroed, mtimes are pinned to the source
-commit timestamp and the gzip header carries no name or timestamp.
+commit timestamp and the gzip header carries no name or timestamp. The tar
+layer is fully deterministic; the compressed bytes are deterministic for a
+given Python/zlib build (zlib-ng emits different bytes at the same level).
 """
 
 from __future__ import annotations
