@@ -62,9 +62,10 @@ def _device_media_class(device_name: str, sys_root: Path) -> MediaClass | None:
     if slaves_dir.is_dir():
         slave_classes = [_device_media_class(entry.name, sys_root) for entry in slaves_dir.iterdir()]
         if slave_classes:
-            if any(slave_class is None for slave_class in slave_classes):
+            resolved_slave_classes = [slave_class for slave_class in slave_classes if slave_class is not None]
+            if len(resolved_slave_classes) != len(slave_classes):
                 return None
-            return max(slave_classes, key=lambda slave_class: slave_class.slowness)
+            return max(resolved_slave_classes, key=lambda slave_class: slave_class.slowness)
     # A partition node has no queue/; its resolved parent (the whole disk) does.
     disk_node = node.resolve()
     if not (disk_node / "queue").is_dir():
