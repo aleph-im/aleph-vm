@@ -17,6 +17,11 @@ debian-package-rust: debian-package-code
 	mkdir -p ./aleph-vm/opt/aleph-vm/bin
 	install -m 0755 ../rust/target/release/aleph-vm-supervisor ./aleph-vm/opt/aleph-vm/bin/aleph-vm-supervisor
 	install -m 0755 ./supervisor-launcher ./aleph-vm/opt/aleph-vm/bin/supervisor-launcher
+	# Per-VM controller (phase 3 task A3): the Rust controller launches the
+	# persistent QEMU process, dispatched from the same ALEPH_VM_SUPERVISOR_IMPL
+	# flag via controller-launcher. Inert until an operator flips the flag.
+	install -m 0755 ../rust/target/release/aleph-vm-controller ./aleph-vm/opt/aleph-vm/bin/aleph-vm-controller
+	install -m 0755 ./controller-launcher ./aleph-vm/opt/aleph-vm/bin/controller-launcher
 
 debian-package-code:
 	rm -fr ./aleph-vm/opt/aleph-vm
