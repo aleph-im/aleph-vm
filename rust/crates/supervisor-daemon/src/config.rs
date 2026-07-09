@@ -34,6 +34,11 @@ pub struct Settings {
     pub supervisor_grpc_socket: PathBuf,
     /// conf.py PERSISTENT_VOLUMES_DIR, default {EXECUTION_ROOT}/volumes/persistent.
     pub persistent_volumes_dir: PathBuf,
+    /// conf.py VOLUME_POOLS, default []: extra VM volume pool directories.
+    /// JSON list like the other pydantic list settings; entries may carry a
+    /// "=class" suffix the daemon strips — media-class eligibility is agent
+    /// policy, the daemon only needs the paths for available-disk accounting.
+    pub volume_pools: Vec<PathBuf>,
     /// conf.py BACKUP_DIRECTORY, default {EXECUTION_ROOT}/backups (increment 5).
     pub backup_directory: PathBuf,
     /// conf.py CONFIDENTIAL_SESSION_DIRECTORY, default {EXECUTION_ROOT}/sessions
@@ -185,6 +190,23 @@ impl Settings {
             Some(path) if !path.is_empty() => PathBuf::from(path),
             _ => execution_root.join("volumes").join("persistent"),
         };
+        let volume_pools = match env.get("VOLUME_POOLS") {
+            None => Vec::new(),
+            Some(value) => serde_json::from_str::<Vec<String>>(&value)
+                .map_err(|_| DaemonError::InvalidSetting {
+                    key: format!("{ENV_PREFIX}VOLUME_POOLS"),
+                    value,
+                    expected: "a JSON list of pool directories",
+                })?
+                .into_iter()
+                .map(|entry| {
+                    let path = entry
+                        .split_once('=')
+                        .map_or(entry.as_str(), |(path, _)| path);
+                    PathBuf::from(path.trim())
+                })
+                .collect(),
+        };
         // conf.py setup(): BACKUP_DIRECTORY defaults to EXECUTION_ROOT/backups,
         // CONFIDENTIAL_SESSION_DIRECTORY to EXECUTION_ROOT/sessions, when unset
         // (or emptied, matching the empty-string-is-unset family, entry 4).
@@ -323,6 +345,7 @@ impl Settings {
             execution_root,
             supervisor_grpc_socket,
             persistent_volumes_dir,
+            volume_pools,
             backup_directory,
             confidential_session_directory,
             enable_confidential_computing,
@@ -357,6 +380,14 @@ impl Settings {
             systemd_unit_dir,
             numa_hugepages,
         })
+    }
+
+    /// Every volume pool: PERSISTENT_VOLUMES_DIR (pool 0) plus the extras,
+    /// in declaration order — the statvfs targets for available-disk.
+    pub fn all_volume_pools(&self) -> Vec<PathBuf> {
+        std::iter::once(self.persistent_volumes_dir.clone())
+            .chain(self.volume_pools.iter().cloned())
+            .collect()
     }
 }
 
@@ -542,6 +573,7 @@ mod tests {
         );
         assert!(settings.developer_ssh_keys.is_empty());
         assert!(!settings.use_developer_ssh_keys);
+        assert!(settings.volume_pools.is_empty());
     }
 
     #[test]
@@ -756,6 +788,38 @@ mod tests {
         let settings =
             Settings::from_vars(vars(&[("ALEPH_VM_NETWORK_INTERFACE", "eth0")])).unwrap();
         assert_eq!(settings.network_interface.as_deref(), Some("eth0"));
+    }
+
+    #[test]
+    fn volume_pools_parse_json_and_strip_class_suffixes() {
+        let settings = Settings::from_vars(vars(&[(
+            "ALEPH_VM_VOLUME_POOLS",
+            r#"["/mnt/nvme1/aleph", "/mnt/sata1/aleph=ssd"]"#,
+        )]))
+        .unwrap();
+        assert_eq!(
+            settings.volume_pools,
+            vec![
+                PathBuf::from("/mnt/nvme1/aleph"),
+                PathBuf::from("/mnt/sata1/aleph"),
+            ]
+        );
+        // all_volume_pools prepends pool 0 (PERSISTENT_VOLUMES_DIR).
+        assert_eq!(
+            settings.all_volume_pools()[0],
+            PathBuf::from("/var/lib/aleph/vm/volumes/persistent")
+        );
+        assert_eq!(settings.all_volume_pools().len(), 3);
+
+        // Default: no extras, all_volume_pools is pool 0 alone.
+        let settings = Settings::from_vars(vars(&[])).unwrap();
+        assert!(settings.volume_pools.is_empty());
+        assert_eq!(settings.all_volume_pools().len(), 1);
+
+        // pydantic list parsing: a non-JSON value is a startup error.
+        let error =
+            Settings::from_vars(vars(&[("ALEPH_VM_VOLUME_POOLS", "/mnt/a,/mnt/b")])).unwrap_err();
+        assert!(error.to_string().contains("VOLUME_POOLS"));
     }
 
     #[test]
