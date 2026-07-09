@@ -3,12 +3,23 @@ lookup and pooled accounting (src/aleph/vm/storage_pools.py)."""
 
 from __future__ import annotations
 
+import json
+import logging
 from pathlib import Path
 
+import pytest
+
+from aleph.vm.conf import settings
 from aleph.vm.storage_pools import (
+    POOL_MARKER_NAME,
     MediaClass,
+    StoragePool,
+    StoragePoolConfigError,
     _device_media_class,
     detect_media_class,
+    get_pools,
+    reset_pools,
+    setup_pools,
 )
 
 
@@ -82,3 +93,136 @@ class TestMediaClassDetection:
         assert MediaClass.NVME.vm_eligible
         assert MediaClass.SSD.vm_eligible
         assert not MediaClass.HDD.vm_eligible
+
+
+@pytest.fixture()
+def pool_settings(tmp_path, monkeypatch):
+    """Isolated settings roots + a clean module cache; yields the tmp root."""
+    execution_root = tmp_path / "execution"
+    default_pool = execution_root / "volumes" / "persistent"
+    default_pool.mkdir(parents=True)
+    monkeypatch.setattr(settings, "EXECUTION_ROOT", execution_root)
+    monkeypatch.setattr(settings, "PERSISTENT_VOLUMES_DIR", default_pool)
+    monkeypatch.setattr(settings, "VOLUME_POOLS", [])
+    reset_pools()
+    yield tmp_path
+    reset_pools()
+
+
+def _fake_ssd_sysfs(tmp_path: Path) -> Path:
+    """A fake /sys that classifies every real filesystem as an SSD is not
+    possible (st_dev is unknowable in advance), so pool tests use explicit
+    `=class` overrides instead of detection."""
+    sys_root = tmp_path / "sys"
+    (sys_root / "dev" / "block").mkdir(parents=True)
+    (sys_root / "class" / "block").mkdir(parents=True)
+    return sys_root
+
+
+class TestSetupPools:
+    def test_no_extra_pools_is_single_default_pool(self, pool_settings):
+        sys_root = _fake_ssd_sysfs(pool_settings)
+        pools = setup_pools(sys_root=sys_root)
+        assert len(pools) == 1
+        assert isinstance(pools[0], StoragePool)
+        assert pools[0].path == Path(settings.PERSISTENT_VOLUMES_DIR)
+        assert pools[0].index == 0
+        assert pools[0].vm_eligible
+
+    def test_default_pool_on_hdd_warns_but_stays_eligible(self, pool_settings, monkeypatch, caplog):
+        """Existing nodes with PERSISTENT_VOLUMES_DIR on a spinner must keep
+        working: pool 0 warns but is always VM-eligible."""
+        sys_root = _fake_ssd_sysfs(pool_settings)
+        monkeypatch.setattr("aleph.vm.storage_pools.detect_media_class", lambda *_args: MediaClass.HDD)
+        with caplog.at_level(logging.WARNING, logger="aleph.vm.storage_pools"):
+            pools = setup_pools(sys_root=sys_root)
+        assert pools[0].media_class is MediaClass.HDD
+        assert pools[0].vm_eligible is True
+        assert any("rotational" in record.message for record in caplog.records)
+
+    def test_extra_pool_with_override_is_adopted(self, pool_settings, monkeypatch):
+        sys_root = _fake_ssd_sysfs(pool_settings)
+        extra = pool_settings / "mnt" / "nvme1"
+        extra.mkdir(parents=True)
+        monkeypatch.setattr(settings, "VOLUME_POOLS", [f"{extra}=nvme"])
+        pools = setup_pools(sys_root=sys_root)
+        assert [pool.index for pool in pools] == [0, 1]
+        assert pools[1].path == extra
+        assert pools[1].media_class.value == "nvme"
+        # Marker written into the pool, path recorded in the registry.
+        marker = json.loads((extra / POOL_MARKER_NAME).read_text())
+        assert marker["media_class"] == "nvme"
+        registry = json.loads((Path(settings.EXECUTION_ROOT) / "volume-pools.json").read_text())
+        assert str(extra) in registry
+
+    def test_missing_pool_dir_is_a_hard_error(self, pool_settings, monkeypatch):
+        sys_root = _fake_ssd_sysfs(pool_settings)
+        monkeypatch.setattr(settings, "VOLUME_POOLS", [f"{pool_settings / 'not-mounted'}=ssd"])
+        with pytest.raises(StoragePoolConfigError, match="does not exist"):
+            setup_pools(sys_root=sys_root)
+
+    def test_hdd_pool_is_a_hard_error(self, pool_settings, monkeypatch):
+        sys_root = _fake_ssd_sysfs(pool_settings)
+        extra = pool_settings / "mnt" / "spinner"
+        extra.mkdir(parents=True)
+        monkeypatch.setattr(settings, "VOLUME_POOLS", [f"{extra}=hdd"])
+        with pytest.raises(StoragePoolConfigError, match="rotational"):
+            setup_pools(sys_root=sys_root)
+
+    def test_undetectable_class_without_override_is_a_hard_error(self, pool_settings, monkeypatch):
+        # tmp dirs sit on real filesystems the empty fake /sys cannot map.
+        sys_root = _fake_ssd_sysfs(pool_settings)
+        extra = pool_settings / "mnt" / "mystery"
+        extra.mkdir(parents=True)
+        monkeypatch.setattr(settings, "VOLUME_POOLS", [str(extra)])
+        with pytest.raises(StoragePoolConfigError, match="media class"):
+            setup_pools(sys_root=sys_root)
+
+    def test_unknown_override_class_is_a_hard_error(self, pool_settings, monkeypatch):
+        sys_root = _fake_ssd_sysfs(pool_settings)
+        extra = pool_settings / "mnt" / "x"
+        extra.mkdir(parents=True)
+        monkeypatch.setattr(settings, "VOLUME_POOLS", [f"{extra}=floppy"])
+        with pytest.raises(StoragePoolConfigError, match="media class"):
+            setup_pools(sys_root=sys_root)
+
+    def test_adopted_pool_with_missing_marker_is_a_hard_error(self, pool_settings, monkeypatch):
+        """The unmounted-disk trap: the registry remembers the adoption, the
+        marker vanished with the mount, so startup must refuse."""
+        sys_root = _fake_ssd_sysfs(pool_settings)
+        extra = pool_settings / "mnt" / "nvme1"
+        extra.mkdir(parents=True)
+        monkeypatch.setattr(settings, "VOLUME_POOLS", [f"{extra}=nvme"])
+        setup_pools(sys_root=sys_root)
+        (extra / POOL_MARKER_NAME).unlink()  # simulate the empty mountpoint
+        reset_pools()
+        with pytest.raises(StoragePoolConfigError, match="not mounted"):
+            setup_pools(sys_root=sys_root)
+
+    def test_marker_without_registry_heals_the_registry(self, pool_settings, monkeypatch):
+        """EXECUTION_ROOT restored from backup: marker present, registry lost."""
+        sys_root = _fake_ssd_sysfs(pool_settings)
+        extra = pool_settings / "mnt" / "nvme1"
+        extra.mkdir(parents=True)
+        monkeypatch.setattr(settings, "VOLUME_POOLS", [f"{extra}=nvme"])
+        setup_pools(sys_root=sys_root)
+        (Path(settings.EXECUTION_ROOT) / "volume-pools.json").unlink()
+        reset_pools()
+        setup_pools(sys_root=sys_root)  # must not raise
+        registry = json.loads((Path(settings.EXECUTION_ROOT) / "volume-pools.json").read_text())
+        assert str(extra) in registry
+
+
+class TestGetPools:
+    def test_get_pools_without_setup_falls_back_to_pool_zero(self, pool_settings):  # noqa: ARG002 (pool_settings is a fixture)
+        pools = get_pools()
+        assert len(pools) == 1
+        assert pools[0].path == Path(settings.PERSISTENT_VOLUMES_DIR)
+
+    def test_get_pools_returns_the_setup_result(self, pool_settings, monkeypatch):
+        sys_root = _fake_ssd_sysfs(pool_settings)
+        extra = pool_settings / "mnt" / "ssd1"
+        extra.mkdir(parents=True)
+        monkeypatch.setattr(settings, "VOLUME_POOLS", [f"{extra}=ssd"])
+        setup_pools(sys_root=sys_root)
+        assert [pool.path for pool in get_pools()][1] == extra
