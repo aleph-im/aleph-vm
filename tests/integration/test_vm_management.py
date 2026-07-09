@@ -7,6 +7,7 @@ import asyncio
 
 import pytest
 from conftest import (
+    assert_controller_matches_impl,
     default_route_interface,
     eventually,
     fc_program_spec,
@@ -175,6 +176,9 @@ async def test_qemu_stop_start_reboot_cycle(supervisor, daemon, ssh_keypair):
     await asyncio.sleep(0.5)
     try:
         await wait_for_tcp_banner(info.ipv4.address, 22)
+        # The persistent QEMU launch runs through the selected controller
+        # implementation (task A3: under impl=rust this is the Rust binary).
+        assert_controller_matches_impl(vm_id)
 
         stopped = await supervisor.stop_vm(vm_id)
         assert stopped.status is VmStatus.STOPPED

@@ -8,16 +8,23 @@
 # cutover is a one-line env change, not a packaging event.
 set -eu
 
+# Target selection is overridable via environment purely so the dispatch can
+# be tested without an /opt/aleph-vm install (the deb never sets these). The
+# defaults are the production paths and MUST stay byte-identical: with the
+# vars unset the exec lines below are exactly what shipped before this seam.
+: "${ALEPH_VM_SUPERVISOR_BIN:=/opt/aleph-vm/bin/aleph-vm-supervisor}"
+: "${ALEPH_VM_SUPERVISOR_PYTHON:=python3}"
+
 case "${ALEPH_VM_SUPERVISOR_IMPL:-python}" in
   rust)
-    exec /opt/aleph-vm/bin/aleph-vm-supervisor "$@"
+    exec "$ALEPH_VM_SUPERVISOR_BIN" "$@"
     ;;
   python)
-    exec python3 -m aleph.vm.supervisor "$@"
+    exec "$ALEPH_VM_SUPERVISOR_PYTHON" -m aleph.vm.supervisor "$@"
     ;;
   *)
     # An operator typo must not brick the node: log and run the default.
     echo "supervisor-launcher: unknown ALEPH_VM_SUPERVISOR_IMPL='${ALEPH_VM_SUPERVISOR_IMPL}', falling back to python" >&2
-    exec python3 -m aleph.vm.supervisor "$@"
+    exec "$ALEPH_VM_SUPERVISOR_PYTHON" -m aleph.vm.supervisor "$@"
     ;;
 esac

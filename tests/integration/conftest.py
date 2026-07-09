@@ -82,6 +82,17 @@ RUST_DAEMON_BINARY = Path(
         REPO_ROOT / "rust" / "target" / "debug" / "aleph-vm-supervisor",
     )
 )
+# The Rust per-VM controller (phase 3 task A3). The daemon starts the
+# aleph-vm-controller@{hash} template unit; under impl=rust the unit must exec
+# THIS binary (via the packaged controller-launcher in production, via the
+# test drop-in below in CI), so a persistent QEMU VM in the rust leg actually
+# exercises the Rust controller and not the python one.
+RUST_CONTROLLER_BINARY = Path(
+    os.environ.get(
+        "AVM_ITEST_RUST_CONTROLLER_BINARY",
+        REPO_ROOT / "rust" / "target" / "debug" / "aleph-vm-controller",
+    )
+)
 
 FC_KERNEL = Path(os.environ.get("AVM_ITEST_FC_KERNEL", "/opt/firecracker/vmlinux.bin"))
 FC_RUNTIME = Path(
@@ -138,12 +149,23 @@ def pytest_collection_modifyitems(config, items):
             if Path(item.fspath).parent == HERE:
                 item.add_marker(skip)
         return
-    if os.environ.get("CI") == "true" and any(Path(item.fspath).parent == HERE for item in items):
-        # In CI an all-skipped suite passes silently and hides a broken
-        # droplet image; a missing /dev/kvm or QEMU binary must FAIL the
-        # job. The Firecracker surface is mandatory on BOTH matrix legs
-        # since increment 4: a leg silently skipping the FC tests would
-        # pass while covering nothing.
+    if os.environ.get("AVM_ITEST") == "1" and any(Path(item.fspath).parent == HERE for item in items):
+        # Anti-silent-skip guard. Once we are in the integration run an
+        # all-skipped suite passes silently and hides a broken droplet image;
+        # a missing /dev/kvm or QEMU binary must FAIL the job. The Firecracker
+        # surface is mandatory on BOTH matrix legs since increment 4: a leg
+        # silently skipping the FC tests would pass while covering nothing.
+        #
+        # We gate on AVM_ITEST, NOT on CI: CI runs pytest under
+        # `sudo ... env AVM_ITEST=1 ...` (see test-using-pytest.yml), and
+        # sudo's env_reset strips CI, so a `CI == "true"` check here would be
+        # dead in the actual CI process and every persistent-QEMU test (the
+        # Rust-controller boot/re-adopt anchors included) would silently skip
+        # on a broken image while the job still reported green. AVM_ITEST is
+        # set past sudo (via `env AVM_ITEST=1`) and IS visible here, so it is
+        # the reliable "this is the integration run" signal. Non-integration
+        # runs (AVM_ITEST unset) already returned above, so their per-test
+        # skipif markers still apply and local skips remain allowed.
         problems = []
         if not HAS_KVM:
             problems.append("/dev/kvm is missing or not accessible")
@@ -159,7 +181,7 @@ def pytest_collection_modifyitems(config, items):
         if QEMU_IMAGE is None or not QEMU_IMAGE.exists():
             problems.append("the QEMU cloud image (AVM_ITEST_QEMU_IMAGE) is missing")
         if problems:
-            msg = f"CI=true but the integration prerequisites are broken: {'; '.join(problems)}"
+            msg = f"AVM_ITEST=1 but the integration prerequisites are broken: {'; '.join(problems)}"
             raise RuntimeError(msg)
     if SUPERVISOR_IMPL == "rust":
         skip = pytest.mark.skip(reason="not ported to the Rust daemon yet (increments 4-5)")
@@ -219,15 +241,36 @@ def _active_controller_units() -> list[str]:
     return [line.split()[0] for line in out.splitlines() if line.strip()]
 
 
+def _controller_exec_start(exec_root: Path) -> str:
+    """The controller ExecStart for the selected implementation, mirroring what
+    the packaged controller-launcher would exec for this ALEPH_VM_SUPERVISOR_IMPL.
+
+    The rust leg MUST run the Rust controller: pointing this at the python
+    module under impl=rust would leave the Rust persistent-QEMU launch (the
+    whole point of A3) untested while the job reported green.
+    """
+    config = f"{exec_root}/%i-controller.json"
+    if SUPERVISOR_IMPL == "rust":
+        if not RUST_CONTROLLER_BINARY.exists():
+            pytest.fail(
+                f"ALEPH_VM_SUPERVISOR_IMPL=rust but {RUST_CONTROLLER_BINARY} does not exist; "
+                "build it first (cargo build, in rust/) or set AVM_ITEST_RUST_CONTROLLER_BINARY"
+            )
+        return f"{RUST_CONTROLLER_BINARY} --config={config}"
+    return f"{sys.executable} -m aleph.vm.supervisor.controllers --config={config}"
+
+
 def _install_controller_unit(exec_root: Path, python_path: str) -> list[Path]:
     """Point aleph-vm-controller@ at this source tree and *exec_root*.
 
-    A drop-in overrides ExecStart/PYTHONPATH of whatever unit is installed
-    (*python_path* must carry the same module resolution the daemon gets:
-    src plus the system-module shim, or the controller dies on import);
-    a fallback unit in /run covers hosts with no aleph-vm package at all
-    (/etc and /usr/lib unit files take precedence over /run, so the fallback
-    is inert when a packaged unit exists).
+    A drop-in overrides ExecStart/PYTHONPATH of whatever unit is installed:
+    the ExecStart is the implementation the launcher would exec for the
+    selected ALEPH_VM_SUPERVISOR_IMPL (Rust binary or python module).
+    *python_path* must carry the same module resolution the daemon gets (src
+    plus the system-module shim) for the python controller, and is harmless
+    (ignored) for the native Rust binary. A fallback unit in /run covers hosts
+    with no aleph-vm package at all (/etc and /usr/lib unit files take
+    precedence over /run, so the fallback is inert when a packaged unit exists).
     """
     created: list[Path] = []
     packaged = any(
@@ -243,7 +286,7 @@ def _install_controller_unit(exec_root: Path, python_path: str) -> list[Path]:
         f"Environment=PYTHONPATH={python_path}\n"
         f"WorkingDirectory={REPO_ROOT}\n"
         "ExecStart=\n"
-        f"ExecStart={sys.executable} -m aleph.vm.supervisor.controllers --config={exec_root}/%i-controller.json\n"
+        f"ExecStart={_controller_exec_start(exec_root)}\n"
     )
     created.append(_CONTROLLER_DROPIN)
     subprocess.run(["systemctl", "daemon-reload"], check=True)
@@ -776,6 +819,33 @@ def vm_processes(vm_id: VmId) -> list[str]:
     QEMU/controller processes, whose command lines carry per-VM paths)."""
     result = subprocess.run(["pgrep", "-a", "-f", str(vm_id)], capture_output=True, text=True)
     return [line for line in result.stdout.splitlines() if line.strip()]
+
+
+def assert_controller_matches_impl(vm_id: VmId) -> None:
+    """Assert the live persistent controller is the selected implementation.
+
+    Under impl=rust it MUST be the Rust binary (task A3: Rust owns the
+    persistent-QEMU launch); under impl=python it MUST be the python module.
+    A clean seam that fails loudly if the controller-launcher dispatch (or the
+    test drop-in that mirrors it) ever regresses to the wrong controller: the
+    controller command line carries the per-VM config path, so it shows up in
+    vm_processes(vm_id) next to the qemu child it spawned.
+
+    Scope: this asserts a LIVE controller of the right kind for this vm_id is
+    present (callers run it after the boot-banner wait, so the controller has
+    reached steady state). It does NOT assert the parent/child link to the
+    specific QEMU that served the request: it matches on the config path in the
+    process list, not on a verified controller->qemu ancestry.
+    """
+    lines = vm_processes(vm_id)
+    if SUPERVISOR_IMPL == "rust":
+        assert any(
+            str(RUST_CONTROLLER_BINARY) in line for line in lines
+        ), f"impl=rust but no Rust controller ({RUST_CONTROLLER_BINARY}) among: {lines}"
+    else:
+        assert any(
+            "aleph.vm.supervisor.controllers" in line for line in lines
+        ), f"impl=python but no python controller among: {lines}"
 
 
 def hypervisor_children(daemon: Daemon) -> list[int]:
