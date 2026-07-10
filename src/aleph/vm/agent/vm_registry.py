@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from aleph_message.models import ExecutableContent, ItemHash
+from aleph_message.models import ExecutableContent, ItemHash, VerifiableProgramContent
 
 from aleph.vm.agent.metrics import ExecutionRecord, get_execution_records, save_record
 from aleph.vm.utils import get_message_executable_content
@@ -42,6 +42,10 @@ class AgentVmRecord:
     @property
     def uses_payment_credit(self) -> bool:
         return bool(self.message.payment and self.message.payment.is_credit)
+
+    @property
+    def is_vprogram(self) -> bool:
+        return isinstance(self.message, VerifiableProgramContent)
 
 
 class AgentVmRegistry:
