@@ -102,8 +102,6 @@ mod tests {
         let dummy_report = AttestationReport {
             tee_type: TeeType::None,
             data: vec![0u8; 64],
-            report_data: [0u8; 64],
-            measurement: vec![0u8; 48],
         };
         let err = backend.verify_report(&dummy_report).unwrap_err();
         assert!(

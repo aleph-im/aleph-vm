@@ -256,6 +256,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "aleph-attest-cli"
+version = "0.1.0"
+dependencies = [
+ "aleph-tee",
+ "anyhow",
+ "clap",
+ "der",
+ "getrandom 0.2.17",
+ "hex",
+ "rcgen",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sev",
+ "sha2",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "x509-parser 0.16.0",
+]
+
+[[package]]
 name = "aleph-tee"
 version = "0.1.0"
 dependencies = [
