@@ -27,7 +27,10 @@ pkgs.linuxPackages_6_6.kernel.override {
     TRUSTED_KEYS = lib.mkForce no;
     ENCRYPTED_KEYS = lib.mkForce no;
 
-    # Crypto algorithms required by dm-crypt / LUKS (aes-xts-plain64).
+    # The current rootfs integrity chain is dm-verity, which needs CRYPTO_SHA256
+    # only. CRYPTO_AES/XTS/ESSIV are LUKS/dm-crypt algorithms (aes-xts-plain64),
+    # retained for a possible future encrypted-rootfs path; LUKS is a non-goal
+    # today, so they are not exercised by the verity-only chain.
     CRYPTO_AES = lib.mkForce yes;
     CRYPTO_XTS = lib.mkForce yes;
     CRYPTO_SHA256 = lib.mkForce yes;

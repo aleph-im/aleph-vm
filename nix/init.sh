@@ -172,7 +172,8 @@ else
     # No dm-verity: direct mount (backwards compatible)
     echo "init: mounting ${blkdev} (no dm-verity)"
     if ! /bin/busybox mount -o ro "$blkdev" /mnt/root; then
-        echo "init: mount failed, trying without readonly"
+        echo "init: WARNING: read-only mount failed; falling back to a writable mount"
+        echo "init: WARNING: the rootfs is NOT integrity-protected on this path"
         /bin/busybox mount "$blkdev" /mnt/root || echo "init: mount failed completely"
     fi
 fi
