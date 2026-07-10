@@ -113,6 +113,9 @@ fn main() -> ExitCode {
         RunTarget::Confidential(qemu_config) => {
             runtime.block_on(qemu::run_confidential(&config.vm_hash, qemu_config))
         }
+        RunTarget::Snp(qemu_config) => {
+            runtime.block_on(qemu::run_snp(&config.vm_hash, qemu_config))
+        }
     };
     match result {
         Ok(_) => ExitCode::SUCCESS,
@@ -154,11 +157,13 @@ fn interface_exists(interface_name: &str) -> bool {
         .exists()
 }
 
-/// The selected QEMU run path: plain (`QemuVM.start()`) or confidential
-/// (`QemuConfidentialVM.start()`).
+/// The selected QEMU run path: plain (`QemuVM.start()`), SEV/SEV-ES
+/// confidential (`QemuConfidentialVM.start()`), or SEV-SNP measured boot
+/// (increment B1).
 enum RunTarget {
     Plain(QemuConfig),
     Confidential(QemuConfig),
+    Snp(QemuConfig),
 }
 
 /// Select the QEMU run path, replicating the Python `execute_persistent_vm`
@@ -178,6 +183,26 @@ fn select_run_target(config: &Configuration) -> Result<RunTarget, String> {
         );
     }
     match &config.vm_configuration {
+        // SEV-SNP is checked first: it is a distinct measured-boot path with no
+        // session/godh, so it is NOT `is_confidential()`, but routing it
+        // explicitly keeps the intent clear. `is_snp()` requires ALL of the
+        // fields `build_snp_argv` `.expect()`s, so this only routes a complete
+        // config into the SNP builder (its debug_assert can never trip).
+        VmConfiguration::Qemu(qemu_config) if qemu_config.is_snp() => {
+            Ok(RunTarget::Snp((**qemu_config).clone()))
+        }
+        // The SNP marker is set but a measured field is missing (a corrupt or
+        // partial controller JSON). Refuse CLEANLY rather than panic-looping in
+        // the SNP builder or, worse, falling through to a silent plain/SEV
+        // launch of a config the daemon meant to be measured. This mirrors the
+        // daemon-side `QemuVmConfig::snp` soft-fail (marker set, field missing
+        // -> `None`, treated as non-SNP fail-closed).
+        VmConfiguration::Qemu(qemu_config) if qemu_config.is_snp_marked() => Err(
+            "SEV-SNP backend marker (sev_snp=true) is set but the config is missing a \
+             measured-boot field (ovmf_path/sev_policy/kernel_path/initrd_path/kernel_cmdline); \
+             refusing to launch a partial SNP config"
+                .to_string(),
+        ),
         VmConfiguration::Qemu(qemu_config) if qemu_config.is_confidential() => {
             Ok(RunTarget::Confidential((**qemu_config).clone()))
         }
@@ -259,6 +284,59 @@ mod tests {
                "sev_dh_cert_file":"d","sev_policy":5"#
         );
         let config = parse("firecracker", &confidential);
+        assert!(select_run_target(&config).is_err());
+    }
+
+    #[test]
+    fn an_snp_marked_config_dispatches_to_the_snp_runner() {
+        // The daemon writes sev_snp:true plus the measured-boot fields; SNP is
+        // NOT is_confidential (no session/godh), so it must route via the SNP
+        // branch, not the plain one.
+        let snp = format!(
+            r#"{QEMU_VM_CONFIG},"sev_snp":true,"ovmf_path":"/OVMF.fd",
+               "sev_policy":196608,"kernel_path":"/bzImage","initrd_path":"/initrd",
+               "kernel_cmdline":"console=ttyS0 root=/dev/mapper/verity-root ro roothash=abc""#
+        );
+        let config = parse("qemu", &snp);
+        assert!(matches!(select_run_target(&config), Ok(RunTarget::Snp(_))));
+    }
+
+    #[test]
+    fn a_partial_snp_config_is_refused_cleanly_not_dispatched_to_the_snp_builder() {
+        // sev_snp=true but the measured cmdline is absent (a corrupt/partial
+        // controller JSON). `build_snp_argv` `.expect()`s that field, so
+        // dispatching here would panic-loop under systemd. select_run_target
+        // must return a clean Err instead (no panic), and it must NOT fall
+        // through to the plain or confidential builder.
+        let partial = format!(
+            r#"{QEMU_VM_CONFIG},"sev_snp":true,"ovmf_path":"/OVMF.fd",
+               "sev_policy":196608,"kernel_path":"/bzImage","initrd_path":"/initrd""#
+        );
+        let config = parse("qemu", &partial);
+        match select_run_target(&config) {
+            Err(message) => assert!(
+                message.contains("SEV-SNP") && message.contains("missing"),
+                "unexpected refusal message: {message}"
+            ),
+            Ok(target) => panic!(
+                "a partial SNP config must be refused, not dispatched to {}",
+                match target {
+                    RunTarget::Plain(_) => "plain",
+                    RunTarget::Confidential(_) => "confidential",
+                    RunTarget::Snp(_) => "snp",
+                }
+            ),
+        }
+    }
+
+    #[test]
+    fn an_snp_config_mislabelled_firecracker_is_still_rejected() {
+        let snp = format!(
+            r#"{QEMU_VM_CONFIG},"sev_snp":true,"ovmf_path":"/OVMF.fd",
+               "sev_policy":196608,"kernel_path":"/bzImage","initrd_path":"/initrd",
+               "kernel_cmdline":"console=ttyS0 root=/dev/mapper/verity-root ro roothash=abc""#
+        );
+        let config = parse("firecracker", &snp);
         assert!(select_run_target(&config).is_err());
     }
 
