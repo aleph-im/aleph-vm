@@ -1531,38 +1531,96 @@ fn build_written_config(
     let qemu_bin_path = checks::which("qemu-system-x86_64")
         .ok_or_else(|| RpcError::Internal("qemu-system-x86_64 not found on PATH".to_string()))?;
     let image_path = require_rootfs(spec)?.path.clone();
-    let host_volumes = spec
-        .disks
-        .iter()
-        .filter(|disk| disk.role == pb::disk_config::DiskRole::Extra as i32)
-        .map(|disk| WrittenHostVolume {
-            // The guest mount point never crosses the boundary; QemuVM
-            // never consumed the field, written empty since the spec path.
+    // SEV-SNP (increment B1) is resolved first: it is a distinct measured-boot
+    // path (no session/godh), so the SEV confidential slice is suppressed when
+    // an SNP slice is present and the two never overlap.
+    let snp_slice = snp_config_slice(state, spec)?;
+    let confidential_slice = if snp_slice.is_some() {
+        None
+    } else {
+        confidential_config_slice(state, spec)?
+    };
+    // dm-verity hash tree device (/dev/vdb) is inserted as the FIRST host
+    // volume for an SNP VM, before any agent-supplied extra disks, mirroring
+    // the aleph-cvm donor (vm/manager.rs inserts the hash tree at index 1).
+    let mut host_volumes: Vec<WrittenHostVolume> = Vec::new();
+    if let Some(snp) = &snp_slice {
+        host_volumes.push(WrittenHostVolume {
             mount: String::new(),
-            path_on_host: disk.path.clone(),
-            read_only: disk.readonly,
-        })
-        .collect();
+            path_on_host: snp.hashtree_path.clone(),
+            read_only: true,
+        });
+    }
+    host_volumes.extend(
+        spec.disks
+            .iter()
+            .filter(|disk| disk.role == pb::disk_config::DiskRole::Extra as i32)
+            .map(|disk| WrittenHostVolume {
+                // The guest mount point never crosses the boundary; QemuVM
+                // never consumed the field, written empty since the spec path.
+                mount: String::new(),
+                path_on_host: disk.path.clone(),
+                read_only: disk.readonly,
+            }),
+    );
     // The confidential build (build_qemu_confidential_configuration) creates
     // QemuGPU(pci_host=...) with the default supports_x_vga=True, unlike the
-    // plain path which passes the spec's flag.
-    let confidential_slice = confidential_config_slice(state, spec)?;
+    // plain path which passes the spec's flag. SNP is confidential-like here.
+    let confidential_like = confidential_slice.is_some() || snp_slice.is_some();
     let gpus = spec
         .gpus
         .iter()
         .map(|gpu| WrittenGpu {
             pci_host: gpu.pci_host.clone(),
-            supports_x_vga: confidential_slice.is_some() || gpu.supports_x_vga,
+            supports_x_vga: confidential_like || gpu.supports_x_vga,
         })
         .collect();
-    let (ovmf_path, sev_session_file, sev_dh_cert_file, sev_policy) = match confidential_slice {
-        Some(slice) => (
+    // SNP shares ovmf_path/sev_policy with the SEV slot but adds the measured
+    // kernel/initrd/cmdline and the sev_snp marker; SEV/SEV-ES fills the
+    // session/godh slots instead. A plain VM leaves them all None.
+    let (
+        ovmf_path,
+        sev_session_file,
+        sev_dh_cert_file,
+        sev_policy,
+        sev_snp,
+        kernel_path,
+        initrd_path,
+        kernel_cmdline,
+    ) = match (&snp_slice, confidential_slice) {
+        (Some(snp), _) => (
+            Some(snp.ovmf_path.clone()),
+            None,
+            None,
+            Some(snp.sev_policy),
+            Some(true),
+            Some(snp.kernel_path.clone()),
+            Some(snp.initrd_path.clone()),
+            Some(snp.kernel_cmdline.clone()),
+        ),
+        (None, Some(slice)) => (
             Some(slice.ovmf_path),
             Some(slice.sev_session_file),
             Some(slice.sev_dh_cert_file),
             Some(slice.sev_policy),
+            None,
+            None,
+            None,
+            None,
         ),
-        None => (None, None, None, None),
+        (None, None) => (None, None, None, None, None, None, None, None),
+    };
+    // A measured SNP VM boots from the Nix image via kernel+initrd (its in-guest
+    // init handles networking / provisioning), so it carries NO cloud-init drive
+    // (which the SEV/plain paths always attach).
+    let cloud_init_drive_path = if snp_slice.is_some() {
+        None
+    } else {
+        Some(
+            root.join(format!("cloud-init-{vm_hash}.img"))
+                .to_string_lossy()
+                .into_owned(),
+        )
     };
     Ok(WrittenControllerConfig {
         vm_id: vm_index,
@@ -1587,11 +1645,7 @@ fn build_written_config(
         },
         vm_configuration: WrittenQemuVmConfiguration {
             qemu_bin_path: qemu_bin_path.to_string_lossy().into_owned(),
-            cloud_init_drive_path: Some(
-                root.join(format!("cloud-init-{vm_hash}.img"))
-                    .to_string_lossy()
-                    .into_owned(),
-            ),
+            cloud_init_drive_path,
             image_path,
             monitor_socket_path: root
                 .join(format!("{vm_hash}-monitor.socket"))
@@ -1615,6 +1669,10 @@ fn build_written_config(
             sev_session_file,
             sev_dh_cert_file,
             sev_policy,
+            sev_snp,
+            kernel_path,
+            initrd_path,
+            kernel_cmdline,
         },
         hypervisor: "qemu",
     })
@@ -1639,6 +1697,10 @@ fn confidential_config_slice(
     let Some(tee) = &spec.tee else {
         return Ok(None);
     };
+    // SEV-SNP is handled by snp_config_slice, not here (it has no session/godh).
+    if tee.backend == pb::TeeBackend::SevSnp as i32 {
+        return Ok(None);
+    }
     if tee.firmware_path.is_empty() {
         return Err(RpcError::InvalidBackend(
             "Confidential spec has no resolved firmware_path; refusing to build configuration"
@@ -1663,6 +1725,119 @@ fn confidential_config_slice(
         // SEV policy crosses the boundary as a string; int(policy, 0) accepts
         // hex ("0x1"), octal, binary and decimal forms.
         sev_policy: parse_sev_policy(&tee.policy)?,
+    }))
+}
+
+/// The default SEV-SNP guest policy (0x30000: SNP enabled, SMT allowed, debug
+/// disabled), matching the aleph-tee generator's DEFAULT_POLICY. Used when the
+/// spec's `tee.policy` is empty.
+const DEFAULT_SNP_POLICY: u32 = 0x30000;
+
+/// Upper bound on the dm-verity roothash sidecar read. A real roothash is a
+/// ~64-hex-char digest; 4 KiB is generous headroom while capping a pathological
+/// sidecar so it cannot load unbounded into RAM.
+const MAX_ROOTHASH_SIDECAR_BYTES: u64 = 4096;
+
+/// The SEV-SNP measured-boot slice `build_written_config` fills, or `None` when
+/// the spec is not SNP. A measured SNP launch must present the EXACT OVMF +
+/// kernel + initrd + cmdline the B2a Nix image's `sev-snp-measure` covered, or
+/// attestation will not match, so all inputs are required and a missing one is
+/// InvalidBackend (fail closed, never boot a mismeasured SNP VM).
+#[derive(Debug)]
+struct SnpSlice {
+    ovmf_path: String,
+    kernel_path: String,
+    initrd_path: String,
+    kernel_cmdline: String,
+    sev_policy: u32,
+    hashtree_path: String,
+}
+
+fn snp_config_slice(_state: &DaemonState, spec: &pb::VmSpec) -> Result<Option<SnpSlice>, RpcError> {
+    let Some(tee) = &spec.tee else {
+        return Ok(None);
+    };
+    if tee.backend != pb::TeeBackend::SevSnp as i32 {
+        return Ok(None);
+    }
+    if tee.firmware_path.is_empty() {
+        return Err(RpcError::InvalidBackend(
+            "SEV-SNP spec has no resolved firmware_path (measured OVMF); refusing to build \
+             configuration"
+                .to_string(),
+        ));
+    }
+    if spec.kernel_path.is_empty() || spec.initrd_path.is_empty() {
+        return Err(RpcError::InvalidBackend(
+            "SEV-SNP measured boot requires kernel_path and initrd_path".to_string(),
+        ));
+    }
+    // GPU passthrough into a confidential SEV-SNP guest (confidential GPU /
+    // NVIDIA CC) is not supported yet, and `build_snp_argv` emits no passthrough
+    // devices. Accepting GPUs here would write them into the controller config
+    // and then silently drop them at launch, giving the owner a VM without the
+    // hardware they asked for. Fail closed instead. See divergence 68.
+    if !spec.gpus.is_empty() {
+        return Err(RpcError::InvalidBackend(
+            "GPU passthrough is not supported on SEV-SNP VMs yet".to_string(),
+        ));
+    }
+    // The dm-verity roothash and hash tree are sidecars of the rootfs image, the
+    // convention the B2a Nix image emits (`rootfs.ext4.roothash` /
+    // `rootfs.ext4.verity`) and the aleph-cvm donor's `ensure_verity` uses. The
+    // proto has no cmdline field (frozen), so the measured cmdline is DERIVED
+    // here from the roothash, exactly as the donor's `build_kernel_cmdline`
+    // does. See divergence 68.
+    let rootfs_path = require_rootfs(spec)?.path.clone();
+    let roothash_path = format!("{rootfs_path}.roothash");
+    // Bound the sidecar read: a real dm-verity roothash is ~64 hex chars, so a
+    // 4 KiB cap is generous. A pathological sidecar (the node builds its own
+    // image, but defense in depth) cannot then load unbounded into RAM; an
+    // over-cap file fails closed (InvalidBackend), never a mismeasured boot.
+    let roothash = {
+        use std::io::Read as _;
+        let mut reader = std::fs::File::open(&roothash_path)
+            .map_err(|error| {
+                RpcError::InvalidBackend(format!(
+                    "cannot read the dm-verity roothash sidecar {roothash_path}: {error}"
+                ))
+            })?
+            .take(MAX_ROOTHASH_SIDECAR_BYTES + 1);
+        let mut contents = String::new();
+        reader.read_to_string(&mut contents).map_err(|error| {
+            RpcError::InvalidBackend(format!(
+                "cannot read the dm-verity roothash sidecar {roothash_path}: {error}"
+            ))
+        })?;
+        if contents.len() as u64 > MAX_ROOTHASH_SIDECAR_BYTES {
+            return Err(RpcError::InvalidBackend(format!(
+                "the dm-verity roothash sidecar {roothash_path} exceeds \
+                 {MAX_ROOTHASH_SIDECAR_BYTES} bytes"
+            )));
+        }
+        contents.trim().to_string()
+    };
+    // The roothash goes verbatim into the kernel cmdline; reject anything that
+    // is not a bare hex string so it cannot inject extra kernel parameters.
+    if roothash.is_empty() || !roothash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(RpcError::InvalidBackend(format!(
+            "the dm-verity roothash in {roothash_path} is not a hex string"
+        )));
+    }
+    let kernel_cmdline =
+        format!("console=ttyS0 root=/dev/mapper/verity-root ro roothash={roothash}");
+    let sev_policy = if tee.policy.is_empty() {
+        DEFAULT_SNP_POLICY
+    } else {
+        parse_sev_policy(&tee.policy)?
+    };
+    Ok(Some(SnpSlice {
+        ovmf_path: tee.firmware_path.clone(),
+        kernel_path: spec.kernel_path.clone(),
+        initrd_path: spec.initrd_path.clone(),
+        kernel_cmdline,
+        sev_policy,
+        hashtree_path: format!("{rootfs_path}.verity"),
     }))
 }
 
@@ -1972,7 +2147,19 @@ fn create_vm_inner(
     // uploads the owner's session certificates. build_qemu_confidential_
     // configuration produces the extra SEV fields; execution.start leaves it
     // in awaiting_confidential_init.
+    //
+    // SEV-SNP (increment B1) is the exception: it has NO session/godh handshake
+    // (secrets are injected at runtime over the attested channel), so there is
+    // nothing to await and it starts immediately like a plain VM. It also boots
+    // the measured Nix image directly (kernel+initrd), so it takes no cloud-init
+    // drive.
+    let snp = request
+        .tee
+        .as_ref()
+        .is_some_and(|tee| tee.backend == pb::TeeBackend::SevSnp as i32);
     let confidential = request.tee.is_some();
+    // SEV/SEV-ES only: the create-then-await path. SNP does not await.
+    let await_session = confidential && !snp;
     if !request.persistent {
         // Python boots this path and fails inside AlephQemuInstance.start()
         // (NotImplementedError -> INTERNAL); refuse up front with the same
@@ -2142,29 +2329,35 @@ fn create_vm_inner(
         }
 
         // The cloud-init seed, then the controller config (same order as
-        // build_qemu_configuration + save_controller_configuration).
-        cloudinit::CloudInitDrive {
-            execution_root: &state.host.settings.execution_root,
-            vm_hash: &vm_id,
-            vm_index,
-            tap: tap.as_ref(),
-            ssh_authorized_keys: &ssh_authorized_keys,
-            hostname: &request.hostname,
-            has_gpu: !request.gpus.is_empty(),
-            dns_nameservers: state.host.dns_nameservers.as_deref(),
-            confidential,
+        // build_qemu_configuration + save_controller_configuration). SNP boots
+        // the measured Nix image directly and carries no cloud-init drive, so
+        // the seed is skipped (build_written_config leaves cloud_init_drive_path
+        // unset for SNP; the two must agree).
+        if !snp {
+            cloudinit::CloudInitDrive {
+                execution_root: &state.host.settings.execution_root,
+                vm_hash: &vm_id,
+                vm_index,
+                tap: tap.as_ref(),
+                ssh_authorized_keys: &ssh_authorized_keys,
+                hostname: &request.hostname,
+                has_gpu: !request.gpus.is_empty(),
+                dns_nameservers: state.host.dns_nameservers.as_deref(),
+                confidential,
+            }
+            .create_image()?;
         }
-        .create_image()?;
         controller_config::save_controller_config(&state.host.settings.execution_root, &written)?;
 
         with_entry_mut(state, &vm_id, |entry| entry.times.starting_at_ns = now_ns());
         let unit = controller_unit_name(&vm_id);
-        if confidential {
-            // execution.start for a confidential VM: setup/configure/
+        if await_session {
+            // execution.start for a SEV/SEV-ES VM: setup/configure/
             // start_guest_api happen, but `persistent and not is_confidential`
             // is false, so the controller is NOT enabled/started. started_at
-            // is stamped in the else branch; the VM reports
-            // awaiting_confidential_init until InitializeConfidential runs.
+            // is stamped here; the VM reports awaiting_confidential_init until
+            // InitializeConfidential runs. SNP does NOT take this branch (it
+            // has no session to wait for) and starts below like a plain VM.
             with_entry_mut(state, &vm_id, |entry| entry.times.started_at_ns = now_ns());
         } else {
             units::enable_and_start(&*state.units, &unit)?;
@@ -3154,6 +3347,222 @@ mod tests {
                 .sev_dh_cert_file
                 .ends_with(&format!("{vm_id}/vm_godh.b64"))
         );
+    }
+
+    /// An SEV-SNP measured-boot spec: a raw rootfs plus kernel/initrd and a
+    /// SEV_SNP tee config. The rootfs dm-verity sidecars are written next to
+    /// the image so `snp_config_slice` can derive the cmdline and hash tree.
+    fn snp_spec(vm_id: &str, root: &Path, firmware: &str) -> pb::VmSpec {
+        let rootfs = root.join(format!("{vm_id}-rootfs.ext4"));
+        std::fs::write(&rootfs, b"rootfs").unwrap();
+        std::fs::write(format!("{}.roothash", rootfs.display()), b"deadbeef00\n").unwrap();
+        std::fs::write(format!("{}.verity", rootfs.display()), b"hashtree").unwrap();
+        let mut request = spec(vm_id, root);
+        request.kernel_path = root.join("bzImage").to_string_lossy().into_owned();
+        request.initrd_path = root.join("initrd").to_string_lossy().into_owned();
+        request.disks = vec![pb::DiskConfig {
+            path: rootfs.to_string_lossy().into_owned(),
+            readonly: true,
+            format: pb::disk_config::Format::Raw as i32,
+            role: pb::disk_config::DiskRole::Rootfs as i32,
+        }];
+        request.tee = Some(pb::TeeConfig {
+            backend: pb::TeeBackend::SevSnp as i32,
+            // Empty policy: the daemon defaults it to 0x30000.
+            policy: String::new(),
+            session_dir: String::new(),
+            firmware_path: firmware.to_string(),
+        });
+        request
+    }
+
+    #[test]
+    fn create_snp_starts_immediately_and_writes_the_snp_config() {
+        // Increment B1: unlike SEV/SEV-ES, an SNP VM has no session handshake,
+        // so it is STARTED at create (not left awaiting_confidential_init), it
+        // carries NO cloud-init drive (measured Nix boot), and its controller
+        // JSON carries the SNP measured-boot fields.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('e');
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let request = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+
+        let (entry, running) = create_vm(state, request).unwrap();
+        assert!(running, "an SNP VM starts at create, no session to await");
+        let unit = controller_unit_name(&vm_id);
+        assert_eq!(
+            harness.systemd.actions(),
+            vec![format!("enable {unit}"), format!("start {unit}")],
+            "the SNP controller unit is enabled and started at create"
+        );
+
+        // Reported as SEV-SNP and NOT awaiting init.
+        let info = crate::service::vm_info_message(&entry, running, now_ns());
+        assert_eq!(info.confidential_mode, pb::ConfidentialMode::SevSnp as i32);
+        assert!(!info.awaiting_confidential_init);
+
+        // No cloud-init drive for a measured SNP boot.
+        assert!(
+            !root.join(format!("cloud-init-{vm_id}.img")).exists(),
+            "SNP carries no cloud-init drive"
+        );
+
+        // The written controller config carries the SNP measured-boot fields
+        // and resolves as SNP (not SEV) on reparse.
+        let written =
+            std::fs::read_to_string(root.join(format!("{vm_id}-controller.json"))).unwrap();
+        let parsed = parse_controller_config(&written).unwrap();
+        let VmConfiguration::Qemu(qemu) = parsed.vm else {
+            panic!("the written config must be QEMU");
+        };
+        assert!(
+            qemu.confidential().is_none(),
+            "SNP must not resolve as a SEV confidential config"
+        );
+        let snp = qemu.snp().expect("the config resolves as SNP");
+        assert_eq!(snp.ovmf_path, firmware.to_string_lossy());
+        assert_eq!(snp.sev_policy, 0x30000, "empty policy defaults to 0x30000");
+        assert!(snp.kernel_path.ends_with("bzImage"));
+        assert!(snp.initrd_path.ends_with("initrd"));
+        assert_eq!(
+            snp.kernel_cmdline, "console=ttyS0 root=/dev/mapper/verity-root ro roothash=deadbeef00",
+            "the measured cmdline is derived from the roothash sidecar"
+        );
+        // The hash tree device is the first host volume (/dev/vdb), read-only.
+        assert!(
+            qemu.host_volumes[0]
+                .path_on_host
+                .ends_with("-rootfs.ext4.verity"),
+            "the dm-verity hash tree is the first host volume"
+        );
+        assert!(qemu.host_volumes[0].read_only);
+    }
+
+    #[test]
+    fn create_snp_refuses_without_kernel_or_roothash() {
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+
+        // Missing kernel_path fails closed.
+        let mut no_kernel = snp_spec(&hash('d'), &root, &firmware.to_string_lossy());
+        no_kernel.kernel_path = String::new();
+        assert!(matches!(
+            create_vm(state, no_kernel),
+            Err(RpcError::InvalidBackend(_))
+        ));
+
+        // Missing roothash sidecar fails closed (a measured VM must not boot
+        // with a wrong/absent cmdline).
+        let vm_id = hash('f');
+        let request = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+        let rootfs = root.join(format!("{vm_id}-rootfs.ext4"));
+        std::fs::remove_file(format!("{}.roothash", rootfs.display())).unwrap();
+        assert!(matches!(
+            create_vm(state, request),
+            Err(RpcError::InvalidBackend(_))
+        ));
+    }
+
+    #[test]
+    fn snp_config_slice_rejects_a_malformed_roothash_so_it_cannot_reach_append() {
+        // The roothash is spliced verbatim into `-append ...roothash={roothash}`,
+        // so the hex-validation guard is the cmdline-injection barrier. Each
+        // malformed sidecar must fail closed (InvalidBackend, no SnpSlice), so
+        // the injected/partial string can never reach -append. Disabling the
+        // guard makes one of these return Ok and this test bites.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+
+        for (label, malformed) in [
+            ("injection", "abc ro init=/bin/sh"),
+            ("internally-spaced", "dead beef"),
+            ("empty-but-present", ""),
+        ] {
+            let vm_id = hash('g');
+            let spec = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+            let rootfs = root.join(format!("{vm_id}-rootfs.ext4"));
+            std::fs::write(format!("{}.roothash", rootfs.display()), malformed).unwrap();
+            match snp_config_slice(state, &spec) {
+                Err(RpcError::InvalidBackend(_)) => {}
+                other => {
+                    panic!("malformed roothash ({label}) must be InvalidBackend, got {other:?}")
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn snp_config_slice_rejects_an_empty_initrd_path() {
+        // The kernel_path side of the `kernel_path.is_empty() ||
+        // initrd_path.is_empty()` guard is covered elsewhere; pin the initrd
+        // side so a mismeasured (initrd-less) boot fails closed.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+
+        let vm_id = hash('h');
+        let mut spec = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+        spec.initrd_path = String::new();
+        match snp_config_slice(state, &spec) {
+            Err(RpcError::InvalidBackend(_)) => {}
+            other => panic!("an empty initrd_path must be InvalidBackend, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn snp_config_slice_rejects_gpus_so_they_are_not_silently_dropped() {
+        // build_snp_argv emits no GPU passthrough devices, so an SNP spec that
+        // carries GPUs must fail closed here rather than launch a VM missing the
+        // requested hardware. Removing the guard makes this return Ok.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+
+        let vm_id = hash('j');
+        let mut spec = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+        spec.gpus = vec![pb::GpuConfig {
+            pci_host: "0000:01:00.0".to_string(),
+            supports_x_vga: true,
+        }];
+        match snp_config_slice(state, &spec) {
+            Err(RpcError::InvalidBackend(_)) => {}
+            other => panic!("an SNP spec with GPUs must be InvalidBackend, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn snp_config_slice_rejects_an_oversized_roothash_sidecar() {
+        // A sidecar larger than the read cap fails closed rather than loading
+        // unbounded into RAM. The content is all-hex, so only the size guard can
+        // reject it.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+
+        let vm_id = hash('i');
+        let spec = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+        let rootfs = root.join(format!("{vm_id}-rootfs.ext4"));
+        let oversized = "a".repeat(MAX_ROOTHASH_SIDECAR_BYTES as usize + 1);
+        std::fs::write(format!("{}.roothash", rootfs.display()), oversized).unwrap();
+        match snp_config_slice(state, &spec) {
+            Err(RpcError::InvalidBackend(_)) => {}
+            other => panic!("an oversized roothash sidecar must be InvalidBackend, got {other:?}"),
+        }
     }
 
     #[test]

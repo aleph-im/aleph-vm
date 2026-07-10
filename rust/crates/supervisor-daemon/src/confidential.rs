@@ -126,6 +126,9 @@ pub fn session_dir(state: &DaemonState, vm_id: &str) -> PathBuf {
 }
 
 fn confidential_mode(entry: &crate::world::VmEntry) -> pb::ConfidentialMode {
+    if entry.config.snp().is_some() {
+        return pb::ConfidentialMode::SevSnp;
+    }
     match entry.config.confidential() {
         None => pb::ConfidentialMode::None,
         Some(config) if config.sev_policy & SEV_ES_POLICY_BIT != 0 => pb::ConfidentialMode::SevEs,

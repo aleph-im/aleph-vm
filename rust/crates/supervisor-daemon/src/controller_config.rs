@@ -124,6 +124,20 @@ pub struct ConfidentialConfig {
     pub sev_policy: u32,
 }
 
+/// The SEV-SNP measured-boot slice (increment B1). Distinct from
+/// [`ConfidentialConfig`]: SNP carries no session/godh (secrets are injected at
+/// runtime over the attested channel), and it is a direct-kernel boot, so it
+/// carries the measured kernel/initrd/cmdline instead. `ovmf_path` is the
+/// measured OVMF, `sev_policy` the SNP policy (default 0x30000 upstream).
+#[derive(Debug, Clone)]
+pub struct SnpConfig {
+    pub ovmf_path: String,
+    pub kernel_path: String,
+    pub initrd_path: String,
+    pub kernel_cmdline: String,
+    pub sev_policy: u32,
+}
+
 /// `QemuVMConfiguration` / `QemuConfidentialVMConfiguration` (the plain
 /// fields are shared; the confidential four are optional here and resolved
 /// by [`QemuVmConfig::confidential`]).
@@ -156,6 +170,18 @@ pub struct QemuVmConfig {
     sev_dh_cert_file: Option<String>,
     #[serde(default)]
     sev_policy: Option<u32>,
+
+    // SEV-SNP measured-boot slice (increment B1). `sev_snp: true` is the
+    // explicit backend marker; when set, ovmf_path/sev_policy plus these three
+    // are all present. Rust-only fields (no Python controller SNP path).
+    #[serde(default)]
+    sev_snp: Option<bool>,
+    #[serde(default)]
+    kernel_path: Option<String>,
+    #[serde(default)]
+    initrd_path: Option<String>,
+    #[serde(default)]
+    kernel_cmdline: Option<String>,
 }
 
 impl QemuVmConfig {
@@ -180,11 +206,17 @@ impl QemuVmConfig {
             sev_session_file: None,
             sev_dh_cert_file: None,
             sev_policy: None,
+            sev_snp: None,
+            kernel_path: None,
+            initrd_path: None,
+            kernel_cmdline: None,
         }
     }
 
     /// The confidential slice when this is a
-    /// `QemuConfidentialVMConfiguration`, `None` for a plain QEMU config.
+    /// `QemuConfidentialVMConfiguration`, `None` for a plain QEMU config OR an
+    /// SEV-SNP config (SNP carries no session/godh, so it is not confidential
+    /// in this SEV sense; use [`QemuVmConfig::snp`] for it).
     pub fn confidential(&self) -> Option<ConfidentialConfig> {
         match (
             &self.ovmf_path,
@@ -198,6 +230,34 @@ impl QemuVmConfig {
                 sev_dh_cert_file: dh_cert.clone(),
                 sev_policy: policy,
             }),
+            _ => None,
+        }
+    }
+
+    /// The SEV-SNP measured-boot slice when this is an SNP config (`sev_snp`
+    /// marker set with all measured-boot fields present), `None` otherwise. The
+    /// daemon writer always fills the fields together, so a marker with a
+    /// missing field yields `None` (treated as non-SNP, fail-closed).
+    pub fn snp(&self) -> Option<SnpConfig> {
+        if self.sev_snp != Some(true) {
+            return None;
+        }
+        match (
+            &self.ovmf_path,
+            &self.kernel_path,
+            &self.initrd_path,
+            &self.kernel_cmdline,
+            self.sev_policy,
+        ) {
+            (Some(ovmf), Some(kernel), Some(initrd), Some(cmdline), Some(policy)) => {
+                Some(SnpConfig {
+                    ovmf_path: ovmf.clone(),
+                    kernel_path: kernel.clone(),
+                    initrd_path: initrd.clone(),
+                    kernel_cmdline: cmdline.clone(),
+                    sev_policy: policy,
+                })
+            }
             _ => None,
         }
     }
@@ -388,6 +448,18 @@ pub struct WrittenQemuVmConfiguration {
     pub sev_dh_cert_file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sev_policy: Option<u32>,
+    // SEV-SNP measured-boot slice (increment B1), Rust-only. All None (and so
+    // omitted) for plain and SEV/SEV-ES configs, keeping their bytes identical
+    // to the pydantic writer; for an SNP VM the daemon sets sev_snp:true plus
+    // the measured kernel/initrd/cmdline (ovmf_path/sev_policy are shared).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sev_snp: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kernel_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initrd_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kernel_cmdline: Option<String>,
 }
 
 /// The top-level `Configuration` as written (QEMU instances only in this
@@ -554,6 +626,59 @@ mod tests {
     }
 
     #[test]
+    fn an_snp_config_resolves_as_snp_not_sev() {
+        // The SNP measured-boot slice: sev_snp marker + ovmf/policy shared with
+        // the SEV slot + the measured kernel/initrd/cmdline. It must NOT resolve
+        // as a SEV confidential config (no session/godh), and snp() must carry
+        // the measured fields.
+        let json = r#"{
+            "vm_id": 9, "vm_hash": "abcd", "settings": {},
+            "hypervisor": "qemu",
+            "vm_configuration": {
+                "qemu_bin_path": "/usr/bin/qemu-system-x86_64",
+                "image_path": "/img/rootfs.ext4",
+                "monitor_socket_path": "/m.sock", "qmp_socket_path": "/q.sock",
+                "vcpu_count": 2, "mem_size_mb": 2048,
+                "host_volumes": [], "gpus": [],
+                "sev_snp": true,
+                "ovmf_path": "/img/OVMF.fd",
+                "sev_policy": 196608,
+                "kernel_path": "/img/bzImage",
+                "initrd_path": "/img/initrd",
+                "kernel_cmdline": "console=ttyS0 root=/dev/mapper/verity-root ro roothash=abc"
+            }
+        }"#;
+        let config = parse_controller_config(json).unwrap();
+        let VmConfiguration::Qemu(vm) = &config.vm else {
+            panic!("expected a QEMU configuration");
+        };
+        assert!(
+            vm.confidential().is_none(),
+            "SNP is not a SEV confidential config"
+        );
+        let snp = vm.snp().expect("must resolve as SNP");
+        assert_eq!(snp.ovmf_path, "/img/OVMF.fd");
+        assert_eq!(snp.sev_policy, 0x30000);
+        assert_eq!(snp.kernel_path, "/img/bzImage");
+        assert_eq!(snp.initrd_path, "/img/initrd");
+        assert_eq!(
+            snp.kernel_cmdline,
+            "console=ttyS0 root=/dev/mapper/verity-root ro roothash=abc"
+        );
+
+        // A SEV config (no sev_snp marker) never resolves as SNP.
+        let name = format!(
+            "{}-controller.json",
+            crate::test_fixtures::CONFIDENTIAL_HASH
+        );
+        let sev = parse_controller_config(&fixture(&name)).unwrap();
+        let VmConfiguration::Qemu(sev_vm) = &sev.vm else {
+            panic!("expected a QEMU configuration");
+        };
+        assert!(sev_vm.snp().is_none(), "a SEV config is not SNP");
+    }
+
+    #[test]
     fn a_firecracker_config_resolves_to_the_unsupported_variant() {
         let json = r#"{
             "vm_id": 7,
@@ -708,6 +833,10 @@ mod tests {
                 sev_session_file: None,
                 sev_dh_cert_file: None,
                 sev_policy: None,
+                sev_snp: None,
+                kernel_path: None,
+                initrd_path: None,
+                kernel_cmdline: None,
             },
             hypervisor: "qemu",
         };
@@ -756,6 +885,10 @@ mod tests {
                 sev_session_file: None,
                 sev_dh_cert_file: None,
                 sev_policy: None,
+                sev_snp: None,
+                kernel_path: None,
+                initrd_path: None,
+                kernel_cmdline: None,
             },
             hypervisor: "qemu",
         };
