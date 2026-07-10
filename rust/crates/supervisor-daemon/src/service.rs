@@ -231,6 +231,21 @@ impl DaemonState {
     }
 }
 
+/// Map a detected NUMA topology to the proto `NumaNode` list reported by
+/// `GetHostInfo` (increment C1): node id -> index, cpu count -> cpu_count,
+/// RAM MB -> memory_mib. Empty when detection was unavailable, as before C1.
+fn numa_nodes_proto(topology: &crate::numa::NumaTopology) -> Vec<pb::NumaNode> {
+    topology
+        .nodes
+        .iter()
+        .map(|node| pb::NumaNode {
+            index: node.id,
+            cpu_count: node.cpus.len() as u32,
+            memory_mib: node.total_ram_mb as u64,
+        })
+        .collect()
+}
+
 pub struct SupervisorService {
     state: Arc<DaemonState>,
 }
@@ -284,17 +299,7 @@ impl SupervisorService {
                 })??;
         // NUMA topology (increment C1): one proto NumaNode per detected node.
         // Empty when detection was unavailable, as it was before C1.
-        let numa_nodes = self
-            .state
-            .numa
-            .nodes
-            .iter()
-            .map(|node| pb::NumaNode {
-                index: node.id,
-                cpu_count: node.cpus.len() as u32,
-                memory_mib: node.total_ram_mb as u64,
-            })
-            .collect();
+        let numa_nodes = numa_nodes_proto(&self.state.numa);
         Ok(pb::HostInfo {
             // Only the fields LocalSupervisor.get_host_info fills, plus
             // sev_snp_supported (increment B1, the SNP host capability check)
@@ -1664,6 +1669,43 @@ mod tests {
             .unwrap()
             .into_inner();
         assert!(collect_chunks(&mut stream).await.is_empty());
+    }
+
+    #[test]
+    fn numa_nodes_proto_maps_the_detected_topology() {
+        // The GetHostInfo reporting path (increment C1) maps each detected NUMA
+        // node to one proto NumaNode: id -> index, cpu count -> cpu_count, RAM
+        // MB -> memory_mib. Pure, independent of the placement path and host IO.
+        let topology = crate::numa::NumaTopology {
+            nodes: vec![
+                crate::numa::NumaNode {
+                    id: 0,
+                    cpus: (0..4).collect(),
+                    total_2m_hugepages: 0,
+                    total_1g_hugepages: 0,
+                    total_ram_mb: 64_000,
+                },
+                crate::numa::NumaNode {
+                    id: 1,
+                    cpus: (4..8).collect(),
+                    total_2m_hugepages: 0,
+                    total_1g_hugepages: 0,
+                    total_ram_mb: 32_000,
+                },
+            ],
+        };
+
+        let nodes = numa_nodes_proto(&topology);
+
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].index, 0);
+        assert_eq!(nodes[0].cpu_count, 4);
+        assert_eq!(nodes[0].memory_mib, 64_000);
+        assert_eq!(nodes[1].index, 1);
+        assert_eq!(nodes[1].cpu_count, 4);
+        assert_eq!(nodes[1].memory_mib, 32_000);
+        // An empty topology reports no nodes (pre-C1 behavior).
+        assert!(numa_nodes_proto(&crate::numa::NumaTopology::empty()).is_empty());
     }
 
     #[tokio::test]
