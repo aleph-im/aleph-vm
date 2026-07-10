@@ -241,7 +241,7 @@ fn numa_nodes_proto(topology: &crate::numa::NumaTopology) -> Vec<pb::NumaNode> {
         .map(|node| pb::NumaNode {
             index: node.id,
             cpu_count: node.cpus.len() as u32,
-            memory_mib: node.total_ram_mb as u64,
+            memory_mib: node.total_ram_mb,
         })
         .collect()
 }

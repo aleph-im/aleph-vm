@@ -45,8 +45,9 @@ pub struct NumaNode {
     pub total_2m_hugepages: u32,
     /// Number of 1 GiB hugepages on this node (carried for C2/HostInfo).
     pub total_1g_hugepages: u32,
-    /// Total RAM on this node in MB.
-    pub total_ram_mb: u32,
+    /// Total RAM on this node in MB. `u64` (matching the proto's
+    /// `memory_mib`) so a node with >= ~4 TB of RAM is not silently truncated.
+    pub total_ram_mb: u64,
 }
 
 /// Detected NUMA topology of the host.
@@ -163,9 +164,9 @@ impl NumaTopology {
         let meminfo_path = node_path.join("meminfo");
         let meminfo = std::fs::read_to_string(&meminfo_path)
             .with_context(|| format!("failed to read meminfo for {name}"))?;
-        let total_ram_mb = (parse_memtotal_kb(&meminfo)
+        let total_ram_mb = parse_memtotal_kb(&meminfo)
             .with_context(|| format!("failed to parse MemTotal for {name}"))?
-            / 1024) as u32;
+            / 1024;
 
         Ok(NumaNode {
             id,
