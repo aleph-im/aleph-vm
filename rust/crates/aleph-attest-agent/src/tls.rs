@@ -78,11 +78,12 @@ pub fn generate_attested_tls_identity(backend: &dyn TeeBackend) -> Result<Attest
 /// if that ever changes).
 pub fn build_rustls_config(identity: &AttestedTlsIdentity) -> Result<rustls::ServerConfig> {
     let cert_chain = vec![CertificateDer::from(identity.cert_der.clone())];
-    // rustls takes ownership of the key bytes; keep our transient copy under
-    // Zeroizing so this extra plaintext copy of the private key is wiped once
-    // rustls has consumed it, rather than lingering on the heap.
-    let key_bytes = Zeroizing::new((*identity.key_der).clone());
-    let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_bytes.to_vec()));
+    // rustls takes ownership of a plain Vec of the key bytes and does not wipe
+    // it: this copy lives, un-zeroized, for the lifetime of the ServerConfig.
+    // We cannot change that (rustls owns it), so we make exactly one copy here
+    // and rely on SEV-SNP memory encryption to keep it confidential at rest.
+    // The persistent secret of record stays under Zeroizing in `identity.key_der`.
+    let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from((*identity.key_der).clone()));
 
     let config = rustls::ServerConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
