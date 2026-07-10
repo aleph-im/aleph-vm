@@ -1772,6 +1772,16 @@ fn snp_config_slice(_state: &DaemonState, spec: &pb::VmSpec) -> Result<Option<Sn
             "SEV-SNP measured boot requires kernel_path and initrd_path".to_string(),
         ));
     }
+    // GPU passthrough into a confidential SEV-SNP guest (confidential GPU /
+    // NVIDIA CC) is not supported yet, and `build_snp_argv` emits no passthrough
+    // devices. Accepting GPUs here would write them into the controller config
+    // and then silently drop them at launch, giving the owner a VM without the
+    // hardware they asked for. Fail closed instead. See divergence 68.
+    if !spec.gpus.is_empty() {
+        return Err(RpcError::InvalidBackend(
+            "GPU passthrough is not supported on SEV-SNP VMs yet".to_string(),
+        ));
+    }
     // The dm-verity roothash and hash tree are sidecars of the rootfs image, the
     // convention the B2a Nix image emits (`rootfs.ext4.roothash` /
     // `rootfs.ext4.verity`) and the aleph-cvm donor's `ensure_verity` uses. The
@@ -3507,6 +3517,29 @@ mod tests {
         match snp_config_slice(state, &spec) {
             Err(RpcError::InvalidBackend(_)) => {}
             other => panic!("an empty initrd_path must be InvalidBackend, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn snp_config_slice_rejects_gpus_so_they_are_not_silently_dropped() {
+        // build_snp_argv emits no GPU passthrough devices, so an SNP spec that
+        // carries GPUs must fail closed here rather than launch a VM missing the
+        // requested hardware. Removing the guard makes this return Ok.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+
+        let vm_id = hash('j');
+        let mut spec = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+        spec.gpus = vec![pb::GpuConfig {
+            pci_host: "0000:01:00.0".to_string(),
+            supports_x_vga: true,
+        }];
+        match snp_config_slice(state, &spec) {
+            Err(RpcError::InvalidBackend(_)) => {}
+            other => panic!("an SNP spec with GPUs must be InvalidBackend, got {other:?}"),
         }
     }
 

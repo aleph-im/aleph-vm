@@ -375,6 +375,12 @@ pub fn snp_tee_fragment(mem_size_mb: u64, sev_policy: u32, ovmf_path: &str) -> V
 /// `kernel_cmdline`, `sev_policy`) must be present; the dispatcher only routes
 /// an SNP-marked config here, so their absence is an internal invariant
 /// violation.
+///
+/// Unlike `build_argv` and `build_confidential_argv`, this path emits NO GPU
+/// passthrough devices: confidential GPU passthrough (NVIDIA CC) into an SNP
+/// guest is not supported yet. The daemon fails closed on an SNP spec that
+/// carries GPUs (`snp_config_slice`), so an SNP config reaching here always has
+/// an empty `gpus`; nothing is silently dropped.
 pub fn build_snp_argv(config: &QemuConfig) -> Vec<String> {
     debug_assert!(
         config.is_snp(),
