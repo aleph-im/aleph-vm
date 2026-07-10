@@ -146,7 +146,26 @@ async def test_get_host_info_matches_the_python_sources(rust_daemon):
     node_dirs = sorted(p for p in Path("/sys/devices/system/node").glob("node[0-9]*") if p.is_dir())
     assert [n.index for n in info.numa_nodes] == sorted(int(p.name.removeprefix("node")) for p in node_dirs)
     if node_dirs:
-        assert sum(n.cpu_count for n in info.numa_nodes) == os.cpu_count()
+        # Compare each node's reported cpu_count against a parse of the SAME
+        # nodeN/cpulist the daemon read, keyed by index (robust to node order).
+        # os.cpu_count() is a different measure whose relation to node cpulists
+        # shifts with offline CPUs and can be None; os.sched_getaffinity is the
+        # process's (possibly cgroup-restricted) affinity, not the host count.
+        def cpulist_count(node_dir: Path) -> int:
+            total = 0
+            for part in filter(None, (node_dir / "cpulist").read_text().strip().split(",")):
+                if "-" in part:
+                    lo, hi = part.split("-")
+                    total += int(hi) - int(lo) + 1
+                else:
+                    total += 1
+            return total
+
+        cpus_by_index = {int(p.name.removeprefix("node")): cpulist_count(p) for p in node_dirs}
+        for node in info.numa_nodes:
+            assert node.cpu_count == cpus_by_index[node.index], (
+                f"node {node.index}: reported {node.cpu_count}, " f"cpulist has {cpus_by_index[node.index]}"
+            )
         assert all(n.memory_mib > 0 for n in info.numa_nodes)
 
 
