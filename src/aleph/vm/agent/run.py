@@ -13,7 +13,12 @@ from aiohttp.web_exceptions import (
     HTTPInternalServerError,
     HTTPServiceUnavailable,
 )
-from aleph_message.models import InstanceContent, ItemHash, ProgramContent
+from aleph_message.models import (
+    InstanceContent,
+    ItemHash,
+    ProgramContent,
+    VerifiableProgramContent,
+)
 from msgpack import UnpackValueError
 from multidict import CIMultiDict
 
@@ -338,6 +343,15 @@ async def create_vm_execution(
         await persist_record(vm_hash, record)
         return None
 
+    if isinstance(content, VerifiableProgramContent):
+        # Scheduler wiring for V-Programs lands before the launch path: the
+        # allocation is accepted, but building a CreateVmSpec for an SNP guest
+        # (runtime manifest fetch, measured cmdline, verified volumes) is not
+        # implemented yet. Fail with the create-path vocabulary so
+        # update_allocations reports it per-VM and the scheduler can react.
+        msg = f"V-PROGRAM {vm_hash} accepted, but this CRN does not implement the SEV-SNP launch path yet"
+        raise VmSetupError(msg)
+
     # Every supported content type is handled above: programs through the spec
     # program path, instances (plain, GPU, confidential) through the spec path.
     # There is no pool fallback anymore. Anything else is genuinely unsupported.
@@ -575,6 +589,8 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, request: web.Request
     expiry.cancel(vm_id)  # do not reap a VM we are about to serve
 
     content, original = await _resolve_program_content(vm_hash, registry)
+    if isinstance(content, VerifiableProgramContent):
+        raise HTTPBadRequest(reason=f"VM {vm_hash} is a V-PROGRAM: executions are scheduler-controlled")
     if not isinstance(content, ProgramContent):
         raise HTTPBadRequest(reason=f"VM {vm_hash} is an instance, not a program")
 
@@ -655,6 +671,8 @@ async def run_code_on_event(
     expiry.cancel(vm_id)  # do not reap a VM we are about to serve
 
     content, original = await _resolve_program_content(vm_hash, registry)
+    if isinstance(content, VerifiableProgramContent):
+        raise HTTPBadRequest(reason=f"VM {vm_hash} is a V-PROGRAM: executions are scheduler-controlled")
     if not isinstance(content, ProgramContent):
         raise HTTPBadRequest(reason=f"VM {vm_hash} is an instance, not a program")
 
