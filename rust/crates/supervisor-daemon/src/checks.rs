@@ -177,6 +177,13 @@ fn check_amd_sev_es_supported() -> bool {
         && Path::new("/dev/sev").exists()
 }
 
+/// Python `check_amd_sev_snp_supported`: the SEV-SNP module parameter is "Y".
+/// Note the Python does NOT also require `/dev/sev` here (unlike SEV / SEV-ES);
+/// this mirrors it exactly. Feeds `HostInfo.sev_snp_supported`.
+pub(crate) fn check_amd_sev_snp_supported() -> bool {
+    check_system_module("kvm_amd/parameters/sev_snp").as_deref() == Some("Y")
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
