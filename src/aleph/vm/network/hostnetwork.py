@@ -51,6 +51,8 @@ class StaticIPv6Allocator(IPv6Allocator):
         VmType.microvm: "1",
         VmType.persistent_program: "2",
         VmType.instance: "3",
+        # Must match the scheduler's VmType::ipv6_value() (scheduler-events)
+        VmType.v_program: "4",
     }
 
     def __init__(self, ipv6_range: IPv6Network, subnet_prefix: int):
