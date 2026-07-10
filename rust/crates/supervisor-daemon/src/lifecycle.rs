@@ -195,7 +195,8 @@ fn apply_numa_dropin(
         &state.host.settings.systemd_unit_dir,
         vm_id,
         &placement.cpuset,
-    )?;
+    )
+    .map_err(|error| format!("{error:#}"))?;
     // A freshly written drop-in only applies after a reload if the unit was
     // already loaded; harmless on first load.
     state.units.reload()?;
@@ -227,7 +228,11 @@ fn remove_numa_dropin(state: &DaemonState, vm_id: &str) {
     if let Err(error) =
         crate::numa::remove_cpuset_dropin(&state.host.settings.systemd_unit_dir, vm_id)
     {
-        tracing::warn!(vm_id, error, "failed to remove the NUMA drop-in");
+        tracing::warn!(
+            vm_id,
+            error = format!("{error:#}"),
+            "failed to remove the NUMA drop-in"
+        );
         return;
     }
     if let Err(error) = state.units.reload() {

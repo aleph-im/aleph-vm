@@ -144,7 +144,7 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
     // daemon, mirroring how the other host-capability probes degrade.
     let numa = numa::NumaTopology::detect().unwrap_or_else(|error| {
         tracing::warn!(
-            error,
+            error = format!("{error:#}"),
             "NUMA topology detection failed; CPU pinning disabled"
         );
         numa::NumaTopology::empty()

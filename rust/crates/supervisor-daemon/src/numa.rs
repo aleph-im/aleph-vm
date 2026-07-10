@@ -18,11 +18,16 @@
 //!
 //! There is NO Python oracle for NUMA (the Python daemon never pinned CPUs
 //! or reported a NUMA topology); the reference is the aleph-cvm Rust donor.
-//! Errors surface as `String` to match the daemon's error conventions
-//! (the donor used anyhow, which this crate does not depend on).
+//! Fallible functions return `anyhow::Result` with `.context()` (like the
+//! donor); the daemon's typed boundary error (`RpcError`) is applied at the
+//! call sites in lifecycle.rs, and `PlacementError` below stays a typed enum
+//! because its variants pick the gRPC status. `AllowedCPUs`-drop-in IO and
+//! sysfs parsing keep their source cause via the context chain.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, bail};
 
 use crate::units::CONTROLLER_UNIT_PREFIX;
 
@@ -52,7 +57,7 @@ pub struct NumaTopology {
 
 impl NumaTopology {
     /// Detect NUMA topology from the real sysfs.
-    pub fn detect() -> Result<Self, String> {
+    pub fn detect() -> Result<Self> {
         Self::from_sysfs(Path::new("/sys/devices/system/node"))
     }
 
@@ -65,11 +70,11 @@ impl NumaTopology {
 
     /// Detect NUMA topology from an arbitrary sysfs-like directory (for
     /// testing).
-    pub fn from_sysfs(base: &Path) -> Result<Self, String> {
+    pub fn from_sysfs(base: &Path) -> Result<Self> {
         let mut nodes = Vec::new();
 
         let mut entries: Vec<_> = std::fs::read_dir(base)
-            .map_err(|error| format!("failed to read {}: {error}", base.display()))?
+            .with_context(|| format!("failed to read {}", base.display()))?
             .filter_map(|entry| entry.ok())
             .filter(|entry| {
                 entry
@@ -109,7 +114,7 @@ impl NumaTopology {
                 Err(error) => {
                     tracing::warn!(
                         directory = %entry.path().display(),
-                        error,
+                        error = format!("{error:#}"),
                         "skipping a NUMA node with unreadable or malformed sysfs"
                     );
                 }
@@ -122,21 +127,19 @@ impl NumaTopology {
     /// Parse one `node*` directory into a [`NumaNode`]. Returns `Err` (for the
     /// caller to skip that node) when the directory name, cpulist, or meminfo
     /// is missing/unreadable/malformed; the hugepage counts degrade to zero.
-    fn parse_node(entry: &std::fs::DirEntry) -> Result<NumaNode, String> {
+    fn parse_node(entry: &std::fs::DirEntry) -> Result<NumaNode> {
         let name = entry.file_name();
-        let name = name
-            .to_str()
-            .ok_or_else(|| "non-UTF-8 node directory name".to_string())?;
+        let name = name.to_str().context("non-UTF-8 node directory name")?;
         let id: u32 = name
             .strip_prefix("node")
-            .ok_or_else(|| format!("unexpected directory name {name}"))?
+            .with_context(|| format!("unexpected directory name {name}"))?
             .parse()
-            .map_err(|error| format!("failed to parse node ID from {name}: {error}"))?;
+            .with_context(|| format!("failed to parse node ID from {name}"))?;
 
         let node_path = entry.path();
 
         let cpulist_raw = std::fs::read_to_string(node_path.join("cpulist"))
-            .map_err(|error| format!("failed to read cpulist for {name}: {error}"))?;
+            .with_context(|| format!("failed to read cpulist for {name}"))?;
         let cpus = parse_cpulist(cpulist_raw.trim())?;
 
         // 2 MiB hugepages: absent counts as zero (a node may expose no
@@ -159,9 +162,9 @@ impl NumaTopology {
         // Per-node MemTotal from meminfo.
         let meminfo_path = node_path.join("meminfo");
         let meminfo = std::fs::read_to_string(&meminfo_path)
-            .map_err(|error| format!("failed to read meminfo for {name}: {error}"))?;
+            .with_context(|| format!("failed to read meminfo for {name}"))?;
         let total_ram_mb = (parse_memtotal_kb(&meminfo)
-            .map_err(|error| format!("failed to parse MemTotal for {name}: {error}"))?
+            .with_context(|| format!("failed to parse MemTotal for {name}"))?
             / 1024) as u32;
 
         Ok(NumaNode {
@@ -396,7 +399,7 @@ const MAX_CPULIST_RANGE: u32 = 4096;
 
 /// Parse a Linux cpulist string (e.g. "0-3,8-11") into a sorted set of CPU
 /// IDs.
-pub fn parse_cpulist(s: &str) -> Result<BTreeSet<u32>, String> {
+pub fn parse_cpulist(s: &str) -> Result<BTreeSet<u32>> {
     let mut cpus = BTreeSet::new();
     for part in s.split(',') {
         let part = part.trim();
@@ -404,27 +407,21 @@ pub fn parse_cpulist(s: &str) -> Result<BTreeSet<u32>, String> {
             continue;
         }
         if let Some((lo, hi)) = part.split_once('-') {
-            let lo: u32 = lo
-                .trim()
-                .parse()
-                .map_err(|_| "invalid cpu range start".to_string())?;
-            let hi: u32 = hi
-                .trim()
-                .parse()
-                .map_err(|_| "invalid cpu range end".to_string())?;
+            let lo: u32 = lo.trim().parse().context("invalid cpu range start")?;
+            let hi: u32 = hi.trim().parse().context("invalid cpu range end")?;
             if hi < lo {
-                return Err(format!("cpu range {lo}-{hi} ends before it starts"));
+                bail!("cpu range {lo}-{hi} ends before it starts");
             }
             // Bound the range so a bogus cpulist cannot OOM the daemon at boot.
             if hi - lo >= MAX_CPULIST_RANGE {
-                return Err(format!(
+                bail!(
                     "cpu range {lo}-{hi} spans more than {MAX_CPULIST_RANGE} CPUs; \
                      refusing to materialize it"
-                ));
+                );
             }
             cpus.extend(lo..=hi);
         } else {
-            let cpu: u32 = part.parse().map_err(|_| "invalid cpu id".to_string())?;
+            let cpu: u32 = part.parse().context("invalid cpu id")?;
             cpus.insert(cpu);
         }
     }
@@ -432,20 +429,18 @@ pub fn parse_cpulist(s: &str) -> Result<BTreeSet<u32>, String> {
 }
 
 /// Parse MemTotal in kB from a node's meminfo file.
-fn parse_memtotal_kb(meminfo: &str) -> Result<u64, String> {
+fn parse_memtotal_kb(meminfo: &str) -> Result<u64> {
     for line in meminfo.lines() {
         if line.contains("MemTotal:") {
             let kb_str = line
                 .split_whitespace()
                 .rev()
                 .nth(1) // second from right, before "kB"
-                .ok_or_else(|| "malformed MemTotal line".to_string())?;
-            return kb_str
-                .parse()
-                .map_err(|_| "failed to parse MemTotal value".to_string());
+                .context("malformed MemTotal line")?;
+            return kb_str.parse().context("failed to parse MemTotal value");
         }
     }
-    Err("MemTotal not found in meminfo".to_string())
+    bail!("MemTotal not found in meminfo")
 }
 
 // ── systemd AllowedCPUs drop-in ─────────────────────────────────────────
@@ -463,18 +458,16 @@ pub fn dropin_dir(unit_dir: &Path, vm_hash: &str) -> PathBuf {
 /// pinning its vCPUs to the chosen node. Creates the `.service.d` directory
 /// if absent. The caller triggers a systemd daemon-reload afterwards so a
 /// unit that was already loaded picks the property up.
-pub fn write_cpuset_dropin(unit_dir: &Path, vm_hash: &str, cpuset: &str) -> Result<(), String> {
+pub fn write_cpuset_dropin(unit_dir: &Path, vm_hash: &str, cpuset: &str) -> Result<()> {
     let dir = dropin_dir(unit_dir, vm_hash);
-    std::fs::create_dir_all(&dir)
-        .map_err(|error| format!("failed to create {}: {error}", dir.display()))?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
     let path = dir.join(NUMA_DROPIN_FILE);
     let body = format!(
         "# Written by the aleph-vm supervisor (NUMA CPU pinning). Do not edit.\n\
          [Service]\n\
          AllowedCPUs={cpuset}\n"
     );
-    std::fs::write(&path, body)
-        .map_err(|error| format!("failed to write {}: {error}", path.display()))
+    std::fs::write(&path, body).with_context(|| format!("failed to write {}", path.display()))
 }
 
 /// Read the effective `AllowedCPUs=` cpuset from a VM's controller drop-in,
@@ -498,12 +491,12 @@ pub fn read_cpuset_dropin(unit_dir: &Path, vm_hash: &str) -> Option<String> {
 /// Remove the NUMA drop-in directory for a VM's controller unit (idempotent;
 /// a missing directory is not an error). Called on delete alongside the
 /// other teardown.
-pub fn remove_cpuset_dropin(unit_dir: &Path, vm_hash: &str) -> Result<(), String> {
+pub fn remove_cpuset_dropin(unit_dir: &Path, vm_hash: &str) -> Result<()> {
     let dir = dropin_dir(unit_dir, vm_hash);
     match std::fs::remove_dir_all(&dir) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("failed to remove {}: {error}", dir.display())),
+        Err(error) => Err(error).with_context(|| format!("failed to remove {}", dir.display())),
     }
 }
 
