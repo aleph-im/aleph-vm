@@ -102,7 +102,8 @@ pub async fn verify_sev_snp_report(
 
     let measurement = extract_measurement(&parsed).to_vec();
 
-    // 2. Extract chip_id and TCB version from the parsed report
+    // Extract chip_id and TCB version from the parsed report (input to the
+    // VCEK fetch below, not a numbered verification stage of its own).
     let chip_id = parsed.inner.chip_id;
     let reported_tcb = &parsed.inner.reported_tcb;
     let tcb = TcbParams {
@@ -123,7 +124,7 @@ pub async fn verify_sev_snp_report(
         .context("failed to fetch CA chain from AMD KDS")?;
 
     let chain = CertChain {
-        vcek_der: vcek_der.clone(),
+        vcek_der,
         ask_der,
         ark_der,
     };
