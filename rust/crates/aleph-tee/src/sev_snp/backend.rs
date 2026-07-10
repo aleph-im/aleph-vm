@@ -77,6 +77,7 @@ impl TeeBackend for SevSnpBackend {
             .context("report data failed structural validation")?;
 
         let measurement = extract_measurement(&parsed).to_vec();
+        let report_data = extract_report_data(&parsed);
 
         Ok(VerificationResult {
             valid: false,
@@ -87,6 +88,7 @@ impl TeeBackend for SevSnpBackend {
                 self.product
             ),
             measurement,
+            report_data,
             details: serde_json::json!({
                 "product": self.product,
                 "guest_svn": parsed.inner.guest_svn,
@@ -104,13 +106,13 @@ impl TeeBackend for SevSnpBackend {
 
     /// Parse raw bytes into a structured attestation report.
     fn parse_report(&self, raw: &[u8]) -> Result<AttestationReport> {
-        let parsed = parse_sev_snp_report(raw)?;
+        // Structural validation only; `data` is the single source of truth and
+        // the verifier re-parses it to derive report_data / measurement.
+        parse_sev_snp_report(raw)?;
 
         Ok(AttestationReport {
             tee_type: TeeType::SevSnp,
             data: raw.to_vec(),
-            report_data: extract_report_data(&parsed),
-            measurement: extract_measurement(&parsed).to_vec(),
         })
     }
 }
@@ -185,9 +187,12 @@ mod tests {
         let parsed = backend.parse_report(&buf).expect("parse should succeed");
 
         assert_eq!(parsed.tee_type, TeeType::SevSnp);
-        assert_eq!(parsed.report_data, [0x42; 64]);
-        assert_eq!(parsed.measurement, vec![0xAB; 48]);
+        // `data` is the single source of truth; report_data / measurement are
+        // derived by re-parsing it, not stored as standalone (unsigned) fields.
         assert_eq!(parsed.data, buf);
+        let reparsed = parse_sev_snp_report(&parsed.data).unwrap();
+        assert_eq!(extract_report_data(&reparsed), [0x42; 64]);
+        assert_eq!(extract_measurement(&reparsed), [0xAB; 48]);
     }
 
     #[test]
