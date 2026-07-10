@@ -12,6 +12,7 @@ from aleph.vm.agent.machine import get_cpu_info, get_hardware_info, get_memory_i
 from aleph.vm.conf import settings
 from aleph.vm.resources import GpuDevice
 from aleph.vm.sevclient import SevClient
+from aleph.vm.agent.vcpu_probe import get_supported_snp_vcpu_types
 from aleph.vm.storage_pools import pools_disk_usage
 from aleph.vm.utils import (
     async_cache,
@@ -72,8 +73,22 @@ class UsagePeriod(BaseModel):
     duration_seconds: float
 
 
+class SevSnpProperties(BaseModel):
+    supported_vcpu_types: list[str] = Field(
+        description="QEMU SNP guest CPU models this host can launch (e.g. EPYC-v4). "
+        "The scheduler matches v-program launch-measurement vcpu_type against this list."
+    )
+
+
+class TeeProperties(BaseModel):
+    """TEE launch capability, keyed by platform so TDX and friends slot in later."""
+
+    sev_snp: SevSnpProperties | None = None
+
+
 class MachineProperties(BaseModel):
     cpu: CpuProperties
+    tee: TeeProperties | None = None
 
 
 class AnnotatedGpuDevice(GpuDevice):
@@ -123,6 +138,7 @@ class MemoryProperties(BaseModel):
 class MachineCapability(BaseModel):
     cpu: ExtendedCpuProperties
     memory: MemoryProperties
+    tee: TeeProperties | None = None
 
 
 async def _gpus_from_host_info(host_info) -> GpuProperties:
@@ -154,6 +170,14 @@ async def _gpus_from_host_info(host_info) -> GpuProperties:
 machine_properties_cached = None
 
 
+async def _get_tee_properties() -> TeeProperties | None:
+    """TEE launch capability, absent when there is nothing provable to advertise."""
+    snp_vcpu_types = await get_supported_snp_vcpu_types()
+    if not snp_vcpu_types:
+        return None
+    return TeeProperties(sev_snp=SevSnpProperties(supported_vcpu_types=snp_vcpu_types))
+
+
 @async_cache
 async def get_machine_properties() -> MachineProperties:
     """Fetch machine properties such as architecture, CPU vendor, ...
@@ -178,6 +202,7 @@ async def get_machine_properties() -> MachineProperties:
                 )
             ),
         ),
+        tee=await _get_tee_properties(),
     )
 
 
@@ -211,6 +236,7 @@ async def get_machine_capability() -> MachineCapability:
             type=mem_info["type"],
             clock=mem_info["clock"],
         ),
+        tee=await _get_tee_properties(),
     )
 
 

@@ -179,7 +179,7 @@ def check_amd_sev_snp_supported() -> bool:
     Adds strong memory integrity protection to help prevent malicious hypervisor-based attacks like data replay,
     memory re-mapping, and more in order to create an isolated execution environment.
     """
-    return check_system_module("kvm_amd/parameters/sev_snp") == "Y"
+    return (check_system_module("kvm_amd/parameters/sev_snp") == "Y") and Path("/dev/sev").exists()
 
 
 def fix_message_validation(message: dict) -> dict:
