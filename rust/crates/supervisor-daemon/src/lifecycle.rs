@@ -225,6 +225,15 @@ fn release_numa_placement(state: &DaemonState, node: u32, vcpus: u32) {
 /// Remove a VM's NUMA drop-in on teardown and reload systemd. Best effort:
 /// a failure is logged, never fatal to a delete.
 fn remove_numa_dropin(state: &DaemonState, vm_id: &str) {
+    // Nothing is ever pinned when placement is inert (single-node or non-NUMA
+    // host), so there is no drop-in to remove and no reason to pay for a
+    // systemd daemon-reload. This matters for the hidden-VM delete path, which
+    // cannot gate on `entry.numa_node` (it has no entry); the tracked-delete
+    // path already only calls this for a pinned VM. Mirrors the same guard in
+    // `release_numa_placement`.
+    if !state.numa.is_placement_active() {
+        return;
+    }
     if let Err(error) =
         crate::numa::remove_cpuset_dropin(&state.host.settings.systemd_unit_dir, vm_id)
     {
@@ -5985,6 +5994,40 @@ mod tests {
             crate::numa::read_cpuset_dropin(&state.host.settings.systemd_unit_dir, &vm_id)
                 .is_none(),
             "the drop-in is gone"
+        );
+    }
+
+    #[test]
+    fn remove_numa_dropin_reloads_only_when_placement_is_active() {
+        // Inactive (single-node / non-NUMA) host: nothing is ever pinned, so a
+        // drop-in removal must not issue a systemd daemon-reload. The hidden-VM
+        // delete path cannot gate on entry.numa_node, so the gate lives inside
+        // remove_numa_dropin.
+        let inert = harness();
+        remove_numa_dropin(&inert.state, &hash('a'));
+        assert!(
+            !inert
+                .systemd
+                .actions()
+                .iter()
+                .any(|action| action.contains("daemon-reload")),
+            "inactive placement must not daemon-reload, got: {:?}",
+            inert.systemd.actions()
+        );
+
+        // Active (multi-node) host: removal reloads so an already-loaded unit
+        // drops the AllowedCPUs property. This also proves the check above is
+        // not vacuous.
+        let active = numa_harness();
+        remove_numa_dropin(&active.state, &hash('a'));
+        assert!(
+            active
+                .systemd
+                .actions()
+                .iter()
+                .any(|action| action.contains("daemon-reload")),
+            "active placement reloads on drop-in removal, got: {:?}",
+            active.systemd.actions()
         );
     }
 
