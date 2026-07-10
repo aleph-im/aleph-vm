@@ -22,7 +22,7 @@ pub const DEFAULT_OVMF_PATH: &str = "/usr/local/share/ovmf-snp/OVMF.fd";
 /// before loading the kernel: without this flag, the blob verifier fails and
 /// OVMF falls back to the embedded GRUB bootloader.
 pub fn sev_snp_qemu_args(config: &VmConfig, ovmf_path: &str) -> Vec<String> {
-    let policy = config.tee.policy.as_deref().unwrap_or(DEFAULT_POLICY);
+    let policy = canonical_policy(config.tee.policy.as_deref().unwrap_or(DEFAULT_POLICY));
 
     let hugetlb_opts = match config.hugepage_size {
         Some(crate::types::HugePageSize::Size1G) => ",hugetlb=on,hugetlbsize=1G",
@@ -58,6 +58,56 @@ pub fn sev_snp_qemu_args(config: &VmConfig, ovmf_path: &str) -> Vec<String> {
         "-bios".to_string(),
         ovmf_path.to_string(),
     ]
+}
+
+/// Canonicalize the guest policy into a bare `0x…` hex literal.
+///
+/// `config.tee.policy` is deserialized from (potentially untrusted) JSON, so it
+/// must never reach the `sev-snp-guest` object verbatim: because that object is
+/// a single comma-separated argv element, a value like `"0x30000,inject=on"`
+/// would smuggle extra properties into it. We parse the policy as a base-0
+/// unsigned integer (the same contract the daemon's `parse_sev_policy`
+/// enforces) and re-emit it as `0x{:x}`, so the emitted text is always nothing
+/// but hex digits. An unparseable policy falls back to the restrictive
+/// [`DEFAULT_POLICY`] (debug disabled) rather than launching attacker-shaped
+/// text; the fallback is logged so a mistyped policy is observable.
+fn canonical_policy(policy: &str) -> String {
+    match parse_policy_u32(policy) {
+        Some(value) => format!("0x{value:x}"),
+        None => {
+            tracing::warn!(policy, "malformed SEV-SNP guest policy; using default");
+            DEFAULT_POLICY.to_string()
+        }
+    }
+}
+
+/// Parse a base-0 unsigned policy value (`0x`/`0o`/`0b` prefix, else decimal)
+/// that fits in a `u32`. Returns `None` for anything else, which notably
+/// rejects embedded commas, whitespace, and signs.
+fn parse_policy_u32(policy: &str) -> Option<u32> {
+    let trimmed = policy.trim();
+    let (radix, digits) = if let Some(rest) = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+    {
+        (16, rest)
+    } else if let Some(rest) = trimmed
+        .strip_prefix("0o")
+        .or_else(|| trimmed.strip_prefix("0O"))
+    {
+        (8, rest)
+    } else if let Some(rest) = trimmed
+        .strip_prefix("0b")
+        .or_else(|| trimmed.strip_prefix("0B"))
+    {
+        (2, rest)
+    } else {
+        (10, trimmed)
+    };
+    if digits.is_empty() {
+        return None;
+    }
+    u32::from_str_radix(digits, radix).ok()
 }
 
 #[cfg(test)]
@@ -103,6 +153,46 @@ mod tests {
             sev_arg.contains("kernel-hashes=on"),
             "kernel-hashes should be on but got: {sev_arg}"
         );
+    }
+
+    #[test]
+    fn test_policy_injection_is_rejected() {
+        // A policy carrying extra QEMU object properties must not survive: it
+        // falls back to the default and the smuggled property is gone.
+        let config = make_config(2048, Some("0x30000,inject=on"));
+        let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH);
+
+        let sev_arg = args
+            .iter()
+            .find(|a| a.contains("sev-snp-guest"))
+            .expect("should have sev-snp-guest arg");
+
+        assert!(
+            !sev_arg.contains("inject=on"),
+            "smuggled property must not survive but got: {sev_arg}"
+        );
+        assert!(
+            sev_arg.contains("policy=0x30000"),
+            "should fall back to default policy but got: {sev_arg}"
+        );
+    }
+
+    #[test]
+    fn test_policy_is_canonicalized() {
+        // Uppercase-prefix hex and bare decimal both render as canonical
+        // lowercase 0x hex (196608 == 0x30000).
+        for input in ["0X30000", "196608"] {
+            let config = make_config(2048, Some(input));
+            let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH);
+            let sev_arg = args
+                .iter()
+                .find(|a| a.contains("sev-snp-guest"))
+                .expect("should have sev-snp-guest arg");
+            assert!(
+                sev_arg.contains("policy=0x30000"),
+                "input {input:?} should canonicalize to 0x30000 but got: {sev_arg}"
+            );
+        }
     }
 
     #[test]
