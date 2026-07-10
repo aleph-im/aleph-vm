@@ -91,11 +91,14 @@ pub async fn proxy_handler(
     req: HttpRequest,
     body: Bytes,
 ) -> HttpResponse {
-    // Build the upstream URL preserving path and query string.
+    // Build the upstream URL preserving path and query string. Trim any
+    // trailing slash on the configured upstream so it does not collide with the
+    // leading slash of the request path (`http://host//path`).
+    let base = state.upstream.trim_end_matches('/');
     let upstream_url = if let Some(qs) = req.uri().query() {
-        format!("{}{path}?{qs}", state.upstream, path = req.uri().path())
+        format!("{base}{path}?{qs}", path = req.uri().path())
     } else {
-        format!("{}{path}", state.upstream, path = req.uri().path())
+        format!("{base}{path}", path = req.uri().path())
     };
 
     // Build the proxied request.
@@ -105,13 +108,15 @@ pub async fn proxy_handler(
         .unwrap_or(reqwest::Method::GET);
     let mut proxy_req = state.http_client.request(method, &upstream_url);
 
-    // Forward end-to-end headers only. Skip Host (reqwest sets it) and all
-    // hop-by-hop headers: relaying a client Transfer-Encoding next to reqwest's
-    // own Content-Length is a request-smuggling / desync vector, so we let
-    // reqwest frame the request itself.
+    // Forward end-to-end headers only. Skip Host (reqwest sets it), all
+    // hop-by-hop headers, and Content-Length: relaying a client
+    // Transfer-Encoding or Content-Length next to reqwest's own body framing is
+    // a request-smuggling / desync vector, so we let reqwest frame the request
+    // itself from the actual body below.
     for (name, value) in req.headers() {
         if name != actix_web::http::header::HOST
             && !is_hop_by_hop(name.as_str())
+            && !name.as_str().eq_ignore_ascii_case("content-length")
             && let Ok(v) = value.to_str()
         {
             proxy_req = proxy_req.header(name.as_str(), v);
@@ -129,10 +134,12 @@ pub async fn proxy_handler(
             let mut resp = HttpResponse::build(status);
 
             // Forward end-to-end response headers only. Dropping hop-by-hop
-            // headers (e.g. Transfer-Encoding) lets actix frame the response and
-            // avoids a Content-Length / Transfer-Encoding desync to the client.
+            // headers (e.g. Transfer-Encoding) and Content-Length lets actix
+            // frame the response from the buffered body below, avoiding a
+            // Content-Length / Transfer-Encoding desync to the client.
             for (name, value) in upstream_resp.headers() {
                 if !is_hop_by_hop(name.as_str())
+                    && !name.as_str().eq_ignore_ascii_case("content-length")
                     && let Ok(v) = value.to_str()
                 {
                     resp.insert_header((name.as_str(), v));
