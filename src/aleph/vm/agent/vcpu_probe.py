@@ -47,25 +47,29 @@ async def query_cpu_definitions() -> list[dict]:
         stderr=asyncio.subprocess.DEVNULL,
     )
     assert process.stdin is not None and process.stdout is not None
+
+    async def _converse() -> list[dict]:
+        assert process.stdin is not None and process.stdout is not None
+        greeting = await _read_qmp_response(process.stdout)
+        if "QMP" not in greeting:
+            msg = f"Unexpected QMP greeting: {greeting}"
+            raise RuntimeError(msg)
+        definitions: list[dict] | None = None
+        for command in ("qmp_capabilities", "query-cpu-definitions", "quit"):
+            process.stdin.write(json.dumps({"execute": command}).encode() + b"\n")
+            await process.stdin.drain()
+            response = await _read_qmp_response(process.stdout)
+            if command == "query-cpu-definitions":
+                definitions = response["return"]
+        await process.wait()
+        assert definitions is not None
+        return definitions
+
     try:
-        async with asyncio.timeout(PROBE_TIMEOUT_SECONDS):
-            greeting = await _read_qmp_response(process.stdout)
-            if "QMP" not in greeting:
-                msg = f"Unexpected QMP greeting: {greeting}"
-                raise RuntimeError(msg)
-            definitions: list[dict] | None = None
-            for command in ("qmp_capabilities", "query-cpu-definitions", "quit"):
-                process.stdin.write(json.dumps({"execute": command}).encode() + b"\n")
-                await process.stdin.drain()
-                response = await _read_qmp_response(process.stdout)
-                if command == "query-cpu-definitions":
-                    definitions = response["return"]
-            await process.wait()
+        return await asyncio.wait_for(_converse(), timeout=PROBE_TIMEOUT_SECONDS)
     finally:
         if process.returncode is None:
             process.kill()
-    assert definitions is not None
-    return definitions
 
 
 def filter_snp_vcpu_types(definitions: list[dict]) -> list[str]:

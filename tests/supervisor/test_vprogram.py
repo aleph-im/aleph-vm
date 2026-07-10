@@ -143,9 +143,7 @@ async def test_update_allocations_stops_descheduled_vprogram(aiohttp_client, moc
     app["pubsub"] = None
     app["vm_registry"].record(ItemHash(vm_hash), message=message.content, original=message.content, persistent=True)
 
-    fake_supervisor = MagicMock(
-        delete_vm=AsyncMock(), list_vms=AsyncMock(return_value=[_running_vm_info(vm_hash)])
-    )
+    fake_supervisor = MagicMock(delete_vm=AsyncMock(), list_vms=AsyncMock(return_value=[_running_vm_info(vm_hash)]))
     app["supervisor"] = fake_supervisor
 
     mock_delete_records = mocker.patch("aleph.vm.agent.views.delete_records_for_vm", new_callable=AsyncMock)
@@ -176,9 +174,7 @@ async def test_update_allocations_spares_scheduled_vprogram(aiohttp_client, mock
     app["pubsub"] = None
     app["vm_registry"].record(ItemHash(vm_hash), message=message.content, original=message.content, persistent=True)
 
-    fake_supervisor = MagicMock(
-        delete_vm=AsyncMock(), list_vms=AsyncMock(return_value=[_running_vm_info(vm_hash)])
-    )
+    fake_supervisor = MagicMock(delete_vm=AsyncMock(), list_vms=AsyncMock(return_value=[_running_vm_info(vm_hash)]))
     app["supervisor"] = fake_supervisor
 
     settings.ALLOCATION_TOKEN_HASH = TEST_TOKEN_HASH
@@ -214,7 +210,7 @@ async def test_create_vm_execution_vprogram_fails_cleanly(mocker):
 
 
 @pytest.mark.asyncio
-async def test_run_code_rejects_vprogram(mocker):
+async def test_run_code_rejects_vprogram():
     """On-demand execution endpoints must reject v-programs: they are
     scheduler-controlled."""
     from aiohttp.web_exceptions import HTTPBadRequest
