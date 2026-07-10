@@ -1,0 +1,55 @@
+{
+    "chain": "ETH",
+    "sender": "0x9319Ad3B7A8E0eE24f2E639c40D8eD124C5520Ba",
+    "type": "V-PROGRAM",
+    "channel": "TEST",
+    "signature": "0x372da8230552b8c3e65c05b31a0ff3a24666d66c575f8e11019f62579bf48c2b7fe2f0bbe907a2a5bf8050989cdaf8a59ff8a1cbcafcdef0656c54279b4aa0c71b",
+    "time": 1719502000.0,
+    "item_type": "inline",
+    "content": {
+        "address": "0x9319Ad3B7A8E0eE24f2E639c40D8eD124C5520Ba",
+        "time": 1719502000.0,
+        "allow_amend": false,
+        "payment": {
+            "type": "credit"
+        },
+        "environment": {
+            "internet": true
+        },
+        "resources": {
+            "vcpus": 2,
+            "memory": 2048,
+            "seconds": 30
+        },
+        "runtime": {
+            "ref": "cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe",
+            "comment": "compose-runner snp bundle"
+        },
+        "workload": {
+            "ref": "beefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef",
+            "hash_tree": "feedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeed",
+            "roothash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+        },
+        "verification": {
+            "backend": "sev_snp",
+            "policy": 196608,
+            "measurements": [
+                {
+                    "platform": "sev_snp",
+                    "digest": "abababababababababababababababababababababababababababababababababababababababababababababababab",
+                    "vcpu_type": "EPYC-v4"
+                }
+            ]
+        },
+        "volumes": [
+            {
+                "ref": "dadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadada",
+                "hash_tree": "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5",
+                "roothash": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+                "comment": "model weights"
+            }
+        ]
+    },
+    "item_content": "{\"address\":\"0x9319Ad3B7A8E0eE24f2E639c40D8eD124C5520Ba\",\"time\":1719502000.0,\"allow_amend\":false,\"payment\":{\"type\":\"credit\"},\"environment\":{\"internet\":true},\"resources\":{\"vcpus\":2,\"memory\":2048,\"seconds\":30},\"runtime\":{\"ref\":\"cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe\",\"comment\":\"compose-runner snp bundle\"},\"workload\":{\"ref\":\"beefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef\",\"hash_tree\":\"feedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeed\",\"roothash\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\"},\"verification\":{\"backend\":\"sev_snp\",\"policy\":196608,\"measurements\":[{\"platform\":\"sev_snp\",\"digest\":\"abababababababababababababababababababababababababababababababababababababababababababababababab\",\"vcpu_type\":\"EPYC-v4\"}]},\"volumes\":[{\"ref\":\"dadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadada\",\"hash_tree\":\"d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5\",\"roothash\":\"efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef\",\"comment\":\"model weights\"}]}",
+    "item_hash": "4c319b6bdf98f1e90f2bf8c69da175679fa21ca27d4547bbfa32f77dd3b49fe6"
+}
