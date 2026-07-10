@@ -282,6 +282,8 @@ class Allocation(BaseModel):
     instances: set[ItemHash] = Field(default_factory=set)
     on_demand_vms: set[ItemHash] | None = None
     jobs: set[ItemHash] | None = None
+    # V-PROGRAM messages (verifiable SEV-SNP programs), scheduler-designated
+    v_programs: set[ItemHash] = Field(default_factory=set)
 
 
 class VMNotification(BaseModel):
