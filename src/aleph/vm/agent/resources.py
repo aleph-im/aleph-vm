@@ -9,10 +9,10 @@ from pydantic import BaseModel, Field
 
 from aleph.vm.agent.aggregate import get_compatible_gpus, update_aggregate_settings
 from aleph.vm.agent.machine import get_cpu_info, get_hardware_info, get_memory_info
+from aleph.vm.agent.vcpu_probe import get_supported_snp_vcpu_types
 from aleph.vm.conf import settings
 from aleph.vm.resources import GpuDevice
 from aleph.vm.sevclient import SevClient
-from aleph.vm.agent.vcpu_probe import get_supported_snp_vcpu_types
 from aleph.vm.storage_pools import pools_disk_usage
 from aleph.vm.utils import (
     async_cache,

@@ -5,7 +5,7 @@ models advertised in /about/usage/system properties.tee, so the advertised
 list must reflect what this exact QEMU + kernel + silicon can launch.
 """
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 

@@ -240,7 +240,9 @@ async def get_code_path(ref: str) -> Path:
     if settings.FAKE_DATA_PROGRAM:
         archive_path = Path(settings.FAKE_DATA_PROGRAM)
 
-        encoding: Encoding = (await get_message(ref="fake-message")).content.code.encoding
+        fake_message = await get_message(ref="fake-message")
+        assert isinstance(fake_message, ProgramMessage), "The fake data message must be a program"
+        encoding: Encoding = fake_message.content.code.encoding
         if encoding == Encoding.squashfs:
             squashfs_path = Path(archive_path.name + ".squashfs")
             squashfs_path.unlink(missing_ok=True)
