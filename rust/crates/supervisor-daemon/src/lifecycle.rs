@@ -2227,9 +2227,24 @@ fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, 
         Ok(())
     })();
     if let Err(error) = restore {
-        let mut world = state.world.blocking_write();
-        if let Some(entry) = world.entries.remove(vm_id) {
-            world.reserved_vm_indices.insert(entry.vm_index);
+        // The VM is untracked again. Undo the NUMA ledger reservation
+        // reconstruct_numa_placement made above, or a retry's reconstruct (and
+        // a restart's reconcile_numa_ledger) would double-count this still-
+        // running VM. Release OUTSIDE the world lock, matching
+        // delete_tracked_vm's world-then-ledger ordering. Do NOT remove the
+        // drop-in: unlike a delete, the controller is still running pinned to
+        // it (we only failed to re-adopt it into tracking), so removing it
+        // would de-pin a live VM and desync on-disk state from the process.
+        let released = {
+            let mut world = state.world.blocking_write();
+            let removed = world.entries.remove(vm_id);
+            if let Some(entry) = &removed {
+                world.reserved_vm_indices.insert(entry.vm_index);
+            }
+            removed.and_then(|entry| entry.numa_node.map(|node| (node, entry.config.vcpu_count)))
+        };
+        if let Some((node, vcpus)) = released {
+            release_numa_placement(state, node, vcpus);
         }
         return Err(RpcError::Internal(error));
     }
@@ -6264,5 +6279,50 @@ mod tests {
             "the re-adopted VM's vCPUs are counted exactly once"
         );
         assert_eq!(allocated(state, 0), 0);
+    }
+
+    #[test]
+    fn readopt_restore_failure_releases_the_reservation_but_keeps_the_dropin() {
+        // Regression: if readopt's network restore fails AFTER
+        // reconstruct_numa_placement has registered the VM, the ledger
+        // reservation must be released, or a retry's reconstruct (and a
+        // restart's reconcile_numa_ledger) would double-count this still-running
+        // VM. The drop-in must NOT be removed: the controller is still running
+        // pinned to it; we only failed to re-adopt it into tracking.
+        let harness = numa_harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let unit_dir = state.host.settings.systemd_unit_dir.clone();
+        let vm_id = test_fixtures::QEMU_HASH;
+        std::fs::copy(
+            test_fixtures::fixtures_dir().join(format!("{vm_id}-controller.json")),
+            root.join(format!("{vm_id}-controller.json")),
+        )
+        .unwrap();
+        // Live controller pinned to node 1 (cpus 4-7); a 2-vCPU fixture.
+        crate::numa::write_cpuset_dropin(&unit_dir, vm_id, "4-7").unwrap();
+        harness
+            .systemd
+            .set_state(&controller_unit_name(vm_id), "active");
+        // Fail the network restore that runs after placement is reconstructed.
+        harness.taps.fail_create("injected tap failure");
+
+        let _ = create_vm(state, spec(vm_id, &root));
+
+        assert!(
+            entry_snapshot(state, vm_id).is_none(),
+            "the failed readopt leaves the VM untracked again"
+        );
+        assert_eq!(
+            allocated(state, 1),
+            0,
+            "the reservation is released on the failed restore, so a retry cannot double-count it"
+        );
+        assert_eq!(allocated(state, 0), 0);
+        assert_eq!(
+            crate::numa::read_cpuset_dropin(&unit_dir, vm_id).as_deref(),
+            Some("4-7"),
+            "the still-running controller's drop-in must NOT be removed on a failed readopt"
+        );
     }
 }
