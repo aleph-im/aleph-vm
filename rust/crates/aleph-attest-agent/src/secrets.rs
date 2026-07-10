@@ -72,6 +72,8 @@ fn ensure_secret_dir(dir: &Path) -> Result<(), String> {
                 return Err("secret directory path exists but is not a directory".to_string());
             }
             // Refuse a directory we do not own: it could have been planted.
+            // SAFETY: geteuid() takes no pointer arguments and has no
+            // preconditions; it cannot cause undefined behavior.
             let euid = unsafe { libc::geteuid() };
             if meta.uid() != euid {
                 return Err("secret directory has unexpected owner".to_string());
