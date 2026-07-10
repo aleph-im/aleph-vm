@@ -111,12 +111,10 @@ mod tests {
             TeeType::SevSnp
         }
 
-        fn get_report(&self, report_data: &[u8; 64]) -> Result<AttestationReport> {
+        fn get_report(&self, _report_data: &[u8; 64]) -> Result<AttestationReport> {
             Ok(AttestationReport {
                 tee_type: TeeType::SevSnp,
                 data: vec![0xDE, 0xAD],
-                report_data: *report_data,
-                measurement: vec![0xBE, 0xEF],
             })
         }
 
@@ -149,7 +147,6 @@ mod tests {
 
         assert_eq!(extracted.tee_type, TeeType::SevSnp);
         assert_eq!(extracted.data, vec![0xDE, 0xAD]);
-        assert_eq!(extracted.measurement, vec![0xBE, 0xEF]);
     }
 
     #[test]

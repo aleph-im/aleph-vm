@@ -6,6 +6,7 @@ members = [
     "crates/supervisor-controller",
     "crates/aleph-tee",
     "crates/aleph-attest-agent",
+    "crates/aleph-attest-cli",
 ]
 
 [workspace.package]
