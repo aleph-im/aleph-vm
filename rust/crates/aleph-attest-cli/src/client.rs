@@ -5,7 +5,6 @@ use aleph_tee::report_data::fresh_report_data;
 use aleph_tee::sev_snp::verify::verify_sev_snp_report;
 use aleph_tee::types::AttestationReport;
 use anyhow::{Context, Result, bail};
-use rand::Rng;
 use serde::Deserialize;
 
 use crate::verify::SnpCertVerifier;
@@ -134,7 +133,7 @@ pub async fn fresh_attestation(
 ) -> Result<AttestationReport> {
     // Generate a random 32-byte nonce.
     let mut nonce = [0u8; 32];
-    rand::rng().fill(&mut nonce);
+    getrandom::getrandom(&mut nonce).context("failed to generate a random nonce")?;
     let nonce_hex = hex::encode(nonce);
 
     // Build the attestation URL.
@@ -224,10 +223,15 @@ async fn inject_secret_with_verifier(
 
     let client = build_attested_client(verifier)?;
 
-    let secrets_map: HashMap<&str, &str> = secrets
-        .iter()
-        .map(|(k, v)| (k.as_str(), v.as_str()))
-        .collect();
+    // Reject duplicate secret keys rather than letting the HashMap silently keep
+    // only the last value: for a secret-injection tool, dropping a value the
+    // caller supplied (e.g. `--secret K=v1 --secret K=v2`) is a footgun.
+    let mut secrets_map: HashMap<&str, &str> = HashMap::with_capacity(secrets.len());
+    for (key, value) in secrets {
+        if secrets_map.insert(key.as_str(), value.as_str()).is_some() {
+            bail!("duplicate secret key {key:?}: each key may be given only once");
+        }
+    }
 
     // send() drives the handshake (the authoritative gate) and only writes the
     // secret body after it completes. A verification failure fails the handshake
@@ -443,6 +447,27 @@ mod tests {
         assert!(
             received.load(Ordering::SeqCst),
             "the secret should be delivered once the peer is fully verified"
+        );
+    }
+
+    /// A duplicate secret key must fail closed rather than silently keep only the
+    /// last value. The check runs before any network I/O, so no server is needed;
+    /// the bail happens regardless of the (never-reached) peer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inject_secret_rejects_duplicate_keys() {
+        let verifier = SnpCertVerifier::with_chain_check(None, "Milan", valid_chain_check());
+        let secrets = vec![
+            ("K".to_string(), "v1".to_string()),
+            ("K".to_string(), "v2".to_string()),
+        ];
+        let result = inject_secret_with_verifier("https://127.0.0.1:1/", &verifier, &secrets).await;
+        let err = match result {
+            Ok(_) => panic!("duplicate secret keys must be rejected"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("duplicate secret key"),
+            "error should name the duplicate-key cause, got: {err}"
         );
     }
 }
