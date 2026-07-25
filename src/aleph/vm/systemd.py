@@ -59,13 +59,22 @@ class SystemDManager:
     def _connect(self, max_retries: int = 3) -> None:
         """Establish connection to D-Bus with a retry mechanism.
 
-        Uses ``follow_name_owner_changes=True`` so the proxy tracks the
-        well-known ``org.freedesktop.systemd1`` name across owner
-        changes. Without it, dbus-python latches onto systemd's unique
-        name (e.g. ``:1.3``) at proxy creation time, and any subsequent
-        ``systemctl daemon-reexec`` or systemd package upgrade would
-        cause every method call to fail with
-        ``org.freedesktop.DBus.Error.ServiceUnknown``.
+        Each call resolves ``org.freedesktop.systemd1`` to systemd's
+        current unique bus name at proxy creation time. A subsequent
+        ``systemctl daemon-reexec`` or systemd package upgrade rotates
+        that unique name, and the cached proxy then fails with
+        ``org.freedesktop.DBus.Error.ServiceUnknown``. That failure is
+        caught by ``_call_with_reconnect`` on every state-changing
+        method, which calls ``_connect()`` again to rebuild the proxy
+        against the new owner and retries the call.
+
+        (The alternative — ``follow_name_owner_changes=True`` — would
+        keep the proxy bound to the well-known name and avoid the
+        first-call failure after a restart, but it internally subscribes
+        to ``NameOwnerChanged`` signals, which requires a D-Bus main
+        loop. Aleph-vm's asyncio supervisor has no such main loop, and
+        constructing the proxy without one raises RuntimeError at
+        import time in every context that instantiates SystemDManager.)
         """
         for attempt in range(max_retries):
             if self._bus:
@@ -75,7 +84,6 @@ class SystemDManager:
                 systemd = self._bus.get_object(
                     "org.freedesktop.systemd1",
                     "/org/freedesktop/systemd1",
-                    follow_name_owner_changes=True,
                 )
                 self._manager = dbus.Interface(systemd, "org.freedesktop.systemd1.Manager")
                 return
