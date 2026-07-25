@@ -19,6 +19,24 @@ class SystemDManagerError(Exception):
 
 _NO_SUCH_UNIT = "org.freedesktop.systemd1.NoSuchUnit"
 
+# DBus errors that mean "your cached proxy points at a dead unique
+# name" (typically after systemctl daemon-reexec or a systemd package
+# upgrade rotates its unique bus name). Reconnecting and retrying the
+# call resolves the well-known name to the current owner.
+#
+# NoReply is included so we survive systemd being briefly unresponsive
+# during a restart, at the cost of retrying legitimate slow calls once
+# — worst case doubles that call's wall time. Acceptable tradeoff:
+# genuine NoReply is rare on a healthy host and we still fail fast if
+# the retry itself times out.
+_STALE_CONNECTION_ERRORS = frozenset(
+    {
+        "org.freedesktop.DBus.Error.ServiceUnknown",
+        "org.freedesktop.DBus.Error.NoReply",
+        "org.freedesktop.DBus.Error.Disconnected",
+    }
+)
+
 
 def _log_dbus_lookup_error(service: str, error: DBusException) -> None:
     """Log a unit lookup error at the right severity.
@@ -45,19 +63,69 @@ class SystemDManager:
         self._connect()
 
     def _connect(self, max_retries: int = 3) -> None:
-        """Establish connection to D-Bus with a retry mechanism."""
+        """Establish connection to D-Bus with a retry mechanism.
+
+        Each call resolves ``org.freedesktop.systemd1`` to systemd's
+        current unique bus name at proxy creation time. A subsequent
+        ``systemctl daemon-reexec`` or systemd package upgrade rotates
+        that unique name, and the cached proxy then fails with
+        ``org.freedesktop.DBus.Error.ServiceUnknown``. That failure is
+        caught by ``_call_with_reconnect`` on every state-changing
+        method, which calls ``_connect()`` again to rebuild the proxy
+        against the new owner and retries the call.
+
+        (The alternative — ``follow_name_owner_changes=True`` — would
+        keep the proxy bound to the well-known name and avoid the
+        first-call failure after a restart, but it internally subscribes
+        to ``NameOwnerChanged`` signals, which requires a D-Bus main
+        loop. Aleph-vm's asyncio supervisor has no such main loop, and
+        constructing the proxy without one raises RuntimeError at
+        import time in every context that instantiates SystemDManager.)
+        """
         for attempt in range(max_retries):
             if self._bus:
                 self._bus.close()
             try:
                 self._bus = dbus.SystemBus()
-                systemd = self._bus.get_object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
+                systemd = self._bus.get_object(
+                    "org.freedesktop.systemd1",
+                    "/org/freedesktop/systemd1",
+                )
                 self._manager = dbus.Interface(systemd, "org.freedesktop.systemd1.Manager")
                 return
             except DBusException as e:
                 logger.warning(f"D-Bus connection attempt {attempt + 1} failed: {e}")
         msg = "Failed to establish D-Bus connection after multiple attempts"
         raise DBusException(msg)
+
+    def _call_with_reconnect(self, work):
+        """Run ``work()``; on stale-connection errors, reconnect and re-run once.
+
+        ``work`` is a zero-argument callable that performs the D-Bus
+        operation from scratch (typically a lambda that calls
+        ``self._get_manager().SomeMethod(...)``). Passing a callable
+        rather than a pre-resolved method matters: a pre-resolved
+        ``_ProxyMethod`` is bound to the ``_connection`` we just closed
+        via ``self._bus.close()``, so retrying it would go through the
+        dead connection. Re-invoking ``work()`` after ``_connect()``
+        reads the new ``self._manager`` and routes through the fresh
+        proxy — no need to peek at ``_method_name`` or rebind.
+
+        Also handles multi-call chains (e.g. ``manager.GetUnit`` then
+        ``bus.get_object`` then ``properties.Get``): the whole sequence
+        is redone against the fresh bus and manager.
+        """
+        try:
+            return work()
+        except DBusException as error:
+            if error.get_dbus_name() not in _STALE_CONNECTION_ERRORS:
+                raise
+            logger.info(
+                "Stale systemd D-Bus proxy (%s), reconnecting and retrying",
+                error.get_dbus_name(),
+            )
+            self._connect()
+            return work()
 
     def _ensure_connection(self) -> None:
         """Ensure D-Bus connection is active, reconnect if necessary.
@@ -121,37 +189,51 @@ class SystemDManager:
             logger.warning("Failed to disable %s: %s", service, error)
 
     def enable(self, service: str) -> None:
-        manager = self._get_manager()
-        manager.EnableUnitFiles([service], False, True)  # noqa: FBT003
+        self._call_with_reconnect(
+            lambda: self._get_manager().EnableUnitFiles([service], False, True)  # noqa: FBT003
+        )
         logger.debug(f"Enabled {service} service")
 
     def start(self, service: str) -> None:
-        manager = self._get_manager()
-        manager.StartUnit(service, "replace")
+        self._call_with_reconnect(lambda: self._get_manager().StartUnit(service, "replace"))
         logger.debug(f"Started {service} service")
 
     def stop(self, service: str) -> None:
-        manager = self._get_manager()
-        manager.StopUnit(service, "replace")
+        self._call_with_reconnect(lambda: self._get_manager().StopUnit(service, "replace"))
         logger.debug(f"Stopped {service} service")
 
     def restart(self, service: str) -> None:
-        manager = self._get_manager()
-        manager.RestartUnit(service, "replace")
+        self._call_with_reconnect(lambda: self._get_manager().RestartUnit(service, "replace"))
         logger.debug(f"Restarted {service} service")
 
     def disable(self, service: str) -> None:
-        manager = self._get_manager()
-        manager.DisableUnitFiles([service], False)  # noqa: FBT003
+        self._call_with_reconnect(
+            lambda: self._get_manager().DisableUnitFiles([service], False)  # noqa: FBT003
+        )
         logger.debug(f"Disabled {service} service")
 
     def is_service_enabled(self, service: str) -> bool:
         try:
-            manager = self._get_manager()
-            return manager.GetUnitFileState(service) == "enabled"
+            return self._call_with_reconnect(lambda: self._get_manager().GetUnitFileState(service)) == "enabled"
         except DBusException as error:
-            logger.error(error)
+            _log_dbus_lookup_error(service, error)
             return False
+
+    def _read_active_state(self, service: str) -> str:
+        """Fetch ActiveState for ``service`` via manager + property lookup.
+
+        Extracted so the whole multi-call chain can be re-run atomically
+        under ``_call_with_reconnect``: on a stale proxy, ``GetUnit``
+        fails first, we reconnect, and the whole sequence re-runs against
+        the fresh bus and manager (so ``bus.get_object`` and the properties
+        interface are also fresh).
+        """
+        manager = self._get_manager()
+        bus = self._get_bus()
+        unit_path = manager.GetUnit(service)
+        unit_proxy = bus.get_object("org.freedesktop.systemd1", object_path=unit_path)
+        properties = dbus.Interface(unit_proxy, "org.freedesktop.DBus.Properties")
+        return str(properties.Get("org.freedesktop.systemd1.Unit", "ActiveState"))
 
     def get_service_active_state(self, service: str) -> str:
         """Return the ActiveState string for a systemd service.
@@ -164,41 +246,16 @@ class SystemDManager:
         rather than treating it as terminal.
         """
         try:
-            manager = self._get_manager()
-            bus = self._get_bus()
-            unit_path = manager.GetUnit(service)
-            unit_proxy = bus.get_object(
-                "org.freedesktop.systemd1",
-                object_path=unit_path,
-            )
-            properties = dbus.Interface(
-                unit_proxy,
-                "org.freedesktop.DBus.Properties",
-            )
-            return str(
-                properties.Get(
-                    "org.freedesktop.systemd1.Unit",
-                    "ActiveState",
-                )
-            )
+            return self._call_with_reconnect(lambda: self._read_active_state(service))
         except DBusException as error:
             _log_dbus_lookup_error(service, error)
             return "unknown"
 
     def is_service_active(self, service: str) -> bool:
+        if not self.is_service_enabled(service):
+            return False
         try:
-            if not self.is_service_enabled(service):
-                return False
-
-            manager = self._get_manager()
-            bus = self._get_bus()
-
-            unit_path = manager.GetUnit(service)
-            systemd_service = bus.get_object("org.freedesktop.systemd1", object_path=unit_path)
-            unit = dbus.Interface(systemd_service, "org.freedesktop.systemd1.Unit")
-            unit_properties = dbus.Interface(unit, "org.freedesktop.DBus.Properties")
-            active_state = unit_properties.Get("org.freedesktop.systemd1.Unit", "ActiveState")
-            return active_state == "active"
+            return self._call_with_reconnect(lambda: self._read_active_state(service)) == "active"
         except DBusException as error:
             _log_dbus_lookup_error(service, error)
             return False
@@ -219,8 +276,7 @@ class SystemDManager:
             return {}
 
         try:
-            manager = self._get_manager()
-            units = manager.ListUnits()
+            units = self._call_with_reconnect(lambda: self._get_manager().ListUnits())
 
             # Build lookup from ListUnits() result
             # ListUnits returns: (name, description, load_state, active_state, sub_state,
