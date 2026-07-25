@@ -90,8 +90,17 @@ class SystemDManager:
         ``follow_name_owner_changes=True`` on the proxy makes routine
         systemd restarts transparent, but a call issued while systemd
         is *mid*-restart can still hit an error before the new owner
-        registers. Catch that narrow class of errors and retry against
-        the freshly-resolved manager.
+        registers. On the errors in ``_STALE_CONNECTION_ERRORS``, tear
+        down and rebuild the bus, then retry the same D-Bus method
+        against the freshly-built ``_manager``.
+
+        The retry MUST be issued through the new manager: ``fn`` here is
+        a ``dbus.proxies._ProxyMethod`` bound to a specific ``_connection``
+        that ``_connect()`` just closed via ``self._bus.close()``. Calling
+        the original ``fn`` again would go through the dead connection.
+        We rebind by looking up the same method name on the new manager
+        via ``_method_name`` (the documented ``_ProxyMethod`` attribute)
+        and ``Interface.get_dbus_method``.
         """
         try:
             return fn(*args, **kwargs)
@@ -102,14 +111,14 @@ class SystemDManager:
                 "Stale systemd D-Bus proxy (%s), reconnecting and retrying",
                 error.get_dbus_name(),
             )
+            method_name = getattr(fn, "_method_name", None)
             self._connect()
-            # Re-resolve fn against the fresh manager. Callers pass a
-            # bound method on the previous ``_manager``; rebinding to
-            # the same attribute on the new one is what makes the retry
-            # actually target the reconnected proxy.
-            if getattr(fn, "__self__", None) is not None and self._manager is not None:
-                fn = getattr(self._manager, fn.__name__)
-            return fn(*args, **kwargs)
+            if method_name is None or self._manager is None:
+                # No safe way to rebind; retrying fn would call through
+                # the connection we just closed. Better to surface the
+                # original failure than to fail obscurely.
+                raise
+            return self._manager.get_dbus_method(method_name)(*args, **kwargs)
 
     def _ensure_connection(self) -> None:
         """Ensure D-Bus connection is active, reconnect if necessary.
