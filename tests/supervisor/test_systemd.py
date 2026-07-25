@@ -1,10 +1,10 @@
 """Unit tests for aleph.vm.systemd.SystemDManager.
 
-Focus on the stale-proxy retry path: when a call raises one of
+Focus on the stale-proxy retry path: when a D-Bus call raises one of
 ``_STALE_CONNECTION_ERRORS`` (e.g. after ``systemctl daemon-reexec``
-rotates systemd's unique bus name), the manager must reconnect and
-retry the same D-Bus method against the NEW manager, not re-invoke the
-stale ``_ProxyMethod`` against a closed connection.
+rotates systemd's unique bus name), ``_call_with_reconnect`` must
+reconnect and re-run the callable so the second attempt routes through
+the freshly-built manager, not the closed connection.
 """
 
 from unittest.mock import MagicMock
@@ -21,15 +21,14 @@ def _make_dbus_error(name: str, msg: str = "boom") -> DBusException:
     Mirrors what dbus-python raises when the daemon replies with an
     error name, without touching a real bus.
     """
-    err = DBusException(msg, name=name)
-    return err
+    return DBusException(msg, name=name)
 
 
 @pytest.fixture
 def fake_manager(monkeypatch):
-    """Instantiate a SystemDManager backed by a MagicMock manager.
+    """Instantiate a SystemDManager backed by MagicMock buses/managers.
 
-    Yields ``(manager_instance, initial_dbus_manager, install_new_manager_fn)``.
+    Returns ``(manager_instance, initial_dbus_manager, install_new_manager_fn)``.
     Calling ``install_new_manager_fn(new_mgr)`` patches ``_connect`` so the
     NEXT reconnect installs ``new_mgr`` (simulating systemd daemon-reexec).
     """
@@ -50,60 +49,63 @@ def fake_manager(monkeypatch):
 
 def test_happy_path_no_reconnect(fake_manager):
     sm, initial, _ = fake_manager
-    method = MagicMock(return_value="ok")
-    method._method_name = "StartUnit"
+    work = MagicMock(return_value="ok")
 
-    assert sm._call_with_reconnect(method, "svc", "replace") == "ok"
+    assert sm._call_with_reconnect(work) == "ok"
 
-    method.assert_called_once_with("svc", "replace")
-    # No rebind against the manager happened
-    initial.get_dbus_method.assert_not_called()
+    work.assert_called_once_with()
+    # No reconnect happened: manager unchanged.
+    assert sm._manager is initial
 
 
 def test_non_stale_error_reraises_without_reconnect(fake_manager):
     sm, initial, _ = fake_manager
     real_error = _make_dbus_error("org.freedesktop.systemd1.NoSuchUnit")
-    method = MagicMock(side_effect=real_error)
-    method._method_name = "GetUnit"
+    work = MagicMock(side_effect=real_error)
 
     with pytest.raises(DBusException) as excinfo:
-        sm._call_with_reconnect(method, "svc")
+        sm._call_with_reconnect(work)
 
     assert excinfo.value is real_error
-    initial.get_dbus_method.assert_not_called()
-    # Manager was not swapped
+    work.assert_called_once_with()
     assert sm._manager is initial
 
 
-def test_stale_error_reconnects_and_retries_via_new_manager(fake_manager):
+def test_stale_error_reconnects_and_work_sees_new_manager(fake_manager):
     """The core regression test.
 
     Simulates systemd daemon-reexec:
-      1. First call on the stale _ProxyMethod raises ServiceUnknown.
+      1. work() reads self._manager and calls it. First call raises
+         ServiceUnknown from the stale manager.
       2. _connect() runs and installs a fresh manager.
-      3. Retry MUST go through new_manager.get_dbus_method(...), not
-         through the stale method whose _connection was just closed.
+      3. work() is re-invoked. It reads self._manager again — this time
+         it sees the NEW manager, and the second call succeeds.
+
+    The test asserts work observed the manager swap, which is exactly
+    what the retry mechanism must guarantee.
     """
     sm, initial, install = fake_manager
 
+    stale_error = _make_dbus_error("org.freedesktop.DBus.Error.ServiceUnknown")
+    initial.SomeCall.side_effect = stale_error
+
     new_mgr = MagicMock(name="new_manager")
-    fresh_method = MagicMock(return_value="ok-from-new")
-    new_mgr.get_dbus_method.return_value = fresh_method
+    new_mgr.SomeCall.return_value = "ok-from-new"
     install(new_mgr)
 
-    stale_method = MagicMock(side_effect=_make_dbus_error("org.freedesktop.DBus.Error.ServiceUnknown"))
-    stale_method._method_name = "EnableUnitFiles"
+    managers_seen = []
 
-    result = sm._call_with_reconnect(stale_method, ["svc"], False, True)
+    def work():
+        mgr = sm._manager
+        managers_seen.append(mgr)
+        return mgr.SomeCall("arg")
+
+    result = sm._call_with_reconnect(work)
 
     assert result == "ok-from-new"
-    # Reconnect swapped the manager
-    assert sm._manager is new_mgr
-    # Method was looked up on the NEW manager by name
-    new_mgr.get_dbus_method.assert_called_once_with("EnableUnitFiles")
-    fresh_method.assert_called_once_with(["svc"], False, True)
-    # Stale method was NOT retried (that would go through the closed connection)
-    assert stale_method.call_count == 1
+    assert managers_seen == [initial, new_mgr]
+    initial.SomeCall.assert_called_once_with("arg")
+    new_mgr.SomeCall.assert_called_once_with("arg")
 
 
 @pytest.mark.parametrize(
@@ -116,39 +118,45 @@ def test_stale_error_reconnects_and_retries_via_new_manager(fake_manager):
 )
 def test_all_stale_error_names_trigger_retry(fake_manager, error_name):
     sm, _initial, install = fake_manager
+
     new_mgr = MagicMock()
-    new_mgr.get_dbus_method.return_value = MagicMock(return_value="ok")
+    new_mgr.SomeCall.return_value = "ok"
     install(new_mgr)
 
-    stale = MagicMock(side_effect=_make_dbus_error(error_name))
-    stale._method_name = "StartUnit"
+    calls = [0]
 
-    assert sm._call_with_reconnect(stale, "svc", "replace") == "ok"
-    new_mgr.get_dbus_method.assert_called_once_with("StartUnit")
+    def work():
+        calls[0] += 1
+        if calls[0] == 1:
+            raise _make_dbus_error(error_name)
+        return sm._manager.SomeCall()
+
+    assert sm._call_with_reconnect(work) == "ok"
+    assert calls[0] == 2
+    new_mgr.SomeCall.assert_called_once_with()
 
 
-def test_reraises_when_method_name_missing(fake_manager):
-    """A callable without ``_method_name`` can't be safely rebound.
+def test_retry_failure_propagates(fake_manager):
+    """If the retry itself fails with the same stale error, don't loop.
 
-    Retrying it directly would call through the connection ``_connect()``
-    just closed. Better to surface the original failure than to fail
-    obscurely.
+    The whole point of a single retry is to avoid infinite loops when
+    something is fundamentally broken (bus daemon down, systemd not
+    coming back). The second failure should propagate to the caller.
     """
     sm, _initial, install = fake_manager
-    new_mgr = MagicMock()
-    install(new_mgr)
 
-    original_error = _make_dbus_error("org.freedesktop.DBus.Error.Disconnected")
-    plain_callable = MagicMock(side_effect=original_error)
-    # No _method_name attribute
-    del plain_callable._method_name
+    def broken_connect(self, max_retries: int = 3) -> None:
+        self._bus = MagicMock()
+        self._manager = MagicMock()
+
+    # Both first call and post-reconnect retry raise the same stale error.
+    stale = _make_dbus_error("org.freedesktop.DBus.Error.Disconnected")
+    work = MagicMock(side_effect=stale)
+    install(MagicMock())  # so reconnect doesn't blow up
 
     with pytest.raises(DBusException) as excinfo:
-        sm._call_with_reconnect(plain_callable, "arg")
+        sm._call_with_reconnect(work)
 
-    assert excinfo.value is original_error
-    # Reconnect DID run (we discover the un-rebindable fn only after)
-    assert sm._manager is new_mgr
-    # But we didn't retry against the stale callable
-    assert plain_callable.call_count == 1
-    new_mgr.get_dbus_method.assert_not_called()
+    assert excinfo.value is stale
+    # First call + one retry = two attempts, no more.
+    assert work.call_count == 2
