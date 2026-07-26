@@ -160,3 +160,42 @@ def test_retry_failure_propagates(fake_manager):
     assert excinfo.value is stale
     # First call + one retry = two attempts, no more.
     assert work.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_enable_and_start_runs_off_event_loop(fake_manager, monkeypatch):
+    """enable_and_start must not block the event loop.
+
+    Records the thread on which the sync body runs and asserts it is
+    NOT the main thread (asyncio.to_thread hands work to the default
+    executor). Prevents accidental regression to inline sync D-Bus.
+    """
+    import threading
+
+    sm, _initial, _install = fake_manager
+
+    main_thread = threading.get_ident()
+    thread_seen = {}
+
+    def fake_sync(service):
+        thread_seen["ident"] = threading.get_ident()
+
+    monkeypatch.setattr(sm, "_enable_and_start_sync", fake_sync)
+
+    await sm.enable_and_start("aleph-vm-controller@svc.service")
+
+    assert thread_seen["ident"] != main_thread
+
+
+@pytest.mark.asyncio
+async def test_enable_and_start_propagates_errors(fake_manager, monkeypatch):
+    """Exceptions raised by the sync body must surface to the async caller."""
+    sm, _initial, _install = fake_manager
+
+    def raising(_):
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(sm, "_enable_and_start_sync", raising)
+
+    with pytest.raises(RuntimeError, match="kaboom"):
+        await sm.enable_and_start("aleph-vm-controller@svc.service")

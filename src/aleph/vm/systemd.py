@@ -2,7 +2,9 @@
 async SystemD Manager implementation.
 """
 
+import asyncio
 import logging
+import threading
 
 import dbus
 from dbus import DBusException, SystemBus
@@ -60,6 +62,10 @@ class SystemDManager:
     def __init__(self):
         self._bus: SystemBus | None = None
         self._manager: Interface | None = None
+        # Guards _connect(): concurrent callers (event loop + payment
+        # monitor worker + enable_and_start worker) must not race on
+        # close+reopen of self._bus.
+        self._connect_lock = threading.Lock()
         self._connect()
 
     def _connect(self, max_retries: int = 3) -> None:
@@ -82,21 +88,30 @@ class SystemDManager:
         constructing the proxy without one raises RuntimeError at
         import time in every context that instantiates SystemDManager.)
         """
-        for attempt in range(max_retries):
-            if self._bus:
-                self._bus.close()
-            try:
-                self._bus = dbus.SystemBus()
-                systemd = self._bus.get_object(
-                    "org.freedesktop.systemd1",
-                    "/org/freedesktop/systemd1",
-                )
-                self._manager = dbus.Interface(systemd, "org.freedesktop.systemd1.Manager")
-                return
-            except DBusException as e:
-                logger.warning(f"D-Bus connection attempt {attempt + 1} failed: {e}")
-        msg = "Failed to establish D-Bus connection after multiple attempts"
-        raise DBusException(msg)
+        # Lock serializes concurrent reconnects across threads (event
+        # loop + payment monitor worker + enable_and_start worker).
+        # Two threads hitting the same stale error at the same moment
+        # will each reconnect once inside the lock; the redundant work
+        # is bounded and doesn't corrupt state. We do NOT fast-path on
+        # get_is_connected(): callers reach _connect() precisely when
+        # they know the proxy is stale, and get_is_connected() is a
+        # local flag that stays True across bus-name rotations.
+        with self._connect_lock:
+            for attempt in range(max_retries):
+                if self._bus:
+                    self._bus.close()
+                try:
+                    self._bus = dbus.SystemBus()
+                    systemd = self._bus.get_object(
+                        "org.freedesktop.systemd1",
+                        "/org/freedesktop/systemd1",
+                    )
+                    self._manager = dbus.Interface(systemd, "org.freedesktop.systemd1.Manager")
+                    return
+                except DBusException as e:
+                    logger.warning(f"D-Bus connection attempt {attempt + 1} failed: {e}")
+            msg = "Failed to establish D-Bus connection after multiple attempts"
+            raise DBusException(msg)
 
     def _call_with_reconnect(self, work):
         """Run ``work()``; on stale-connection errors, reconnect and re-run once.
@@ -326,8 +341,22 @@ class SystemDManager:
             return {service: False for service in services}
         return result
 
-    async def enable_and_start(self, service: str) -> None:
+    def _enable_and_start_sync(self, service: str) -> None:
+        """Sync body of enable_and_start; runs in a worker thread."""
         if not self.is_service_enabled(service):
             self.enable(service)
         if not self.is_service_active(service):
             self.start(service)
+
+    async def enable_and_start(self, service: str) -> None:
+        """Enable and start a systemd unit without blocking the event loop.
+
+        Each of the four underlying D-Bus round-trips is synchronous and
+        would block the asyncio event loop if run inline (visible as
+        multi-second TTFB spikes when many VMs start together). Push the
+        whole sequence to a worker thread. Thread safety of the shared
+        SystemDManager is provided by ``_connect_lock`` around the only
+        state-mutating operation (reconnect); individual D-Bus calls go
+        through dbus-python's own connection-level locking.
+        """
+        await asyncio.to_thread(self._enable_and_start_sync, service)
