@@ -9,6 +9,11 @@ on:
     # The branches below must be a subset of the branches above
     branches: [main]
 
+# Cancel superseded runs when new commits are pushed to a PR branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 
 jobs:
   tests-python:
@@ -64,11 +69,33 @@ jobs:
           # this produces a 33 MB log
           #  find /opt
 
+      # The aleph-debian-12-python runtime takes ~2 minutes to debootstrap and
+      # rarely changes. Cache it on the content of its build inputs, with a
+      # monthly stamp so the packages pulled by debootstrap and pip do not
+      # become indefinitely stale. The key is shared with the build_rootfs job
+      # of the droplet test workflow and computed in shell because hashFiles()
+      # is re-evaluated in the cache post step, after the build filled the
+      # directory with the debootstrapped tree (hashing it times out).
+      - name: Compute runtime cache key
+        id: cache-key
+        run: |
+          input_hash=$(cat runtimes/aleph-debian-12-python/*.sh runtimes/aleph-debian-12-python/*.py runtimes/aleph-debian-12-python/*.html | sha256sum | cut -c -16)
+          echo "key=runtime-aleph-debian-12-python-$(date +%Y-%m)-${input_hash}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the aleph-debian-12-python runtime
+        id: cache-runtime
+        uses: actions/cache@v4
+        with:
+          path: runtimes/aleph-debian-12-python/rootfs.squashfs
+          key: ${{ steps.cache-key.outputs.key }}
+
       - name: "Build custom runtimes"
         run: |
           sudo apt update
           sudo apt install -y debootstrap ndppd acl cloud-image-utils qemu-utils qemu-system-x86
-          cd runtimes/aleph-debian-12-python && sudo ./create_disk_image.sh && cd ../..
+          if [ ! -f runtimes/aleph-debian-12-python/rootfs.squashfs ]; then
+            cd runtimes/aleph-debian-12-python && sudo ./create_disk_image.sh && cd ../..
+          fi
           cd runtimes/instance-rootfs && sudo ./create-ubuntu-22-04-qemu-disk.sh && cd ../..
           cd runtimes/instance-rootfs && sudo ./create-debian-12-disk.sh && cd ../..
 
