@@ -206,6 +206,12 @@ pub struct VmEntry {
     pub is_program: bool,
     /// Set once the program booted (the ready handshake completed).
     pub program: Option<ProgramEntry>,
+    /// Effective NUMA placement (Phase 3 increment C1): the node the
+    /// supervisor pinned this VM's vCPUs to via `AllowedCPUs`, or None when
+    /// placement is inert (no NUMA topology) or the VM is unpinned (adopted
+    /// from a pre-NUMA daemon with no `AllowedCPUs` drop-in). Reported in
+    /// `VmInfo.numa_node`; drives the ledger release on delete.
+    pub numa_node: Option<u32>,
 }
 
 impl VmEntry {
@@ -234,6 +240,7 @@ impl VmEntry {
             ordinal: 0,
             is_program: false,
             program: None,
+            numa_node: None,
         }
     }
 
@@ -626,6 +633,10 @@ pub fn build_world_view(
             ordinal: 0, // assigned by insert_entry
             is_program: false,
             program: None,
+            // Unknown at adoption: reconstructed by reconcile_numa_ledger
+            // from the VM's AllowedCPUs drop-in, or left unpinned (a VM
+            // adopted from a pre-NUMA daemon has no drop-in).
+            numa_node: None,
         });
     }
 
