@@ -123,14 +123,9 @@ jobs:
       matrix:
 
         # Check compatibility with all supported OSes.
+        # Debian 12 is not tested anymore: DigitalOcean removed the debian-12-x64
+        # image when Debian 12 reached its end of standard support (June 2026).
         os_config:
-          - os_name: "Debian 12"
-            os_image: "debian-12-x64"
-            alias: "debian-12"
-            package_build_command: "all-podman-debian-12"
-            package_name: "aleph-vm.debian-12.deb"
-            concurrency_group: "droplet-aleph-vm-debian-12"
-
           - os_name: "Debian 13"
             os_image: "debian-13-x64"
             alias: "debian-13"
@@ -269,8 +264,8 @@ jobs:
             doctl compute droplet delete --force $DROPLET_ID
           done
 
-  run_new_runtime_debian_12:
-    name: "Test new runtime on Droplet with Debian 12"
+  run_new_runtime_debian_13:
+    name: "Test new runtime on Droplet with Debian 13"
     # Test by building a version of the runtimes and diagnostic program from the source.
     # (other tests use the version deployed in the aleph cloud)
 
@@ -306,7 +301,7 @@ jobs:
       - name: Create the Droplet
         run: |
           doctl compute droplet create \
-          --image debian-12-x64 \
+          --image debian-13-x64 \
           --size s-2vcpu-4gb-amd \
           --region ams3 \
           --vpc-uuid 5976b7bd-4417-49e8-8522-672aaa920c30 \
@@ -324,12 +319,12 @@ jobs:
       - uses: actions/download-artifact@v4
         name: "Download the debian package from artifacts."
         with:
-          name: "aleph-vm.debian-12.deb"
+          name: "aleph-vm.debian-13.deb"
           path: packaging/target/
 
       #      - name: Build Debian Package
       #        run: |
-      #          cd packaging && make all-podman-debian-12 && cd ..
+      #          cd packaging && make all-podman-debian-13 && cd ..
       #          ls packaging/target
 
       - name: Get droplet ip and export it in env
@@ -356,7 +351,7 @@ jobs:
           echo ALEPH_VM_FAKE_DATA_RUNTIME=/opt/rootfs.squashfs >> supervisor.env
           ssh  root@${DROPLET_IPV4} mkdir -p /etc/aleph-vm/
           scp supervisor.env root@${DROPLET_IPV4}:/etc/aleph-vm/supervisor.env
-          scp packaging/target/aleph-vm.debian-12.deb root@${DROPLET_IPV4}:/opt
+          scp packaging/target/aleph-vm.debian-13.deb root@${DROPLET_IPV4}:/opt
 
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=-1 update"
           ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o Dpkg::Progress-Fancy=0 -o DPkg::Lock::Timeout=-1 upgrade -y"
@@ -365,7 +360,7 @@ jobs:
 
           # Copy our example VM on the server
           scp -pr ./examples root@${DROPLET_IPV4}:/opt/
-          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=-1  -o Dpkg::Options::="--force-confold" install -y /opt/aleph-vm.debian-12.deb"
+          ssh root@${DROPLET_IPV4} DEBIAN_FRONTEND=noninteractive "apt-get -o DPkg::Lock::Timeout=-1  -o Dpkg::Options::="--force-confold" install -y /opt/aleph-vm.debian-13.deb"
 
       - name: Call the runtime and example program on the Droplet
         run: |
