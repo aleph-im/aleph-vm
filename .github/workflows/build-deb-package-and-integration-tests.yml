@@ -44,6 +44,13 @@ jobs:
       - name: Initialize git submodules
         run: git submodule init
 
+      # Runner image 20260726.254 ships podman 5.8.4 but leaves a stale crun 1.14.1
+      # at /usr/bin/crun, breaking every podman run/build with "unknown version
+      # specified". Point podman at the current crun in /usr/local/bin.
+      # See https://github.com/actions/runner-images/issues/14473
+      - name: Work around actions/runner-images#14473 (podman uses stale crun)
+        run: (echo '[engine.runtimes]'; echo 'crun = [ "/usr/local/bin/crun" ]') | sudo tee /etc/containers/containers.conf
+
       - run: |
           cd packaging && make ${{ matrix.make_target }} && cd ..
           ls packaging/target
