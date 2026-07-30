@@ -173,7 +173,7 @@ mod tests {
         // A policy carrying extra QEMU object properties must not survive: it
         // falls back to the default and the smuggled property is gone.
         let config = make_config(2048, Some("0x30000,inject=on"));
-        let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH);
+        let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH, 51, 1);
 
         let sev_arg = args
             .iter()
@@ -196,7 +196,7 @@ mod tests {
         // lowercase 0x hex (196608 == 0x30000).
         for input in ["0X30000", "196608"] {
             let config = make_config(2048, Some(input));
-            let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH);
+            let args = sev_snp_qemu_args(&config, DEFAULT_OVMF_PATH, 51, 1);
             let sev_arg = args
                 .iter()
                 .find(|a| a.contains("sev-snp-guest"))
