@@ -49,7 +49,8 @@ jobs:
       # specified". Point podman at the current crun in /usr/local/bin.
       # See https://github.com/actions/runner-images/issues/14473
       - name: Work around actions/runner-images#14473 (podman uses stale crun)
-        run: (echo '[engine.runtimes]'; echo 'crun = [ "/usr/local/bin/crun" ]') | sudo tee /etc/containers/containers.conf
+        run: (echo '[engine.runtimes]'; echo 'crun = [ "/usr/local/bin/crun" ]') |
+          sudo tee /etc/containers/containers.conf
 
       - run: |
           cd packaging && make ${{ matrix.make_target }} && cd ..
