@@ -28,6 +28,7 @@ pub mod error;
 pub mod events;
 pub mod firecracker;
 pub mod host;
+pub mod hugepages;
 pub mod lifecycle;
 pub mod logs;
 pub mod lspci;

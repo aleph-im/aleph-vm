@@ -162,16 +162,23 @@ fn with_entry_mut<R>(
 fn place_vm_numa(
     state: &DaemonState,
     vcpus: u32,
+    memory_mib: u64,
     requested: Option<u32>,
 ) -> Result<Option<crate::numa::NumaPlacement>, RpcError> {
     if !state.numa.is_placement_active() {
         return Ok(None);
     }
+    // Hugepage backing is opt-in (ALEPH_VM_NUMA_HUGEPAGES); when off, the
+    // allocator tracks only vCPUs and never selects a page size, so C2 delivers
+    // just the regular-page NUMA memory binding. The hugepage pools are u32
+    // pages; a memory value beyond u32 MB saturates (no host has that RAM).
+    let uses_hugepages = state.host.settings.numa_hugepages;
+    let memory_mb = memory_mib.min(u32::MAX as u64) as u32;
     let mut ledger = state
         .numa_ledger
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    match ledger.allocate(vcpus, requested) {
+    match ledger.allocate(vcpus, memory_mb, requested, uses_hugepages) {
         Ok(placement) => Ok(Some(placement)),
         Err(crate::numa::PlacementError::UnknownNode(message)) => {
             // A bad client argument (InvalidArgument on the wire).
@@ -213,9 +220,30 @@ fn apply_numa_dropin(
     Ok(())
 }
 
-/// Release a VM's reserved vCPUs from the ledger (idempotent-safe: a
-/// saturating subtract). No-op when placement is inert.
-fn release_numa_placement(state: &DaemonState, node: u32, vcpus: u32) {
+/// The hugepage backing a written config recorded: its memory in MB (saturated
+/// into the u32 page-pool domain, like `place_vm_numa`) and the page size the
+/// allocator selected (`None` for regular pages). Used to return the exact
+/// pages a VM reserved on release and to re-register them at adoption.
+fn config_hugepage_backing(config: &QemuVmConfig) -> (u32, Option<crate::numa::HugePageSize>) {
+    let memory_mb = config.mem_size_mb.min(u32::MAX as u64) as u32;
+    let hugepage_size = config
+        .hugepage_size
+        .as_deref()
+        .and_then(crate::numa::HugePageSize::from_qemu);
+    (memory_mb, hugepage_size)
+}
+
+/// Release a VM's reserved vCPUs AND hugepages from the ledger (idempotent-safe:
+/// saturating subtracts). Passing the VM's `memory_mb` + `hugepage_size` returns
+/// its reserved pages to the node's pool, so an enabled hugepage pool does not
+/// leak on delete/failed-create. No-op when placement is inert.
+fn release_numa_placement(
+    state: &DaemonState,
+    node: u32,
+    vcpus: u32,
+    memory_mb: u32,
+    hugepage_size: Option<crate::numa::HugePageSize>,
+) {
     if !state.numa.is_placement_active() {
         return;
     }
@@ -223,7 +251,7 @@ fn release_numa_placement(state: &DaemonState, node: u32, vcpus: u32) {
         .numa_ledger
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .release(node, vcpus);
+        .release(node, vcpus, memory_mb, hugepage_size);
 }
 
 /// Remove a VM's NUMA drop-in on teardown and reload systemd. Best effort:
@@ -266,7 +294,13 @@ fn remove_numa_dropin(state: &DaemonState, vm_id: &str) {
 /// with no drop-in (or an unrecognized cpuset) is treated as UNPINNED and
 /// counts against no node (design section 8 risk: pre-NUMA adopted VMs must
 /// not be silently attributed to node 0).
-fn reconstruct_numa_placement(state: &DaemonState, vm_id: &str, vcpus: u32) -> Option<u32> {
+fn reconstruct_numa_placement(
+    state: &DaemonState,
+    vm_id: &str,
+    vcpus: u32,
+    memory_mb: u32,
+    hugepage_size: Option<crate::numa::HugePageSize>,
+) -> Option<u32> {
     if !state.numa.is_placement_active() {
         return None;
     }
@@ -278,7 +312,9 @@ fn reconstruct_numa_placement(state: &DaemonState, vm_id: &str, vcpus: u32) -> O
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let node = ledger.node_for_cpuset(&cpuset)?;
-    ledger.register(node, vcpus);
+    // Re-register vCPUs AND the VM's hugepage usage (from its written config)
+    // so the page pool is correct across a daemon restart, not reset to 0.
+    ledger.register(node, vcpus, memory_mb, hugepage_size);
     tracing::info!(
         vm_id,
         node,
@@ -308,16 +344,24 @@ pub fn reconcile_numa_ledger(state: &DaemonState) {
     if !state.numa.is_placement_active() {
         return;
     }
-    let adopted: Vec<(String, u32)> = state
+    let adopted: Vec<(String, u32, u32, Option<crate::numa::HugePageSize>)> = state
         .world
         .blocking_read()
         .ordered_entries()
         .into_iter()
         .filter(|entry| entry.adopted_running && !entry.is_program)
-        .map(|entry| (entry.vm_hash.clone(), entry.config.vcpu_count))
+        .map(|entry| {
+            let (memory_mb, hugepage_size) = config_hugepage_backing(&entry.config);
+            (
+                entry.vm_hash.clone(),
+                entry.config.vcpu_count,
+                memory_mb,
+                hugepage_size,
+            )
+        })
         .collect();
-    for (vm_id, vcpus) in adopted {
-        let node = reconstruct_numa_placement(state, &vm_id, vcpus);
+    for (vm_id, vcpus, memory_mb, hugepage_size) in adopted {
+        let node = reconstruct_numa_placement(state, &vm_id, vcpus, memory_mb, hugepage_size);
         with_entry_mut(state, &vm_id, |entry| entry.numa_node = node);
     }
 }
@@ -1344,7 +1388,14 @@ fn delete_tracked_vm(
     // Release the NUMA reservation alongside the other teardown (increment
     // C1). No-op for an unpinned or program VM (numa_node is None).
     if let Some(node) = entry.numa_node {
-        release_numa_placement(state, node, entry.config.vcpu_count);
+        let (memory_mb, hugepage_size) = config_hugepage_backing(&entry.config);
+        release_numa_placement(
+            state,
+            node,
+            entry.config.vcpu_count,
+            memory_mb,
+            hugepage_size,
+        );
     }
     // The drop-in removal is NOT gated on numa_node: a VM reconciled as
     // unpinned after a topology change still has a stale drop-in on disk,
@@ -1871,6 +1922,13 @@ fn build_written_config(
             kernel_path,
             initrd_path,
             kernel_cmdline,
+            // NUMA memory binding + hugepages (increment C2) are filled in by
+            // the create path AFTER placement is chosen (place_vm_numa runs
+            // after this builder), so they start None here and are injected
+            // before the config is written to disk. A plain/SEV/no-NUMA config
+            // leaves them None (byte-identical to pre-C2).
+            numa_node: None,
+            hugepage_size: None,
         },
         hypervisor: "qemu",
     })
@@ -2194,7 +2252,14 @@ fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, 
     // only for a controller NOT currently tracked, disjoint from what the
     // boot-time `reconcile_numa_ledger` pass registers (see that function's
     // invariant), so the two paths never double-count the same VM.
-    let numa_node = reconstruct_numa_placement(state, vm_id, qemu.vcpu_count);
+    let (numa_memory_mb, numa_hugepage_size) = config_hugepage_backing(&qemu);
+    let numa_node = reconstruct_numa_placement(
+        state,
+        vm_id,
+        qemu.vcpu_count,
+        numa_memory_mb,
+        numa_hugepage_size,
+    );
 
     let now = now_ns();
     let entry = VmEntry {
@@ -2263,10 +2328,15 @@ fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, 
             if let Some(entry) = &removed {
                 world.reserved_vm_indices.insert(entry.vm_index);
             }
-            removed.and_then(|entry| entry.numa_node.map(|node| (node, entry.config.vcpu_count)))
+            removed.and_then(|entry| {
+                entry.numa_node.map(|node| {
+                    let (memory_mb, hugepage_size) = config_hugepage_backing(&entry.config);
+                    (node, entry.config.vcpu_count, memory_mb, hugepage_size)
+                })
+            })
         };
-        if let Some((node, vcpus)) = released {
-            release_numa_placement(state, node, vcpus);
+        if let Some((node, vcpus, memory_mb, hugepage_size)) = released {
+            release_numa_placement(state, node, vcpus, memory_mb, hugepage_size);
         }
         return Err(RpcError::Internal(error));
     }
@@ -2448,7 +2518,7 @@ fn create_vm_inner(
     // Register the entry (Python registers the execution before prepare so
     // duplicate creates and Health see it), allocating the vm_index and the
     // tap assignment under one world lock.
-    let (vm_index, assignment, written, stale_numa) = {
+    let (vm_index, assignment, mut written, stale_numa) = {
         let mut world = state.world.blocking_write();
         // A stale stopped entry is replaced, like the Python
         // `self.executions[vm_id] = execution` overwrite; a dict overwrite
@@ -2460,9 +2530,12 @@ fn create_vm_inner(
         // a LIVE reservation on `numa_node`. Capture it so we can release it
         // BEFORE the new `place_vm_numa` re-allocates - otherwise the node's
         // vCPUs double-count (increment C1, FIX 2).
-        let stale_numa = stale
-            .as_ref()
-            .and_then(|stale| stale.numa_node.map(|node| (node, stale.config.vcpu_count)));
+        let stale_numa = stale.as_ref().and_then(|stale| {
+            stale.numa_node.map(|node| {
+                let (memory_mb, hugepage_size) = config_hugepage_backing(&stale.config);
+                (node, stale.config.vcpu_count, memory_mb, hugepage_size)
+            })
+        });
         let vm_index = world
             .unique_vm_index(state.host.settings.start_id_index)
             .map_err(RpcError::Internal)?;
@@ -2532,8 +2605,8 @@ fn create_vm_inner(
     // 2). The drop-in is left in place: `place_vm_numa` + `apply_numa_dropin`
     // below overwrite it (the file is keyed by vm_hash), and a placement
     // failure unwinds without a boot, so no stale pin is left applied.
-    if let Some((node, vcpus)) = stale_numa {
-        release_numa_placement(state, node, vcpus);
+    if let Some((node, vcpus, memory_mb, hugepage_size)) = stale_numa {
+        release_numa_placement(state, node, vcpus, memory_mb, hugepage_size);
     }
 
     // NUMA placement (increment C1): honor a requested numa_node or pack
@@ -2541,17 +2614,33 @@ fn create_vm_inner(
     // before the boot. A placement failure unwinds the just-registered
     // entry, like the boot-failure cleanup below. The chosen cpuset is
     // written as an AllowedCPUs drop-in inside the boot closure.
-    let numa_placement = match place_vm_numa(state, request.vcpus, request.numa_node) {
-        Ok(placement) => placement,
-        Err(error) => {
-            state.world.blocking_write().entries.remove(&vm_id);
-            return Err(error);
-        }
-    };
+    let numa_placement =
+        match place_vm_numa(state, request.vcpus, request.memory_mib, request.numa_node) {
+            Ok(placement) => placement,
+            Err(error) => {
+                state.world.blocking_write().entries.remove(&vm_id);
+                return Err(error);
+            }
+        };
     if let Some(placement) = &numa_placement {
+        let hugepage_size = placement
+            .hugepage_size
+            .map(|size| size.as_qemu().to_string());
         with_entry_mut(state, &vm_id, |entry| {
-            entry.numa_node = Some(placement.node)
+            entry.numa_node = Some(placement.node);
+            // Keep the in-memory config in lockstep with the written config so
+            // a later delete/failed-create releases the SAME pages the allocator
+            // reserved (delete derives the release from `entry.config`). Without
+            // this the config's hugepage_size stays None and the pool leaks.
+            entry.config.numa_node = Some(placement.node);
+            entry.config.hugepage_size = hugepage_size.clone();
         });
+        // Carry the chosen node (and hugepage size, if any) into the controller
+        // config BEFORE it is written to disk below, so the controller binds the
+        // VM's memory to that node. build_written_config left these None; a
+        // no-placement create never enters this branch, so its bytes stay pre-C2.
+        written.vm_configuration.numa_node = Some(placement.node);
+        written.vm_configuration.hugepage_size = hugepage_size;
     }
 
     // qemu_build.py appends settings.DEVELOPER_SSH_KEYS when
@@ -2674,7 +2763,16 @@ fn create_vm_inner(
         // boot got far enough to write it); the ledger must not leak a
         // reservation for a VM that never came up (increment C1).
         if let Some(placement) = &numa_placement {
-            release_numa_placement(state, placement.node, request.vcpus);
+            // Return the exact pages this VM reserved (placement.hugepage_size)
+            // so a failed create does not leak the node's hugepage pool.
+            let memory_mb = request.memory_mib.min(u32::MAX as u64) as u32;
+            release_numa_placement(
+                state,
+                placement.node,
+                request.vcpus,
+                memory_mb,
+                placement.hugepage_size,
+            );
             remove_numa_dropin(state, &vm_id);
         }
         state.world.blocking_write().entries.remove(&vm_id);
@@ -5863,12 +5961,87 @@ mod tests {
         numa_harness_with(two_node_topology())
     }
 
+    /// A two-node topology whose nodes carry real 2M/1G hugepage pools, for the
+    /// C2 hugepage selection tests.
+    fn two_node_topology_with_hugepages() -> crate::numa::NumaTopology {
+        crate::numa::NumaTopology {
+            nodes: vec![
+                crate::numa::NumaNode {
+                    id: 0,
+                    cpus: (0..4).collect(),
+                    total_2m_hugepages: 2000,
+                    total_1g_hugepages: 4,
+                    total_ram_mb: 64_000,
+                },
+                crate::numa::NumaNode {
+                    id: 1,
+                    cpus: (4..8).collect(),
+                    total_2m_hugepages: 2000,
+                    total_1g_hugepages: 0,
+                    total_ram_mb: 64_000,
+                },
+            ],
+        }
+    }
+
+    /// A two-node NUMA harness with `ALEPH_VM_NUMA_HUGEPAGES` enabled and nodes
+    /// carrying hugepage pools, so the allocator selects a page size.
+    fn numa_hugepages_harness() -> Harness {
+        let (mut host, tmp) = numa_host();
+        host.settings.numa_hugepages = true;
+        let systemd = Arc::new(FakeSystemd::new());
+        let taps = Arc::new(FakeTapBackend::new());
+        let nft_executor = Arc::new(nft::StaticRuleset::new(bare_host_ruleset()));
+        let programs = Arc::new(crate::firecracker::FakeProgramLauncher::new());
+        let mut state = crate::service::DaemonState::hermetic(
+            host,
+            world::WorldView::default(),
+            systemd.clone(),
+            Arc::new(StaticLogSource::default()),
+        );
+        state.nft = nft_executor.clone();
+        state.taps = taps.clone();
+        state.programs = programs.clone();
+        state.with_numa_topology(two_node_topology_with_hugepages());
+        Harness {
+            state: Arc::new(state),
+            systemd,
+            taps,
+            nft: nft_executor,
+            programs,
+            _tmp: tmp,
+        }
+    }
+
+    /// Read the on-disk controller config JSON a create wrote.
+    fn written_config_json(state: &DaemonState, vm_id: &str) -> String {
+        let path =
+            controller_config::controller_config_path(&state.host.settings.execution_root, vm_id);
+        std::fs::read_to_string(path).expect("controller config was written")
+    }
+
     fn allocated(state: &DaemonState, node: u32) -> u32 {
         state
             .numa_ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .allocated_vcpus(node)
+    }
+
+    fn allocated_2m(state: &DaemonState, node: u32) -> u32 {
+        state
+            .numa_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .allocated_2m_pages(node)
+    }
+
+    fn allocated_1g(state: &DaemonState, node: u32) -> u32 {
+        state
+            .numa_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .allocated_1g_pages(node)
     }
 
     /// Insert an adopted-running QEMU entry (as build_world_view would) with
@@ -5955,6 +6128,251 @@ mod tests {
         );
         assert_eq!(allocated(state, 0), 0);
         assert_eq!(allocated(state, 1), 1);
+    }
+
+    #[test]
+    fn create_writes_numa_node_into_the_controller_config() {
+        // C2: a placed VM's controller config binds memory to the node. With
+        // hugepages OFF (the default), no hugepage_size / hugetlb is written.
+        let harness = numa_harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+
+        let (entry, _) = create_vm(state, spec(&vm_id, &root)).unwrap();
+        assert_eq!(entry.numa_node, Some(0));
+
+        let json = written_config_json(state, &vm_id);
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let vm = &value["vm_configuration"];
+        assert_eq!(vm["numa_node"], serde_json::json!(0));
+        assert!(
+            vm.get("hugepage_size").is_none(),
+            "hugepages off: no hugepage_size written: {json}"
+        );
+    }
+
+    #[test]
+    fn create_on_a_single_node_host_writes_no_numa_node() {
+        // Parity: a single-node (or non-NUMA) host places nothing, so the
+        // written config carries no numa_node / hugepage_size and its bytes
+        // stay identical to pre-C2.
+        let harness = numa_harness_with(one_node_topology());
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+
+        let (entry, _) = create_vm(state, spec(&vm_id, &root)).unwrap();
+        assert_eq!(entry.numa_node, None);
+
+        let json = written_config_json(state, &vm_id);
+        assert!(
+            !json.contains("numa_node") && !json.contains("hugepage_size"),
+            "no NUMA fields on a single-node host: {json}"
+        );
+    }
+
+    #[test]
+    fn create_with_hugepages_enabled_selects_a_page_size() {
+        // C2 opt-in: with ALEPH_VM_NUMA_HUGEPAGES on and hugepages reserved on
+        // the node, a placed VM's config carries a hugepage_size. The default
+        // spec is 256 MB (not 1G-aligned), so 2M is selected.
+        let harness = numa_hugepages_harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+
+        create_vm(state, spec(&vm_id, &root)).unwrap();
+        let json = written_config_json(state, &vm_id);
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let vm = &value["vm_configuration"];
+        assert_eq!(vm["numa_node"], serde_json::json!(0));
+        assert_eq!(
+            vm["hugepage_size"],
+            serde_json::json!("2M"),
+            "256 MB is not 1G-aligned, so 2M pages are chosen: {json}"
+        );
+    }
+
+    #[test]
+    fn create_with_hugepage_pools_but_setting_off_writes_no_hugepage_size() {
+        // FIX 2 (opt-in gate): a host with operator-pre-reserved hugepage pools
+        // but ALEPH_VM_NUMA_HUGEPAGES OFF must NOT emit hugepages. This pins the
+        // gate `let uses_hugepages = state.host.settings.numa_hugepages;`:
+        // mutating it to `true` here would select 2M (the pools are present) and
+        // write a hugepage_size, which this test forbids -> the mutation dies.
+        let harness = numa_harness_with(two_node_topology_with_hugepages());
+        let state = &harness.state;
+        assert!(
+            !state.host.settings.numa_hugepages,
+            "the setting is off (the default) even though pools are present"
+        );
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+
+        let (entry, _) = create_vm(state, spec(&vm_id, &root)).unwrap();
+        assert_eq!(entry.numa_node, Some(0), "still placed (vCPU binding)");
+
+        let json = written_config_json(state, &vm_id);
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let vm = &value["vm_configuration"];
+        assert_eq!(vm["numa_node"], serde_json::json!(0));
+        assert!(
+            vm.get("hugepage_size").is_none(),
+            "setting off: no hugepage_size against the operator opt-out: {json}"
+        );
+        // No hugetlb can reach the argv: it is only ever emitted from
+        // hugepage_size, which is absent. Guard against a stray literal too.
+        assert!(
+            !json.contains("hugetlb"),
+            "no hugetlb literal in the written config: {json}"
+        );
+        // The 2M pool was never touched.
+        assert_eq!(allocated_2m(state, 0), 0);
+        assert_eq!(allocated_1g(state, 0), 0);
+    }
+
+    #[test]
+    fn create_then_delete_returns_hugepages_no_leak() {
+        // FIX 1: with hugepages enabled, a create reserves pages and a delete
+        // returns them to the node's pool (pre-create value), no monotonic leak.
+        let harness = numa_hugepages_harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+
+        let pre = allocated_2m(state, 0);
+        create_vm(state, spec(&vm_id, &root)).unwrap();
+        // 256 MB spec -> 2M pages: 256.div_ceil(2) = 128 pages reserved.
+        assert_eq!(
+            allocated_2m(state, 0),
+            pre + 128,
+            "pages reserved on create"
+        );
+
+        delete_vm(state, &vm_id, false, false).unwrap();
+        assert_eq!(
+            allocated_2m(state, 0),
+            pre,
+            "delete returned the reserved pages: no leak"
+        );
+        assert_eq!(allocated(state, 0), 0, "and the vCPU reservation is freed");
+    }
+
+    #[test]
+    fn failed_create_with_hugepages_releases_the_pages() {
+        // FIX 1: a create that fails AFTER the hugepage reservation must return
+        // the reserved pages, not leak them.
+        let (mut host, _tmp) = numa_host();
+        host.settings.numa_hugepages = true;
+        struct FailingSystemd(Arc<FakeSystemd>);
+        impl crate::units::UnitStateSource for FailingSystemd {
+            fn active_states(
+                &self,
+                units: &[String],
+            ) -> Result<std::collections::HashMap<String, bool>, String> {
+                self.0.active_states(units)
+            }
+            fn controller_units(&self) -> Result<std::collections::HashMap<String, bool>, String> {
+                self.0.controller_units()
+            }
+            fn get_active_state(&self, _unit: &str) -> String {
+                "failed".to_string()
+            }
+            fn start(&self, unit: &str) -> Result<(), String> {
+                self.0.start(unit)
+            }
+            fn stop(&self, unit: &str) -> Result<(), String> {
+                self.0.stop(unit)
+            }
+            fn restart(&self, unit: &str) -> Result<(), String> {
+                self.0.restart(unit)
+            }
+            fn enable(&self, unit: &str) -> Result<(), String> {
+                self.0.enable(unit)
+            }
+            fn disable(&self, unit: &str) -> Result<(), String> {
+                self.0.disable(unit)
+            }
+            fn is_enabled(&self, unit: &str) -> bool {
+                self.0.is_enabled(unit)
+            }
+        }
+        let systemd = Arc::new(FakeSystemd::new());
+        let mut state = crate::service::DaemonState::hermetic(
+            host,
+            world::WorldView::default(),
+            Arc::new(FailingSystemd(systemd.clone())),
+            Arc::new(StaticLogSource::default()),
+        );
+        state.nft = Arc::new(nft::StaticRuleset::new(bare_host_ruleset()));
+        state.taps = Arc::new(FakeTapBackend::new());
+        state.with_numa_topology(two_node_topology_with_hugepages());
+        let state = Arc::new(state);
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+
+        match create_vm(&state, spec(&vm_id, &root)) {
+            Err(RpcError::Internal(message)) => {
+                assert!(message.contains("controller failed to start"), "{message}");
+            }
+            other => panic!("expected Internal, got {other:?}"),
+        }
+        assert_eq!(
+            allocated_2m(&state, 0),
+            0,
+            "the reserved pages were returned on the failed create"
+        );
+        assert_eq!(allocated(&state, 0), 0, "and the vCPUs did not leak");
+    }
+
+    #[test]
+    fn reconcile_reregisters_a_hugepage_backed_vms_pages() {
+        // FIX 1: adoption/reconcile of a hugepage-backed VM must re-register its
+        // page usage from the written config, so the pool is NOT reset to 0
+        // across a daemon restart (which would over-commit the pages).
+        let harness = numa_hugepages_harness();
+        let state = &harness.state;
+        let unit_dir = state.host.settings.systemd_unit_dir.clone();
+        let vm_id = hash('c');
+
+        // An adopted VM: 2048 MB, 1G-backed, 2 vCPUs, pinned to node 0.
+        let mut config = QemuVmConfig::for_program(2048, Some("vmtap9".to_string()));
+        config.vcpu_count = 2;
+        config.numa_node = Some(0);
+        config.hugepage_size = Some("1G".to_string());
+        let entry = VmEntry {
+            vm_hash: vm_id.clone(),
+            vm_index: 9,
+            config,
+            settings_slice: Default::default(),
+            times: VmTimes {
+                started_at_ns: 1_000,
+                ..VmTimes::default()
+            },
+            adopted_running: true,
+            ipv4: None,
+            ipv6: None,
+            port_forwards: Vec::new(),
+            gpus: Vec::new(),
+            spec: None,
+            ordinal: 0,
+            is_program: false,
+            program: None,
+            numa_node: None,
+        };
+        state.world.blocking_write().insert_entry(entry);
+        crate::numa::write_cpuset_dropin(&unit_dir, &vm_id, "0-3").unwrap();
+
+        reconcile_numa_ledger(state);
+
+        assert_eq!(entry_snapshot(state, &vm_id).unwrap().numa_node, Some(0));
+        assert_eq!(allocated(state, 0), 2, "vCPUs re-registered");
+        assert_eq!(
+            allocated_1g(state, 0),
+            2,
+            "the 1G pages were re-registered (2048 MB / 1024), pool not reset to 0"
+        );
     }
 
     #[test]
@@ -6321,7 +6739,7 @@ mod tests {
                 .numa_ledger
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            ledger.register(0, 3);
+            ledger.register(0, 3, 0, None);
         }
         // The hidden VM has an on-disk drop-in mapping to node 0.
         crate::numa::write_cpuset_dropin(&unit_dir, &vm_id, "0-3").unwrap();
