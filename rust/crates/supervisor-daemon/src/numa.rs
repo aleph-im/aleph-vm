@@ -491,12 +491,14 @@ pub fn read_cpuset_dropin(unit_dir: &Path, vm_hash: &str) -> Option<String> {
 
 /// Remove the NUMA drop-in directory for a VM's controller unit (idempotent;
 /// a missing directory is not an error). Called on delete alongside the
-/// other teardown.
-pub fn remove_cpuset_dropin(unit_dir: &Path, vm_hash: &str) -> Result<()> {
+/// other teardown. Reports whether a directory was actually removed, so the
+/// caller only pays for a systemd daemon-reload when the on-disk state
+/// changed.
+pub fn remove_cpuset_dropin(unit_dir: &Path, vm_hash: &str) -> Result<bool> {
     let dir = dropin_dir(unit_dir, vm_hash);
     match std::fs::remove_dir_all(&dir) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error).with_context(|| format!("failed to remove {}", dir.display())),
     }
 }
@@ -785,9 +787,9 @@ mod tests {
         assert!(body.contains("AllowedCPUs=4-7"));
         assert_eq!(read_cpuset_dropin(unit_dir, &hash), Some("4-7".to_string()));
 
-        // Removal is idempotent.
-        remove_cpuset_dropin(unit_dir, &hash).unwrap();
+        // Removal is idempotent and reports whether anything was removed.
+        assert!(remove_cpuset_dropin(unit_dir, &hash).unwrap());
         assert!(!dropin_dir(unit_dir, &hash).exists());
-        remove_cpuset_dropin(unit_dir, &hash).unwrap();
+        assert!(!remove_cpuset_dropin(unit_dir, &hash).unwrap());
     }
 }

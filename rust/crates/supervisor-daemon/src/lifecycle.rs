@@ -227,25 +227,27 @@ fn release_numa_placement(state: &DaemonState, node: u32, vcpus: u32) {
 }
 
 /// Remove a VM's NUMA drop-in on teardown and reload systemd. Best effort:
-/// a failure is logged, never fatal to a delete.
+/// a failure is logged, never fatal to a delete. Deliberately NOT gated on
+/// `is_placement_active` or `entry.numa_node`: a drop-in written under an
+/// earlier topology must not outlive its VM (systemd would apply it to a
+/// future same-hash controller), and a VM reconciled as unpinned (its cpuset
+/// no longer matches any node) still has a file to clean up. The unpinned
+/// common case stays cheap because the daemon-reload only runs when a file
+/// was actually removed.
 fn remove_numa_dropin(state: &DaemonState, vm_id: &str) {
-    // Nothing is ever pinned when placement is inert (single-node or non-NUMA
-    // host), so there is no drop-in to remove and no reason to pay for a
-    // systemd daemon-reload. This matters for the hidden-VM delete path, which
-    // cannot gate on `entry.numa_node` (it has no entry); the tracked-delete
-    // path already only calls this for a pinned VM. Mirrors the same guard in
-    // `release_numa_placement`.
-    if !state.numa.is_placement_active() {
-        return;
-    }
-    if let Err(error) =
-        crate::numa::remove_cpuset_dropin(&state.host.settings.systemd_unit_dir, vm_id)
-    {
-        tracing::warn!(
-            vm_id,
-            error = format!("{error:#}"),
-            "failed to remove the NUMA drop-in"
-        );
+    let removed =
+        match crate::numa::remove_cpuset_dropin(&state.host.settings.systemd_unit_dir, vm_id) {
+            Ok(removed) => removed,
+            Err(error) => {
+                tracing::warn!(
+                    vm_id,
+                    error = format!("{error:#}"),
+                    "failed to remove the NUMA drop-in"
+                );
+                return;
+            }
+        };
+    if !removed {
         return;
     }
     if let Err(error) = state.units.reload() {
@@ -1339,13 +1341,15 @@ fn delete_tracked_vm(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     state.world.blocking_write().entries.remove(vm_id);
-    // Release the NUMA reservation and drop the AllowedCPUs drop-in
-    // alongside the other teardown (increment C1). No-op for an unpinned or
-    // program VM (numa_node is None).
+    // Release the NUMA reservation alongside the other teardown (increment
+    // C1). No-op for an unpinned or program VM (numa_node is None).
     if let Some(node) = entry.numa_node {
         release_numa_placement(state, node, entry.config.vcpu_count);
-        remove_numa_dropin(state, vm_id);
     }
+    // The drop-in removal is NOT gated on numa_node: a VM reconciled as
+    // unpinned after a topology change still has a stale drop-in on disk,
+    // and leaving it behind would pin a future same-hash controller.
+    remove_numa_dropin(state, vm_id);
     // Delete releases the definition: the controller config and the
     // cloud-init seed go too (stop keeps them for reattach).
     controller_config::remove_controller_configuration(root, vm_id).map_err(RpcError::Internal)?;
@@ -6002,37 +6006,78 @@ mod tests {
     }
 
     #[test]
-    fn remove_numa_dropin_reloads_only_when_placement_is_active() {
-        // Inactive (single-node / non-NUMA) host: nothing is ever pinned, so a
-        // drop-in removal must not issue a systemd daemon-reload. The hidden-VM
-        // delete path cannot gate on entry.numa_node, so the gate lives inside
-        // remove_numa_dropin.
-        let inert = harness();
-        remove_numa_dropin(&inert.state, &hash('a'));
-        assert!(
-            !inert
-                .systemd
-                .actions()
-                .iter()
-                .any(|action| action.contains("daemon-reload")),
-            "inactive placement must not daemon-reload, got: {:?}",
-            inert.systemd.actions()
-        );
-
-        // Active (multi-node) host: removal reloads so an already-loaded unit
-        // drops the AllowedCPUs property. This also proves the check above is
-        // not vacuous.
+    fn remove_numa_dropin_reloads_only_when_a_dropin_was_removed() {
+        // No drop-in on disk (the unpinned common case, e.g. a program VM):
+        // removal is a no-op and must not pay for a systemd daemon-reload,
+        // even with placement active. The hidden-VM and tracked delete paths
+        // call remove_numa_dropin unconditionally, so this keeps every
+        // unpinned delete cheap.
         let active = numa_harness();
         remove_numa_dropin(&active.state, &hash('a'));
         assert!(
-            active
+            !active
                 .systemd
                 .actions()
                 .iter()
                 .any(|action| action.contains("daemon-reload")),
-            "active placement reloads on drop-in removal, got: {:?}",
+            "no drop-in on disk must not daemon-reload, got: {:?}",
             active.systemd.actions()
         );
+
+        // A leftover drop-in is removed and reloaded even when placement is
+        // inert (single-node host): a pin written under an earlier topology
+        // must not outlive its VM, and the reload drops the property from an
+        // already-loaded unit.
+        let single_node = crate::numa::NumaTopology {
+            nodes: vec![crate::numa::NumaNode {
+                id: 0,
+                cpus: (0..8).collect(),
+                total_2m_hugepages: 0,
+                total_1g_hugepages: 0,
+                total_ram_mb: 64_000,
+            }],
+        };
+        let inert = numa_harness_with(single_node);
+        let unit_dir = inert.state.host.settings.systemd_unit_dir.clone();
+        crate::numa::write_cpuset_dropin(&unit_dir, &hash('a'), "0-3").unwrap();
+        remove_numa_dropin(&inert.state, &hash('a'));
+        assert!(
+            crate::numa::read_cpuset_dropin(&unit_dir, &hash('a')).is_none(),
+            "the stale drop-in is removed on an inert host"
+        );
+        assert!(
+            inert
+                .systemd
+                .actions()
+                .iter()
+                .any(|action| action.contains("daemon-reload")),
+            "removing an actual drop-in reloads, got: {:?}",
+            inert.systemd.actions()
+        );
+    }
+
+    #[test]
+    fn delete_removes_the_dropin_of_a_vm_reconciled_as_unpinned() {
+        // A drop-in whose cpuset matches no node after a topology change
+        // between restarts leaves the VM reconciled as unpinned
+        // (numa_node None). Delete must still remove the file: systemd
+        // would apply it to a future controller with the same vm_hash.
+        let harness = numa_harness();
+        let state = &harness.state;
+        let unit_dir = state.host.settings.systemd_unit_dir.clone();
+        let vm_id = hash('a');
+
+        insert_adopted(state, &vm_id, 2, 9);
+        crate::numa::write_cpuset_dropin(&unit_dir, &vm_id, "0-1").unwrap();
+        reconcile_numa_ledger(state);
+        assert_eq!(entry_snapshot(state, &vm_id).unwrap().numa_node, None);
+
+        delete_vm(state, &vm_id, false, false).unwrap();
+        assert!(
+            crate::numa::read_cpuset_dropin(&unit_dir, &vm_id).is_none(),
+            "the stale drop-in must not outlive the VM"
+        );
+        assert_eq!(allocated(state, 0), 0, "nothing was ever reserved");
     }
 
     #[test]
