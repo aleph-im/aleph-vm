@@ -183,9 +183,13 @@ fn place_vm_numa(
     }
 }
 
-/// Write the `AllowedCPUs=` drop-in for a placed VM and reload systemd so an
-/// already-loaded unit picks the pin up. Called inside the create boot
-/// closure, before the controller is started.
+/// Write the `AllowedCPUs=` drop-in for a placed VM. The controller is an
+/// instance of the shared `aleph-vm-controller@.service` template, so a
+/// per-VM pin can only live in a per-instance drop-in, not in the unit file.
+/// Called inside the create boot closure, before the controller starts, so
+/// the pin applies from the first instruction. The daemon-reload only
+/// matters when the instance unit is still loaded from a previous life of
+/// the same vm_hash (stop then recreate); on a first boot it is a no-op.
 fn apply_numa_dropin(
     state: &DaemonState,
     vm_id: &str,
