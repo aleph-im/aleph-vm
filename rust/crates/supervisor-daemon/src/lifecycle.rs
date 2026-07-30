@@ -140,6 +140,188 @@ fn with_entry_mut<R>(
         .map(mutate)
 }
 
+// ── NUMA placement (Phase 3 increment C1) ───────────────────────────────
+//
+// The supervisor auto-places persistent QEMU VMs on NUMA nodes (pack-first)
+// and pins their vCPUs through the systemd `AllowedCPUs=` property, written
+// as a per-instance drop-in. There is NO Python oracle; the reference is the
+// aleph-cvm donor. Every function is inert (returns None / does nothing)
+// UNLESS the host has more than one NUMA node (`is_placement_active`). A
+// single-node host - every CONFIG_NUMA kernel exposes node0 even on one
+// socket - is treated exactly like a non-NUMA host: pinning to the only node
+// is all host CPUs, a no-op, so no drop-in, no daemon-reload, no reservation,
+// and `VmInfo.numa_node` stays None. The topology is still REPORTED in
+// `HostInfo.numa_nodes` for a single node (that is pure reporting).
+
+/// Choose a NUMA node for a new VM and reserve its vCPUs in the ledger.
+///
+/// Honors a requested `numa_node` when the spec carries one (decision 4),
+/// otherwise packs onto the first node (node 0, then 1, ...) with room.
+/// Returns `Ok(None)` when placement is inert (fewer than two nodes). The
+/// ledger mutation is serialized by the caller's creation lock.
+fn place_vm_numa(
+    state: &DaemonState,
+    vcpus: u32,
+    requested: Option<u32>,
+) -> Result<Option<crate::numa::NumaPlacement>, RpcError> {
+    if !state.numa.is_placement_active() {
+        return Ok(None);
+    }
+    let mut ledger = state
+        .numa_ledger
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match ledger.allocate(vcpus, requested) {
+        Ok(placement) => Ok(Some(placement)),
+        Err(crate::numa::PlacementError::UnknownNode(message)) => {
+            // A bad client argument (InvalidArgument on the wire).
+            Err(RpcError::InvalidBackend(message))
+        }
+        Err(crate::numa::PlacementError::Insufficient(message)) => {
+            Err(RpcError::InsufficientResources(message))
+        }
+    }
+}
+
+/// Write the `AllowedCPUs=` drop-in for a placed VM. The controller is an
+/// instance of the shared `aleph-vm-controller@.service` template, so a
+/// per-VM pin can only live in a per-instance drop-in, not in the unit file.
+/// Called inside the create boot closure, before the controller starts, so
+/// the pin applies from the first instruction. The daemon-reload only
+/// matters when the instance unit is still loaded from a previous life of
+/// the same vm_hash (stop then recreate); on a first boot it is a no-op.
+fn apply_numa_dropin(
+    state: &DaemonState,
+    vm_id: &str,
+    placement: &crate::numa::NumaPlacement,
+) -> Result<(), String> {
+    crate::numa::write_cpuset_dropin(
+        &state.host.settings.systemd_unit_dir,
+        vm_id,
+        &placement.cpuset,
+    )
+    .map_err(|error| format!("{error:#}"))?;
+    // A freshly written drop-in only applies after a reload if the unit was
+    // already loaded; harmless on first load.
+    state.units.reload()?;
+    tracing::info!(
+        vm_id,
+        node = placement.node,
+        cpuset = placement.cpuset,
+        "pinned controller vCPUs via AllowedCPUs"
+    );
+    Ok(())
+}
+
+/// Release a VM's reserved vCPUs from the ledger (idempotent-safe: a
+/// saturating subtract). No-op when placement is inert.
+fn release_numa_placement(state: &DaemonState, node: u32, vcpus: u32) {
+    if !state.numa.is_placement_active() {
+        return;
+    }
+    state
+        .numa_ledger
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .release(node, vcpus);
+}
+
+/// Remove a VM's NUMA drop-in on teardown and reload systemd. Best effort:
+/// a failure is logged, never fatal to a delete. Deliberately NOT gated on
+/// `is_placement_active` or `entry.numa_node`: a drop-in written under an
+/// earlier topology must not outlive its VM (systemd would apply it to a
+/// future same-hash controller), and a VM reconciled as unpinned (its cpuset
+/// no longer matches any node) still has a file to clean up. The unpinned
+/// common case stays cheap because the daemon-reload only runs when a file
+/// was actually removed.
+fn remove_numa_dropin(state: &DaemonState, vm_id: &str) {
+    let removed =
+        match crate::numa::remove_cpuset_dropin(&state.host.settings.systemd_unit_dir, vm_id) {
+            Ok(removed) => removed,
+            Err(error) => {
+                tracing::warn!(
+                    vm_id,
+                    error = format!("{error:#}"),
+                    "failed to remove the NUMA drop-in"
+                );
+                return;
+            }
+        };
+    if !removed {
+        return;
+    }
+    if let Err(error) = state.units.reload() {
+        tracing::warn!(
+            vm_id,
+            error,
+            "daemon-reload after NUMA drop-in removal failed"
+        );
+    }
+}
+
+/// Rebuild a VM's ledger reservation from its on-disk `AllowedCPUs` drop-in
+/// and return the effective node. Used at boot reconcile and when
+/// re-adopting a live controller: a VM whose drop-in maps to a known node is
+/// re-registered so pack-first stays correct across a daemon restart; one
+/// with no drop-in (or an unrecognized cpuset) is treated as UNPINNED and
+/// counts against no node (design section 8 risk: pre-NUMA adopted VMs must
+/// not be silently attributed to node 0).
+fn reconstruct_numa_placement(state: &DaemonState, vm_id: &str, vcpus: u32) -> Option<u32> {
+    if !state.numa.is_placement_active() {
+        return None;
+    }
+    // Read the on-disk drop-in BEFORE taking the ledger mutex: the fs read
+    // must not run while the std::Mutex is held (FIX 8).
+    let cpuset = crate::numa::read_cpuset_dropin(&state.host.settings.systemd_unit_dir, vm_id)?;
+    let mut ledger = state
+        .numa_ledger
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let node = ledger.node_for_cpuset(&cpuset)?;
+    ledger.register(node, vcpus);
+    tracing::info!(
+        vm_id,
+        node,
+        cpuset,
+        "re-registered NUMA placement from the AllowedCPUs drop-in"
+    );
+    Some(node)
+}
+
+/// Rebuild the NUMA placement ledger at boot from the effective placement of
+/// every adopted-running VM (design section 8). Runs unconditionally at
+/// startup, independent of `reconcile_boot` (which is gated on networking):
+/// the ledger must be consistent even on a host with `ALLOW_VM_NETWORKING`
+/// off. Adopted VMs with no `AllowedCPUs` drop-in are left unpinned.
+///
+/// INVARIANT (no double-count with `readopt_live_controller`): this runs
+/// EXACTLY ONCE at boot, before the socket exists, over the boot-time world;
+/// `reconstruct_numa_placement` `register`s each adopted entry once.
+/// `readopt_live_controller` also reconstructs+registers, but ONLY for a
+/// controller that is live yet NOT tracked - a set disjoint from what this
+/// pass sees. An entry counted here stays tracked until DeleteVm (which
+/// releases), and nothing turns a counted, tracked entry back into an
+/// untracked-but-live one, so readopt can never re-register a VM this pass
+/// already counted. The two paths are therefore mutually exclusive per VM
+/// and neither needs to be idempotent.
+pub fn reconcile_numa_ledger(state: &DaemonState) {
+    if !state.numa.is_placement_active() {
+        return;
+    }
+    let adopted: Vec<(String, u32)> = state
+        .world
+        .blocking_read()
+        .ordered_entries()
+        .into_iter()
+        .filter(|entry| entry.adopted_running && !entry.is_program)
+        .map(|entry| (entry.vm_hash.clone(), entry.config.vcpu_count))
+        .collect();
+    for (vm_id, vcpus) in adopted {
+        let node = reconstruct_numa_placement(state, &vm_id, vcpus);
+        with_entry_mut(state, &vm_id, |entry| entry.numa_node = node);
+    }
+}
+
 /// Python `_is_running` for one persistent execution: a batched-state
 /// lookup that degrades to "inactive" on a bus failure (ledger entry 13).
 fn unit_active(state: &DaemonState, unit: &str) -> bool {
@@ -1109,7 +1291,13 @@ pub fn delete_vm(
         tracing::warn!(unit, error, "failed to stop/disable the stale controller");
     }
     // Release the hidden VM's vm_index claim (and its retry-queue entry,
-    // the Python `_failed_reattach.pop`) before the config goes.
+    // the Python `_failed_reattach.pop`) before the config goes. NOTE the
+    // NUMA ledger is deliberately NOT touched here: a hidden VM (adoption
+    // failed, never entered `world.entries`) was NEVER registered by
+    // `reconcile_numa_ledger` (which only registers adopted-running tracked
+    // entries), so releasing its vCPUs would subtract a reservation that was
+    // never added and steal capacity from co-located VMs (increment C1). Its
+    // drop-in is still removed below for cleanliness.
     {
         let mut world = state.world.blocking_write();
         world.failed_reattach.remove(vm_id);
@@ -1119,6 +1307,7 @@ pub fn delete_vm(
             world.reserved_vm_indices.remove(&config.vm_index);
         }
     }
+    remove_numa_dropin(state, vm_id);
     controller_config::remove_controller_configuration(root, vm_id).map_err(RpcError::Internal)?;
     Ok(())
 }
@@ -1152,6 +1341,15 @@ fn delete_tracked_vm(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     state.world.blocking_write().entries.remove(vm_id);
+    // Release the NUMA reservation alongside the other teardown (increment
+    // C1). No-op for an unpinned or program VM (numa_node is None).
+    if let Some(node) = entry.numa_node {
+        release_numa_placement(state, node, entry.config.vcpu_count);
+    }
+    // The drop-in removal is NOT gated on numa_node: a VM reconciled as
+    // unpinned after a topology change still has a stale drop-in on disk,
+    // and leaving it behind would pin a future same-hash controller.
+    remove_numa_dropin(state, vm_id);
     // Delete releases the definition: the controller config and the
     // cloud-init seed go too (stop keeps them for reattach).
     controller_config::remove_controller_configuration(root, vm_id).map_err(RpcError::Internal)?;
@@ -1990,6 +2188,13 @@ fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, 
     let gpus = world::rebuild_attached_gpus(&qemu.gpus, &state.host.gpus);
     let port_forwards = ports::load_port_forwards(&state.host.settings.supervisor_database, vm_id)
         .map_err(RpcError::Internal)?;
+    // Rebuild the NUMA ledger entry for this live-but-untracked controller
+    // from its effective AllowedCPUs drop-in (increment C1); unpinned when
+    // no drop-in maps to a node. This registers the VM exactly once: it fires
+    // only for a controller NOT currently tracked, disjoint from what the
+    // boot-time `reconcile_numa_ledger` pass registers (see that function's
+    // invariant), so the two paths never double-count the same VM.
+    let numa_node = reconstruct_numa_placement(state, vm_id, qemu.vcpu_count);
 
     let now = now_ns();
     let entry = VmEntry {
@@ -2012,6 +2217,7 @@ fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, 
         ordinal: 0, // assigned by insert_entry
         is_program: false,
         program: None,
+        numa_node,
     };
     {
         let mut world = state.world.blocking_write();
@@ -2043,9 +2249,24 @@ fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, 
         Ok(())
     })();
     if let Err(error) = restore {
-        let mut world = state.world.blocking_write();
-        if let Some(entry) = world.entries.remove(vm_id) {
-            world.reserved_vm_indices.insert(entry.vm_index);
+        // The VM is untracked again. Undo the NUMA ledger reservation
+        // reconstruct_numa_placement made above, or a retry's reconstruct (and
+        // a restart's reconcile_numa_ledger) would double-count this still-
+        // running VM. Release OUTSIDE the world lock, matching
+        // delete_tracked_vm's world-then-ledger ordering. Do NOT remove the
+        // drop-in: unlike a delete, the controller is still running pinned to
+        // it (we only failed to re-adopt it into tracking), so removing it
+        // would de-pin a live VM and desync on-disk state from the process.
+        let released = {
+            let mut world = state.world.blocking_write();
+            let removed = world.entries.remove(vm_id);
+            if let Some(entry) = &removed {
+                world.reserved_vm_indices.insert(entry.vm_index);
+            }
+            removed.and_then(|entry| entry.numa_node.map(|node| (node, entry.config.vcpu_count)))
+        };
+        if let Some((node, vcpus)) = released {
+            release_numa_placement(state, node, vcpus);
         }
         return Err(RpcError::Internal(error));
     }
@@ -2227,12 +2448,21 @@ fn create_vm_inner(
     // Register the entry (Python registers the execution before prepare so
     // duplicate creates and Health see it), allocating the vm_index and the
     // tap assignment under one world lock.
-    let (vm_index, assignment, written) = {
+    let (vm_index, assignment, written, stale_numa) = {
         let mut world = state.world.blocking_write();
         // A stale stopped entry is replaced, like the Python
         // `self.executions[vm_id] = execution` overwrite; a dict overwrite
         // keeps the key's insertion position, so the ordinal survives.
-        let stale_ordinal = world.entries.remove(&vm_id).map(|stale| stale.ordinal);
+        let stale = world.entries.remove(&vm_id);
+        let stale_ordinal = stale.as_ref().map(|stale| stale.ordinal);
+        // A stopped-then-recreated VM keeps its ledger reservation across the
+        // stop (stop never releases, by design); the dropped VmEntry carries
+        // a LIVE reservation on `numa_node`. Capture it so we can release it
+        // BEFORE the new `place_vm_numa` re-allocates - otherwise the node's
+        // vCPUs double-count (increment C1, FIX 2).
+        let stale_numa = stale
+            .as_ref()
+            .and_then(|stale| stale.numa_node.map(|node| (node, stale.config.vcpu_count)));
         let vm_index = world
             .unique_vm_index(state.host.settings.start_id_index)
             .map_err(RpcError::Internal)?;
@@ -2282,6 +2512,8 @@ fn create_vm_inner(
             ordinal: 0, // assigned below
             is_program: false,
             program: None,
+            // Set below once the NUMA placement is chosen (increment C1).
+            numa_node: None,
         };
         match stale_ordinal {
             Some(ordinal) => {
@@ -2290,10 +2522,37 @@ fn create_vm_inner(
             }
             None => world.insert_entry(entry),
         }
-        (vm_index, assignment, written)
+        (vm_index, assignment, written, stale_numa)
     };
 
     let tap = assignment.map(|(ipv4, ipv6)| TapAssignment::new(vm_index, ipv4, ipv6));
+
+    // Release the replaced stale entry's reservation before re-placing, so a
+    // stop->recreate does not leak/double-count its vCPUs (increment C1, FIX
+    // 2). The drop-in is left in place: `place_vm_numa` + `apply_numa_dropin`
+    // below overwrite it (the file is keyed by vm_hash), and a placement
+    // failure unwinds without a boot, so no stale pin is left applied.
+    if let Some((node, vcpus)) = stale_numa {
+        release_numa_placement(state, node, vcpus);
+    }
+
+    // NUMA placement (increment C1): honor a requested numa_node or pack
+    // onto the first node with room, reserving its vCPUs in the ledger
+    // before the boot. A placement failure unwinds the just-registered
+    // entry, like the boot-failure cleanup below. The chosen cpuset is
+    // written as an AllowedCPUs drop-in inside the boot closure.
+    let numa_placement = match place_vm_numa(state, request.vcpus, request.numa_node) {
+        Ok(placement) => placement,
+        Err(error) => {
+            state.world.blocking_write().entries.remove(&vm_id);
+            return Err(error);
+        }
+    };
+    if let Some(placement) = &numa_placement {
+        with_entry_mut(state, &vm_id, |entry| {
+            entry.numa_node = Some(placement.node)
+        });
+    }
 
     // qemu_build.py appends settings.DEVELOPER_SSH_KEYS when
     // USE_DEVELOPER_SSH_KEYS is truthy.
@@ -2349,6 +2608,14 @@ fn create_vm_inner(
         }
         controller_config::save_controller_config(&state.host.settings.execution_root, &written)?;
 
+        // Write the AllowedCPUs drop-in before the controller starts so the
+        // pin applies on first boot (increment C1). For SEV/SEV-ES VMs the
+        // controller starts later (InitializeConfidential); the drop-in
+        // persists on disk and applies then.
+        if let Some(placement) = &numa_placement {
+            apply_numa_dropin(state, &vm_id, placement)?;
+        }
+
         with_entry_mut(state, &vm_id, |entry| entry.times.starting_at_ns = now_ns());
         let unit = controller_unit_name(&vm_id);
         if await_session {
@@ -2402,6 +2669,13 @@ fn create_vm_inner(
             if let Err(delete_error) = state.taps.delete_tap(tap) {
                 tracing::warn!(delete_error, "failed to delete the tap during cleanup");
             }
+        }
+        // Release the reserved vCPUs and drop the AllowedCPUs drop-in (if the
+        // boot got far enough to write it); the ledger must not leak a
+        // reservation for a VM that never came up (increment C1).
+        if let Some(placement) = &numa_placement {
+            release_numa_placement(state, placement.node, request.vcpus);
+            remove_numa_dropin(state, &vm_id);
         }
         state.world.blocking_write().entries.remove(&vm_id);
         return Err(RpcError::Internal(error));
@@ -2520,6 +2794,8 @@ fn create_program_vm(
             ordinal: 0, // assigned below
             is_program: true,
             program: None,
+            // Ephemeral programs are never NUMA-pinned.
+            numa_node: None,
         };
         match stale_ordinal {
             Some(ordinal) => {
@@ -5485,5 +5761,665 @@ mod tests {
             "the assignment was rederived from vm_index 3"
         );
         assert!(entry.ipv6.is_some());
+    }
+
+    // ── NUMA placement + CPU pinning (Phase 3 increment C1) ─────────────
+
+    /// A 2-node topology: node 0 = cpus 0-3, node 1 = cpus 4-7.
+    fn two_node_topology() -> crate::numa::NumaTopology {
+        crate::numa::NumaTopology {
+            nodes: vec![
+                crate::numa::NumaNode {
+                    id: 0,
+                    cpus: (0..4).collect(),
+                    total_2m_hugepages: 0,
+                    total_1g_hugepages: 0,
+                    total_ram_mb: 64_000,
+                },
+                crate::numa::NumaNode {
+                    id: 1,
+                    cpus: (4..8).collect(),
+                    total_2m_hugepages: 0,
+                    total_1g_hugepages: 0,
+                    total_ram_mb: 32_000,
+                },
+            ],
+        }
+    }
+
+    /// A host whose systemd unit directory points at a writable temp path (so
+    /// the AllowedCPUs drop-in can be written) with VM networking allowed. The
+    /// temp dir is returned so the caller keeps it alive.
+    fn numa_host() -> (HostState, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut settings = Settings::from_vars(
+            [(
+                "ALEPH_VM_EXECUTION_ROOT".to_string(),
+                tmp.path().to_string_lossy().into_owned(),
+            )]
+            .into_iter(),
+        )
+        .unwrap();
+        settings.allow_vm_networking = true;
+        settings.systemd_unit_dir = tmp.path().join("systemd");
+        crate::server::prepare_directories(&settings).unwrap();
+        ports::ensure_schema(&settings.supervisor_database).unwrap();
+
+        let host = HostState {
+            settings,
+            host_ipv4: "192.0.2.10".to_string(),
+            network_interface: Some("eth0".to_string()),
+            gpus: Vec::new(),
+            dns_nameservers: Some(vec!["1.1.1.1".to_string()]),
+        };
+        (host, tmp)
+    }
+
+    /// A single-node topology: node 0 = cpus 0-15. Every CONFIG_NUMA host
+    /// exposes exactly this on a single socket; placement must stay inert.
+    fn one_node_topology() -> crate::numa::NumaTopology {
+        crate::numa::NumaTopology {
+            nodes: vec![crate::numa::NumaNode {
+                id: 0,
+                cpus: (0..16).collect(),
+                total_2m_hugepages: 0,
+                total_1g_hugepages: 0,
+                total_ram_mb: 128_000,
+            }],
+        }
+    }
+
+    /// A harness like [`harness`] with the given NUMA topology installed and
+    /// the systemd unit directory pointed at a writable temp path (so the
+    /// AllowedCPUs drop-in can be written).
+    fn numa_harness_with(topology: crate::numa::NumaTopology) -> Harness {
+        let (host, tmp) = numa_host();
+        let systemd = Arc::new(FakeSystemd::new());
+        let taps = Arc::new(FakeTapBackend::new());
+        let nft_executor = Arc::new(nft::StaticRuleset::new(bare_host_ruleset()));
+        let programs = Arc::new(crate::firecracker::FakeProgramLauncher::new());
+        let mut state = crate::service::DaemonState::hermetic(
+            host,
+            world::WorldView::default(),
+            systemd.clone(),
+            Arc::new(StaticLogSource::default()),
+        );
+        state.nft = nft_executor.clone();
+        state.taps = taps.clone();
+        state.programs = programs.clone();
+        state.with_numa_topology(topology);
+        Harness {
+            state: Arc::new(state),
+            systemd,
+            taps,
+            nft: nft_executor,
+            programs,
+            _tmp: tmp,
+        }
+    }
+
+    /// The default two-node NUMA harness.
+    fn numa_harness() -> Harness {
+        numa_harness_with(two_node_topology())
+    }
+
+    fn allocated(state: &DaemonState, node: u32) -> u32 {
+        state
+            .numa_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .allocated_vcpus(node)
+    }
+
+    /// Insert an adopted-running QEMU entry (as build_world_view would) with
+    /// the given vCPU count and no recorded NUMA placement.
+    fn insert_adopted(state: &DaemonState, vm_id: &str, vcpus: u32, vm_index: i64) {
+        let mut config = QemuVmConfig::for_program(256, Some(format!("vmtap{vm_index}")));
+        config.vcpu_count = vcpus;
+        let entry = VmEntry {
+            vm_hash: vm_id.to_string(),
+            vm_index,
+            config,
+            settings_slice: Default::default(),
+            times: VmTimes {
+                started_at_ns: 1_000,
+                ..VmTimes::default()
+            },
+            adopted_running: true,
+            ipv4: None,
+            ipv6: None,
+            port_forwards: Vec::new(),
+            gpus: Vec::new(),
+            spec: None,
+            ordinal: 0,
+            is_program: false,
+            program: None,
+            numa_node: None,
+        };
+        state.world.blocking_write().insert_entry(entry);
+    }
+
+    #[test]
+    fn create_pins_vcpus_pack_first_and_reports_effective_placement() {
+        let harness = numa_harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+
+        let (entry, running) = create_vm(state, spec(&vm_id, &root)).unwrap();
+        assert!(running);
+        // Pack-first: the first VM lands on node 0 (cpus 0-3).
+        assert_eq!(entry.numa_node, Some(0));
+
+        // VmInfo carries the effective placement.
+        let info = crate::service::vm_info_message(&entry, running, now_ns());
+        assert_eq!(info.numa_node, Some(0));
+
+        // The AllowedCPUs drop-in was written with node 0's cpuset.
+        assert_eq!(
+            crate::numa::read_cpuset_dropin(&state.host.settings.systemd_unit_dir, &vm_id),
+            Some("0-3".to_string())
+        );
+
+        // A daemon-reload preceded the enable/start so the pin applies.
+        let unit = controller_unit_name(&vm_id);
+        assert_eq!(
+            harness.systemd.actions(),
+            vec![
+                "daemon-reload".to_string(),
+                format!("enable {unit}"),
+                format!("start {unit}"),
+            ]
+        );
+
+        // The ledger reserved one vCPU on node 0.
+        assert_eq!(allocated(state, 0), 1);
+        assert_eq!(allocated(state, 1), 0);
+    }
+
+    #[test]
+    fn create_honors_a_requested_numa_node() {
+        let harness = numa_harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+        let mut request = spec(&vm_id, &root);
+        request.numa_node = Some(1);
+
+        let (entry, _) = create_vm(state, request).unwrap();
+        // Honored even though node 0 (pack-first) had room.
+        assert_eq!(entry.numa_node, Some(1));
+        assert_eq!(
+            crate::numa::read_cpuset_dropin(&state.host.settings.systemd_unit_dir, &vm_id),
+            Some("4-7".to_string())
+        );
+        assert_eq!(allocated(state, 0), 0);
+        assert_eq!(allocated(state, 1), 1);
+    }
+
+    #[test]
+    fn create_rejects_an_invalid_requested_numa_node() {
+        let harness = numa_harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+        let mut request = spec(&vm_id, &root);
+        request.numa_node = Some(9); // no such node
+
+        match create_vm(state, request) {
+            Err(RpcError::InvalidBackend(message)) => {
+                assert!(
+                    message.contains("9"),
+                    "message names the bad node: {message}"
+                );
+            }
+            other => panic!("expected InvalidBackend, got {other:?}"),
+        }
+        // No entry left behind and no reservation leaked.
+        assert!(entry_snapshot(state, &vm_id).is_none());
+        assert_eq!(allocated(state, 0), 0);
+        assert_eq!(allocated(state, 1), 0);
+        // No drop-in was written.
+        assert!(
+            crate::numa::read_cpuset_dropin(&state.host.settings.systemd_unit_dir, &vm_id)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn delete_releases_the_reservation_and_removes_the_dropin() {
+        let harness = numa_harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+
+        create_vm(state, spec(&vm_id, &root)).unwrap();
+        assert_eq!(allocated(state, 0), 1);
+
+        delete_vm(state, &vm_id, false, false).unwrap();
+        assert_eq!(allocated(state, 0), 0, "the vCPU reservation is freed");
+        assert!(
+            crate::numa::read_cpuset_dropin(&state.host.settings.systemd_unit_dir, &vm_id)
+                .is_none(),
+            "the drop-in is gone"
+        );
+    }
+
+    #[test]
+    fn remove_numa_dropin_reloads_only_when_a_dropin_was_removed() {
+        // No drop-in on disk (the unpinned common case, e.g. a program VM):
+        // removal is a no-op and must not pay for a systemd daemon-reload,
+        // even with placement active. The hidden-VM and tracked delete paths
+        // call remove_numa_dropin unconditionally, so this keeps every
+        // unpinned delete cheap.
+        let active = numa_harness();
+        remove_numa_dropin(&active.state, &hash('a'));
+        assert!(
+            !active
+                .systemd
+                .actions()
+                .iter()
+                .any(|action| action.contains("daemon-reload")),
+            "no drop-in on disk must not daemon-reload, got: {:?}",
+            active.systemd.actions()
+        );
+
+        // A leftover drop-in is removed and reloaded even when placement is
+        // inert (single-node host): a pin written under an earlier topology
+        // must not outlive its VM, and the reload drops the property from an
+        // already-loaded unit.
+        let single_node = crate::numa::NumaTopology {
+            nodes: vec![crate::numa::NumaNode {
+                id: 0,
+                cpus: (0..8).collect(),
+                total_2m_hugepages: 0,
+                total_1g_hugepages: 0,
+                total_ram_mb: 64_000,
+            }],
+        };
+        let inert = numa_harness_with(single_node);
+        let unit_dir = inert.state.host.settings.systemd_unit_dir.clone();
+        crate::numa::write_cpuset_dropin(&unit_dir, &hash('a'), "0-3").unwrap();
+        remove_numa_dropin(&inert.state, &hash('a'));
+        assert!(
+            crate::numa::read_cpuset_dropin(&unit_dir, &hash('a')).is_none(),
+            "the stale drop-in is removed on an inert host"
+        );
+        assert!(
+            inert
+                .systemd
+                .actions()
+                .iter()
+                .any(|action| action.contains("daemon-reload")),
+            "removing an actual drop-in reloads, got: {:?}",
+            inert.systemd.actions()
+        );
+    }
+
+    #[test]
+    fn delete_removes_the_dropin_of_a_vm_reconciled_as_unpinned() {
+        // A drop-in whose cpuset matches no node after a topology change
+        // between restarts leaves the VM reconciled as unpinned
+        // (numa_node None). Delete must still remove the file: systemd
+        // would apply it to a future controller with the same vm_hash.
+        let harness = numa_harness();
+        let state = &harness.state;
+        let unit_dir = state.host.settings.systemd_unit_dir.clone();
+        let vm_id = hash('a');
+
+        insert_adopted(state, &vm_id, 2, 9);
+        crate::numa::write_cpuset_dropin(&unit_dir, &vm_id, "0-1").unwrap();
+        reconcile_numa_ledger(state);
+        assert_eq!(entry_snapshot(state, &vm_id).unwrap().numa_node, None);
+
+        delete_vm(state, &vm_id, false, false).unwrap();
+        assert!(
+            crate::numa::read_cpuset_dropin(&unit_dir, &vm_id).is_none(),
+            "the stale drop-in must not outlive the VM"
+        );
+        assert_eq!(allocated(state, 0), 0, "nothing was ever reserved");
+    }
+
+    #[test]
+    fn reconcile_treats_unknown_placement_as_unpinned_and_reregisters_known() {
+        let harness = numa_harness();
+        let state = &harness.state;
+        let unit_dir = state.host.settings.systemd_unit_dir.clone();
+        let pinned = hash('c');
+        let unpinned = hash('b');
+
+        insert_adopted(state, &pinned, 2, 9);
+        insert_adopted(state, &unpinned, 3, 10);
+        // The pinned VM has an effective AllowedCPUs drop-in (node 0); the
+        // unpinned one (a pre-NUMA adoption) has none.
+        crate::numa::write_cpuset_dropin(&unit_dir, &pinned, "0-3").unwrap();
+
+        reconcile_numa_ledger(state);
+
+        assert_eq!(entry_snapshot(state, &pinned).unwrap().numa_node, Some(0));
+        assert_eq!(
+            entry_snapshot(state, &unpinned).unwrap().numa_node,
+            None,
+            "an adopted VM with no drop-in is unpinned, not node 0"
+        );
+        // Only the pinned VM's vCPUs count against the ledger.
+        assert_eq!(allocated(state, 0), 2);
+        assert_eq!(allocated(state, 1), 0);
+    }
+
+    #[test]
+    fn single_node_host_is_inert_for_placement_and_pinning() {
+        // FIX 1: a one-node host (every CONFIG_NUMA box has node0) must behave
+        // exactly like a non-NUMA host: no placement, no drop-in, no
+        // daemon-reload, no reservation, and VmInfo.numa_node stays None. The
+        // topology is STILL reported (HostInfo.numa_nodes) for the one node.
+        let harness = numa_harness_with(one_node_topology());
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+
+        // Reporting is retained even though placement is inert.
+        assert!(!state.numa.is_placement_active());
+        assert_eq!(
+            state.numa.nodes.len(),
+            1,
+            "the single node is still reported"
+        );
+
+        let (entry, running) = create_vm(state, spec(&vm_id, &root)).unwrap();
+        assert!(running);
+        assert_eq!(entry.numa_node, None, "no placement on a single-node host");
+
+        let info = crate::service::vm_info_message(&entry, running, now_ns());
+        assert_eq!(info.numa_node, None);
+
+        // No AllowedCPUs drop-in, no reservation.
+        assert!(
+            crate::numa::read_cpuset_dropin(&state.host.settings.systemd_unit_dir, &vm_id)
+                .is_none(),
+            "a single-node host writes no drop-in"
+        );
+        assert_eq!(allocated(state, 0), 0);
+
+        // No daemon-reload preceded the enable/start (the drop-in path is
+        // never entered): just enable + start, exactly as before C1.
+        let unit = controller_unit_name(&vm_id);
+        assert_eq!(
+            harness.systemd.actions(),
+            vec![format!("enable {unit}"), format!("start {unit}")],
+        );
+    }
+
+    #[test]
+    fn two_vms_pack_first_then_spill_to_node_one() {
+        // FIX 7: at the lifecycle level, VM1 fills node 0 and VM2 lands on
+        // node 1 with node 1's cpuset and its own drop-in.
+        let harness = numa_harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+
+        let vm1 = hash('a');
+        let mut req1 = spec(&vm1, &root);
+        req1.vcpus = 4; // fills node 0 (cpus 0-3)
+        let (entry1, _) = create_vm(state, req1).unwrap();
+        assert_eq!(entry1.numa_node, Some(0));
+        assert_eq!(
+            crate::numa::read_cpuset_dropin(&state.host.settings.systemd_unit_dir, &vm1),
+            Some("0-3".to_string())
+        );
+
+        let vm2 = hash('b');
+        let (entry2, _) = create_vm(state, spec(&vm2, &root)).unwrap();
+        assert_eq!(
+            entry2.numa_node,
+            Some(1),
+            "node 0 full, VM2 spills to node 1"
+        );
+        assert_eq!(
+            crate::numa::read_cpuset_dropin(&state.host.settings.systemd_unit_dir, &vm2),
+            Some("4-7".to_string()),
+            "VM2 is pinned to node 1's cpuset"
+        );
+        assert_eq!(allocated(state, 0), 4);
+        assert_eq!(allocated(state, 1), 1);
+    }
+
+    #[test]
+    fn stop_keeps_the_numa_reservation() {
+        // FIX 7 characterization: stop must NOT release the reservation (and
+        // start must not re-place); the node's allocated count is unchanged
+        // across a stop.
+        let harness = numa_harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+
+        create_vm(state, spec(&vm_id, &root)).unwrap();
+        assert_eq!(allocated(state, 0), 1);
+
+        stop_vm(state, &vm_id).unwrap();
+        assert_eq!(
+            allocated(state, 0),
+            1,
+            "stop keeps the reservation (delete releases, not stop)"
+        );
+    }
+
+    #[test]
+    fn recreate_over_a_stopped_vm_does_not_double_count() {
+        // FIX 2: create -> stop (keeps the entry + reservation) -> create the
+        // same hash. The stale entry's LIVE reservation must be released
+        // before the new placement re-allocates, so the node does not
+        // double-count.
+        let harness = numa_harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+
+        create_vm(state, spec(&vm_id, &root)).unwrap();
+        assert_eq!(allocated(state, 0), 1);
+
+        stop_vm(state, &vm_id).unwrap();
+        assert_eq!(allocated(state, 0), 1, "stop keeps the reservation");
+
+        // Re-create the same VM: the stale reservation is released and a fresh
+        // one is taken, netting the SAME count (not two).
+        let (entry, _) = create_vm(state, spec(&vm_id, &root)).unwrap();
+        assert_eq!(entry.numa_node, Some(0));
+        assert_eq!(
+            allocated(state, 0),
+            1,
+            "the node's vCPUs did not double across stop->recreate"
+        );
+        assert_eq!(allocated(state, 1), 0);
+    }
+
+    #[test]
+    fn a_boot_failure_after_placement_releases_the_reservation_and_dropin() {
+        // FIX 7: a create that fails AFTER place_vm_numa must release the
+        // reserved vCPUs and remove the drop-in, leaving the ledger at zero.
+        let (host, _tmp) = numa_host();
+        // A systemd whose controller never goes active: start records the
+        // action but the state reads back "failed", failing the boot.
+        struct FailingSystemd(Arc<FakeSystemd>);
+        impl crate::units::UnitStateSource for FailingSystemd {
+            fn active_states(
+                &self,
+                units: &[String],
+            ) -> Result<std::collections::HashMap<String, bool>, String> {
+                self.0.active_states(units)
+            }
+            fn controller_units(&self) -> Result<std::collections::HashMap<String, bool>, String> {
+                self.0.controller_units()
+            }
+            fn get_active_state(&self, _unit: &str) -> String {
+                "failed".to_string()
+            }
+            fn start(&self, unit: &str) -> Result<(), String> {
+                self.0.start(unit)
+            }
+            fn stop(&self, unit: &str) -> Result<(), String> {
+                self.0.stop(unit)
+            }
+            fn restart(&self, unit: &str) -> Result<(), String> {
+                self.0.restart(unit)
+            }
+            fn enable(&self, unit: &str) -> Result<(), String> {
+                self.0.enable(unit)
+            }
+            fn disable(&self, unit: &str) -> Result<(), String> {
+                self.0.disable(unit)
+            }
+            fn is_enabled(&self, unit: &str) -> bool {
+                self.0.is_enabled(unit)
+            }
+        }
+        let systemd = Arc::new(FakeSystemd::new());
+        let mut state = crate::service::DaemonState::hermetic(
+            host,
+            world::WorldView::default(),
+            Arc::new(FailingSystemd(systemd.clone())),
+            Arc::new(StaticLogSource::default()),
+        );
+        state.nft = Arc::new(nft::StaticRuleset::new(bare_host_ruleset()));
+        state.taps = Arc::new(FakeTapBackend::new());
+        state.with_numa_topology(two_node_topology());
+        let state = Arc::new(state);
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+
+        match create_vm(&state, spec(&vm_id, &root)) {
+            Err(RpcError::Internal(message)) => {
+                assert!(message.contains("controller failed to start"), "{message}");
+            }
+            other => panic!("expected Internal, got {other:?}"),
+        }
+        // The reservation was released and the drop-in removed: no leak.
+        assert_eq!(allocated(&state, 0), 0, "the reservation did not leak");
+        assert!(
+            crate::numa::read_cpuset_dropin(&state.host.settings.systemd_unit_dir, &vm_id)
+                .is_none(),
+            "the drop-in was removed on the failed boot"
+        );
+        assert!(state.world.blocking_read().entries.is_empty());
+    }
+
+    #[test]
+    fn deleting_a_hidden_vm_does_not_release_the_ledger() {
+        // FIX 3: a hidden VM (adoption failed, never in world.entries) was
+        // NEVER registered by reconcile_numa_ledger, so its delete must NOT
+        // release any vCPUs (that would steal capacity from co-located VMs).
+        // The drop-in file is still removed for cleanliness.
+        let harness = numa_harness();
+        let state = &harness.state;
+        let unit_dir = state.host.settings.systemd_unit_dir.clone();
+        let vm_id = seed_hidden_vm(&harness);
+
+        // A co-located, legitimately-tracked VM holds 3 vCPUs on node 0.
+        {
+            let mut ledger = state
+                .numa_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            ledger.register(0, 3);
+        }
+        // The hidden VM has an on-disk drop-in mapping to node 0.
+        crate::numa::write_cpuset_dropin(&unit_dir, &vm_id, "0-3").unwrap();
+        harness
+            .systemd
+            .set_state(&controller_unit_name(&vm_id), "inactive");
+
+        delete_vm(state, &vm_id, false, false).unwrap();
+
+        assert_eq!(
+            allocated(state, 0),
+            3,
+            "the hidden delete did not touch the co-located reservation"
+        );
+        assert!(
+            crate::numa::read_cpuset_dropin(&unit_dir, &vm_id).is_none(),
+            "the hidden VM's drop-in was still removed"
+        );
+    }
+
+    #[test]
+    fn readopt_reconstructs_the_pin_and_counts_it_once() {
+        // FIX 4: re-adopting a live-but-untracked controller with a pinned
+        // drop-in stamps entry.numa_node and registers its vCPUs exactly once
+        // (this path is disjoint from reconcile_numa_ledger).
+        let harness = numa_harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let unit_dir = state.host.settings.systemd_unit_dir.clone();
+        let vm_id = test_fixtures::QEMU_HASH;
+        std::fs::copy(
+            test_fixtures::fixtures_dir().join(format!("{vm_id}-controller.json")),
+            root.join(format!("{vm_id}-controller.json")),
+        )
+        .unwrap();
+        // The live controller is pinned to node 1 (cpus 4-7); the fixture is a
+        // 2-vCPU VM.
+        crate::numa::write_cpuset_dropin(&unit_dir, vm_id, "4-7").unwrap();
+        harness
+            .systemd
+            .set_state(&controller_unit_name(vm_id), "active");
+
+        // A create for the same hash re-adopts it (a differing spec conflicts,
+        // but the re-adoption + ledger registration still happen).
+        let _ = create_vm(state, spec(vm_id, &root));
+
+        let entry = entry_snapshot(state, vm_id).expect("the VM was re-adopted");
+        assert_eq!(entry.numa_node, Some(1), "the pin was reconstructed");
+        assert_eq!(
+            allocated(state, 1),
+            2,
+            "the re-adopted VM's vCPUs are counted exactly once"
+        );
+        assert_eq!(allocated(state, 0), 0);
+    }
+
+    #[test]
+    fn readopt_restore_failure_releases_the_reservation_but_keeps_the_dropin() {
+        // Regression: if readopt's network restore fails AFTER
+        // reconstruct_numa_placement has registered the VM, the ledger
+        // reservation must be released, or a retry's reconstruct (and a
+        // restart's reconcile_numa_ledger) would double-count this still-running
+        // VM. The drop-in must NOT be removed: the controller is still running
+        // pinned to it; we only failed to re-adopt it into tracking.
+        let harness = numa_harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let unit_dir = state.host.settings.systemd_unit_dir.clone();
+        let vm_id = test_fixtures::QEMU_HASH;
+        std::fs::copy(
+            test_fixtures::fixtures_dir().join(format!("{vm_id}-controller.json")),
+            root.join(format!("{vm_id}-controller.json")),
+        )
+        .unwrap();
+        // Live controller pinned to node 1 (cpus 4-7); a 2-vCPU fixture.
+        crate::numa::write_cpuset_dropin(&unit_dir, vm_id, "4-7").unwrap();
+        harness
+            .systemd
+            .set_state(&controller_unit_name(vm_id), "active");
+        // Fail the network restore that runs after placement is reconstructed.
+        harness.taps.fail_create("injected tap failure");
+
+        let _ = create_vm(state, spec(vm_id, &root));
+
+        assert!(
+            entry_snapshot(state, vm_id).is_none(),
+            "the failed readopt leaves the VM untracked again"
+        );
+        assert_eq!(
+            allocated(state, 1),
+            0,
+            "the reservation is released on the failed restore, so a retry cannot double-count it"
+        );
+        assert_eq!(allocated(state, 0), 0);
+        assert_eq!(
+            crate::numa::read_cpuset_dropin(&unit_dir, vm_id).as_deref(),
+            Some("4-7"),
+            "the still-running controller's drop-in must NOT be removed on a failed readopt"
+        );
     }
 }

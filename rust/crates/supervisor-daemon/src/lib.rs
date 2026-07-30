@@ -34,6 +34,7 @@ pub mod lspci;
 pub mod ndppd;
 pub mod net;
 pub mod nft;
+pub mod numa;
 pub mod ports;
 pub mod qmp;
 pub mod server;

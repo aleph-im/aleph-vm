@@ -169,6 +169,14 @@ pub struct DaemonState {
     /// Backup job bookkeeping (increment 5): the Python `_backup_jobs` /
     /// `_backup_tasks` / `_backup_locks` triple.
     pub backups: crate::backup::BackupRegistry,
+    /// Host NUMA topology detected once at startup, reported in
+    /// `HostInfo.numa_nodes` (Phase 3 increment C1). Empty when detection
+    /// was unavailable, which makes NUMA placement inert.
+    pub numa: crate::numa::NumaTopology,
+    /// The supervisor-side pack-first placement ledger: per-node vCPU
+    /// tracking for `AllowedCPUs` pinning. In-memory; rebuilt at boot from
+    /// each adopted VM's effective placement (its `AllowedCPUs` drop-in).
+    pub numa_ledger: std::sync::Mutex<crate::numa::NumaAllocator>,
 }
 
 /// See [`DaemonState::log_follows`].
@@ -205,8 +213,37 @@ impl DaemonState {
             download_streams: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DOWNLOADS)),
             disk_tools: Arc::new(crate::backup::FakeDiskTools::default()),
             backups: crate::backup::BackupRegistry::default(),
+            // No NUMA topology by default: placement is inert unless a test
+            // installs one (via `with_numa_topology`).
+            numa: crate::numa::NumaTopology::empty(),
+            numa_ledger: std::sync::Mutex::new(crate::numa::NumaAllocator::new(
+                crate::numa::NumaTopology::empty(),
+            )),
         }
     }
+
+    /// Install a NUMA topology on hermetic test state: sets both the
+    /// reported topology and a fresh pack-first ledger over it.
+    #[cfg(test)]
+    pub fn with_numa_topology(&mut self, topology: crate::numa::NumaTopology) {
+        self.numa_ledger = std::sync::Mutex::new(crate::numa::NumaAllocator::new(topology.clone()));
+        self.numa = topology;
+    }
+}
+
+/// Map a detected NUMA topology to the proto `NumaNode` list reported by
+/// `GetHostInfo` (increment C1): node id -> index, cpu count -> cpu_count,
+/// RAM MB -> memory_mib. Empty when detection was unavailable, as before C1.
+fn numa_nodes_proto(topology: &crate::numa::NumaTopology) -> Vec<pb::NumaNode> {
+    topology
+        .nodes
+        .iter()
+        .map(|node| pb::NumaNode {
+            index: node.id,
+            cpu_count: node.cpus.len() as u32,
+            memory_mib: node.total_ram_mb,
+        })
+        .collect()
 }
 
 pub struct SupervisorService {
@@ -260,13 +297,17 @@ impl SupervisorService {
                 .map_err(|error| {
                     DaemonError::Internal(format!("the statvfs task failed: {error}"))
                 })??;
+        // NUMA topology (increment C1): one proto NumaNode per detected node.
+        // Empty when detection was unavailable, as it was before C1.
+        let numa_nodes = numa_nodes_proto(&self.state.numa);
         Ok(pb::HostInfo {
             // Only the fields LocalSupervisor.get_host_info fills, plus
-            // sev_snp_supported (increment B1, the SNP host capability check);
-            // the rest keep their proto defaults, exactly like the Python
-            // HostInfo dataclass defaults (cpu_architecture, cpu_vendor,
-            // cpu_model, frequencies, memory type, NUMA topology, the narrow
-            // gpus list and the remaining SEV/TDX flags still ride empty).
+            // sev_snp_supported (increment B1, the SNP host capability check)
+            // and numa_nodes (increment C1); the rest keep their proto
+            // defaults, exactly like the Python HostInfo dataclass defaults
+            // (cpu_architecture, cpu_vendor, cpu_model, frequencies, memory
+            // type, the narrow gpus list and the remaining SEV/TDX flags
+            // still ride empty).
             cpu_count: host::cpu_count(),
             memory_mib: host::memory_total_mib()?,
             kernel_version,
@@ -276,6 +317,7 @@ impl SupervisorService {
             gpu_inventory_json: inventory_json,
             available_gpus_json: available_json,
             sev_snp_supported: crate::checks::check_amd_sev_snp_supported(),
+            numa_nodes,
             ..Default::default()
         })
     }
@@ -405,7 +447,9 @@ pub fn vm_info_message(entry: &VmEntry, running: bool, now_ns: u64) -> pb::VmInf
         ipv6: Some(ip(&entry.ipv6)),
         uptime_secs,
         backend: backend as i32,
-        numa_node: None,
+        // Effective NUMA placement (increment C1): the node the supervisor
+        // pinned this VM to, or None when placement is inert/unpinned.
+        numa_node: entry.numa_node,
         status_message: String::new(),
         defined_at_ns: times.defined_at_ns,
         preparing_at_ns: times.preparing_at_ns,
@@ -1388,6 +1432,7 @@ mod tests {
             ordinal: 0,
             is_program: false,
             program: None,
+            numa_node: None,
         }
     }
 
@@ -1624,6 +1669,43 @@ mod tests {
             .unwrap()
             .into_inner();
         assert!(collect_chunks(&mut stream).await.is_empty());
+    }
+
+    #[test]
+    fn numa_nodes_proto_maps_the_detected_topology() {
+        // The GetHostInfo reporting path (increment C1) maps each detected NUMA
+        // node to one proto NumaNode: id -> index, cpu count -> cpu_count, RAM
+        // MB -> memory_mib. Pure, independent of the placement path and host IO.
+        let topology = crate::numa::NumaTopology {
+            nodes: vec![
+                crate::numa::NumaNode {
+                    id: 0,
+                    cpus: (0..4).collect(),
+                    total_2m_hugepages: 0,
+                    total_1g_hugepages: 0,
+                    total_ram_mb: 64_000,
+                },
+                crate::numa::NumaNode {
+                    id: 1,
+                    cpus: (4..8).collect(),
+                    total_2m_hugepages: 0,
+                    total_1g_hugepages: 0,
+                    total_ram_mb: 32_000,
+                },
+            ],
+        };
+
+        let nodes = numa_nodes_proto(&topology);
+
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].index, 0);
+        assert_eq!(nodes[0].cpu_count, 4);
+        assert_eq!(nodes[0].memory_mib, 64_000);
+        assert_eq!(nodes[1].index, 1);
+        assert_eq!(nodes[1].cpu_count, 4);
+        assert_eq!(nodes[1].memory_mib, 32_000);
+        // An empty topology reports no nodes (pre-C1 behavior).
+        assert!(numa_nodes_proto(&crate::numa::NumaTopology::empty()).is_empty());
     }
 
     #[tokio::test]
