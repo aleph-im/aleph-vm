@@ -125,6 +125,14 @@ pub struct Settings {
     /// writes each VM's NUMA `AllowedCPUs=` drop-in under here; tests point
     /// it at a temporary directory. Rust-only (NUMA has no Python oracle).
     pub systemd_unit_dir: PathBuf,
+
+    /// ALEPH_VM_NUMA_HUGEPAGES, default false. When true (and the host has
+    /// more than one NUMA node), the daemon reserves 2M hugepages per node at
+    /// boot and backs each placed VM's memory with hugepages (increment C2).
+    /// Reserving hugepages writes host-wide `nr_hugepages`, a real memory
+    /// reservation, so it is OPT-IN: with it off, C2 delivers only the
+    /// regular-page NUMA memory binding. Rust-only (no Python oracle).
+    pub numa_hugepages: bool,
 }
 
 /// conf.py DnsResolver: how DNS_NAMESERVERS is derived when unset.
@@ -296,6 +304,7 @@ impl Settings {
             Some(path) if !path.is_empty() => PathBuf::from(path),
             _ => PathBuf::from("/etc/systemd/system"),
         };
+        let numa_hugepages = env.get_bool("NUMA_HUGEPAGES")?.unwrap_or(false);
         let dns_resolution = match env.get("DNS_RESOLUTION") {
             None => DnsResolution::Detect,
             Some(value) if value == "detect" => DnsResolution::Detect,
@@ -346,6 +355,7 @@ impl Settings {
             developer_ssh_keys,
             use_developer_ssh_keys,
             systemd_unit_dir,
+            numa_hugepages,
         })
     }
 }
@@ -455,6 +465,24 @@ mod tests {
     }
 
     #[test]
+    fn numa_hugepages_is_opt_in() {
+        // Off unless explicitly enabled; the pydantic bool spellings apply.
+        assert!(!Settings::from_vars(vars(&[])).unwrap().numa_hugepages);
+        assert!(
+            Settings::from_vars(vars(&[("ALEPH_VM_NUMA_HUGEPAGES", "true")]))
+                .unwrap()
+                .numa_hugepages
+        );
+        assert!(
+            !Settings::from_vars(vars(&[("ALEPH_VM_NUMA_HUGEPAGES", "false")]))
+                .unwrap()
+                .numa_hugepages
+        );
+        // A non-bool value is a hard error (get_bool), like the other flags.
+        assert!(Settings::from_vars(vars(&[("ALEPH_VM_NUMA_HUGEPAGES", "maybe")])).is_err());
+    }
+
+    #[test]
     fn defaults_mirror_conf_py() {
         let settings = Settings::from_vars(vars(&[])).unwrap();
         assert_eq!(settings.execution_root, PathBuf::from("/var/lib/aleph/vm"));
@@ -483,6 +511,9 @@ mod tests {
         assert_eq!(settings.ipv6_subnet_prefix, 124);
         assert!(settings.ipv6_forwarding_enabled);
         assert!(settings.use_ndp_proxy);
+        // NUMA hugepage reservation is OFF by default (a real host memory
+        // reservation must be opt-in).
+        assert!(!settings.numa_hugepages);
         assert_eq!(settings.nftables_chain_prefix, "aleph");
         assert_eq!(settings.start_id_index, 4);
         assert_eq!(settings.host_memory_reserved_mib, 2048);
