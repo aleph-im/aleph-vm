@@ -42,6 +42,8 @@ case "$1" in
             /bin/busybox ip route add default via "$router" dev "$interface" 2>/dev/null
         fi
         if [ -n "$dns" ]; then
+            # The minimal initramfs ships no /etc; create it or the write fails.
+            /bin/busybox mkdir -p /etc
             : > /etc/resolv.conf
             for ns in $dns; do
                 echo "nameserver $ns" >> /etc/resolv.conf
