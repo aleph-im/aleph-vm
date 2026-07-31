@@ -16,22 +16,47 @@ pub struct SevSnpBackend {
     pub product: String,
     /// Path to the OVMF firmware binary used by QEMU.
     pub ovmf_path: String,
+    /// Memory-encryption C-bit position, a HOST hardware property read from
+    /// CPUID leaf `0x8000001F` (not a measurement input). The launcher injects
+    /// the host value so the argv stays architecture-agnostic; defaults to the
+    /// current EPYC target's 51.
+    pub cbitpos: u32,
+    /// Guest physical-address-space reduction, the companion host property from
+    /// the same CPUID leaf. Defaults to the current EPYC target's 1.
+    pub reduced_phys_bits: u32,
 }
+
+/// The current EPYC target's CPUID `cbitpos` / `reduced_phys_bits`, used as the
+/// default when a backend is constructed without a host read. A real launcher
+/// should override these with the values read from the host at launch.
+const DEFAULT_CBITPOS: u32 = 51;
+const DEFAULT_REDUCED_PHYS_BITS: u32 = 1;
 
 impl SevSnpBackend {
     /// Create a new SEV-SNP backend for the given product line.
     ///
-    /// Uses the default OVMF firmware path.
+    /// Uses the default OVMF firmware path and the current EPYC target's
+    /// C-bit parameters (override via [`Self::with_cbit_params`]).
     pub fn new(product: impl Into<String>) -> Self {
         Self {
             product: product.into(),
             ovmf_path: DEFAULT_OVMF_PATH.to_string(),
+            cbitpos: DEFAULT_CBITPOS,
+            reduced_phys_bits: DEFAULT_REDUCED_PHYS_BITS,
         }
     }
 
     /// Override the OVMF firmware path (builder pattern).
     pub fn with_ovmf_path(mut self, ovmf_path: impl Into<String>) -> Self {
         self.ovmf_path = ovmf_path.into();
+        self
+    }
+
+    /// Override the host C-bit parameters, e.g. with the values read from the
+    /// host CPUID at launch (builder pattern).
+    pub fn with_cbit_params(mut self, cbitpos: u32, reduced_phys_bits: u32) -> Self {
+        self.cbitpos = cbitpos;
+        self.reduced_phys_bits = reduced_phys_bits;
         self
     }
 }
@@ -101,7 +126,12 @@ impl TeeBackend for SevSnpBackend {
 
     /// Generate QEMU command-line arguments for launching an SEV-SNP VM.
     fn qemu_args(&self, config: &VmConfig) -> Vec<String> {
-        sev_snp_qemu_args(config, &self.ovmf_path)
+        sev_snp_qemu_args(
+            config,
+            &self.ovmf_path,
+            self.cbitpos,
+            self.reduced_phys_bits,
+        )
     }
 
     /// Parse raw bytes into a structured attestation report.
