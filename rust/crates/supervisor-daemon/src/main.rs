@@ -171,6 +171,7 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
         logs: Arc::new(JournalctlLogSource),
         nft: Arc::new(NftCli),
         taps: Arc::new(IpCommand),
+        dhcp: Arc::new(supervisor_daemon::dhcp::SystemdRunDhcp),
         ndp,
         port_cursor: Default::default(),
         creation_lock: std::sync::Mutex::new(()),
