@@ -228,6 +228,27 @@ mod tests {
     }
 
     #[test]
+    fn reserve_honors_a_global_limit_split_across_nodes() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        for id in 0..2 {
+            let hp = base.join(format!("node{id}/hugepages/hugepages-2048kB"));
+            std::fs::create_dir_all(&hp).unwrap();
+            std::fs::write(hp.join("nr_hugepages"), "0\n").unwrap();
+        }
+        let mut topo = NumaTopology {
+            nodes: vec![node(0, 64000, 2), node(1, 64000, 0)],
+        };
+        // effective_limit = 32768; per_node_cap = 16384 (limit / 2 nodes),
+        // which undercuts ram - headroom = 59904 on both nodes.
+        // Node 0: cap=16384; reserved_1g=2048; budget=14336; pages=7168.
+        // Node 1: cap=16384; reserved_1g=0; budget=16384; pages=8192.
+        reserve_2m_hugepages_in(&mut topo, 4096, Some(32768), base);
+        assert_eq!(topo.nodes[0].total_2m_hugepages, 7168);
+        assert_eq!(topo.nodes[1].total_2m_hugepages, 8192);
+    }
+
+    #[test]
     fn reserve_is_fail_safe_when_a_node_write_fails() {
         // Node 0 has a writable sysfs; node 1's file is missing (write fails).
         // The reservation must still populate node 0 and leave node 1 at 0
