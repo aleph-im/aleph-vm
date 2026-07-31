@@ -92,9 +92,27 @@ prepare_chroot() {
     /bin/busybox mkdir -m 0700 -p /tmp/secrets
     /bin/busybox mkdir -m 0700 -p /mnt/root/tmp/secrets
     /bin/busybox mount --bind /tmp/secrets /mnt/root/tmp/secrets
-    # DNS: use gateway as nameserver (common for VM bridges).
-    if [ -n "$gateway" ]; then
-        echo "nameserver ${gateway}" > /mnt/root/etc/resolv.conf
+    # DNS for the chrooted workload. The rootfs is mounted read-only under
+    # dm-verity, so writing /mnt/root/etc/resolv.conf directly cannot work
+    # there (the old `echo >` only ever worked on legacy writable mounts).
+    # Instead, expose the initramfs /etc/resolv.conf (written by udhcpc.script
+    # from the DHCP option-6 nameservers) via a file bind-mount over the
+    # rootfs placeholder. On the static ip= path there is no DHCP lease, so
+    # seed the initramfs copy from the gateway first (common for VM bridges).
+    if [ ! -f /etc/resolv.conf ] && [ -n "$gateway" ]; then
+        /bin/busybox mkdir -p /etc
+        echo "nameserver ${gateway}" > /etc/resolv.conf
+    fi
+    if [ -f /etc/resolv.conf ]; then
+        if [ -f /mnt/root/etc/resolv.conf ]; then
+            /bin/busybox mount --bind /etc/resolv.conf /mnt/root/etc/resolv.conf \
+                || echo "init: WARNING: resolv.conf bind-mount failed; workload DNS unavailable"
+        else
+            # Legacy rootfs without the placeholder: best-effort copy (works
+            # only if the rootfs is mounted writable).
+            /bin/busybox cp /etc/resolv.conf /mnt/root/etc/resolv.conf 2>/dev/null \
+                || echo "init: WARNING: rootfs has no /etc/resolv.conf placeholder; workload DNS unavailable"
+        fi
     fi
     echo "init: chroot environment prepared (proc, sys, dev, secrets, DNS)"
 }
