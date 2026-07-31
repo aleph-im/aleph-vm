@@ -4,4 +4,4 @@ pub mod qemu;
 pub mod report;
 pub mod verify;
 
-pub use backend::{CbitParams, SevSnpBackend};
+pub use backend::SevSnpBackend;

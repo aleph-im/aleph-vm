@@ -100,7 +100,7 @@ pub fn build_rustls_config(identity: &AttestedTlsIdentity) -> Result<rustls::Ser
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aleph_tee::types::{AttestationReport, TeeType, VerificationResult, VmConfig};
+    use aleph_tee::types::{AttestationReport, TeeType, VerificationResult};
     use aleph_tee::x509::extract_attestation_from_cert;
 
     /// Mock backend that returns a report with the given report_data.
@@ -119,10 +119,6 @@ mod tests {
         }
 
         fn verify_report(&self, _report: &AttestationReport) -> Result<VerificationResult> {
-            unimplemented!()
-        }
-
-        fn qemu_args(&self, _config: &VmConfig) -> Result<Vec<String>> {
             unimplemented!()
         }
 

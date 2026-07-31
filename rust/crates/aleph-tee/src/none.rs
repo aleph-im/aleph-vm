@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use crate::traits::TeeBackend;
-use crate::types::{AttestationReport, TeeType, VerificationResult, VmConfig};
+use crate::types::{AttestationReport, TeeType, VerificationResult};
 
 /// No-TEE backend implementing the `TeeBackend` trait for non-confidential VMs.
 ///
@@ -35,10 +35,6 @@ impl TeeBackend for NoTeeBackend {
         anyhow::bail!("attestation not available: VM is not running in a TEE")
     }
 
-    fn qemu_args(&self, _config: &VmConfig) -> Result<Vec<String>> {
-        Ok(vec!["-cpu".to_string(), "host".to_string()])
-    }
-
     fn parse_report(&self, _raw: &[u8]) -> Result<AttestationReport> {
         anyhow::bail!("attestation not available: VM is not running in a TEE")
     }
@@ -47,37 +43,12 @@ impl TeeBackend for NoTeeBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{TeeConfig, TeeType};
-
-    fn test_vm_config() -> VmConfig {
-        VmConfig {
-            vm_id: "test-no-tee".to_string(),
-            kernel: None,
-            initrd: None,
-            disks: vec![],
-            vcpus: 2,
-            memory_mb: 2048,
-            tee: TeeConfig {
-                backend: TeeType::None,
-                policy: None,
-            },
-            encrypted: false,
-            numa_node: None,
-            hugepage_size: None,
-        }
-    }
+    use crate::types::TeeType;
 
     #[test]
     fn test_no_tee_backend_type() {
         let backend = NoTeeBackend::new();
         assert_eq!(backend.tee_type(), TeeType::None);
-    }
-
-    #[test]
-    fn test_no_tee_qemu_args() {
-        let backend = NoTeeBackend::new();
-        let args = backend.qemu_args(&test_vm_config()).unwrap();
-        assert_eq!(args, vec!["-cpu", "host"]);
     }
 
     #[test]
