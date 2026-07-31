@@ -926,6 +926,21 @@ fn start_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> 
         // Even when the interface survived, the nftables rules may have
         // been flushed; always re-apply (create-if-absent).
         nft_setup_vm(state, entry.vm_index, &tap.device_name).map_err(RpcError::Internal)?;
+        // Stop tore the SNP per-tap DHCP server down with the tap and nft
+        // rules; recreate it with them, or the rebooting measured guest
+        // (whose cmdline has no `ip=`, ledger entry 78) can never lease its
+        // IP and attestation is unreachable. `DhcpBackend::start` replaces a
+        // leftover unit, so a partial stop cannot fail this start.
+        if entry.config.snp().is_some() {
+            let config = dhcp::DhcpConfig::for_snp(
+                vm_id,
+                &tap,
+                state.host.dns_nameservers.as_deref().unwrap_or(&[]),
+                &dhcp_lease_dir(state),
+            )
+            .map_err(RpcError::Internal)?;
+            state.dhcp.start(&config).map_err(RpcError::Internal)?;
+        }
     }
 
     let unit = entry.unit_name();
@@ -3981,6 +3996,67 @@ mod tests {
             "delete tears the DHCP server down"
         );
         assert_eq!(harness.dhcp.stopped(), vec![vm_id]);
+    }
+
+    #[test]
+    fn restarting_a_stopped_snp_vm_recreates_the_dhcp_server() {
+        // Stop tears the per-tap dnsmasq down with the tap and nft rules;
+        // start must stand it back up, or the rebooting measured guest (whose
+        // cmdline carries no `ip=`) can never lease its IP and attestation is
+        // unreachable.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('e');
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let request = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+
+        let (entry, running) = create_vm(state, request).unwrap();
+        assert!(running);
+        stop_vm(state, &vm_id).unwrap();
+        assert!(
+            !harness.dhcp.is_running(&vm_id),
+            "stop tears the DHCP server down"
+        );
+
+        start_vm(state, &vm_id).unwrap();
+        assert!(
+            harness.dhcp.is_running(&vm_id),
+            "start recreates the DHCP server"
+        );
+        // The second start reissues the same per-tap config: same allocated
+        // guest IP on the same tap, so the rebooted guest leases exactly the
+        // address the daemon reports in VmInfo.
+        let started = harness.dhcp.started();
+        assert_eq!(started.len(), 2, "one DHCP start per boot");
+        assert_eq!(started[1].vm_hash, vm_id);
+        assert_eq!(started[1].device_name, format!("vmtap{}", entry.vm_index));
+        assert_eq!(
+            started[1].guest_ip,
+            entry.ipv4.as_ref().unwrap().address,
+            "the restarted server still hands out the allocated IP"
+        );
+    }
+
+    #[test]
+    fn restarting_a_stopped_plain_vm_starts_no_dhcp_server() {
+        // The restart path's DHCP recreation is gated on SNP exactly like the
+        // create path: a plain VM keeps cloud-init static config across a
+        // stop/start cycle and must never gain a DHCP server.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+        let request = spec(&vm_id, &root);
+
+        create_vm(state, request).unwrap();
+        stop_vm(state, &vm_id).unwrap();
+        start_vm(state, &vm_id).unwrap();
+        assert!(
+            harness.dhcp.started().is_empty(),
+            "a plain VM never gets a DHCP server, including on restart"
+        );
     }
 
     #[test]
