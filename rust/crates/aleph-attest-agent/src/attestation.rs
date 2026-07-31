@@ -70,7 +70,7 @@ mod tests {
             unimplemented!("not needed for these tests")
         }
 
-        fn qemu_args(&self, _config: &VmConfig) -> Vec<String> {
+        fn qemu_args(&self, _config: &VmConfig) -> Result<Vec<String>> {
             unimplemented!("not needed for these tests")
         }
 

@@ -122,7 +122,7 @@ mod tests {
             unimplemented!()
         }
 
-        fn qemu_args(&self, _config: &VmConfig) -> Vec<String> {
+        fn qemu_args(&self, _config: &VmConfig) -> Result<Vec<String>> {
             unimplemented!()
         }
 
