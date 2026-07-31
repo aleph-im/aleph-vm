@@ -35,8 +35,8 @@ impl TeeBackend for NoTeeBackend {
         anyhow::bail!("attestation not available: VM is not running in a TEE")
     }
 
-    fn qemu_args(&self, _config: &VmConfig) -> Vec<String> {
-        vec!["-cpu".to_string(), "host".to_string()]
+    fn qemu_args(&self, _config: &VmConfig) -> Result<Vec<String>> {
+        Ok(vec!["-cpu".to_string(), "host".to_string()])
     }
 
     fn parse_report(&self, _raw: &[u8]) -> Result<AttestationReport> {
@@ -76,7 +76,7 @@ mod tests {
     #[test]
     fn test_no_tee_qemu_args() {
         let backend = NoTeeBackend::new();
-        let args = backend.qemu_args(&test_vm_config());
+        let args = backend.qemu_args(&test_vm_config()).unwrap();
         assert_eq!(args, vec!["-cpu", "host"]);
     }
 
