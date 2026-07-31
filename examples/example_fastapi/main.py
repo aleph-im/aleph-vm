@@ -226,31 +226,48 @@ async def read_aleph_messages() -> dict[str, MessagesResponse]:
 
 @app.get("/dns")
 async def resolve_dns_hostname():
-    """Check if DNS resolution is working."""
-    hostname = "example.org"
+    """Check if DNS resolution is working.
+
+    example.org (an RFC 2606 documentation domain) is not meant as a live
+    resolution target and proved DNS-flaky, so we try a list of reliable
+    dual-stack hosts from independent providers and report the first that
+    resolves to both an IPv4 and an IPv6 address.
+    """
+    hostnames = ["one.one.one.one", "dns.google"]
     ipv4: str | None = None
     ipv6: str | None = None
 
-    info = socket.getaddrinfo(hostname, 80, proto=socket.IPPROTO_TCP)
-    if not info:
-        logger.error("DNS resolution failed")
+    for hostname in hostnames:
+        try:
+            info = socket.getaddrinfo(hostname, 80, proto=socket.IPPROTO_TCP)
+        except OSError:
+            logger.warning(f"DNS resolution failed for {hostname}")
+            continue
 
-    # Iterate over the results to find the IPv4 and IPv6 addresses they may not all be present.
-    # The function returns a list of 5-tuples with the following structure:
-    # (family, type, proto, canonname, sockaddr)
-    for info_tuple in info:
-        if info_tuple[0] == socket.AF_INET:
-            ipv4 = info_tuple[4][0]
-        elif info_tuple[0] == socket.AF_INET6:
-            ipv6 = info_tuple[4][0]
+        # getaddrinfo returns 5-tuples: (family, type, proto, canonname, sockaddr).
+        # A dual-stack host yields both an AF_INET and an AF_INET6 entry.
+        host_ipv4: str | None = None
+        host_ipv6: str | None = None
+        for info_tuple in info:
+            if info_tuple[0] == socket.AF_INET:
+                host_ipv4 = info_tuple[4][0]
+            elif info_tuple[0] == socket.AF_INET6:
+                host_ipv6 = info_tuple[4][0]
+
+        # Keep the best partial result seen so far, but only stop once a single
+        # host gives us both families (what the supervisor's check_dns asserts).
+        ipv4 = ipv4 or host_ipv4
+        ipv6 = ipv6 or host_ipv6
+        if host_ipv4 and host_ipv6:
+            break
 
     if ipv4 and not ipv6:
-        logger.warning(f"DNS resolution for {hostname} returned only an IPv4 address")
+        logger.warning("DNS resolution returned only an IPv4 address")
     elif ipv6 and not ipv4:
-        logger.warning(f"DNS resolution for {hostname} returned only an IPv6 address")
+        logger.warning("DNS resolution returned only an IPv6 address")
 
     result = {"ipv4": ipv4, "ipv6": ipv6}
-    status_code = 200 if len(info) > 1 else 503
+    status_code = 200 if (ipv4 and ipv6) else 503
     return JSONResponse(content=result, status_code=status_code)
 
 

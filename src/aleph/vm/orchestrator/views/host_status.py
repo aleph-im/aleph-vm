@@ -118,15 +118,35 @@ async def resolve_dns(hostname: str) -> tuple[str | None, str | None]:
 
 
 async def check_dns_ipv4() -> bool:
-    """Check if DNS resolution is working via IPv4."""
-    ipv4, _ = await resolve_dns(settings.CONNECTIVITY_DNS_HOSTNAME)
-    return bool(ipv4)
+    """Check if DNS resolution is working via IPv4.
+
+    Tries each configured hostname in order, passing on the first that resolves,
+    so a single provider's DNS hiccup does not fail the check.
+    """
+    for hostname in settings.CONNECTIVITY_DNS_HOSTNAMES:
+        try:
+            ipv4, _ = await resolve_dns(hostname)
+        except OSError:
+            continue
+        if ipv4:
+            return True
+    return False
 
 
 async def check_dns_ipv6() -> bool:
-    """Check if DNS resolution is working via IPv6."""
-    _, ipv6 = await resolve_dns(settings.CONNECTIVITY_DNS_HOSTNAME)
-    return bool(ipv6)
+    """Check if DNS resolution is working via IPv6.
+
+    Tries each configured hostname in order, passing on the first that resolves,
+    so a single provider's DNS hiccup does not fail the check.
+    """
+    for hostname in settings.CONNECTIVITY_DNS_HOSTNAMES:
+        try:
+            _, ipv6 = await resolve_dns(hostname)
+        except OSError:
+            continue
+        if ipv6:
+            return True
+    return False
 
 
 async def check_domain_resolution_ipv4() -> bool:

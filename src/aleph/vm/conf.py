@@ -163,7 +163,12 @@ class Settings(BaseSettings):
     # real HTTP/1.1 web server, making them reliable egress connectivity probes.
     CONNECTIVITY_IPV4_URL: str = "https://1.1.1.1/"
     CONNECTIVITY_IPV6_URL: str = "https://[2606:4700:4700::1111]/"
-    CONNECTIVITY_DNS_HOSTNAME: str = "example.org"
+    # Hostnames resolved to verify DNS egress. example.org (an RFC 2606
+    # documentation domain) is not meant as a live resolution target and proved
+    # DNS-flaky; these are reliable dual-stack (A + AAAA) names from two
+    # independent providers, tried in order so one provider's hiccup can't break
+    # the check. Cloudflare first, to match CONNECTIVITY_IPV4_URL above.
+    CONNECTIVITY_DNS_HOSTNAMES: list[str] = ["one.one.one.one", "dns.google"]
     # Hostname-based HTTP checks — verify that DNS + egress work end-to-end.
     # Tried in order for both IPv4 and IPv6; the check passes on first success.
     CONNECTIVITY_HTTP_URLS: list[str] = [
