@@ -23,6 +23,7 @@ pub mod cloudinit;
 pub mod confidential;
 pub mod config;
 pub mod controller_config;
+pub mod dhcp;
 pub mod envfile;
 pub mod error;
 pub mod events;

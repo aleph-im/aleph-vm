@@ -1,0 +1,52 @@
+#!/bin/busybox sh
+# udhcpc lease-application script for the measured SNP guest.
+#
+# busybox udhcpc obtains a DHCP lease but does NOT configure the interface
+# itself: it delegates that to a script (busybox default path is
+# /usr/share/udhcpc/default.script, absent from this minimal initrd). init.sh
+# invokes udhcpc with `-s /bin/udhcpc.script`, and udhcpc runs this with
+# $1 = action (deconfig|bound|renew) and the lease in the environment
+# ($interface, $ip, $subnet, $router, $dns). Without it the guest would lease
+# an address from the host's per-tap dnsmasq (rust-port-divergences: SNP guest
+# DHCP) but never bring up its IP, leaving the attest-agent unreachable.
+
+# Convert a dotted netmask ($subnet, e.g. 255.255.255.0) to a prefix length,
+# using only shell arithmetic (no tr/awk): split on dots, sum the set bits of
+# each octet (a valid netmask is contiguous, so the popcount is the prefix).
+mask2prefix() {
+    oldifs=$IFS
+    IFS=.
+    # shellcheck disable=SC2086
+    set -- $1
+    IFS=$oldifs
+    prefix=0
+    for octet in "$@"; do
+        while [ "$octet" -gt 0 ]; do
+            prefix=$((prefix + (octet & 1)))
+            octet=$((octet >> 1))
+        done
+    done
+    echo "$prefix"
+}
+
+case "$1" in
+    deconfig)
+        /bin/busybox ip addr flush dev "$interface" 2>/dev/null
+        /bin/busybox ip link set "$interface" up
+        ;;
+    bound | renew)
+        prefix=$(mask2prefix "${subnet:-255.255.255.0}")
+        /bin/busybox ip addr add "${ip}/${prefix}" dev "$interface"
+        /bin/busybox ip link set "$interface" up
+        if [ -n "$router" ]; then
+            /bin/busybox ip route add default via "$router" dev "$interface" 2>/dev/null
+        fi
+        if [ -n "$dns" ]; then
+            : > /etc/resolv.conf
+            for ns in $dns; do
+                echo "nameserver $ns" >> /etc/resolv.conf
+            done
+        fi
+        echo "init: DHCP configured ${ip}/${prefix} gw ${router:-none} on ${interface}"
+        ;;
+esac
