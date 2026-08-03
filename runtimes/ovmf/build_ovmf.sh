@@ -24,12 +24,12 @@ apt-get install -y autoconf autopoint binutils bison flex gcc gettext git make p
 # Packages for OVMF (there are some duplicates with Grub, kept for documentation)
 apt-get install -y bison build-essential dosfstools flex iasl libgmp3-dev libmpfr-dev mtools nasm subversion texinfo uuid-dev
 
-cd $GRUB_DIR
+cd "$GRUB_DIR"
 ./bootstrap
 ./configure --prefix /usr/ --with-platform=efi --target=x86_64
 make
 make install
 
 # Build OVMF
-cd $EDK2_DIR
+cd "$EDK2_DIR"
 OvmfPkg/build.sh -b RELEASE -p OvmfPkg/AmdSev/AmdSevX64.dsc

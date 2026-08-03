@@ -103,26 +103,21 @@ following are recorded here rather than fixed in this batch. All are guest-side
 or image-side; the attest-agent (initramfs) is unaffected, so attestation works
 today.
 
-- **Workload chroot has no DNS on the DHCP path.** `nix/init.sh`
-  `prepare_chroot` writes `/mnt/root/etc/resolv.conf` only in the static `ip=`
-  branch (which the SNP image never takes, its cmdline omits `ip=`), and
-  `nix/udhcpc.script` writes `resolv.conf` only inside the initramfs
-  (`/etc/resolv.conf`), not into the workload chroot at `/mnt/root`. The
-  attest-agent runs in the initramfs so attestation resolves fine, but a real
-  workload pivoted into `/mnt/root` gets no resolver. FIX LATER (needs a `nix/`
-  change): seed `/mnt/root/etc/resolv.conf` from the DHCP-learned nameservers
-  (the `$dns` the udhcpc script already has) on the DHCP path.
+- **Workload chroot has no DNS on the DHCP path.** RESOLVED (increment D3,
+  `od/phase3-d3-guest-dns`): the verity rootfs is mounted read-only, so the
+  old `echo > /mnt/root/etc/resolv.conf` could never work on measured boots
+  (and `mkdir -p /mnt/root/tmp/secrets` could not create the secrets
+  bind-mount target either, the same read-only failure). The rootfs now ships
+  `/etc/resolv.conf` and `/tmp/secrets` placeholders, and `prepare_chroot`
+  bind-mounts the initramfs `/etc/resolv.conf` (DHCP option-6 nameservers
+  written by `udhcpc.script`, gateway-seeded on the static `ip=` path) over
+  the placeholder. Changes the launch measurement (expected).
 
-- **`nix/udhcpc.script` is not shellcheck-clean (SC2154).** shellcheck 0.10.0
-  flags `SC2154` twice (`interface` and `ip` referenced but not assigned):
-  they are lease variables udhcpc injects via the environment, invisible to
-  shellcheck. Because these are real findings, the aleph-vm shellcheck CI job
-  (`.github/workflows/test-using-pytest.yml`) was DELIBERATELY NOT extended to
-  cover `*.script` in this batch (wiring it would surface the warnings on a
-  file we cannot edit under the `nix/` constraint). NOTE the current CI `find
-  ... -exec shellcheck {} \;` swallows per-file exit codes (find returns 0
-  regardless), so shellcheck findings do not actually fail that job today; that
-  is a separate pre-existing CI weakness. FIX LATER (needs a `nix/` change):
-  add `# shellcheck disable=SC2154` (or declare the udhcpc-injected lease
-  variables) in `nix/udhcpc.script`, THEN add `-o -name "*.script"` to the CI
-  find pattern so the guest lease script is covered going forward.
+- **`nix/udhcpc.script` shellcheck + the non-gating CI job.** RESOLVED
+  (increment D4, `od/phase3-d4-shellcheck-gate`): `# shellcheck
+  disable=SC2154` documents the udhcpc-injected lease variables; the CI find
+  pattern now includes `*.script`; and the job switched from `-exec shellcheck
+  {} \;` (which swallowed exit codes, so shellcheck never actually failed CI)
+  to `-exec ... +`, making it a real gate. The 8 pre-existing findings this
+  uncovered across 5 scripts were fixed (quoting) or annotated (SC1091
+  runtime source, SC2029 intentional client-side expansion).

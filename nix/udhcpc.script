@@ -29,6 +29,9 @@ mask2prefix() {
     echo "$prefix"
 }
 
+# udhcpc passes the lease via environment variables ($interface, $ip,
+# $subnet, $router, $dns), which shellcheck cannot see assigned.
+# shellcheck disable=SC2154
 case "$1" in
     deconfig)
         /bin/busybox ip addr flush dev "$interface" 2>/dev/null
