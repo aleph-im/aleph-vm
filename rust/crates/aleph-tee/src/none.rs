@@ -1,13 +1,13 @@
 use anyhow::Result;
 
 use crate::traits::TeeBackend;
-use crate::types::{AttestationReport, TeeType, VerificationResult};
+use crate::types::{AttestationReport, TeeType};
 
 /// No-TEE backend implementing the `TeeBackend` trait for non-confidential VMs.
 ///
 /// This backend is used for plain KVM virtual machines that do not run inside
 /// a Trusted Execution Environment. Attestation operations are not available
-/// and will return errors. QEMU is launched with `-cpu host` only.
+/// and will return errors.
 pub struct NoTeeBackend;
 
 impl NoTeeBackend {
@@ -28,10 +28,6 @@ impl TeeBackend for NoTeeBackend {
     }
 
     fn get_report(&self, _report_data: &[u8; 64]) -> Result<AttestationReport> {
-        anyhow::bail!("attestation not available: VM is not running in a TEE")
-    }
-
-    fn verify_report(&self, _report: &AttestationReport) -> Result<VerificationResult> {
         anyhow::bail!("attestation not available: VM is not running in a TEE")
     }
 
@@ -68,17 +64,6 @@ mod tests {
             err.to_string()
                 .contains("attestation not available: VM is not running in a TEE"),
             "parse_report error: {err}"
-        );
-
-        let dummy_report = AttestationReport {
-            tee_type: TeeType::None,
-            data: vec![0u8; 64],
-        };
-        let err = backend.verify_report(&dummy_report).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("attestation not available: VM is not running in a TEE"),
-            "verify_report error: {err}"
         );
     }
 }
