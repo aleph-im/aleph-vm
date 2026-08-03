@@ -24,7 +24,8 @@ use crate::numa::NumaTopology;
 
 /// Per-node floor of regular RAM (MB) kept out of the 2M hugepage reservation
 /// so the host and its non-hugepage workloads are never starved. Generous on
-/// purpose: hugepages are an opt-in optimization, not a guarantee.
+/// purpose: hugepages are an opt-in optimization, not a guarantee. Default for
+/// ALEPH_VM_NUMA_HUGEPAGES_HEADROOM_MB.
 pub const DEFAULT_HEADROOM_MB: u32 = 8192;
 
 /// Real sysfs root for NUMA hugepage control files.
@@ -75,12 +76,18 @@ pub fn allocate_2m_pages_on_node(
 /// Reserve 2M hugepages across every NUMA node from the real sysfs, updating
 /// `topology.nodes[i].total_2m_hugepages` with the effective count. See
 /// [`reserve_2m_hugepages_in`] for the behaviour; this is the production entry
-/// point (real sysfs root, [`DEFAULT_HEADROOM_MB`]).
-pub fn reserve_2m_hugepages(topology: &mut NumaTopology) {
+/// point (real sysfs root), with `headroom_mb` and `global_limit_mb` coming
+/// from the settings (ALEPH_VM_NUMA_HUGEPAGES_HEADROOM_MB and
+/// ALEPH_VM_NUMA_HUGEPAGES_LIMIT_MB).
+pub fn reserve_2m_hugepages(
+    topology: &mut NumaTopology,
+    headroom_mb: u32,
+    global_limit_mb: Option<u64>,
+) {
     reserve_2m_hugepages_in(
         topology,
-        DEFAULT_HEADROOM_MB,
-        None,
+        headroom_mb,
+        global_limit_mb,
         Path::new(SYSFS_NODE_ROOT),
     );
 }
@@ -218,6 +225,27 @@ mod tests {
         reserve_2m_hugepages_in(&mut topo, 4096, None, base);
         assert_eq!(topo.nodes[0].total_2m_hugepages, 28928);
         assert_eq!(topo.nodes[1].total_2m_hugepages, 29952);
+    }
+
+    #[test]
+    fn reserve_honors_a_global_limit_split_across_nodes() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        for id in 0..2 {
+            let hp = base.join(format!("node{id}/hugepages/hugepages-2048kB"));
+            std::fs::create_dir_all(&hp).unwrap();
+            std::fs::write(hp.join("nr_hugepages"), "0\n").unwrap();
+        }
+        let mut topo = NumaTopology {
+            nodes: vec![node(0, 64000, 2), node(1, 64000, 0)],
+        };
+        // effective_limit = 32768; per_node_cap = 16384 (limit / 2 nodes),
+        // which undercuts ram - headroom = 59904 on both nodes.
+        // Node 0: cap=16384; reserved_1g=2048; budget=14336; pages=7168.
+        // Node 1: cap=16384; reserved_1g=0; budget=16384; pages=8192.
+        reserve_2m_hugepages_in(&mut topo, 4096, Some(32768), base);
+        assert_eq!(topo.nodes[0].total_2m_hugepages, 7168);
+        assert_eq!(topo.nodes[1].total_2m_hugepages, 8192);
     }
 
     #[test]

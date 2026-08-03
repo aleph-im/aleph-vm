@@ -12,7 +12,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from aleph_message.models.execution.volume import PersistentVolume, VolumePersistence
+from aleph_message.models.execution.volume import (
+    ParentVolume,
+    PersistentVolume,
+    VolumePersistence,
+)
 
 import aleph.vm.storage as storage_module
 import aleph.vm.storage_pools as storage_pools_module
@@ -241,6 +245,35 @@ class TestSetupPools:
         reset_pools()
         monkeypatch.setattr(settings, "VOLUME_POOLS", [])
         with pytest.raises(StoragePoolConfigError, match=re.escape(str(extra))):
+            setup_pools(sys_root=sys_root)
+
+    def test_cosmetic_path_rewrite_is_not_an_orphan(self, pool_settings, monkeypatch):
+        """A lexical rewrite of a configured pool path (.. segments, doubled
+        separators) must not trip the orphaned-pool guard: that guard is a
+        hard startup failure, and the pool is still the same directory. The
+        comparison normalizes lexically but never resolves symlinks."""
+        sys_root = _fake_ssd_sysfs(pool_settings)
+        extra = pool_settings / "mnt" / "nvme1"
+        extra.mkdir(parents=True)
+        monkeypatch.setattr(settings, "VOLUME_POOLS", [f"{extra}=nvme"])
+        setup_pools(sys_root=sys_root)
+        reset_pools()
+        rewritten = f"{extra.parent}//elsewhere/../{extra.name}"
+        monkeypatch.setattr(settings, "VOLUME_POOLS", [f"{rewritten}=nvme"])
+        pools = setup_pools(sys_root=sys_root)  # must not raise a false orphan
+        assert pools[1].path == extra
+
+    def test_unnormalized_registry_entry_still_guards_missing_marker(self, pool_settings, monkeypatch):
+        """A hand-edited (or pre-normalization) registry entry must still be
+        recognized as this pool: with the marker gone, startup must refuse
+        (the unmounted-disk trap), not silently re-adopt."""
+        sys_root = _fake_ssd_sysfs(pool_settings)
+        extra = pool_settings / "mnt" / "nvme1"
+        extra.mkdir(parents=True)
+        registry = Path(settings.EXECUTION_ROOT) / "volume-pools.json"
+        registry.write_text(json.dumps([f"{extra.parent}//elsewhere/../{extra.name}"]) + "\n")
+        monkeypatch.setattr(settings, "VOLUME_POOLS", [f"{extra}=nvme"])
+        with pytest.raises(StoragePoolConfigError, match="not mounted"):
             setup_pools(sys_root=sys_root)
 
     @pytest.mark.parametrize("entry", ["=ssd", "relative/path=ssd"])
@@ -530,6 +563,32 @@ class TestFirecrackerPool0Wiring:
         path = await storage_module.get_volume_path(_persistent_volume(), namespace="vmhash", pool0_only=True)
         assert path == three_pools[0].path / "vmhash" / "data.ext4"
         create_ext4.assert_awaited_once_with(path, 1024)
+
+    @pytest.mark.asyncio
+    async def test_get_volume_path_devmapper_threads_pool0_only(self, three_pools, mocker):  # noqa: ARG002
+        """The devmapper branch must forward pool0_only into the
+        create_devmapper -> create_volume_file -> volume_path_for chain, so a
+        hypothetical Firecracker parent volume could never place its backing
+        file off pool 0 (the jailer hardlink-copy would lose guest writes)."""
+        devmapper = mocker.patch.object(
+            storage_module, "create_devmapper", new_callable=AsyncMock, return_value=Path("/dev/mapper/vmhash_data")
+        )
+        volume = _persistent_volume().model_copy(update={"parent": ParentVolume(ref="cafe" * 16, use_latest=False)})
+        await storage_module.get_volume_path(volume, namespace="vmhash", pool0_only=True)
+        assert devmapper.await_args.kwargs["pool0_only"] is True
+
+    @pytest.mark.asyncio
+    async def test_create_volume_file_pool0_only_places_on_pool0(self, three_pools, monkeypatch, mocker):
+        """create_volume_file (the devmapper backing file) must honor
+        pool0_only even when an extra pool has more free space."""
+        _fake_disk_usage(
+            monkeypatch,
+            {three_pools[0].path: 10 * 1024**3, three_pools[1].path: 50 * 1024**3, three_pools[2].path: 2 * 1024**3},
+        )
+        mocker.patch.object(storage_module, "run_in_subprocess", new_callable=AsyncMock)
+        mocker.patch.object(storage_module, "chown_to_jailman", new_callable=AsyncMock)
+        path = await storage_module.create_volume_file(_persistent_volume(), "vmhash", pool0_only=True)
+        assert path == three_pools[0].path / "vmhash" / "data.btrfs"
 
     @pytest.mark.asyncio
     async def test_host_volumes_from_message_threads_pool0_only(self, mocker):

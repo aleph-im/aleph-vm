@@ -170,6 +170,19 @@ pub struct Settings {
     /// reservation, so it is OPT-IN: with it off, C2 delivers only the
     /// regular-page NUMA memory binding. Rust-only (no Python oracle).
     pub numa_hugepages: bool,
+
+    /// ALEPH_VM_NUMA_HUGEPAGES_HEADROOM_MB, default
+    /// [`crate::hugepages::DEFAULT_HEADROOM_MB`] (8192). Per-node floor of
+    /// regular RAM (MB) kept out of the boot 2M hugepage reservation so the
+    /// host is never starved. Only read when `numa_hugepages` is on.
+    /// Rust-only (no Python oracle).
+    pub numa_hugepages_headroom_mb: u32,
+
+    /// ALEPH_VM_NUMA_HUGEPAGES_LIMIT_MB, default unset. Optional global cap
+    /// (MB, split evenly across nodes) on the boot 2M hugepage reservation;
+    /// unset bounds the reservation by total RAM minus the per-node headroom.
+    /// Only read when `numa_hugepages` is on. Rust-only (no Python oracle).
+    pub numa_hugepages_limit_mb: Option<u64>,
 }
 
 /// conf.py DnsResolver: how DNS_NAMESERVERS is derived when unset.
@@ -357,6 +370,10 @@ impl Settings {
             _ => PathBuf::from("/etc/systemd/system"),
         };
         let numa_hugepages = env.get_bool("NUMA_HUGEPAGES")?.unwrap_or(false);
+        let numa_hugepages_headroom_mb = env
+            .get_u32("NUMA_HUGEPAGES_HEADROOM_MB")?
+            .unwrap_or(crate::hugepages::DEFAULT_HEADROOM_MB);
+        let numa_hugepages_limit_mb = env.get_u64("NUMA_HUGEPAGES_LIMIT_MB")?;
         let dns_resolution = match env.get("DNS_RESOLUTION") {
             None => DnsResolution::Detect,
             Some(value) if value == "detect" => DnsResolution::Detect,
@@ -409,6 +426,8 @@ impl Settings {
             use_developer_ssh_keys,
             systemd_unit_dir,
             numa_hugepages,
+            numa_hugepages_headroom_mb,
+            numa_hugepages_limit_mb,
         })
     }
 
@@ -478,6 +497,38 @@ impl EnvSlice {
     /// Integer parsing; an unparseable value is a startup error, as it is
     /// for pydantic's int fields.
     fn get_int(&self, name: &str) -> Result<Option<u8>, DaemonError> {
+        self.get(name)
+            .map(|value| {
+                value
+                    .trim()
+                    .parse()
+                    .map_err(|_| DaemonError::InvalidSetting {
+                        key: format!("{ENV_PREFIX}{name}"),
+                        value,
+                        expected: "an integer",
+                    })
+            })
+            .transpose()
+    }
+
+    /// Like [`Self::get_int`] for u32 settings.
+    fn get_u32(&self, name: &str) -> Result<Option<u32>, DaemonError> {
+        self.get(name)
+            .map(|value| {
+                value
+                    .trim()
+                    .parse()
+                    .map_err(|_| DaemonError::InvalidSetting {
+                        key: format!("{ENV_PREFIX}{name}"),
+                        value,
+                        expected: "an integer",
+                    })
+            })
+            .transpose()
+    }
+
+    /// Like [`Self::get_int`] for u64 settings.
+    fn get_u64(&self, name: &str) -> Result<Option<u64>, DaemonError> {
         self.get(name)
             .map(|value| {
                 value
@@ -563,6 +614,32 @@ mod tests {
         );
         // A non-bool value is a hard error (get_bool), like the other flags.
         assert!(Settings::from_vars(vars(&[("ALEPH_VM_NUMA_HUGEPAGES", "maybe")])).is_err());
+    }
+
+    #[test]
+    fn numa_hugepages_headroom_and_limit_are_configurable() {
+        // Defaults: the hugepages module's headroom floor, no global limit.
+        let defaults = Settings::from_vars(vars(&[])).unwrap();
+        assert_eq!(
+            defaults.numa_hugepages_headroom_mb,
+            crate::hugepages::DEFAULT_HEADROOM_MB
+        );
+        assert_eq!(defaults.numa_hugepages_limit_mb, None);
+
+        let tuned = Settings::from_vars(vars(&[
+            ("ALEPH_VM_NUMA_HUGEPAGES_HEADROOM_MB", "2048"),
+            ("ALEPH_VM_NUMA_HUGEPAGES_LIMIT_MB", "32768"),
+        ]))
+        .unwrap();
+        assert_eq!(tuned.numa_hugepages_headroom_mb, 2048);
+        assert_eq!(tuned.numa_hugepages_limit_mb, Some(32768));
+
+        // A non-integer (or negative) value is a hard error, like the other
+        // int settings.
+        assert!(
+            Settings::from_vars(vars(&[("ALEPH_VM_NUMA_HUGEPAGES_HEADROOM_MB", "lots")])).is_err()
+        );
+        assert!(Settings::from_vars(vars(&[("ALEPH_VM_NUMA_HUGEPAGES_LIMIT_MB", "-1")])).is_err());
     }
 
     #[test]
