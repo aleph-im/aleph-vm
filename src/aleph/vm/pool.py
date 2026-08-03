@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import shutil
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -18,6 +17,7 @@ from aleph.vm.resources import (
     InsufficientResourcesError,
     get_gpu_devices,
 )
+from aleph.vm.storage_pools import pools_disk_usage
 from aleph.vm.supervisor.networking_db import (
     create_supervisor_tables,
     get_port_mappings,
@@ -158,7 +158,7 @@ class VmPool:
 
         This takes into account the disk request (but not used) for Volume of executions in the pool
         Result in bytes."""
-        free_space = shutil.disk_usage(str(settings.PERSISTENT_VOLUMES_DIR)).free
+        free_space = pools_disk_usage()[1]
         # Free disk space reported by the system
 
         # Calculate the reservation

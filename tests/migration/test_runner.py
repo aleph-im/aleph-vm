@@ -718,6 +718,7 @@ async def test_import_spec_build_reuses_staged_overlay(tmp_path, monkeypatch):
     resources = QemuDownloader(message_content=None, namespace=namespace)
     rootfs_volume = MagicMock(spec=RootfsVolume)
     rootfs_volume.persistence = VolumePersistence.host
+    rootfs_volume.size_mib = 2048
 
     result = await resources.make_writable_volume(parent_path, rootfs_volume)
 

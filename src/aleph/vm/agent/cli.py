@@ -12,6 +12,7 @@ import sentry_sdk
 from aleph_message.models import ItemHash
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from aleph.vm import storage_pools
 from aleph.vm.conf import ALLOW_DEVELOPER_SSH_KEYS, make_db_url, settings
 from aleph.vm.version import __version__, get_version_from_apt, get_version_from_git
 
@@ -247,6 +248,8 @@ def main():
         print(settings.display())
 
     settings.check()
+
+    storage_pools.setup_pools()
 
     if not args.do_not_run:
         logger.debug("Initialising the DB...")

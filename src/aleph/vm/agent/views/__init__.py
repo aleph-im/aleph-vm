@@ -1027,6 +1027,7 @@ async def operate_reserve_resources(request: web.Request, authenticated_sender: 
             memory_mib=requirements.memory_mib,
             vcpus=requirements.vcpus,
             disk_mib=requirements.disk_mib,
+            max_volume_mib=requirements.max_volume_mib,
             is_instance=requirements.is_instance,
         )
         expiration_date = await capacity.reserve_gpus(requirements.gpu_device_ids, authenticated_sender)

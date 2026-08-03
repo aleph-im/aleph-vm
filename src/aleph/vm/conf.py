@@ -271,6 +271,14 @@ class Settings(BaseSettings):
     )
     JAILER_BASE_DIR: Path | None = Field(None)
 
+    VOLUME_POOLS: list[str] = Field(
+        default_factory=list,
+        description="Extra VM volume pool directories, one per additional fast disk. "
+        'JSON list; entries are "path" or "path=class" (class: nvme|ssd|hdd). '
+        "PERSISTENT_VOLUMES_DIR is always the first pool. HDD pools are "
+        "rejected: rotational disks are for CACHE_ROOT/BACKUP_DIRECTORY.",
+    )
+
     MAX_PROGRAM_ARCHIVE_SIZE: int = 10_000_000  # 10 MB
     MAX_DATA_ARCHIVE_SIZE: int = 10_000_000  # 10 MB
 
