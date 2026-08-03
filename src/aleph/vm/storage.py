@@ -19,6 +19,7 @@ from aleph_message.models import (
     InstanceMessage,
     ItemHash,
     ProgramMessage,
+    VerifiableProgramMessage,
     parse_message,
 )
 from aleph_message.models.execution.instance import RootfsVolume
@@ -203,7 +204,7 @@ async def get_latest_amend(item_hash: str) -> str:
     return item_hash
 
 
-async def get_message(ref: str) -> ProgramMessage | InstanceMessage:
+async def get_message(ref: str) -> ProgramMessage | InstanceMessage | VerifiableProgramMessage:
     if ref == settings.FAKE_INSTANCE_ID:
         logger.debug("Using the fake instance message since the ref matches")
         cache_path = settings.FAKE_INSTANCE_MESSAGE
@@ -229,7 +230,9 @@ async def get_message(ref: str) -> ProgramMessage | InstanceMessage:
             msg = fix_message_validation(msg)
 
         result = parse_message(message_dict=msg)
-        assert isinstance(result, InstanceMessage | ProgramMessage), "Parsed message is not executable"
+        assert isinstance(
+            result, InstanceMessage | ProgramMessage | VerifiableProgramMessage
+        ), "Parsed message is not executable"
         return result
 
 
@@ -237,7 +240,9 @@ async def get_code_path(ref: str) -> Path:
     if settings.FAKE_DATA_PROGRAM:
         archive_path = Path(settings.FAKE_DATA_PROGRAM)
 
-        encoding: Encoding = (await get_message(ref="fake-message")).content.code.encoding
+        fake_message = await get_message(ref="fake-message")
+        assert isinstance(fake_message, ProgramMessage), "The fake data message must be a program"
+        encoding: Encoding = fake_message.content.code.encoding
         if encoding == Encoding.squashfs:
             squashfs_path = Path(archive_path.name + ".squashfs")
             squashfs_path.unlink(missing_ok=True)

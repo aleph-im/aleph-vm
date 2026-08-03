@@ -341,6 +341,11 @@ def _group_executions_by_payment(
         record = registry.get(vm_hash)
         if record is None:
             continue
+        if record.is_vprogram:
+            # V-Programs are not payment-checked on the node: the CCN and the
+            # scheduler already enforce their credit budget, node-side
+            # duplication adds nothing.
+            continue
         if vm_hash in (settings.CHECK_FASTAPI_VM_ID, settings.LEGACY_CHECK_FASTAPI_VM_ID):
             continue
         if info.status is not VmStatus.RUNNING:

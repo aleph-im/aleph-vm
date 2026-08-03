@@ -60,6 +60,10 @@ async def update_message(message: ExecutableMessage):
             update_with_latest_ref(message.content.data),
             *(update_with_latest_ref(volume) for volume in (message.content.volumes or [])),
         )
+    elif message.type == MessageType.v_program:
+        # V-Programs are immutable (allow_amend is schema-rejected) and every
+        # reference is pinned by exact hash, so there are no amends to resolve.
+        return
     else:
         assert message.type == MessageType.instance
         await asyncio.gather(
