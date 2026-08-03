@@ -29,7 +29,8 @@
 
 use std::path::PathBuf;
 
-use serde::{Deserialize, Deserializer};
+use memsizes::MiB;
+use serde::Deserialize;
 
 /// A parse failure for one controller config file. The world view logs it
 /// and skips the VM; it never aborts the daemon (the Python crash-loop
@@ -152,8 +153,7 @@ pub struct QemuVmConfig {
     #[serde(default)]
     pub qga_socket_path: Option<String>,
     pub vcpu_count: u32,
-    #[serde(deserialize_with = "deserialize_mem_size_mib")]
-    pub mem_size_mb: u64,
+    pub mem_size_mb: MiB,
     #[serde(default)]
     pub interface_name: Option<String>,
     pub host_volumes: Vec<QemuHostVolume>,
@@ -209,7 +209,8 @@ impl QemuVmConfig {
             qmp_socket_path: String::new(),
             qga_socket_path: None,
             vcpu_count: 0,
-            mem_size_mb,
+            // The caller holds a raw MiB count from the request/proto edge.
+            mem_size_mb: MiB::from(mem_size_mb),
             interface_name,
             host_volumes: Vec::new(),
             gpus: Vec::new(),
@@ -274,26 +275,6 @@ impl QemuVmConfig {
             _ => None,
         }
     }
-}
-
-/// `MemSizeMib` reads with the coercion of the Python `_coerce_mib`
-/// (`MiB(int(value))`): an integer, a float JSON number (Python's `int()`
-/// truncates) or an INTEGER string. A float STRING like "2048.5" raises in
-/// Python's `int(value)` and makes the whole config unparseable; it is
-/// rejected here too.
-fn deserialize_mem_size_mib<'de, D>(deserializer: D) -> Result<u64, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = serde_json::Value::deserialize(deserializer)?;
-    let parsed = match &value {
-        serde_json::Value::Number(number) => number
-            .as_u64()
-            .or_else(|| number.as_f64().map(|float| float as u64)),
-        serde_json::Value::String(text) => text.trim().parse::<u64>().ok(),
-        _ => None,
-    };
-    parsed.ok_or_else(|| serde::de::Error::custom(format!("cannot coerce {value} to MiB")))
 }
 
 /// The resolved `vm_configuration` union member.
@@ -608,7 +589,7 @@ mod tests {
             panic!("expected a QEMU configuration");
         };
         assert_eq!(vm.vcpu_count, 2);
-        assert_eq!(vm.mem_size_mb, 2048);
+        assert_eq!(vm.mem_size_mb, MiB::from(2048));
         assert_eq!(vm.interface_name.as_deref(), Some("vmtap3"));
         assert!(vm.image_path.ends_with("rootfs.qcow2"));
         assert_eq!(vm.host_volumes.len(), 1);
@@ -791,21 +772,26 @@ mod tests {
     }
 
     #[test]
-    fn mem_size_accepts_pydantic_lax_forms() {
+    fn a_non_integer_mem_size_fails_the_whole_config() {
+        // mem_size_mb reads as memsizes::MiB, which deserializes only from a
+        // bare integer. No producer writes anything else (pydantic MiB is an
+        // int subclass; the daemon writer holds a u64), so a float, negative
+        // or string is a parse error and the world view skips the VM. This is
+        // strictly safer than the former coercion, whose `float as u64` path
+        // saturated a negative like -2048 to `-m 0`.
         let name = format!("{}-controller.json", crate::test_fixtures::QEMU_HASH);
-        let mut value: serde_json::Value = serde_json::from_str(&fixture(&name)).unwrap();
-        for lax in [
-            serde_json::Value::from("2048"),
-            serde_json::Value::from(2048.0),
-            // Python's int() truncates a float JSON number.
+        let base: serde_json::Value = serde_json::from_str(&fixture(&name)).unwrap();
+        for bad in [
             serde_json::Value::from(2048.7),
+            serde_json::Value::from(-2048),
+            serde_json::Value::from("2048"),
         ] {
-            value["vm_configuration"]["mem_size_mb"] = lax;
-            let config = parse_controller_config(&value.to_string()).unwrap();
-            let VmConfiguration::Qemu(vm) = &config.vm else {
-                panic!("expected a QEMU configuration");
-            };
-            assert_eq!(vm.mem_size_mb, 2048);
+            let mut value = base.clone();
+            value["vm_configuration"]["mem_size_mb"] = bad.clone();
+            assert!(
+                parse_controller_config(&value.to_string()).is_err(),
+                "{bad} must be rejected"
+            );
         }
     }
 
@@ -940,18 +926,5 @@ mod tests {
         std::fs::write(tmp.path().join("ab-qmp.socket"), b"dead").unwrap();
         remove_controller_configuration(tmp.path(), hash).unwrap();
         assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn a_float_string_mem_size_fails_the_whole_config() {
-        // Python parity: _coerce_mib does MiB(int(value)) and
-        // int("2048.5") raises, so the whole Configuration is unparseable
-        // (the world view then skips the VM, ledger entry 12). The payload
-        // does not fit the Firecracker shape either, so the shape-based
-        // union cannot rescue it.
-        let name = format!("{}-controller.json", crate::test_fixtures::QEMU_HASH);
-        let mut value: serde_json::Value = serde_json::from_str(&fixture(&name)).unwrap();
-        value["vm_configuration"]["mem_size_mb"] = "2048.5".into();
-        assert!(parse_controller_config(&value.to_string()).is_err());
     }
 }
