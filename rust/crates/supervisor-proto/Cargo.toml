@@ -8,7 +8,11 @@ description = "Generated tonic bindings for proto/supervisor.proto (the frozen s
 
 [dependencies]
 prost.workspace = true
+serde.workspace = true
 tonic.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [build-dependencies]
 tonic-build.workspace = true

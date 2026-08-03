@@ -4,6 +4,7 @@ members = [
     "crates/supervisor-proto",
     "crates/supervisor-daemon",
     "crates/supervisor-controller",
+    "crates/supervisor-cli",
     "crates/aleph-tee",
     "crates/aleph-attest-agent",
     "crates/aleph-attest-cli",
