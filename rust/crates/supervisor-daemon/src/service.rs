@@ -538,7 +538,7 @@ pub fn vm_spec_message(entry: &VmEntry) -> pb::VmSpec {
         initrd_path: String::new(),
         disks,
         vcpus: config.vcpu_count,
-        memory_mib: config.mem_size_mb,
+        memory_mib: config.mem_size_mb.count(),
         tee,
         network: Some(pb::NetworkConfig {
             // Python: bool(vm_cfg.interface_name).
