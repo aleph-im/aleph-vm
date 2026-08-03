@@ -406,6 +406,7 @@ async def test_v2_executions_list_one_vm(aiohttp_client, mock_app_with_pool, moc
             "running": False,
             "awaiting_confidential_init": False,
             "vm_type": "instance",
+            "mode": "normal",
         }
     }
 
@@ -638,6 +639,7 @@ async def test_v2_executions_list_vm_network(aiohttp_client, mocker, mock_app_wi
             "running": False,
             "awaiting_confidential_init": False,
             "vm_type": "instance",
+            "mode": "normal",
         }
     }
 
