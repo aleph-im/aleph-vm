@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
@@ -23,6 +22,7 @@ import psutil
 from aleph_message.models import ExecutableContent, ItemHash
 from aleph_message.models.execution.instance import InstanceContent
 
+from aleph.vm import storage_pools
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
 from aleph.vm.resources import GpuDevice, InsufficientResourcesError
@@ -44,22 +44,24 @@ class ResourceRequirements:
     vcpus: int
     memory_mib: int
     disk_mib: int
-    is_instance: bool
+    max_volume_mib: int = 0
+    is_instance: bool = False
     gpu_device_ids: list[str] = field(default_factory=list)
 
 
 def requirements_from_message(content: ExecutableContent) -> ResourceRequirements:
     """Extract the resources a message requests into a message-free DTO."""
     is_instance = isinstance(content, InstanceContent)
-    disk_mib = 0
+    volume_sizes_mib: list[int] = []
     if isinstance(content, InstanceContent) and content.rootfs:
-        disk_mib += content.rootfs.size_mib
+        volume_sizes_mib.append(content.rootfs.size_mib)
     for volume in content.volumes or []:
-        disk_mib += getattr(volume, "size_mib", 0) or 0
+        volume_sizes_mib.append(getattr(volume, "size_mib", 0) or 0)
     return ResourceRequirements(
         vcpus=content.resources.vcpus,
         memory_mib=content.resources.memory,
-        disk_mib=disk_mib,
+        disk_mib=sum(volume_sizes_mib),
+        max_volume_mib=max(volume_sizes_mib, default=0),
         is_instance=is_instance,
         gpu_device_ids=requested_gpu_ids(content),
     )
@@ -104,6 +106,7 @@ class CapacityManager:
         memory_mib: int,
         vcpus: int,
         disk_mib: int,
+        max_volume_mib: int = 0,
         is_instance: bool,
         exclude_vm_hash: ItemHash | None = None,
     ) -> None:
@@ -124,22 +127,9 @@ class CapacityManager:
         required_vcpus = vcpus
         required_disk_mib = disk_mib
 
-        committed_instance_memory_mib = 0
-        committed_program_memory_mib = 0
-        committed_vcpus = 0
-        for vm_hash, record in tuple(self.registry.items()):
-            if exclude_vm_hash is not None and vm_hash == exclude_vm_hash:
-                continue
-            resources = record.message.resources
-            memory = resources.memory
-            record_vcpus = resources.vcpus
-            if not memory and not record_vcpus:
-                continue
-            if isinstance(record.message, InstanceContent):
-                committed_instance_memory_mib += memory
-            else:
-                committed_program_memory_mib += memory
-            committed_vcpus += record_vcpus
+        committed_instance_memory_mib, committed_program_memory_mib, committed_vcpus = self._committed_resources(
+            exclude_vm_hash
+        )
 
         physical_memory_mib = psutil.virtual_memory().total // (1024 * 1024)
         physical_cores = psutil.cpu_count() or 1
@@ -190,6 +180,10 @@ class CapacityManager:
         if required_disk_mib > 0 and required_disk_mib > available_disk_mib:
             errors.append(f"Disk: required {required_disk_mib} MiB, " f"available {available_disk_mib} MiB")
 
+        max_volume_error = self._check_max_volume(max_volume_mib)
+        if max_volume_error:
+            errors.append(max_volume_error)
+
         if errors:
             detail = "Insufficient capacity to create VM. " + "; ".join(errors)
             available_memory_mib = max(memory_cap_mib - committed_memory_mib, 0)
@@ -208,21 +202,52 @@ class CapacityManager:
                 },
             )
 
+    def _committed_resources(self, exclude_vm_hash: ItemHash | None) -> tuple[int, int, int]:
+        """(committed_instance_memory_mib, committed_program_memory_mib,
+        committed_vcpus) summed over the registry, skipping
+        ``exclude_vm_hash``'s own record (see ``check_capacity``)."""
+        committed_instance_memory_mib = 0
+        committed_program_memory_mib = 0
+        committed_vcpus = 0
+        for vm_hash, record in tuple(self.registry.items()):
+            if exclude_vm_hash is not None and vm_hash == exclude_vm_hash:
+                continue
+            resources = record.message.resources
+            memory = resources.memory
+            record_vcpus = resources.vcpus
+            if not memory and not record_vcpus:
+                continue
+            if isinstance(record.message, InstanceContent):
+                committed_instance_memory_mib += memory
+            else:
+                committed_program_memory_mib += memory
+            committed_vcpus += record_vcpus
+        return committed_instance_memory_mib, committed_program_memory_mib, committed_vcpus
+
+    @staticmethod
+    def _check_max_volume(max_volume_mib: int) -> str | None:
+        """None when ``max_volume_mib`` fits the roomiest eligible pool, else
+        an error string describing the shortfall. No pool holds a volume
+        split across disks, so this catches a request the aggregate free
+        figure alone would wrongly admit."""
+        if max_volume_mib <= 0:
+            return None
+        roomiest_mib = storage_pools.roomiest_pool_free_bytes() // (1024 * 1024)
+        if max_volume_mib <= roomiest_mib:
+            return None
+        return f"Disk (largest single volume): required {max_volume_mib} MiB, roomiest pool has {roomiest_mib} MiB"
+
     @staticmethod
     def _available_disk_bytes() -> int:
-        """Disk available for new VMs, in bytes.
+        """Disk available for new VMs across every volume pool, in bytes.
 
-        Free space under PERSISTENT_VOLUMES_DIR, the same figure the pool's
-        calculate_available_disk reports: the reserved-but-unused delta it
-        added per execution is 0 for every spec-built VM (spec disks carry no
-        size). The directory is created by the supervisor's setup; if it does
-        not exist (yet), report 0 rather than failing admission outright.
+        Aggregate free space with same-filesystem pools counted once, the
+        same figure the pool's calculate_available_disk reports: the
+        reserved-but-unused delta it adds per execution is 0 for every
+        spec-built VM (spec disks carry no size). Unreachable pools (missing
+        dir, dead disk) contribute 0 rather than failing admission outright.
         """
-        try:
-            return max(shutil.disk_usage(str(settings.PERSISTENT_VOLUMES_DIR)).free, 0)
-        except OSError:
-            logger.warning("PERSISTENT_VOLUMES_DIR %s not accessible, reporting 0", settings.PERSISTENT_VOLUMES_DIR)
-            return 0
+        return max(storage_pools.pools_disk_usage()[1], 0)
 
     async def _available_gpus(self) -> list[GpuDevice]:
         """Host cards not attached to any VM, per the supervisor's HostInfo."""

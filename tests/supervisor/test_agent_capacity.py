@@ -389,3 +389,57 @@ def test_manager_never_calls_unrelated_supervisor_methods(mocker):
     manager.check_capacity(memory_mib=1024, vcpus=1, disk_mib=0, is_instance=True)
 
     supervisor.get_host_info.assert_not_called()
+
+
+# ── pooled disk accounting ──────────────────────────────────────────────────
+
+
+def test_requirements_carry_the_largest_single_volume():
+    message = _make_qemu_instance_message()
+    requirements = requirements_from_message(message)
+    # The fixture message has a rootfs and no sized extra volumes: the largest
+    # single volume IS the rootfs.
+    assert requirements.max_volume_mib == message.rootfs.size_mib
+    assert requirements.disk_mib >= requirements.max_volume_mib
+
+
+def test_check_capacity_rejects_a_volume_no_pool_can_hold(mocker):
+    manager = _manager()
+    _patch_host(mocker, memory_bytes=64 * 1024**3, cores=16, disk_bytes=900 * 1024**3)
+    # Aggregate says 900 GiB free, but the roomiest single pool has 400 GiB.
+    mocker.patch(
+        "aleph.vm.agent.capacity.storage_pools.roomiest_pool_free_bytes",
+        return_value=400 * 1024**3,
+    )
+    with pytest.raises(InsufficientResourcesError, match="single volume"):
+        manager.check_capacity(
+            memory_mib=1024,
+            vcpus=1,
+            disk_mib=500 * 1024,
+            max_volume_mib=500 * 1024,
+            is_instance=True,
+        )
+
+
+def test_check_capacity_accepts_when_the_roomiest_pool_fits(mocker):
+    manager = _manager()
+    _patch_host(mocker, memory_bytes=64 * 1024**3, cores=16, disk_bytes=900 * 1024**3)
+    mocker.patch(
+        "aleph.vm.agent.capacity.storage_pools.roomiest_pool_free_bytes",
+        return_value=400 * 1024**3,
+    )
+    manager.check_capacity(
+        memory_mib=1024,
+        vcpus=1,
+        disk_mib=500 * 1024,
+        max_volume_mib=300 * 1024,
+        is_instance=True,
+    )
+
+
+def test_available_disk_bytes_is_the_pooled_aggregate(mocker):
+    mocker.patch(
+        "aleph.vm.agent.capacity.storage_pools.pools_disk_usage",
+        return_value=(2 * 1024**4, 3 * 1024**3),
+    )
+    assert CapacityManager._available_disk_bytes() == 3 * 1024**3
