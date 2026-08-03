@@ -7,9 +7,12 @@
 //!   truncated to MiB like `int(total / (1024 * 1024))`
 //! - kernel_version / hostname: uname(2) release / nodename, like os.uname()
 //! - available_disk_bytes: statvfs f_bavail * f_frsize, what
-//!   shutil.disk_usage().free reports for PERSISTENT_VOLUMES_DIR
+//!   shutil.disk_usage().free reports for PERSISTENT_VOLUMES_DIR;
+//!   available_disk_bytes_pooled sums this across every volume pool
 
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+use std::path::PathBuf;
 
 use crate::error::DaemonError;
 
@@ -87,9 +90,61 @@ pub fn available_disk_bytes(path: &Path) -> Result<u64, DaemonError> {
     Ok(stat.f_bavail as u64 * stat.f_frsize as u64)
 }
 
+/// Free disk space for new volumes across every volume pool, in bytes:
+/// the statvfs sum with filesystems deduplicated by st_dev (two pool
+/// directories on one filesystem count once), matching the agent's
+/// pools_disk_usage. Unreachable pools contribute zero instead of failing
+/// GetHostInfo: a dead disk must not take Health down.
+pub fn available_disk_bytes_pooled(paths: &[PathBuf]) -> u64 {
+    let mut seen_devices = std::collections::HashSet::new();
+    let mut free = 0u64;
+    for path in paths {
+        let device = match std::fs::metadata(path) {
+            Ok(metadata) => metadata.dev(),
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "volume pool inaccessible, ignoring");
+                continue;
+            }
+        };
+        if !seen_devices.insert(device) {
+            continue;
+        }
+        match available_disk_bytes(path) {
+            Ok(bytes) => free += bytes,
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "statvfs failed, ignoring pool");
+            }
+        }
+    }
+    free
+}
+
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
+
+    #[test]
+    fn pooled_disk_dedups_same_filesystem_and_skips_dead_pools() {
+        let root = PathBuf::from("/");
+        // The same filesystem listed twice counts once...
+        let once = available_disk_bytes_pooled(std::slice::from_ref(&root));
+        let twice = available_disk_bytes_pooled(&[root.clone(), PathBuf::from("/etc")]);
+        // ("/" and "/etc" are usually one filesystem; when they are, the sums
+        // match. Different-filesystem hosts still satisfy the >= invariant.)
+        assert!(twice >= once);
+        assert_eq!(
+            available_disk_bytes_pooled(&[root.clone(), root.clone()]),
+            once
+        );
+        // A nonexistent pool contributes zero instead of erroring.
+        assert_eq!(
+            available_disk_bytes_pooled(&[root, PathBuf::from("/nonexistent-pool")]),
+            once
+        );
+        assert_eq!(available_disk_bytes_pooled(&[]), 0);
+    }
 
     #[test]
     fn meminfo_total_is_parsed_and_truncated() {

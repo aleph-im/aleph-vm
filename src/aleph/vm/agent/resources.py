@@ -12,6 +12,7 @@ from aleph.vm.agent.machine import get_cpu_info, get_hardware_info, get_memory_i
 from aleph.vm.conf import settings
 from aleph.vm.resources import GpuDevice
 from aleph.vm.sevclient import SevClient
+from aleph.vm.storage_pools import pools_disk_usage
 from aleph.vm.utils import (
     async_cache,
     check_amd_sev_es_supported,
@@ -213,6 +214,17 @@ async def get_machine_capability() -> MachineCapability:
     )
 
 
+def _disk_usage_from_pools(host_info) -> DiskUsage:
+    """Aggregate capacity across every volume pool (same-filesystem pools
+    counted once). Usage-aware available disk comes from the supervisor's
+    HostInfo; a gRPC supervisor that has not implemented it yet reports 0."""
+    total_bytes, free_bytes = pools_disk_usage()
+    return DiskUsage(
+        total_kB=total_bytes // 1000,
+        available_kB=(host_info.available_disk_bytes // 1000 if host_info.available_disk_bytes else free_bytes // 1000),
+    )
+
+
 @cors_allow_all
 async def about_system_usage(request: web.Request):
     """Public endpoint to expose information about the system usage."""
@@ -230,17 +242,7 @@ async def about_system_usage(request: web.Request):
             total_kB=math.ceil(psutil.virtual_memory().total / 1000),
             available_kB=math.floor(psutil.virtual_memory().available / 1000),
         ),
-        disk=DiskUsage(
-            total_kB=psutil.disk_usage(str(settings.PERSISTENT_VOLUMES_DIR)).total // 1000,
-            # Usage-aware available disk comes from the supervisor's
-            # HostInfo; the embedded engine fills it from the pool. A gRPC
-            # supervisor that has not implemented it yet reports 0.
-            available_kB=(
-                host_info.available_disk_bytes // 1000
-                if host_info.available_disk_bytes
-                else psutil.disk_usage(str(settings.PERSISTENT_VOLUMES_DIR)).free // 1000
-            ),
-        ),
+        disk=_disk_usage_from_pools(host_info),
         period=UsagePeriod(
             start_timestamp=period_start,
             duration_seconds=60,

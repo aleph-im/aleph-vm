@@ -22,6 +22,7 @@ import logging
 import signal
 from pathlib import Path
 
+from aleph.vm import storage_pools
 from aleph.vm.conf import settings
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,10 @@ def main(argv: list[str] | None = None) -> int:
 
     settings.setup()
     settings.check()
+    # The pool's capacity accounting (calculate_available_disk, GetHostInfo)
+    # must see every configured volume pool; a misconfigured pool aborts
+    # startup, consistent with the agent CLI (fail fast, never degrade).
+    storage_pools.setup_pools()
 
     socket_path = args.socket or default_socket_path()
     asyncio.run(run_daemon(socket_path))

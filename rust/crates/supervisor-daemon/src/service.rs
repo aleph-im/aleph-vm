@@ -298,13 +298,13 @@ impl SupervisorService {
         // execution's get_disk_usage_delta, which is 0 for every adopted
         // (spec-built, message-free) execution, so free space alone is
         // still the exact post-restart figure.
-        let volumes_dir = self.state.host.settings.persistent_volumes_dir.clone();
+        let volume_pools = self.state.host.settings.all_volume_pools();
         let available_disk_bytes =
-            tokio::task::spawn_blocking(move || host::available_disk_bytes(&volumes_dir))
+            tokio::task::spawn_blocking(move || host::available_disk_bytes_pooled(&volume_pools))
                 .await
                 .map_err(|error| {
                     DaemonError::Internal(format!("the statvfs task failed: {error}"))
-                })??;
+                })?;
         // NUMA topology (increment C1): one proto NumaNode per detected node.
         // Empty when detection was unavailable, as it was before C1.
         let numa_nodes = numa_nodes_proto(&self.state.numa);

@@ -19,6 +19,7 @@ from typing import cast
 from aiohttp.web import Request, Response
 from aleph_message.models import ItemHash
 
+from aleph.vm import storage_pools
 from aleph.vm.agent.capacity import CapacityManager
 from aleph.vm.agent.expiry import ExpiryManager
 from aleph.vm.agent.pubsub import PubSub
@@ -98,6 +99,7 @@ async def benchmark(runs: int):
 
     # Finish setting up the settings
     settings.setup()
+    storage_pools.setup_pools()
     settings.check()
 
     # First test all methods

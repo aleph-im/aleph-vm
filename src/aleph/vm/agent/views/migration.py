@@ -209,10 +209,12 @@ async def migration_disk_download(request: web.Request) -> web.StreamResponse:
     if not secrets.compare_digest(token, job.token):
         return web.HTTPUnauthorized(text="Invalid or missing export token")
 
-    if job.volumes_dir is None:
-        return web.HTTPNotFound(text=f"Disk file not found: {filename}")
-    export_path = job.volumes_dir / f"{filename}.export.qcow2"
-    if not export_path.exists():
+    # Exports may live in different pools; resolve from the recorded paths.
+    export_path = next(
+        (path for path in (job.export_paths or []) if path.name == f"{filename}.export.qcow2"),
+        None,
+    )
+    if export_path is None or not export_path.exists():
         return web.HTTPNotFound(text=f"Disk file not found: {filename}")
 
     # Increment AFTER all early-return validation paths so a 401/404 doesn't leak the counter.

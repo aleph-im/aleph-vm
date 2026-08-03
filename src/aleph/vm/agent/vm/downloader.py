@@ -38,6 +38,7 @@ from aleph.vm.storage import (
     get_rootfs_base_path,
     get_runtime_path,
 )
+from aleph.vm.storage_pools import volume_path_for
 from aleph.vm.supervisor_interface.errors import ResourceDownloadError, VmSetupError
 from aleph.vm.utils import run_in_subprocess
 
@@ -66,12 +67,11 @@ async def _make_writable_volume(
         msg = f"Format {parent_format} for {volume} unhandled by QEMU hypervisor"
         raise VmSetupError(msg)
 
-    dest_path = settings.PERSISTENT_VOLUMES_DIR / namespace / f"{volume_name}.qcow2"
+    dest_path = volume_path_for(namespace, f"{volume_name}.qcow2", volume.size_mib)
     # Do not override if user asked for host persistence.
     if dest_path.exists() and volume.persistence == VolumePersistence.host:
         return dest_path
 
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
     size_in_bytes = int(volume.size_mib * 1024 * 1024)
 
     await run_in_subprocess(
@@ -113,7 +113,7 @@ class QemuDownloader:
         self.rootfs_path = await self.make_writable_volume(parent_image_path, volume)
 
     async def download_volumes(self) -> None:
-        self.volumes = await host_volumes_from_message(self.message_content, self.namespace)
+        self.volumes = await host_volumes_from_message(self.message_content, self.namespace, pool0_only=False)
 
     async def download_all(self) -> None:
         await asyncio.gather(
@@ -172,7 +172,10 @@ class ProgramDownloader:
         assert self.rootfs_path.is_file(), f"Runtime not found on {self.rootfs_path}"
 
     async def download_volumes(self) -> None:
-        self.volumes = await host_volumes_from_message(self.message_content, self.namespace)
+        # Programs run under Firecracker, whose jailer hardlink-copies drive
+        # files across filesystems (losing guest writes): writable volumes
+        # must stay on pool 0.
+        self.volumes = await host_volumes_from_message(self.message_content, self.namespace, pool0_only=True)
 
     async def download_data(self) -> None:
         if self.message_content.data:
