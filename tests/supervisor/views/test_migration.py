@@ -277,7 +277,6 @@ class TestMigrationDiskDownloadEndpoint:
             state=MigrationState.EXPORTED,
             started_at=datetime.now(timezone.utc),
             token="correct-token",
-            volumes_dir=tmp_path,
         )
 
         pool = mocker.Mock(executions={})
@@ -299,7 +298,6 @@ class TestMigrationDiskDownloadEndpoint:
             state=MigrationState.EXPORTED,
             started_at=datetime.now(timezone.utc),
             token="test-token",
-            volumes_dir=tmp_path,
         )
 
         pool = mocker.Mock(executions={})
@@ -318,7 +316,7 @@ class TestMigrationDiskDownloadEndpoint:
 
         from aleph.vm.agent.migration.jobs import ExportJob, export_jobs
 
-        # The handler reads from `{volumes_dir}/{filename}.export.qcow2`
+        # The handler resolves the file through job.export_paths
         export_file = tmp_path / "rootfs.qcow2.export.qcow2"
         export_file.write_bytes(b"compressed qcow2 data")
 
@@ -327,7 +325,6 @@ class TestMigrationDiskDownloadEndpoint:
             state=MigrationState.EXPORTED,
             started_at=datetime.now(timezone.utc),
             token="test-token",
-            volumes_dir=tmp_path,
             export_paths=[export_file],
         )
 

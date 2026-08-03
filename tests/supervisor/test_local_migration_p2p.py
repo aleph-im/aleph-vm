@@ -39,9 +39,10 @@ def test_supervisor_has_no_migration_method():
 
 
 @pytest.mark.asyncio
-async def test_export_drives_stop_vm_and_derives_volumes_dir(tmp_path, monkeypatch):
+async def test_export_drives_stop_vm_and_collects_disks(tmp_path, monkeypatch):
     """The export runner stops the VM through the standard stop_vm RPC and
-    computes the volumes dir from settings (no migration-specific method)."""
+    collects the disks from settings-derived pool paths (no
+    migration-specific method)."""
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     monkeypatch.setattr(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
 
@@ -64,5 +65,5 @@ async def test_export_drives_stop_vm_and_derives_volumes_dir(tmp_path, monkeypat
     await run_export(job, supervisor)
 
     supervisor.stop_vm.assert_awaited_once_with(vm_hash)
-    assert job.volumes_dir == volumes_dir
+    assert job.export_paths == [volumes_dir / "rootfs.qcow2.export.qcow2"]
     assert job.state == MigrationState.EXPORTED

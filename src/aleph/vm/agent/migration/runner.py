@@ -132,16 +132,15 @@ async def run_export(
             # until the controller's SIGTERM handler has ACPI-powered the guest
             # down and QMP-quit QEMU with a cache flush. The exported overlay is
             # therefore consistent once stop_vm returns; no separate graceful
-            # step is needed. The volumes dir is the same settings-derived path
-            # the import runner stages into.
+            # step is needed.
             await supervisor.stop_vm(job.vm_hash)
-            # A VM's volumes may span pools (each volume is placed
-            # independently); export from every namespace dir, one copy per
-            # basename (lowest-index pool wins, like the boot-time lookup).
-            volume_dirs = list(iter_namespace_dirs(str(job.vm_hash)))
-            job.volumes_dir = volume_dirs[0] if volume_dirs else None
 
             disk_files: list[DiskFileInfo] = []
+
+            # A VM's volumes may span pools (each volume is placed
+            # independently); _collect_export_disks scans every namespace dir,
+            # one copy per basename (lowest-index pool wins, like the
+            # boot-time lookup).
 
             for qcow2_file in _collect_export_disks(str(job.vm_hash)):
                 export_path = qcow2_file.with_suffix(".qcow2.export.qcow2")
