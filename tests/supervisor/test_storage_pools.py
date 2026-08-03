@@ -627,3 +627,14 @@ class TestMigrationPools:
             three_pools[2].path / "vm-x" / "extra.qcow2",
         ]
         assert any("multiple pools" in record.message for record in caplog.records)
+
+    def test_export_skips_stale_export_artifacts(self, three_pools):
+        """A leftover .export.qcow2 from an earlier failed export (the reaper
+        only sweeps at startup) must not be collected as a source disk: the
+        *.qcow2 glob matches it, so it needs explicit filtering."""
+        namespace = three_pools[1].path / "vm-x"
+        namespace.mkdir()
+        (namespace / "rootfs.qcow2").touch()
+        (namespace / "rootfs.qcow2.export.qcow2").touch()
+        disks = _collect_export_disks("vm-x")
+        assert disks == [namespace / "rootfs.qcow2"]
