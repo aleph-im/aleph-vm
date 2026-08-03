@@ -100,7 +100,7 @@ pub fn build_rustls_config(identity: &AttestedTlsIdentity) -> Result<rustls::Ser
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aleph_tee::types::{AttestationReport, TeeType, VerificationResult};
+    use aleph_tee::types::{AttestationReport, TeeType};
     use aleph_tee::x509::extract_attestation_from_cert;
 
     /// Mock backend that returns a report with the given report_data.
@@ -116,10 +116,6 @@ mod tests {
                 tee_type: TeeType::SevSnp,
                 data: vec![0xDE, 0xAD],
             })
-        }
-
-        fn verify_report(&self, _report: &AttestationReport) -> Result<VerificationResult> {
-            unimplemented!()
         }
 
         fn parse_report(&self, _raw: &[u8]) -> Result<AttestationReport> {

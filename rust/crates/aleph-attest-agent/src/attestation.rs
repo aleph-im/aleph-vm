@@ -45,7 +45,7 @@ pub fn get_fresh_report(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aleph_tee::types::{AttestationReport, TeeType, VerificationResult};
+    use aleph_tee::types::{AttestationReport, TeeType};
 
     /// A mock TEE backend for testing that captures the report_data passed in.
     struct MockBackend;
@@ -64,10 +64,6 @@ mod tests {
                 tee_type: TeeType::SevSnp,
                 data: report_data.to_vec(),
             })
-        }
-
-        fn verify_report(&self, _report: &AttestationReport) -> Result<VerificationResult> {
-            unimplemented!("not needed for these tests")
         }
 
         fn parse_report(&self, _raw: &[u8]) -> Result<AttestationReport> {
