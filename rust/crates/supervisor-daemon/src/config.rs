@@ -26,6 +26,37 @@ pub enum Ipv6AllocationPolicy {
     Dynamic,
 }
 
+/// storage_pools.py MediaClass: the vocabulary of the VOLUME_POOLS
+/// `=class` override. Media-class eligibility stays agent policy; the
+/// daemon carries the value only so a class conf.py would reject aborts
+/// startup here too instead of being silently accepted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaClass {
+    Nvme,
+    Ssd,
+    Hdd,
+}
+
+impl MediaClass {
+    /// `MediaClass(value)` in Python: exact lowercase names only.
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "nvme" => Some(Self::Nvme),
+            "ssd" => Some(Self::Ssd),
+            "hdd" => Some(Self::Hdd),
+            _ => None,
+        }
+    }
+}
+
+/// One VOLUME_POOLS entry, storage_pools.py _parse_pool_entry: the pool
+/// directory plus the optional media-class override.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VolumePool {
+    pub path: PathBuf,
+    pub media_class: Option<MediaClass>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Settings {
     /// conf.py EXECUTION_ROOT, default /var/lib/aleph/vm.
@@ -36,9 +67,10 @@ pub struct Settings {
     pub persistent_volumes_dir: PathBuf,
     /// conf.py VOLUME_POOLS, default []: extra VM volume pool directories.
     /// JSON list like the other pydantic list settings; entries may carry a
-    /// "=class" suffix the daemon strips — media-class eligibility is agent
-    /// policy, the daemon only needs the paths for available-disk accounting.
-    pub volume_pools: Vec<PathBuf>,
+    /// "=class" suffix. The daemon only needs the paths (available-disk
+    /// accounting), but parses entries with _parse_pool_entry's validation
+    /// so a config the agent would refuse to boot on fails here too.
+    pub volume_pools: Vec<VolumePool>,
     /// conf.py BACKUP_DIRECTORY, default {EXECUTION_ROOT}/backups (increment 5).
     pub backup_directory: PathBuf,
     /// conf.py CONFIDENTIAL_SESSION_DIRECTORY, default {EXECUTION_ROOT}/sessions
@@ -192,20 +224,18 @@ impl Settings {
         };
         let volume_pools = match env.get("VOLUME_POOLS") {
             None => Vec::new(),
-            Some(value) => serde_json::from_str::<Vec<String>>(&value)
-                .map_err(|_| DaemonError::InvalidSetting {
+            Some(value) => {
+                let invalid = |expected| DaemonError::InvalidSetting {
                     key: format!("{ENV_PREFIX}VOLUME_POOLS"),
-                    value,
-                    expected: "a JSON list of pool directories",
-                })?
-                .into_iter()
-                .map(|entry| {
-                    let path = entry
-                        .split_once('=')
-                        .map_or(entry.as_str(), |(path, _)| path);
-                    PathBuf::from(path.trim())
-                })
-                .collect(),
+                    value: value.clone(),
+                    expected,
+                };
+                serde_json::from_str::<Vec<String>>(&value)
+                    .map_err(|_| invalid("a JSON list of pool directories"))?
+                    .iter()
+                    .map(|entry| parse_pool_entry(entry).map_err(invalid))
+                    .collect::<Result<Vec<_>, _>>()?
+            }
         };
         // conf.py setup(): BACKUP_DIRECTORY defaults to EXECUTION_ROOT/backups,
         // CONFIDENTIAL_SESSION_DIRECTORY to EXECUTION_ROOT/sessions, when unset
@@ -382,13 +412,35 @@ impl Settings {
         })
     }
 
-    /// Every volume pool: PERSISTENT_VOLUMES_DIR (pool 0) plus the extras,
-    /// in declaration order — the statvfs targets for available-disk.
+    /// Every volume pool path: PERSISTENT_VOLUMES_DIR (pool 0) plus the
+    /// extras, in declaration order — the statvfs targets for available-disk.
     pub fn all_volume_pools(&self) -> Vec<PathBuf> {
         std::iter::once(self.persistent_volumes_dir.clone())
-            .chain(self.volume_pools.iter().cloned())
+            .chain(self.volume_pools.iter().map(|pool| pool.path.clone()))
             .collect()
     }
+}
+
+/// storage_pools.py _parse_pool_entry: "path" or "path=class", both parts
+/// trimmed. An unknown class or a non-absolute path is a
+/// StoragePoolConfigError there (startup aborts), so it is a startup error
+/// here as well; the Err carries the InvalidSetting `expected` text.
+fn parse_pool_entry(entry: &str) -> Result<VolumePool, &'static str> {
+    let (path_part, class_part) = match entry.split_once('=') {
+        Some((path, class)) => (path, Some(class)),
+        None => (entry, None),
+    };
+    let media_class = class_part
+        .map(|class| {
+            MediaClass::parse(class.trim())
+                .ok_or("a media class of nvme, ssd or hdd after '=' in every entry")
+        })
+        .transpose()?;
+    let path = PathBuf::from(path_part.trim());
+    if !path.is_absolute() {
+        return Err("an absolute pool path in every entry");
+    }
+    Ok(VolumePool { path, media_class })
 }
 
 /// Case-insensitive view over `ALEPH_VM_*` variables.
@@ -791,17 +843,28 @@ mod tests {
     }
 
     #[test]
-    fn volume_pools_parse_json_and_strip_class_suffixes() {
+    fn volume_pools_parse_paths_and_class_suffixes() {
         let settings = Settings::from_vars(vars(&[(
             "ALEPH_VM_VOLUME_POOLS",
-            r#"["/mnt/nvme1/aleph", "/mnt/sata1/aleph=ssd"]"#,
+            r#"["/mnt/nvme1/aleph", "/mnt/sata1/aleph=ssd", " /mnt/sata2/aleph = hdd "]"#,
         )]))
         .unwrap();
         assert_eq!(
             settings.volume_pools,
             vec![
-                PathBuf::from("/mnt/nvme1/aleph"),
-                PathBuf::from("/mnt/sata1/aleph"),
+                VolumePool {
+                    path: PathBuf::from("/mnt/nvme1/aleph"),
+                    media_class: None,
+                },
+                VolumePool {
+                    path: PathBuf::from("/mnt/sata1/aleph"),
+                    media_class: Some(MediaClass::Ssd),
+                },
+                // Both parts are trimmed, like _parse_pool_entry's strip().
+                VolumePool {
+                    path: PathBuf::from("/mnt/sata2/aleph"),
+                    media_class: Some(MediaClass::Hdd),
+                },
             ]
         );
         // all_volume_pools prepends pool 0 (PERSISTENT_VOLUMES_DIR).
@@ -809,7 +872,7 @@ mod tests {
             settings.all_volume_pools()[0],
             PathBuf::from("/var/lib/aleph/vm/volumes/persistent")
         );
-        assert_eq!(settings.all_volume_pools().len(), 3);
+        assert_eq!(settings.all_volume_pools().len(), 4);
 
         // Default: no extras, all_volume_pools is pool 0 alone.
         let settings = Settings::from_vars(vars(&[])).unwrap();
@@ -820,6 +883,32 @@ mod tests {
         let error =
             Settings::from_vars(vars(&[("ALEPH_VM_VOLUME_POOLS", "/mnt/a,/mnt/b")])).unwrap_err();
         assert!(error.to_string().contains("VOLUME_POOLS"));
+    }
+
+    #[test]
+    fn volume_pools_reject_unknown_media_classes() {
+        // storage_pools.py raises StoragePoolConfigError on any class
+        // MediaClass() does not accept; the daemon must refuse the same
+        // configs instead of silently running with them.
+        for value in [
+            r#"["/mnt/a=floppy"]"#,
+            // An empty class after '=' is unknown too.
+            r#"["/mnt/a="]"#,
+            // MediaClass(value) is case-sensitive.
+            r#"["/mnt/a=SSD"]"#,
+        ] {
+            let error = Settings::from_vars(vars(&[("ALEPH_VM_VOLUME_POOLS", value)])).unwrap_err();
+            assert!(error.to_string().contains("VOLUME_POOLS"), "{value}");
+        }
+    }
+
+    #[test]
+    fn volume_pools_reject_relative_and_empty_paths() {
+        // _parse_pool_entry demands an absolute pool path.
+        for value in [r#"["mnt/a"]"#, r#"["=ssd"]"#, r#"[""]"#] {
+            let error = Settings::from_vars(vars(&[("ALEPH_VM_VOLUME_POOLS", value)])).unwrap_err();
+            assert!(error.to_string().contains("VOLUME_POOLS"), "{value}");
+        }
     }
 
     #[test]
