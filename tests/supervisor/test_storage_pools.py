@@ -243,6 +243,35 @@ class TestSetupPools:
         with pytest.raises(StoragePoolConfigError, match=re.escape(str(extra))):
             setup_pools(sys_root=sys_root)
 
+    def test_cosmetic_path_rewrite_is_not_an_orphan(self, pool_settings, monkeypatch):
+        """A lexical rewrite of a configured pool path (.. segments, doubled
+        separators) must not trip the orphaned-pool guard: that guard is a
+        hard startup failure, and the pool is still the same directory. The
+        comparison normalizes lexically but never resolves symlinks."""
+        sys_root = _fake_ssd_sysfs(pool_settings)
+        extra = pool_settings / "mnt" / "nvme1"
+        extra.mkdir(parents=True)
+        monkeypatch.setattr(settings, "VOLUME_POOLS", [f"{extra}=nvme"])
+        setup_pools(sys_root=sys_root)
+        reset_pools()
+        rewritten = f"{extra.parent}//elsewhere/../{extra.name}"
+        monkeypatch.setattr(settings, "VOLUME_POOLS", [f"{rewritten}=nvme"])
+        pools = setup_pools(sys_root=sys_root)  # must not raise a false orphan
+        assert pools[1].path == extra
+
+    def test_unnormalized_registry_entry_still_guards_missing_marker(self, pool_settings, monkeypatch):
+        """A hand-edited (or pre-normalization) registry entry must still be
+        recognized as this pool: with the marker gone, startup must refuse
+        (the unmounted-disk trap), not silently re-adopt."""
+        sys_root = _fake_ssd_sysfs(pool_settings)
+        extra = pool_settings / "mnt" / "nvme1"
+        extra.mkdir(parents=True)
+        registry = Path(settings.EXECUTION_ROOT) / "volume-pools.json"
+        registry.write_text(json.dumps([f"{extra.parent}//elsewhere/../{extra.name}"]) + "\n")
+        monkeypatch.setattr(settings, "VOLUME_POOLS", [f"{extra}=nvme"])
+        with pytest.raises(StoragePoolConfigError, match="not mounted"):
+            setup_pools(sys_root=sys_root)
+
     @pytest.mark.parametrize("entry", ["=ssd", "relative/path=ssd"])
     def test_empty_or_relative_pool_path_is_a_hard_error(self, pool_settings, monkeypatch, entry):
         sys_root = _fake_ssd_sysfs(pool_settings)

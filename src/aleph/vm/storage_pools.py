@@ -133,11 +133,23 @@ def _parse_pool_entry(entry: str) -> tuple[Path, MediaClass | None]:
                 "(expected nvme, ssd or hdd)"
             )
             raise StoragePoolConfigError(msg) from error
-    path = Path(path_part.strip())
-    if not path_part.strip() or not path.is_absolute():
+    stripped = path_part.strip()
+    path = Path(_canonical(stripped)) if stripped else Path("")
+    if not stripped or not path.is_absolute():
         msg = f"VOLUME_POOLS entry {entry!r} needs an absolute pool path, e.g. /mnt/nvme1/aleph-volumes"
         raise StoragePoolConfigError(msg)
     return path, override
+
+
+def _canonical(path: Path | str) -> str:
+    """The canonical string form of a pool path, for registry storage and
+    comparison: lexically normalized (redundant separators and ``..``
+    segments collapsed) but deliberately NOT symlink-resolved. Resolving
+    would change pool identity across a symlink rewrite, silently merging or
+    splitting pools; a lexical form only forgives cosmetic rewrites of the
+    same configured path. A false mismatch here is a startup failure (the
+    orphaned-pool guard), so the forgiveness matters."""
+    return os.path.normpath(str(path))
 
 
 def _adoption_registry_path() -> Path:
@@ -165,12 +177,14 @@ def _load_adopted() -> set[str]:
             f"not {type(adopted).__name__}"
         )
         raise StoragePoolConfigError(msg)
-    return set(adopted)
+    # Normalize on read so registries written before canonicalization (or
+    # edited by hand) still match their configured pools.
+    return {_canonical(entry) for entry in adopted}
 
 
 def _record_adopted(path: Path) -> None:
     adopted = _load_adopted()
-    adopted.add(str(path))
+    adopted.add(_canonical(path))
     registry = _adoption_registry_path()
     tmp_path = registry.with_name(registry.name + ".tmp")
     tmp_path.write_text(json.dumps(sorted(adopted)) + "\n")
@@ -185,7 +199,7 @@ def _adopt_pool(path: Path, media_class: MediaClass) -> None:
     if marker.is_file():
         _record_adopted(path)  # heal the registry after e.g. a restore
         return
-    if str(path) in _load_adopted():
+    if _canonical(path) in _load_adopted():
         msg = (
             f"Volume pool {path} was adopted before but its {POOL_MARKER_NAME} marker is gone. "
             "Most likely the disk is not mounted; refusing to write to whatever is at that path."
@@ -234,7 +248,7 @@ def setup_pools(sys_root: Path = Path("/sys")) -> list[StoragePool]:
         _adopt_pool(path, media_class)
         pools.append(StoragePool(path=path, media_class=media_class, index=position))
 
-    orphaned = _load_adopted() - {str(pool.path) for pool in pools}
+    orphaned = _load_adopted() - {_canonical(pool.path) for pool in pools}
     if orphaned:
         msg = (
             f"Pool(s) {', '.join(sorted(orphaned))} were adopted as volume pools but are no longer "
