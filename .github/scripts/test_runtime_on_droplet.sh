@@ -44,6 +44,7 @@ wait_for_supervisor() {
 }
 
 echo "==> Configuring supervisor for runtime ${ITEM_HASH}"
+# shellcheck disable=SC2029  # ${ITEM_HASH} expands client-side on purpose (local value)
 ssh root@"${DROPLET_IPV4}" "sed -i '/^ALEPH_VM_CHECK_FASTAPI_VM_ID=/d' /etc/aleph-vm/supervisor.env && echo ALEPH_VM_CHECK_FASTAPI_VM_ID=${ITEM_HASH} >> /etc/aleph-vm/supervisor.env"
 ssh root@"${DROPLET_IPV4}" "systemctl restart aleph-vm-supervisor"
 wait_for_supervisor "${DROPLET_IPV4}"

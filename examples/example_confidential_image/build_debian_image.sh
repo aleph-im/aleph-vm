@@ -99,13 +99,13 @@ fi
 if [ -z "${DISK_PASSWORD}" ]; then
   echo "No disk password provided. Generating one..."
   DISK_PASSWORD=$(
-    tr </dev/urandom -dc _A-Z-a-z-0-9 | head -c${1:-16}
+    tr </dev/urandom -dc _A-Z-a-z-0-9 | head -c"${1:-16}"
     echo
   )
 fi
 
 if [ -z "${IMAGE_FILE}" ]; then
-  IMAGE_FILE="$(basename ${ROOTFS_DIR}).img"
+  IMAGE_FILE="$(basename "${ROOTFS_DIR}").img"
 fi
 
 BOOT_PARTITION_SIZE=100MiB
@@ -148,7 +148,7 @@ sudo mount "${MAPPED_DEVICE_ID}" "${MOUNT_POINT}"
 sudo cp --archive "${ROOTFS_DIR}"/* "${MOUNT_POINT}"
 
 echo "Configuring root file system..."
-for m in run sys proc dev; do sudo mount --bind /$m ${MOUNT_POINT}/$m; done
+for m in run sys proc dev; do sudo mount --bind /$m "${MOUNT_POINT}/$m"; done
 sudo cp "${SCRIPT_DIR}/setup_debian_rootfs.sh" "${KEY_FILE}" "${MOUNT_POINT}"
 sudo chroot "${MOUNT_POINT}" bash setup_debian_rootfs.sh --loop-device-id "${LOOP_DEVICE_ID}" --mapper-name "${MAPPER_NAME}"
 sudo rm "${MOUNT_POINT}/setup_debian_rootfs.sh" "${KEY_FILE}"
