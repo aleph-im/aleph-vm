@@ -45,7 +45,7 @@ pub fn get_fresh_report(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aleph_tee::types::{AttestationReport, TeeType, VerificationResult, VmConfig};
+    use aleph_tee::types::{AttestationReport, TeeType, VerificationResult};
 
     /// A mock TEE backend for testing that captures the report_data passed in.
     struct MockBackend;
@@ -67,10 +67,6 @@ mod tests {
         }
 
         fn verify_report(&self, _report: &AttestationReport) -> Result<VerificationResult> {
-            unimplemented!("not needed for these tests")
-        }
-
-        fn qemu_args(&self, _config: &VmConfig) -> Result<Vec<String>> {
             unimplemented!("not needed for these tests")
         }
 

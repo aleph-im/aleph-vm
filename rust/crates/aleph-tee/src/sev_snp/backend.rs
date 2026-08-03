@@ -1,68 +1,28 @@
 use anyhow::{Context, Result};
 
 use crate::traits::TeeBackend;
-use crate::types::{AttestationReport, TeeType, VerificationResult, VmConfig};
+use crate::types::{AttestationReport, TeeType, VerificationResult};
 
-use super::qemu::{DEFAULT_OVMF_PATH, sev_snp_qemu_args};
 use super::report::{extract_measurement, extract_report_data, parse_sev_snp_report};
 
-/// SEV-SNP backend implementing the `TeeBackend` trait.
+/// SEV-SNP attestation backend implementing the `TeeBackend` trait.
 ///
-/// This backend handles attestation report retrieval, parsing,
-/// verification (stubbed for now), and QEMU argument generation
-/// for AMD SEV-SNP confidential VMs.
+/// This backend handles attestation report retrieval, parsing, and
+/// verification (stubbed for now) for AMD SEV-SNP confidential VMs. It
+/// carries NO launch state: QEMU argument generation is a launcher concern
+/// with its own explicit API ([`super::qemu::sev_snp_qemu_args`]), which
+/// takes the host-CPUID-derived C-bit parameters as arguments.
 pub struct SevSnpBackend {
     /// The AMD product name (e.g., "Milan", "Genoa", "Turin").
     pub product: String,
-    /// Path to the OVMF firmware binary used by QEMU.
-    pub ovmf_path: String,
-    /// Host C-bit parameters read from CPUID leaf `0x8000001F` at launch.
-    /// There is deliberately NO default: `None` makes [`Self::qemu_args`] fail
-    /// closed, so a launcher can never start a VM with a stale hardcoded pair
-    /// from a different EPYC generation. Attestation-only users (e.g. the
-    /// in-guest agent) never set this.
-    pub cbit_params: Option<CbitParams>,
-}
-
-/// Memory-encryption C-bit position and guest physical-address-space
-/// reduction, HOST hardware properties read from CPUID leaf `0x8000001F`
-/// (not measurement inputs). A launcher must read them from the host at
-/// launch and inject them via [`SevSnpBackend::with_cbit_params`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CbitParams {
-    pub cbitpos: u32,
-    pub reduced_phys_bits: u32,
 }
 
 impl SevSnpBackend {
-    /// Create a new SEV-SNP backend for the given product line.
-    ///
-    /// Uses the default OVMF firmware path and NO C-bit parameters: this form
-    /// supports attestation (report retrieval, parsing, verification) only.
-    /// To generate QEMU launch arguments, inject the host CPUID values via
-    /// [`Self::with_cbit_params`] first.
+    /// Create a new SEV-SNP attestation backend for the given product line.
     pub fn new(product: impl Into<String>) -> Self {
         Self {
             product: product.into(),
-            ovmf_path: DEFAULT_OVMF_PATH.to_string(),
-            cbit_params: None,
         }
-    }
-
-    /// Override the OVMF firmware path (builder pattern).
-    pub fn with_ovmf_path(mut self, ovmf_path: impl Into<String>) -> Self {
-        self.ovmf_path = ovmf_path.into();
-        self
-    }
-
-    /// Inject the host C-bit parameters read from the host CPUID at launch
-    /// (builder pattern). Required before [`Self::qemu_args`].
-    pub fn with_cbit_params(mut self, cbitpos: u32, reduced_phys_bits: u32) -> Self {
-        self.cbit_params = Some(CbitParams {
-            cbitpos,
-            reduced_phys_bits,
-        });
-        self
     }
 }
 
@@ -129,31 +89,6 @@ impl TeeBackend for SevSnpBackend {
         })
     }
 
-    /// Generate QEMU command-line arguments for launching an SEV-SNP VM.
-    ///
-    /// Fails closed when no host C-bit parameters were injected: the values
-    /// vary by EPYC generation, so silently launching with a built-in pair
-    /// could break memory encryption on a different host.
-    fn qemu_args(&self, config: &VmConfig) -> Result<Vec<String>> {
-        let CbitParams {
-            cbitpos,
-            reduced_phys_bits,
-        } = self.cbit_params.ok_or_else(|| {
-            anyhow::anyhow!(
-                "SEV-SNP host C-bit parameters not set: read cbitpos/reduced-phys-bits \
-                 from the host CPUID (leaf 0x8000001F) at launch and inject them via \
-                 with_cbit_params()"
-            )
-        })?;
-
-        Ok(sev_snp_qemu_args(
-            config,
-            &self.ovmf_path,
-            cbitpos,
-            reduced_phys_bits,
-        ))
-    }
-
     /// Parse raw bytes into a structured attestation report.
     fn parse_report(&self, raw: &[u8]) -> Result<AttestationReport> {
         // Structural validation only; `data` is the single source of truth and
@@ -170,8 +105,7 @@ impl TeeBackend for SevSnpBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{TeeConfig, TeeType};
-    use std::path::PathBuf;
+    use crate::types::TeeType;
 
     #[test]
     fn test_sev_snp_backend_tee_type() {
@@ -183,64 +117,6 @@ mod tests {
     fn test_sev_snp_backend_product() {
         let backend = SevSnpBackend::new("Genoa");
         assert_eq!(backend.product, "Genoa");
-    }
-
-    fn make_config() -> VmConfig {
-        VmConfig {
-            vm_id: "test".to_string(),
-            kernel: Some(PathBuf::from("/boot/vmlinuz")),
-            initrd: Some(PathBuf::from("/boot/initrd.img")),
-            disks: vec![],
-            vcpus: 2,
-            memory_mb: 2048,
-            tee: TeeConfig {
-                backend: TeeType::SevSnp,
-                policy: Some("0x30000".to_string()),
-            },
-            encrypted: false,
-            numa_node: None,
-            hugepage_size: None,
-        }
-    }
-
-    #[test]
-    fn test_sev_snp_backend_qemu_args() {
-        let backend = SevSnpBackend::new("Milan").with_cbit_params(51, 1);
-
-        let args = backend.qemu_args(&make_config()).unwrap();
-        assert!(!args.is_empty());
-        assert!(args.iter().any(|a| a.contains("sev-snp-guest")));
-        assert!(args.iter().any(|a| a.contains("2048M")));
-        assert!(
-            args.iter()
-                .any(|a| a.contains("cbitpos=51,reduced-phys-bits=1")),
-            "emitted args must reflect the injected C-bit parameters: {args:?}"
-        );
-    }
-
-    #[test]
-    fn test_qemu_args_reflect_injected_cbit_params() {
-        // A non-EPYC-default pair must flow through verbatim, proving the
-        // backend no longer carries a hardcoded 51/1.
-        let backend = SevSnpBackend::new("Genoa").with_cbit_params(47, 2);
-
-        let args = backend.qemu_args(&make_config()).unwrap();
-        assert!(
-            args.iter()
-                .any(|a| a.contains("cbitpos=47,reduced-phys-bits=2")),
-            "emitted args must reflect the injected C-bit parameters: {args:?}"
-        );
-    }
-
-    #[test]
-    fn test_qemu_args_fail_closed_without_cbit_params() {
-        let backend = SevSnpBackend::new("Milan");
-
-        let err = backend.qemu_args(&make_config()).unwrap_err();
-        assert!(
-            err.to_string().contains("C-bit parameters not set"),
-            "qemu_args error: {err}"
-        );
     }
 
     #[test]
