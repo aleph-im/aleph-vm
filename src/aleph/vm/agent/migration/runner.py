@@ -61,6 +61,12 @@ def _collect_export_disks(vm_hash: str) -> list[Path]:
     seen_names: set[str] = set()
     for volumes_dir in iter_namespace_dirs(vm_hash):
         for qcow2_file in sorted(volumes_dir.glob("*.qcow2")):
+            if qcow2_file.name.endswith(".export.qcow2"):
+                # A stale export artifact from an earlier failed run: the
+                # reaper only sweeps at startup, so a retry without an agent
+                # restart would otherwise collect it as a source disk and
+                # re-export an export.
+                continue
             if qcow2_file.name in seen_names:
                 logger.warning(
                     "Volume %s for %s found in multiple pools; exporting the copy from %s",
