@@ -323,10 +323,12 @@ async def create_ext4(path: Path, size_mib: int) -> bool:
     return True
 
 
-async def create_volume_file(volume: PersistentVolume | RootfsVolume, namespace: str) -> Path:
+async def create_volume_file(
+    volume: PersistentVolume | RootfsVolume, namespace: str, *, pool0_only: bool = False
+) -> Path:
     volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
     # Assume that the main filesystem format is BTRFS
-    path = volume_path_for(namespace, f"{volume_name}.btrfs", volume.size_mib)
+    path = volume_path_for(namespace, f"{volume_name}.btrfs", volume.size_mib, pool0_only=pool0_only)
     if not path.is_file():
         logger.debug(f"Creating {volume.size_mib}MB volume")
         # Create an empty file the right size
@@ -394,9 +396,17 @@ async def resize_and_tune_file_system(device_path: Path, mount_path: Path) -> No
     await run_in_subprocess(["umount", str(mount_path)])
 
 
-async def create_devmapper(volume: PersistentVolume | RootfsVolume, namespace: str) -> Path:
+async def create_devmapper(
+    volume: PersistentVolume | RootfsVolume, namespace: str, *, pool0_only: bool = False
+) -> Path:
     """It creates a /dev/mapper/DEVICE inside the VM, that is an extended mapped device of the volume specified.
     We follow the steps described here: https://community.aleph.im/t/deploying-mutable-vm-instances-on-aleph/56/2
+
+    ``pool0_only`` pins the backing volume file's placement to pool 0 (see
+    volume_path_for): the Firecracker jailer hardlink-copies drive files
+    across filesystems, silently losing guest writes. Devmapper volumes are
+    only used by QEMU instances today, but the flag is threaded through so
+    that assumption never has to hold silently.
     """
     volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
     mapped_volume_name = f"{namespace}_{volume_name}"
@@ -419,7 +429,7 @@ async def create_devmapper(volume: PersistentVolume | RootfsVolume, namespace: s
         base_table_command = f"0 {image_block_size} linear {image_loop_device} 0"
         await create_mapped_device(image_volume_name, base_table_command)
 
-    volume_path = await create_volume_file(volume, namespace)
+    volume_path = await create_volume_file(volume, namespace, pool0_only=pool0_only)
     extended_block_size: int = await get_block_size(volume_path)
 
     mapped_volume_name_base = f"{namespace}_base"
@@ -476,8 +486,10 @@ async def get_volume_path(volume: MachineVolume, namespace: str, *, pool0_only: 
             volume_name = re.sub(r"[^\w\-_]", "_", volume_name)
         if volume.parent:
             # create_devmapper resolves its volume file through
-            # create_volume_file, which is pool-aware.
-            return await create_devmapper(volume, namespace)
+            # create_volume_file, which is pool-aware; pool0_only rides along
+            # so a hypothetical Firecracker parent volume could never land off
+            # pool 0 (jailer hardlink-copy would lose guest writes).
+            return await create_devmapper(volume, namespace, pool0_only=pool0_only)
         else:
             volume_path = volume_path_for(namespace, f"{volume_name}.ext4", volume.size_mib, pool0_only=pool0_only)
             await create_ext4(volume_path, volume.size_mib)
