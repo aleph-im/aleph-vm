@@ -155,8 +155,16 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
     // nr_hugepages and updates the topology's per-node 2M pool in place, which
     // the allocator built just below then draws from. Fail-safe per node.
     if host.settings.numa_hugepages && numa.is_placement_active() {
-        tracing::info!("ALEPH_VM_NUMA_HUGEPAGES on: reserving 2M hugepages per NUMA node");
-        hugepages::reserve_2m_hugepages(&mut numa);
+        tracing::info!(
+            headroom_mb = host.settings.numa_hugepages_headroom_mb,
+            limit_mb = host.settings.numa_hugepages_limit_mb,
+            "ALEPH_VM_NUMA_HUGEPAGES on: reserving 2M hugepages per NUMA node"
+        );
+        hugepages::reserve_2m_hugepages(
+            &mut numa,
+            host.settings.numa_hugepages_headroom_mb,
+            host.settings.numa_hugepages_limit_mb,
+        );
     }
     let numa_ledger = std::sync::Mutex::new(numa::NumaAllocator::new(numa.clone()));
     // The ephemeral Firecracker launcher (increment 4): programs are direct
