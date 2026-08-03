@@ -42,7 +42,6 @@ class ExportJob:
     token: str | None = None
     disk_files: list[DiskFileInfo] | None = None
     export_paths: list[Path] = field(default_factory=list)
-    volumes_dir: Path | None = None
     active_downloads: int = 0
     error: str | None = None
     task: asyncio.Task | None = None
