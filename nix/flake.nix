@@ -7,9 +7,13 @@
   #   aleph-attest-agent static-musl binary and init.sh) + a minimal
   #   dm-verity-protected rootfs + a precomputed, reproducible sev-snp-measure
   #   launch measurement.
-  # Excluded from the donor: compose-rootfs / compose-demo, the encrypted-rootfs
-  # (LUKS) mode, and the fib-service demo app (replaced by a trivial busybox
-  # httpd placeholder workload). See rust-port-divergences.
+  # Excluded from the donor: compose-rootfs / compose-demo and the
+  # encrypted-rootfs (LUKS) mode. The fib-service demo app is NOT excluded
+  # here: it now exists as the V-PROGRAM workload (see workload.nix), baked
+  # into its own measured dm-verity volume that the guest init mounts and
+  # execs when a workload_roothash is present on the cmdline. The trivial
+  # busybox httpd remains the platform rootfs's baked /sbin/init, used as the
+  # no-workload fallback. See rust-port-divergences.
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
@@ -194,12 +198,26 @@
       '';
 
       # Parameterized SEV-SNP launch measurement builder.
-      # vcpus:    number of vCPUs (affects the launch measurement)
-      # vcpuType: QEMU CPU model ("EPYC-v4" for Genoa, "EPYC-v3" for Milan)
+      # vcpus:            number of vCPUs (affects the launch measurement)
+      # vcpuType:         QEMU CPU model ("EPYC-v4" for Genoa, "EPYC-v3" for Milan)
+      # workloadRoothash: when null (default), the cmdline is the
+      #   platform-only form `...roothash=<platform>` (workload-less parity,
+      #   what test_vm_snp and the baked `measurement` below expect). When
+      #   set to a dm-verity root hash, the cmdline is extended to the
+      #   workload form `...roothash=<platform> workload_roothash=<hex>`,
+      #   matching byte-for-byte what the daemon emits when a V-PROGRAM
+      #   workload is attached (lifecycle.rs) and the CMDLINE_TEMPLATE_EXEC_V1
+      #   manifest template (src/aleph/vm/vprogram/bundle.py). Per-workload
+      #   measurements are computed by passing this argument; they are never
+      #   baked into the platform bundle's own measurement.hex.
       # The measurement is a function of (OVMF + kernel + initrd + cmdline +
       # vCPU count + CPU type), so each configuration needs its own value.
-      measurementFor = { vcpus ? 2, vcpuType ? "EPYC-v4" }: let
-        kernelCmdline = "console=ttyS0 root=/dev/mapper/verity-root ro roothash=${builtins.readFile "${verity}/roothash"}";
+      measurementFor = { vcpus ? 2, vcpuType ? "EPYC-v4", workloadRoothash ? null }: let
+        platformRoothash = builtins.readFile "${verity}/roothash";
+        kernelCmdline =
+          if workloadRoothash == null
+          then "console=ttyS0 root=/dev/mapper/verity-root ro roothash=${platformRoothash}"
+          else "console=ttyS0 root=/dev/mapper/verity-root ro roothash=${platformRoothash} workload_roothash=${workloadRoothash}";
       in pkgs.runCommand "sev-snp-measurement-${toString vcpus}vcpus-${vcpuType}" {
         nativeBuildInputs = [ sev-snp-measure ];
       } ''
@@ -214,8 +232,22 @@
           | tr -d '\n' > $out
       '';
 
-      # Default measurement: 2 vCPUs, EPYC-v4 (Genoa).
+      # Default measurement: 2 vCPUs, EPYC-v4 (Genoa), platform-only cmdline
+      # (no workload_roothash). This is the value baked into image/measurement.hex
+      # below and MUST stay platform-only for workload-less parity (test_vm_snp).
       measurement = measurementFor { vcpus = 2; vcpuType = "EPYC-v4"; };
+
+      # Convenience: the workload-form measurement for THIS repo's fib-service
+      # demo workload (2 vCPUs, EPYC-v4), using workloadVerity's root hash.
+      # Exposed for sanity-checking the workload cmdline template end-to-end;
+      # NOT baked into the platform image's measurement.hex (see above). Real
+      # per-workload measurements at launch time are computed by the daemon's
+      # own helper from the workload's actual root hash, not by this flake.
+      workloadMeasurement = measurementFor {
+        vcpus = 2;
+        vcpuType = "EPYC-v4";
+        workloadRoothash = builtins.readFile "${workloadVerity}/roothash";
+      };
 
       # Convenience: all measured-image artifacts in one directory.
       image = pkgs.runCommand "aleph-cvm-image" {} ''
@@ -246,6 +278,7 @@
           workloadVerity
           workload
           measurement
+          workloadMeasurement
           image;
         default = image;
       };
