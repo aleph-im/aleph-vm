@@ -122,16 +122,39 @@ def build_bundle(image_dir: Path, out_dir: Path, source_epoch: int, source: Sour
 # its init parses only roothash=). Changing these is a runtime/format
 # evolution, not a CLI flag.
 CMDLINE_TEMPLATE_V1 = "console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash}"
+# Exec-runtime flavor: the daemon measures a workload rootfs alongside the
+# platform rootfs and folds its dm-verity roothash into the cmdline (Task 1's
+# daemon emits exactly this string). Client-side launch-measurement
+# computation depends on byte-identity with what the daemon emits, so this
+# constant must not be reformatted independently of that emitter.
+CMDLINE_TEMPLATE_EXEC_V1 = (
+    "console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash}"
+    " workload_roothash={workload_roothash}"
+)
 DEFAULT_CPU_MODELS = ["EPYC-v4"]
 DEFAULT_ATTESTATION = [
     AttestationProtocol(protocol="aleph.ra-tls", version="1", transport=AttestationTransport(type="tcp", port=8443))
 ]
 DEFAULT_WORKLOAD = WorkloadSpec(contract="aleph.builtin/1", upstream_port=8080)
+# Exec-runtime workload contract: a plain executable/command workload rather
+# than the builtin no-workload runtime.
+EXEC_WORKLOAD = WorkloadSpec(contract="aleph.exec/1", upstream_port=8080)
 
 
-def make_manifest(info: BundleInfo, bundle_ref: str, name: str, runtime_version: str) -> RuntimeManifest:
+def make_manifest(
+    info: BundleInfo, bundle_ref: str, name: str, runtime_version: str, *, exec_runtime: bool = False
+) -> RuntimeManifest:
     """Build the manifest for an uploaded bundle. Validation is the
-    constructor: any inconsistency raises pydantic ValidationError."""
+    constructor: any inconsistency raises pydantic ValidationError.
+
+    By default builds the platform-only, no-workload manifest (builtin
+    contract, `{platform_roothash}`-only cmdline template). Pass
+    `exec_runtime=True` to select the `aleph.exec/1` workload contract and
+    the `{platform_roothash}`/`{workload_roothash}` cmdline template used by
+    runtimes that boot a separate measured workload rootfs.
+    """
+    cmdline_template = CMDLINE_TEMPLATE_EXEC_V1 if exec_runtime else CMDLINE_TEMPLATE_V1
+    workload = EXEC_WORKLOAD if exec_runtime else DEFAULT_WORKLOAD
     return RuntimeManifest(
         format="aleph-vprogram-runtime",
         format_version=1,
@@ -144,10 +167,10 @@ def make_manifest(info: BundleInfo, bundle_ref: str, name: str, runtime_version:
             kernel_hashes=True,
             cpu_models=list(DEFAULT_CPU_MODELS),
             platform_roothash=info.platform_roothash,
-            cmdline_template=CMDLINE_TEMPLATE_V1,
+            cmdline_template=cmdline_template,
         ),
         attestation=[protocol.model_copy(deep=True) for protocol in DEFAULT_ATTESTATION],
-        workload=DEFAULT_WORKLOAD.model_copy(deep=True),
+        workload=workload.model_copy(deep=True),
         source=info.source,
     )
 
