@@ -192,21 +192,71 @@ async def test_update_allocations_spares_scheduled_vprogram(aiohttp_client, mock
 
 
 @pytest.mark.asyncio
-async def test_create_vm_execution_vprogram_fails_cleanly(mocker):
-    """The allocation is accepted but the SNP launch path is not wired yet:
-    create must raise the create-path vocabulary (VmSetupError), which
-    update_allocations reports per-VM."""
+async def test_create_vm_execution_vprogram_launches_snp(mocker):
+    """A V-PROGRAM allocation goes through the SNP launch path: build the
+    spec from the runtime bundle, create_vm, wait for RUNNING, persist the
+    registry record. No confidential-init wait: SNP VMs auto-boot."""
     message = load_vprogram_message()
+    vm_hash = message.item_hash
     mocker.patch("aleph.vm.agent.run.load_updated_message", new_callable=AsyncMock, return_value=(message, message))
 
-    with pytest.raises(VmSetupError, match="SEV-SNP"):
+    fake_spec = MagicMock()
+    mock_build = mocker.patch("aleph.vm.agent.run.build_vprogram_spec", new_callable=AsyncMock, return_value=fake_spec)
+    mock_persist = mocker.patch("aleph.vm.agent.run.persist_record", new_callable=AsyncMock)
+
+    info = _running_vm_info(str(vm_hash))
+    assert not info.awaiting_confidential_init
+    supervisor = MagicMock(
+        create_vm=AsyncMock(return_value=info),
+        get_vm=AsyncMock(return_value=info),
+        delete_vm=AsyncMock(),
+    )
+    registry = AgentVmRegistry()
+
+    await create_vm_execution(
+        vm_hash,
+        supervisor=supervisor,
+        registry=registry,
+        capacity=MagicMock(),
+        persistent=True,
+    )
+
+    mock_build.assert_awaited_once_with(vm_hash, message.content)
+    supervisor.create_vm.assert_awaited_once_with(fake_spec)
+    supervisor.delete_vm.assert_not_awaited()
+    assert vm_hash in registry
+    record = registry.get(vm_hash)
+    assert record is not None and record.persistent
+    mock_persist.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_create_vm_execution_vprogram_build_failure_forgets_record(mocker):
+    """A failed bundle fetch/verify must surface the create-path vocabulary
+    (VmSetupError, reported per-VM by update_allocations) and leave no
+    dangling registry record behind."""
+    message = load_vprogram_message()
+    mocker.patch("aleph.vm.agent.run.load_updated_message", new_callable=AsyncMock, return_value=(message, message))
+    mocker.patch(
+        "aleph.vm.agent.run.build_vprogram_spec",
+        new_callable=AsyncMock,
+        side_effect=VmSetupError("runtime bundle sha256 mismatch"),
+    )
+
+    supervisor = MagicMock(create_vm=AsyncMock())
+    registry = AgentVmRegistry()
+
+    with pytest.raises(VmSetupError, match="sha256 mismatch"):
         await create_vm_execution(
             message.item_hash,
-            supervisor=MagicMock(),
-            registry=AgentVmRegistry(),
+            supervisor=supervisor,
+            registry=registry,
             capacity=MagicMock(),
             persistent=True,
         )
+
+    supervisor.create_vm.assert_not_awaited()
+    assert message.item_hash not in registry
 
 
 @pytest.mark.asyncio
