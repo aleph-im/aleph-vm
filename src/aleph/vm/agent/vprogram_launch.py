@@ -204,9 +204,14 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
     # first virtio disk (/dev/vda), the platform dm-verity hash tree from
     # /dev/vdb, and (when a workload is present) the workload data from
     # /dev/vdc and its hash tree from /dev/vdd.
+    #
+    # The platform hash tree is NOT attached here: the daemon force-inserts
+    # `{rootfs}.verity` (written by _ensure_verity_sidecars above) as the
+    # first SNP host volume (-> /dev/vdb). Attaching it here too would
+    # duplicate it and shift the workload disks to vdd/vde, breaking the
+    # guest's vdc/vdd workload-verity assumption.
     disks = [
         DiskSpec(path=rootfs_path, readonly=True, format=DiskFormat.RAW, role=DiskRole.ROOTFS),
-        DiskSpec(path=hash_tree_path, readonly=True, format=DiskFormat.RAW, role=DiskRole.EXTRA),
     ]
 
     if content.workload is not None:

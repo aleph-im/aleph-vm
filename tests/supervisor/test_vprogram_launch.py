@@ -236,9 +236,11 @@ async def test_build_vprogram_spec(staged_bundle):
     assert spec.initrd_path == staging / "image/initrd"
     assert spec.kernel_path.read_bytes() == b"kernel image"
 
+    # The platform hash tree is NOT a spec disk: the daemon force-inserts
+    # {rootfs}.verity as the first SNP host volume (/dev/vdb). The spec carries
+    # only the rootfs + the workload data/hash tree (/dev/vdc, /dev/vdd).
     assert [d.path for d in spec.disks] == [
         staging / "image/rootfs.ext4",
-        staging / "image/rootfs.ext4.verity",
         staged_bundle["data"],
         staged_bundle["hashtree"],
     ]
@@ -246,10 +248,11 @@ async def test_build_vprogram_spec(staged_bundle):
         DiskRole.ROOTFS,
         DiskRole.EXTRA,
         DiskRole.EXTRA,
-        DiskRole.EXTRA,
     ]
     assert all(d.readonly for d in spec.disks)
     assert all(d.format is DiskFormat.RAW for d in spec.disks)
+    # The platform verity sidecar still exists on disk for the daemon.
+    assert (staging / "image/rootfs.ext4.verity").is_file()
 
     assert spec.vcpus == content.resources.vcpus == 2
     assert spec.memory_mib == content.resources.memory == 2048
@@ -330,25 +333,26 @@ async def test_missing_member_fails_closed(tmp_path, storage_files):
 
 @pytest.mark.asyncio
 async def test_workload_attached_and_sidecar_written(staged_bundle):
-    """content.workload is attached as two more EXTRA disks (data, then hash
-    tree) after the platform hash tree, and its roothash is staged in a
-    sidecar next to the rootfs: the daemon has no cmdline field on the proto,
-    so this sidecar is the only way it learns 'workload_roothash=<hex>'."""
+    """content.workload is attached as two EXTRA disks (data, then hash tree)
+    after the rootfs, and its roothash is staged in a sidecar next to the
+    rootfs: the daemon has no cmdline field on the proto, so this sidecar is
+    the only way it learns 'workload_roothash=<hex>'. The platform hash tree
+    is NOT a spec disk (the daemon force-inserts it as /dev/vdb), so the
+    workload data/hash tree land at /dev/vdc, /dev/vdd."""
     message = load_vprogram_message()
     content = message.content
     assert content.workload.roothash == WORKLOAD_ROOTHASH
     spec = await build_vprogram_spec(message.item_hash, content)
 
-    assert len(spec.disks) == 4
+    assert len(spec.disks) == 3
     assert [d.role for d in spec.disks] == [
         DiskRole.ROOTFS,
         DiskRole.EXTRA,
         DiskRole.EXTRA,
-        DiskRole.EXTRA,
     ]
-    assert spec.disks[2].path == staged_bundle["data"]
-    assert spec.disks[3].path == staged_bundle["hashtree"]
-    assert all(d.readonly for d in spec.disks[2:])
+    assert spec.disks[1].path == staged_bundle["data"]
+    assert spec.disks[2].path == staged_bundle["hashtree"]
+    assert all(d.readonly for d in spec.disks[1:])
     assert all(d.format is DiskFormat.RAW for d in spec.disks[2:])
 
     rootfs = spec.rootfs.path
