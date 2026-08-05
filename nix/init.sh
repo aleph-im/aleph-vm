@@ -53,6 +53,13 @@ fi
 
 # Parse boot mode from kernel command line.
 roothash=$(/bin/busybox sed -n 's/.*\broothash=\([0-9a-fA-F]*\).*/\1/p' /proc/cmdline)
+# Parse the V-PROGRAM workload root hash, if present. `\b` requires a
+# non-word character immediately before the match: since "_" and letters are
+# both word characters, `\broothash=` above never matches inside
+# "workload_roothash=" (no boundary between the "d" of "workload" and the "_"
+# that follows, nor between that "_" and "r"), and this `\bworkload_roothash=`
+# match is unambiguous on its own. The two tokens never cross-match.
+workload_roothash=$(/bin/busybox sed -n 's/.*\bworkload_roothash=\([0-9a-fA-F]*\).*/\1/p' /proc/cmdline)
 
 # Wait for the rootfs block device to appear.
 blkdev=""
@@ -72,6 +79,24 @@ if [ -z "$blkdev" ]; then
     echo "init: FATAL: no block device found"
     exec /bin/busybox poweroff -f
 fi
+
+# Wait (up to 3s) for a block device to appear, e.g. a dm-verity hash tree
+# disk attached by QEMU as an extra virtio-blk device. Used for both the
+# platform hash tree (/dev/vdb) and the workload data + hash tree devices
+# (/dev/vdc, /dev/vdd) below, so each disk is waited for explicitly instead
+# of assuming a single fixed device name.
+wait_for_dev() {
+    dev="$1"
+    n=0
+    while [ "$n" -lt 30 ]; do
+        if [ -b "$dev" ]; then
+            return 0
+        fi
+        /bin/busybox sleep 0.1
+        n=$((n + 1))
+    done
+    return 1
+}
 
 /bin/busybox mkdir -p /mnt/root
 
@@ -147,8 +172,9 @@ NFT
     fi
 }
 
-# Load dm-verity kernel modules if verity is requested.
-if [ -n "$roothash" ]; then
+# Load dm-verity kernel modules if verity is requested (platform rootfs
+# and/or workload volume: either token alone is enough to need dm-verity).
+if [ -n "$roothash" ] || [ -n "$workload_roothash" ]; then
     echo "init: loading dm-verity kernel modules"
     /bin/busybox insmod /lib/modules/dax.ko 2>&1 || echo "init: warning: insmod dax.ko failed"
     /bin/busybox insmod /lib/modules/dm-mod.ko 2>&1 || echo "init: warning: insmod dm-mod.ko failed"
@@ -160,34 +186,25 @@ if [ -n "$roothash" ]; then
 fi
 
 if [ -n "$roothash" ]; then
-    # dm-verity: wait for hash tree device (/dev/vdb)
-    hashdev=""
-    n=0
-    while [ "$n" -lt 30 ]; do
-        if [ -b /dev/vdb ]; then
-            hashdev="/dev/vdb"
-            break
-        fi
-        /bin/busybox sleep 0.1
-        n=$((n + 1))
-    done
-
-    if [ -z "$hashdev" ]; then
+    # dm-verity: wait for the platform hash tree device (/dev/vdb).
+    if wait_for_dev /dev/vdb; then
+        hashdev="/dev/vdb"
+    else
         echo "init: FATAL: roothash set but /dev/vdb (hash tree) not found"
         exec /bin/busybox poweroff -f
-    else
-        echo "init: setting up dm-verity on ${blkdev} with hash tree ${hashdev}"
-        echo "init: roothash=${roothash}"
-        if /bin/veritysetup open "$blkdev" verity-root "$hashdev" "$roothash" 2>&1; then
-            echo "init: mounting /dev/mapper/verity-root"
-            if ! /bin/busybox mount -t ext4 -o ro /dev/mapper/verity-root /mnt/root; then
-                echo "init: FATAL: verity mount failed"
-                exec /bin/busybox poweroff -f
-            fi
-        else
-            echo "init: FATAL: dm-verity verification failed - rootfs may be tampered"
+    fi
+
+    echo "init: setting up dm-verity on ${blkdev} with hash tree ${hashdev}"
+    echo "init: roothash=${roothash}"
+    if /bin/veritysetup open "$blkdev" verity-root "$hashdev" "$roothash" 2>&1; then
+        echo "init: mounting /dev/mapper/verity-root"
+        if ! /bin/busybox mount -t ext4 -o ro /dev/mapper/verity-root /mnt/root; then
+            echo "init: FATAL: verity mount failed"
             exec /bin/busybox poweroff -f
         fi
+    else
+        echo "init: FATAL: dm-verity verification failed - rootfs may be tampered"
+        exec /bin/busybox poweroff -f
     fi
 else
     # No dm-verity: direct mount (backwards compatible)
@@ -199,13 +216,54 @@ else
     fi
 fi
 
+# V-PROGRAM workload volume: verity-verify and mount the workload data disk
+# (/dev/vdc) against its hash tree (/dev/vdd), distinct devices from the
+# platform rootfs (/dev/vda) and its hash tree (/dev/vdb) above. Only present
+# when the daemon attached a workload; when workload_roothash is empty this
+# whole block is skipped and behavior is unchanged (platform /sbin/init runs
+# below, as today).
+if [ -n "$workload_roothash" ]; then
+    if ! wait_for_dev /dev/vdc; then
+        echo "init: FATAL: workload_roothash set but /dev/vdc (workload data) not found"
+        exec /bin/busybox poweroff -f
+    fi
+    if ! wait_for_dev /dev/vdd; then
+        echo "init: FATAL: workload_roothash set but /dev/vdd (workload hash tree) not found"
+        exec /bin/busybox poweroff -f
+    fi
+
+    echo "init: setting up dm-verity on /dev/vdc with hash tree /dev/vdd (workload)"
+    echo "init: workload_roothash=${workload_roothash}"
+    if /bin/veritysetup open /dev/vdc verity-workload /dev/vdd "$workload_roothash" 2>&1; then
+        /bin/busybox mkdir -p /mnt/workload
+        echo "init: mounting /dev/mapper/verity-workload"
+        if ! /bin/busybox mount -t ext4 -o ro /dev/mapper/verity-workload /mnt/workload; then
+            echo "init: FATAL: workload verity mount failed"
+            exec /bin/busybox poweroff -f
+        fi
+    else
+        echo "init: FATAL: dm-verity verification failed for the workload volume - it may be tampered"
+        exec /bin/busybox poweroff -f
+    fi
+fi
+
 prepare_chroot
 
 # Install the guest firewall BEFORE starting the workload, so the app can never
 # be reached directly even during the window before the agent is up.
 setup_firewall
 
-if [ -x /mnt/root/sbin/init ]; then
+# When a V-PROGRAM workload is mounted, its /sbin/init (the workload
+# entrypoint, e.g. fib-service) runs INSTEAD OF the baked platform
+# /sbin/init (the busybox httpd fallback used when no workload is present).
+if [ -n "$workload_roothash" ]; then
+    if [ -x /mnt/workload/sbin/init ]; then
+        echo "init: starting /sbin/init from workload volume"
+        /bin/busybox chroot /mnt/workload /sbin/init &
+    else
+        echo "init: WARNING: no /sbin/init found in workload volume"
+    fi
+elif [ -x /mnt/root/sbin/init ]; then
     echo "init: starting /sbin/init from rootfs"
     /bin/busybox chroot /mnt/root /sbin/init &
 else
