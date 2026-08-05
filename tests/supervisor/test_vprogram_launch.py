@@ -39,6 +39,14 @@ MANIFEST_REF = "cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe
 BUNDLE_REF = "87287e4a5c8d7554a50f982cd681b64b2600c0bbb1c0b1e618465e022e01b977"
 PLATFORM_ROOTHASH = "cb121a317be7dc7969dd633ca9b6c3718ffe9ea6715b64e0e35a871d484b56b8"
 
+# Matches content.workload in tests/supervisor/fixtures/vprogram_message.json:
+# the fixture message always carries a workload block (the field is required
+# on VerifiableProgramContent), so every test that runs build_vprogram_spec
+# to completion needs get_existing_file to resolve these two refs too.
+WORKLOAD_REF = "beefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef"
+WORKLOAD_HASH_TREE_REF = "feedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeed"
+WORKLOAD_ROOTHASH = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+
 # The reference manifest shape (tests/vprogram/test_manifest.py), with the
 # bundle digest/size patched per-test to match the locally built tarball.
 MANIFEST_TEMPLATE: dict[str, Any] = {
@@ -139,13 +147,26 @@ def storage_files(tmp_path, monkeypatch) -> dict[str, Path]:
     return files
 
 
+def stage_workload(storage_files: dict[str, Path], tmp_path: Path) -> dict[str, Path]:
+    """Register the fixture message's workload ref + hash_tree with
+    get_existing_file, mirroring how the runtime bundle members are staged."""
+    data_path = tmp_path / "workload_data.img"
+    data_path.write_bytes(b"workload data volume")
+    hashtree_path = tmp_path / "workload_hashtree.img"
+    hashtree_path.write_bytes(b"workload hash tree")
+    storage_files[WORKLOAD_REF] = data_path
+    storage_files[WORKLOAD_HASH_TREE_REF] = hashtree_path
+    return {"data": data_path, "hashtree": hashtree_path}
+
+
 @pytest.fixture
 def staged_bundle(tmp_path, storage_files) -> dict[str, Path]:
     tar_path = make_bundle(tmp_path)
     manifest_path = make_manifest(tar_path, tmp_path)
     storage_files[MANIFEST_REF] = manifest_path
     storage_files[BUNDLE_REF] = tar_path
-    return {"tar": tar_path, "manifest": manifest_path}
+    workload = stage_workload(storage_files, tmp_path)
+    return {"tar": tar_path, "manifest": manifest_path, **workload}
 
 
 @pytest.mark.asyncio
@@ -200,8 +221,10 @@ async def test_bundle_size_mismatch_fails_closed(tmp_path, storage_files):
 @pytest.mark.asyncio
 async def test_build_vprogram_spec(staged_bundle):
     """The spec mirrors the on-host SNP launch template: QEMU + SEV_SNP tee,
-    direct-kernel boot from the extracted members, rootfs then hash tree (the
-    order IS the guest contract: /dev/vda and /dev/vdb), persistent."""
+    direct-kernel boot from the extracted members, and a disk order that IS
+    the guest contract: platform rootfs (/dev/vda), platform hash tree
+    (/dev/vdb), workload data (/dev/vdc), workload hash tree (/dev/vdd);
+    persistent."""
     message = load_vprogram_message()
     content = message.content
     spec = await build_vprogram_spec(message.item_hash, content)
@@ -213,10 +236,23 @@ async def test_build_vprogram_spec(staged_bundle):
     assert spec.initrd_path == staging / "image/initrd"
     assert spec.kernel_path.read_bytes() == b"kernel image"
 
-    assert [d.path for d in spec.disks] == [staging / "image/rootfs.ext4", staging / "image/rootfs.ext4.verity"]
-    assert [d.role for d in spec.disks] == [DiskRole.ROOTFS, DiskRole.EXTRA]
+    # The platform hash tree is NOT a spec disk: the daemon force-inserts
+    # {rootfs}.verity as the first SNP host volume (/dev/vdb). The spec carries
+    # only the rootfs + the workload data/hash tree (/dev/vdc, /dev/vdd).
+    assert [d.path for d in spec.disks] == [
+        staging / "image/rootfs.ext4",
+        staged_bundle["data"],
+        staged_bundle["hashtree"],
+    ]
+    assert [d.role for d in spec.disks] == [
+        DiskRole.ROOTFS,
+        DiskRole.EXTRA,
+        DiskRole.EXTRA,
+    ]
     assert all(d.readonly for d in spec.disks)
     assert all(d.format is DiskFormat.RAW for d in spec.disks)
+    # The platform verity sidecar still exists on disk for the daemon.
+    assert (staging / "image/rootfs.ext4.verity").is_file()
 
     assert spec.vcpus == content.resources.vcpus == 2
     assert spec.memory_mib == content.resources.memory == 2048
@@ -258,6 +294,7 @@ async def test_roothash_sidecar_written_when_bundle_lacks_it(tmp_path, storage_f
     tar_path = make_bundle(tmp_path, files)
     storage_files[MANIFEST_REF] = make_manifest(tar_path, tmp_path)
     storage_files[BUNDLE_REF] = tar_path
+    stage_workload(storage_files, tmp_path)
 
     message = load_vprogram_message()
     spec = await build_vprogram_spec(message.item_hash, message.content)
@@ -292,3 +329,50 @@ async def test_missing_member_fails_closed(tmp_path, storage_files):
     message = load_vprogram_message()
     with pytest.raises(VmSetupError, match="kernel missing"):
         await build_vprogram_spec(message.item_hash, message.content)
+
+
+@pytest.mark.asyncio
+async def test_workload_attached_and_sidecar_written(staged_bundle):
+    """content.workload is attached as two EXTRA disks (data, then hash tree)
+    after the rootfs, and its roothash is staged in a sidecar next to the
+    rootfs: the daemon has no cmdline field on the proto, so this sidecar is
+    the only way it learns 'workload_roothash=<hex>'. The platform hash tree
+    is NOT a spec disk (the daemon force-inserts it as /dev/vdb), so the
+    workload data/hash tree land at /dev/vdc, /dev/vdd."""
+    message = load_vprogram_message()
+    content = message.content
+    assert content.workload.roothash == WORKLOAD_ROOTHASH
+    spec = await build_vprogram_spec(message.item_hash, content)
+
+    assert len(spec.disks) == 3
+    assert [d.role for d in spec.disks] == [
+        DiskRole.ROOTFS,
+        DiskRole.EXTRA,
+        DiskRole.EXTRA,
+    ]
+    assert spec.disks[1].path == staged_bundle["data"]
+    assert spec.disks[2].path == staged_bundle["hashtree"]
+    assert all(d.readonly for d in spec.disks[1:])
+    assert all(d.format is DiskFormat.RAW for d in spec.disks[2:])
+
+    rootfs = spec.rootfs.path
+    sidecar = rootfs.with_name(rootfs.name + ".workload_roothash")
+    assert sidecar.is_file()
+    assert sidecar.read_text() == content.workload.roothash
+
+
+@pytest.mark.asyncio
+async def test_workload_roothash_non_hex_fails_closed(staged_bundle):
+    """A workload roothash that is not bare hex must never be staged or
+    attached: the daemon trusts the sidecar content verbatim, appending it to
+    the measured cmdline unquoted."""
+    message = load_vprogram_message()
+    bad_workload = message.content.workload.model_copy(update={"roothash": "not-bare-hex!!"})
+    content = message.content.model_copy(update={"workload": bad_workload})
+
+    with pytest.raises(VmSetupError, match="not bare hex"):
+        await build_vprogram_spec(message.item_hash, content)
+
+    staging = vprogram_staging_dir(message.item_hash)
+    rootfs = staging / "image" / "rootfs.ext4"
+    assert not rootfs.with_name(rootfs.name + ".workload_roothash").is_file()
