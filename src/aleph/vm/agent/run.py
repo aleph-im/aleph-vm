@@ -13,7 +13,12 @@ from aiohttp.web_exceptions import (
     HTTPInternalServerError,
     HTTPServiceUnavailable,
 )
-from aleph_message.models import InstanceContent, ItemHash, ProgramContent
+from aleph_message.models import (
+    InstanceContent,
+    ItemHash,
+    ProgramContent,
+    VerifiableProgramContent,
+)
 from msgpack import UnpackValueError
 from multidict import CIMultiDict
 
@@ -24,6 +29,7 @@ from aleph.vm.agent.translate import build_create_vm_spec, build_program_create_
 from aleph.vm.agent.update_watcher import UpdateWatcher
 from aleph.vm.agent.vm.program_client import ProgramGuestClient
 from aleph.vm.agent.vm_registry import AgentVmRegistry, persist_record
+from aleph.vm.agent.vprogram_launch import build_vprogram_spec
 from aleph.vm.conf import settings
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor_interface import errors as supervisor_errors
@@ -126,14 +132,14 @@ async def resolve_port_forwards(vm_id: VmId, content) -> list[PortForwardSpec]:
     return forwards
 
 
-async def reconcile_port_forwards(supervisor: Supervisor, vm_id: VmId, content) -> None:
-    """Drive the hypervisor's forwards to match the aggregate settings.
-
-    Agent policy half of the old fetch_port_redirect_config_and_setup: compute
-    the desired set, diff against what the hypervisor reports, and issue
-    add/remove calls. The hypervisor owns application and persistence.
+async def _reconcile_forwards(supervisor: Supervisor, vm_id: VmId, desired_specs: list[PortForwardSpec]) -> None:
+    """Diff `desired_specs` against what the hypervisor currently reports for
+    `vm_id` and issue add/remove calls so the two converge. The hypervisor
+    owns application and persistence; this is pure agent policy, and it is
+    idempotent: calling it again with the same desired set (e.g. on
+    re-adoption) issues no calls at all.
     """
-    desired = {(int(spec.vm_port), spec.protocol): spec for spec in await resolve_port_forwards(vm_id, content)}
+    desired = {(int(spec.vm_port), spec.protocol): spec for spec in desired_specs}
     current = {(int(info.vm_port), info.protocol): info for info in await supervisor.list_port_forwards(vm_id)}
     for key, info in current.items():
         if key not in desired:
@@ -141,6 +147,44 @@ async def reconcile_port_forwards(supervisor: Supervisor, vm_id: VmId, content) 
     for key, spec in desired.items():
         if key not in current:
             await supervisor.add_port_forward(spec)
+
+
+async def reconcile_port_forwards(supervisor: Supervisor, vm_id: VmId, content) -> None:
+    """Drive the hypervisor's forwards to match the aggregate settings.
+
+    Agent policy half of the old fetch_port_redirect_config_and_setup: compute
+    the desired set, then converge through ``_reconcile_forwards``.
+    """
+    await _reconcile_forwards(supervisor, vm_id, await resolve_port_forwards(vm_id, content))
+
+
+def resolve_vprogram_port_forwards(vm_id: VmId, attest_port: int | None) -> list[PortForwardSpec]:
+    """The only forward a V-PROGRAM gets: the manifest's RA-TLS attestation
+    port (tcp), mapped to a host IPv4 port so an external client (the aleph
+    CLI) can reach the guest's RA-TLS endpoint. Host-only DNAT,
+    measurement-neutral: unlike instances, no user aggregate is consulted and
+    SSH is never force-added. `attest_port` is None when the manifest
+    declared no aleph.ra-tls tcp transport; that V-PROGRAM gets no mapping.
+    """
+    if attest_port is None:
+        return []
+    return [
+        PortForwardSpec(
+            vm_id=vm_id,
+            host_port=HostPort(0),
+            vm_port=GuestPort(int(attest_port)),
+            protocol=Protocol.TCP,
+        )
+    ]
+
+
+async def reconcile_vprogram_port_forwards(supervisor: Supervisor, vm_id: VmId, attest_port: int | None) -> None:
+    """Drive the hypervisor's forwards to match the V-PROGRAM's single
+    attestation-port mapping. Reuses ``_reconcile_forwards``, so re-running
+    this on re-adoption (a fresh agent process picking the VM back up) is a
+    no-op once the mapping already exists.
+    """
+    await _reconcile_forwards(supervisor, vm_id, resolve_vprogram_port_forwards(vm_id, attest_port))
 
 
 async def _wait_until_running(
@@ -335,6 +379,48 @@ async def create_vm_execution(
         # Agent persists its own knowledge; the hypervisor object is not
         # touched. Registry rehydration and past-logs owner-auth read the
         # message back from the agent DB.
+        await persist_record(vm_hash, record)
+        return None
+
+    if isinstance(content, VerifiableProgramContent):
+        # V-PROGRAM: an auto-booting SEV-SNP VM. build_vprogram_spec fetches
+        # the runtime manifest, integrity-checks and stages the measured
+        # bundle, and returns a spec whose TeeConfig takes the SNP launch
+        # path. Mirrors the instance path above: record early, build spec,
+        # create, wait, persist; forget (and tear down) on failure. Unlike
+        # SEV instances there is no owner session to wait for: the daemon
+        # boots an SNP VM immediately (awaiting_confidential_init is never
+        # set), so the plain readiness wait applies.
+        record = registry.record(vm_hash, message=content, original=original_message.content, persistent=True)
+        try:
+            spec, attest_port = await build_vprogram_spec(vm_hash, content)
+            # Agent-side admission after the download, like the instance path:
+            # a failed bundle fetch never consumes capacity.
+            capacity.check_capacity(
+                memory_mib=content.resources.memory,
+                vcpus=content.resources.vcpus,
+                disk_mib=0,
+                is_instance=True,
+                exclude_vm_hash=vm_hash,
+            )
+            info = await supervisor.create_vm(spec)
+        except Exception:
+            registry.forget(vm_hash)
+            raise
+        try:
+            await _wait_until_running(supervisor, info.vm_id)
+            # Host-only DNAT so an external client (the aleph CLI) can reach
+            # the guest's RA-TLS attestation endpoint; measurement-neutral
+            # (no guest image/cmdline change) and idempotent via the same
+            # reconcile machinery the instance path uses.
+            await reconcile_vprogram_port_forwards(supervisor, info.vm_id, attest_port)
+        except Exception:
+            registry.forget(vm_hash)
+            try:
+                await supervisor.delete_vm(info.vm_id)
+            except Exception:
+                logger.exception("Teardown of half-started V-PROGRAM %s failed", vm_hash)
+            raise
         await persist_record(vm_hash, record)
         return None
 
@@ -575,6 +661,8 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, request: web.Request
     expiry.cancel(vm_id)  # do not reap a VM we are about to serve
 
     content, original = await _resolve_program_content(vm_hash, registry)
+    if isinstance(content, VerifiableProgramContent):
+        raise HTTPBadRequest(reason=f"VM {vm_hash} is a V-PROGRAM: executions are scheduler-controlled")
     if not isinstance(content, ProgramContent):
         raise HTTPBadRequest(reason=f"VM {vm_hash} is an instance, not a program")
 
@@ -655,6 +743,8 @@ async def run_code_on_event(
     expiry.cancel(vm_id)  # do not reap a VM we are about to serve
 
     content, original = await _resolve_program_content(vm_hash, registry)
+    if isinstance(content, VerifiableProgramContent):
+        raise HTTPBadRequest(reason=f"VM {vm_hash} is a V-PROGRAM: executions are scheduler-controlled")
     if not isinstance(content, ProgramContent):
         raise HTTPBadRequest(reason=f"VM {vm_hash} is an instance, not a program")
 

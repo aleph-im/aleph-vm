@@ -19,3 +19,14 @@ def test_static_ipv6_allocator():
         vm_type=VmType.microvm,
     )
     assert ip_subnet == IPv6Network("1111:2222:3333:4444:0001:8920:215b:2e90/124")
+
+
+def test_static_ipv6_allocator_v_program_prefix():
+    allocator = StaticIPv6Allocator(ipv6_range=IPv6Network("1111:2222:3333:4444::/64"), subnet_prefix=124)
+    ip_subnet = allocator.allocate_vm_ipv6_subnet(
+        vm_index=3,
+        vm_hash=ItemHash("8920215b2e961a4d4c59a8ceb2803af53f91530ff53d6704273ab4d380bc6446"),
+        vm_type=VmType.v_program,
+    )
+    # 16-bit VM-type field = 4: must mirror scheduler-events VmType::ipv6_value()
+    assert ip_subnet == IPv6Network("1111:2222:3333:4444:0004:8920:215b:2e90/124")
