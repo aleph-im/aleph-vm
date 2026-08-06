@@ -42,10 +42,24 @@ def confidential_instance_content(instance_content) -> dict:
     return instance_content
 
 
-def make_execution(content: dict, mocker, *, controller_active: bool = False) -> VmExecution:
-    """Build a persistent execution whose systemd controller state is mocked."""
+def make_execution(
+    content: dict,
+    mocker,
+    *,
+    controller_active: bool = False,
+    active_state: str | None = None,
+) -> VmExecution:
+    """Build a persistent execution whose systemd controller state is mocked.
+
+    ``active_state`` sets ``get_service_active_state``'s return value
+    (used by the new "check systemd state before stopping" logic in
+    ``start_persistent_vm``).
+    """
     message = InstanceContent.model_validate(content)
-    systemd_manager = mocker.Mock(is_service_active=mocker.Mock(return_value=controller_active))
+    systemd_manager = mocker.Mock(
+        is_service_active=mocker.Mock(return_value=controller_active),
+        get_service_active_state=mocker.Mock(return_value=active_state or "unknown"),
+    )
     return VmExecution(
         vm_hash=VM_HASH,
         message=message,
@@ -117,3 +131,64 @@ async def test_start_persistent_vm_keeps_confidential_instance_awaiting_init(con
     stop_mock.assert_not_called()
     create_mock.assert_not_called()
     pool.forget_vm.assert_not_called()
+
+
+# --- start_persistent_vm's transient-state guard -----------------------------
+#
+# Regression tests for the "unknown execution state, stopping the vm" branch.
+# Right after a start, systemd may still be `activating` for a few hundred
+# milliseconds: is_running is False (state != "active"), is_starting is False
+# (started_at was already set optimistically), is_stopping is False. A second
+# allocation POST landing in that window used to fall through and stop the VM,
+# whose graceful shutdown then SIGKILLed because the firecracker API socket
+# wasn't accepting connections yet — corrupting the BTRFS rootfs. The guard
+# checks systemd's real state and only stops on definitively-terminal states.
+
+
+@pytest.mark.parametrize("transient_state", ["active", "activating", "unknown"])
+@pytest.mark.asyncio
+async def test_start_persistent_vm_does_not_stop_on_transient_systemd_state(
+    instance_content, mocker, transient_state
+):
+    execution = make_execution(instance_content, mocker, active_state=transient_state)
+    mark_started(execution)
+    execution.vm = mocker.Mock()
+
+    stop_mock = mocker.patch.object(execution, "stop", new=mocker.AsyncMock())
+    create_mock = mocker.patch("aleph.vm.orchestrator.run.create_vm_execution", new=mocker.AsyncMock())
+
+    pool = mocker.Mock(executions={VM_HASH: execution})
+
+    result = await start_persistent_vm(VM_HASH, pubsub=None, pool=pool)
+
+    assert result is execution
+    stop_mock.assert_not_called()
+    create_mock.assert_not_called()
+    pool.forget_vm.assert_not_called()
+
+
+@pytest.mark.parametrize("terminal_state", ["failed", "inactive", "deactivating"])
+@pytest.mark.asyncio
+async def test_start_persistent_vm_stops_and_recreates_on_terminal_systemd_state(
+    instance_content, mocker, terminal_state
+):
+    execution = make_execution(instance_content, mocker, active_state=terminal_state)
+    mark_started(execution)
+    execution.vm = mocker.Mock()
+
+    stop_mock = mocker.patch.object(execution, "stop", new=mocker.AsyncMock())
+    new_execution = mocker.Mock()
+    new_execution.becomes_ready = mocker.AsyncMock()
+    new_execution.cancel_expiration = mocker.Mock()
+    create_mock = mocker.patch(
+        "aleph.vm.orchestrator.run.create_vm_execution",
+        new=mocker.AsyncMock(return_value=new_execution),
+    )
+
+    pool = mocker.Mock(executions={VM_HASH: execution})
+
+    result = await start_persistent_vm(VM_HASH, pubsub=None, pool=pool)
+
+    stop_mock.assert_awaited_once()
+    create_mock.assert_awaited_once()
+    assert result is new_execution

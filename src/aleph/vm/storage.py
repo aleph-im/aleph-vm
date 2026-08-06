@@ -359,9 +359,38 @@ async def create_mapped_device(device_name: str, table_command: str) -> None:
     await run_in_subprocess(command, stdin_input=table_command.encode())
 
 
+_BTRFS_CORRUPTION_MARKERS = ("open ctree failed", "parent transid verify failed")
+
+
+async def _tune_with_recovery(device_path: Path) -> None:
+    """Assign a random fsid and, on log-tree corruption, self-heal.
+
+    Unclean stops of a running instance (SIGKILL before BTRFS could flush
+    its write cache) leave the guest's rootfs with a log tree that points
+    at blocks with older transids. ``btrfstune -m`` refuses to touch the
+    volume and the VM becomes permanently unstartable. Zero the log tree
+    (losing at most the last few seconds of guest writes, which for a
+    rootfs is acceptable) and retry once.
+    """
+    try:
+        await run_in_subprocess(["btrfstune", "-m", str(device_path)])
+    except CalledProcessError as error:
+        # run_in_subprocess stashes stderr in `.output` (not `.stderr`).
+        message = error.output or ""
+        if not any(marker in message for marker in _BTRFS_CORRUPTION_MARKERS):
+            raise
+        logger.warning(
+            "BTRFS corruption on %s (%s); running `btrfs rescue zero-log` and retrying",
+            device_path,
+            message.strip(),
+        )
+        await run_in_subprocess(["btrfs", "rescue", "zero-log", str(device_path)])
+        await run_in_subprocess(["btrfstune", "-m", str(device_path)])
+
+
 async def resize_and_tune_file_system(device_path: Path, mount_path: Path) -> None:
     # This tune is needed to assign a random fsid to BTRFS device to be able to mount it
-    await run_in_subprocess(["btrfstune", "-m", str(device_path)])
+    await _tune_with_recovery(device_path)
     await run_in_subprocess(["mount", str(device_path), str(mount_path)])
     await run_in_subprocess(["btrfs", "filesystem", "resize", "max", str(mount_path)])
     await run_in_subprocess(["umount", str(mount_path)])
