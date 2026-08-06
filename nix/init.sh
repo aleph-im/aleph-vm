@@ -60,6 +60,9 @@ else
     # The wait below is bounded and non-fatal: with no RA source reachable
     # on this tap the guest simply stays IPv4-only, matching Python's
     # ipv6_forwarding_enabled=False fallback.
+    # FOLLOW-UP: the host does NOT yet run a per-tap RA sender (no radvd /
+    # RA on the tap today), so IPv6 here is INERT until that host-side piece
+    # lands; the guest is ready, the RA source is the missing half.
     echo 0 > "/proc/sys/net/ipv6/conf/${iface}/disable_ipv6" 2>/dev/null || true
     echo 2 > "/proc/sys/net/ipv6/conf/${iface}/accept_ra" 2>/dev/null || true
     n=0
