@@ -73,7 +73,14 @@ async fn main() -> Result<()> {
     let secret_store = web::Data::new(SecretStore::with_default_dir());
 
     // 6. Start actix-web HTTPS server.
-    let bind_addr = format!("0.0.0.0:{}", cli.port);
+    // "[::]" (not "0.0.0.0"): a literal IPv4-only wildcard would silently
+    // refuse every IPv6 client even after the guest gets a routable IPv6
+    // address (nix/init.sh SLAAC bring-up) and the firewall opens the port.
+    // Linux dual-stack sockets bound to "::" accept both v4 (IPv4-mapped)
+    // and v6 by default (IPV6_V6ONLY unset), so this is a strict superset of
+    // the old bind: existing IPv4 clients, including the host's port-map
+    // path, are unaffected.
+    let bind_addr = format!("[::]:{}", cli.port);
     info!(addr = %bind_addr, "binding HTTPS server");
 
     HttpServer::new(move || {
