@@ -141,14 +141,23 @@ pub struct ProgramEntry {
 pub enum VmType {
     Microvm,
     Instance,
+    /// A V-PROGRAM (`aleph_message.models.VerifiableProgramContent`): the
+    /// QEMU SEV-SNP measured-boot launch path is its exclusive hypervisor
+    /// (design doc docs/plans/2026-07-11-vprogram-scheduler-support-design.md
+    /// section 2), so `QemuVmConfig::snp().is_some()` identifies one on this
+    /// side (see [`VmEntry::vm_type`]).
+    VProgram,
 }
 
 impl VmType {
-    /// `StaticIPv6Allocator.VM_TYPE_PREFIX`.
+    /// `StaticIPv6Allocator.VM_TYPE_PREFIX`. Must match the scheduler's
+    /// `VmType::ipv6_value()` (scheduler-events) and the Python
+    /// `StaticIPv6Allocator.VM_TYPE_PREFIX` (hostnetwork.py).
     fn prefix(self) -> u16 {
         match self {
             VmType::Microvm => 0x1,
             VmType::Instance => 0x3,
+            VmType::VProgram => 0x4,
         }
     }
 }
@@ -255,6 +264,22 @@ impl VmEntry {
     /// Python `is_stopping`: stopping_at set, stopped_at not yet.
     pub fn is_stopping(&self) -> bool {
         self.times.stopping_at_ns != 0 && self.times.stopped_at_ns == 0
+    }
+
+    /// The vm-type hextet input to the static IPv6 scheme (mirrors the
+    /// Python `VmType.from_message_content` split, ported as the equivalent
+    /// config shape check: there is no message content on this side). An
+    /// ephemeral Firecracker program is `Microvm`; a QEMU SEV-SNP
+    /// measured-boot config is `VProgram` (its exclusive launch path, see
+    /// [`VmType::VProgram`]); everything else is `Instance`.
+    pub fn vm_type(&self) -> VmType {
+        if self.is_program {
+            VmType::Microvm
+        } else if self.config.snp().is_some() {
+            VmType::VProgram
+        } else {
+            VmType::Instance
+        }
     }
 }
 
@@ -544,11 +569,16 @@ pub fn build_world_view(
                             continue;
                         }
                     }
+                    let adopted_vm_type = if qemu.snp().is_some() {
+                        VmType::VProgram
+                    } else {
+                        VmType::Instance
+                    };
                     let ipv6_result = match settings.ipv6_allocation_policy {
                         Ipv6AllocationPolicy::Static => ipv6_static_assignment(
                             &settings.ipv6_address_pool,
                             &vm_hash,
-                            VmType::Instance,
+                            adopted_vm_type,
                         ),
                         Ipv6AllocationPolicy::Dynamic => {
                             dynamic_ordinal += 1;
@@ -1258,6 +1288,24 @@ mod tests {
         assert!(
             ipv6_static_assignment("fc00:1:2:3::/64", "nothex-----", VmType::Instance).is_err()
         );
+    }
+
+    #[test]
+    fn ipv6_static_math_gives_v_programs_the_0x4_hextet() {
+        // Python: StaticIPv6Allocator(...).allocate_vm_ipv6_subnet(3, hash,
+        // VmType.v_program) uses VM_TYPE_PREFIX[VmType.v_program] == "4"
+        // (hostnetwork.py), matching the scheduler's VmType::ipv6_value().
+        // Same hash as ipv6_static_math_matches_the_python_allocator, only
+        // the vm-type hextet differs: 4 instead of 3.
+        let pair = ipv6_static_assignment(
+            "2a01:240:2:c8::/64",
+            "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+            VmType::VProgram,
+        )
+        .unwrap();
+        assert_eq!(pair.network_cidr, "2a01:240:2:c8:4:abcd:ef01:2340/124");
+        assert_eq!(pair.address, "2a01:240:2:c8:4:abcd:ef01:2341");
+        assert_eq!(pair.gateway, "2a01:240:2:c8:4:abcd:ef01:2340");
     }
 
     #[test]
