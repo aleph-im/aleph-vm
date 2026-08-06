@@ -202,7 +202,9 @@ async def test_create_vm_execution_vprogram_launches_snp(mocker):
     mocker.patch("aleph.vm.agent.run.load_updated_message", new_callable=AsyncMock, return_value=(message, message))
 
     fake_spec = MagicMock()
-    mock_build = mocker.patch("aleph.vm.agent.run.build_vprogram_spec", new_callable=AsyncMock, return_value=fake_spec)
+    mock_build = mocker.patch(
+        "aleph.vm.agent.run.build_vprogram_spec", new_callable=AsyncMock, return_value=(fake_spec, 8443)
+    )
     mock_persist = mocker.patch("aleph.vm.agent.run.persist_record", new_callable=AsyncMock)
 
     info = _running_vm_info(str(vm_hash))
@@ -211,6 +213,8 @@ async def test_create_vm_execution_vprogram_launches_snp(mocker):
         create_vm=AsyncMock(return_value=info),
         get_vm=AsyncMock(return_value=info),
         delete_vm=AsyncMock(),
+        list_port_forwards=AsyncMock(return_value=[]),
+        add_port_forward=AsyncMock(),
     )
     registry = AgentVmRegistry()
 
@@ -225,6 +229,10 @@ async def test_create_vm_execution_vprogram_launches_snp(mocker):
     mock_build.assert_awaited_once_with(vm_hash, message.content)
     supervisor.create_vm.assert_awaited_once_with(fake_spec)
     supervisor.delete_vm.assert_not_awaited()
+    supervisor.add_port_forward.assert_awaited_once()
+    added_spec = supervisor.add_port_forward.await_args.args[0]
+    assert added_spec.vm_port == 8443
+    assert added_spec.protocol.value == "tcp"
     assert vm_hash in registry
     record = registry.get(vm_hash)
     assert record is not None and record.persistent
