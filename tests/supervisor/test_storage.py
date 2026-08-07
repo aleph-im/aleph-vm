@@ -6,7 +6,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 
-from aleph.vm.storage import _tune_with_recovery, download_file, download_file_in_chunks, get_latest_amend
+from aleph.vm.storage import (
+    _tune_with_recovery,
+    download_file,
+    download_file_in_chunks,
+    get_latest_amend,
+)
 
 ORIGINAL_HASH = "a" * 64
 AMEND_HASH = "b" * 64
