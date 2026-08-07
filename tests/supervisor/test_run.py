@@ -147,9 +147,7 @@ async def test_start_persistent_vm_keeps_confidential_instance_awaiting_init(con
 
 @pytest.mark.parametrize("transient_state", ["active", "activating", "unknown"])
 @pytest.mark.asyncio
-async def test_start_persistent_vm_does_not_stop_on_transient_systemd_state(
-    instance_content, mocker, transient_state
-):
+async def test_start_persistent_vm_does_not_stop_on_transient_systemd_state(instance_content, mocker, transient_state):
     execution = make_execution(instance_content, mocker, active_state=transient_state)
     mark_started(execution)
     execution.vm = mocker.Mock()
