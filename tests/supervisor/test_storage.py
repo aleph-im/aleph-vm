@@ -1,11 +1,10 @@
 import asyncio
 from pathlib import Path
+from subprocess import CalledProcessError
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
-
-from subprocess import CalledProcessError
 
 from aleph.vm.storage import _tune_with_recovery, download_file, download_file_in_chunks, get_latest_amend
 
