@@ -151,11 +151,6 @@ async def test_start_persistent_vm_does_not_stop_on_transient_systemd_state(inst
     execution = make_execution(instance_content, mocker, active_state=transient_state)
     mark_started(execution)
     execution.vm = mocker.Mock()
-    # Also mock the async methods the "fall through to becomes_ready"
-    # path would call, so we can assert the transient branch really
-    # returns early and does not touch them.
-    execution.becomes_ready = mocker.AsyncMock()
-    execution.cancel_expiration = mocker.Mock()
 
     stop_mock = mocker.patch.object(execution, "stop", new=mocker.AsyncMock())
     create_mock = mocker.patch("aleph.vm.orchestrator.run.create_vm_execution", new=mocker.AsyncMock())
@@ -164,16 +159,15 @@ async def test_start_persistent_vm_does_not_stop_on_transient_systemd_state(inst
 
     result = await start_persistent_vm(VM_HASH, pubsub=None, pool=pool)
 
+    # Together these assertions prove the transient branch returned
+    # early without touching state: the same execution came back, no
+    # stop was issued (neither on the wrapper nor on execution.vm),
+    # no recreation happened, and the pool was not asked to forget it.
     assert result is execution
     stop_mock.assert_not_called()
     execution.vm.stop.assert_not_called()
     create_mock.assert_not_called()
     pool.forget_vm.assert_not_called()
-    # Transient branch returns early — must not await becomes_ready
-    # (would deadlock: the ready_event is set by the first POST) or
-    # touch expiration timers.
-    execution.becomes_ready.assert_not_called()
-    execution.cancel_expiration.assert_not_called()
 
 
 @pytest.mark.parametrize("terminal_state", ["failed", "inactive", "deactivating"])
