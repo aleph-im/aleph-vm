@@ -301,9 +301,14 @@ async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub | None, pool: Vm
                     vm_hash,
                     state,
                 )
-                # Fall through: don't reset, don't recreate. Return the
-                # existing execution so callers observing "ready" state
-                # can rely on it being the same object.
+                # Return early instead of falling through to
+                # becomes_ready() / cancel_expiration() below. Unlike the
+                # is_running branch, this path is only reached from a
+                # concurrent second allocation POST — the first POST's
+                # start_persistent_vm is still in flight and is the one
+                # that will await becomes_ready(). Calling it a second
+                # time would either deadlock (the ready event isn't set
+                # yet) or double-cancel expiration timers.
                 return execution
             logger.info(
                 "%s in terminal systemd state %s, stopping and recreating",
