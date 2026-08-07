@@ -283,7 +283,38 @@ async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub | None, pool: Vm
             # only the owner can start it by uploading the session certificates.
             logger.info(f"{vm_hash} is waiting for its owner to initialize the confidential session")
         else:
-            logger.info(f"{vm_hash} unknown execution state, stopping the vm")
+            # None of the four fast paths matched. Before assuming the VM is
+            # dead and destroying it, check what systemd actually thinks.
+            # A VM that just started is 'activating' for a moment: not yet
+            # 'active' (so is_running is False) but times.started_at was set
+            # optimistically (so is_starting is also False). Blindly stopping
+            # here caused BTRFS corruption on the ensuing hard kill, because
+            # the firecracker API socket is not yet accepting connections and
+            # graceful shutdown falls back to SIGKILL, losing the guest's
+            # unflushed writes.
+            state = "unknown"
+            if execution.systemd_manager and execution.persistent:
+                state = execution.systemd_manager.get_service_active_state(execution.controller_service)
+            if state in ("active", "activating", "unknown"):
+                logger.info(
+                    "%s in transient systemd state %s, leaving alone",
+                    vm_hash,
+                    state,
+                )
+                # Return early instead of falling through to
+                # becomes_ready() / cancel_expiration() below. Unlike the
+                # is_running branch, this path is only reached from a
+                # concurrent second allocation POST — the first POST's
+                # start_persistent_vm is still in flight and is the one
+                # that will await becomes_ready(). Calling it a second
+                # time would either deadlock (the ready event isn't set
+                # yet) or double-cancel expiration timers.
+                return execution
+            logger.info(
+                "%s in terminal systemd state %s, stopping and recreating",
+                vm_hash,
+                state,
+            )
             if execution.vm:
                 await execution.stop()
             else:

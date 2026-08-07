@@ -1,10 +1,17 @@
 import asyncio
+from pathlib import Path
+from subprocess import CalledProcessError
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
 
-from aleph.vm.storage import download_file, download_file_in_chunks, get_latest_amend
+from aleph.vm.storage import (
+    _tune_with_recovery,
+    download_file,
+    download_file_in_chunks,
+    get_latest_amend,
+)
 
 ORIGINAL_HASH = "a" * 64
 AMEND_HASH = "b" * 64
@@ -198,3 +205,87 @@ async def test_download_file_aborts_after_exhausting_retries_on_timeout(tmp_path
 
     assert not local_path.is_file()
     assert not (tmp_path / "runtime.part").exists()
+
+
+# --- BTRFS log-tree auto-recovery ------------------------------------------
+#
+# Unclean stops of a running VM (SIGKILL before BTRFS flushed its write cache)
+# leave the rootfs with a log tree that points at blocks with older transids.
+# btrfstune -m then fails with "open ctree failed" and the VM is permanently
+# unstartable. _tune_with_recovery detects that specific failure, runs
+# `btrfs rescue zero-log`, and retries once so the VM self-heals.
+
+
+def _corruption_error(stderr: str = "parent transid verify failed on 2589589504") -> CalledProcessError:
+    err = CalledProcessError(1, ["btrfstune", "-m", "/dev/mapper/x"])
+    # run_in_subprocess stashes stderr in `.output` (not `.stderr`).
+    err.output = stderr + "\nopen ctree failed\n"
+    return err
+
+
+def _generic_error() -> CalledProcessError:
+    err = CalledProcessError(1, ["btrfstune", "-m", "/dev/mapper/x"])
+    err.output = "some unrelated failure"
+    return err
+
+
+@pytest.mark.asyncio
+async def test_tune_with_recovery_zeros_log_and_retries_on_corruption(mocker):
+    calls: list[list[str]] = []
+
+    async def fake_run(cmd, *args, **kwargs):
+        calls.append(list(cmd))
+        # First btrfstune fails with corruption; zero-log succeeds; retry succeeds.
+        if cmd[0] == "btrfstune" and len(calls) == 1:
+            raise _corruption_error()
+        return b""
+
+    mocker.patch("aleph.vm.storage.run_in_subprocess", side_effect=fake_run)
+
+    await _tune_with_recovery(Path("/dev/mapper/x"))
+
+    assert [cmd[:2] for cmd in calls] == [
+        ["btrfstune", "-m"],
+        ["btrfs", "rescue"],
+        ["btrfstune", "-m"],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_tune_with_recovery_reraises_non_corruption_errors(mocker):
+    calls: list[list[str]] = []
+
+    async def fake_run(cmd, *args, **kwargs):
+        calls.append(list(cmd))
+        raise _generic_error()
+
+    mocker.patch("aleph.vm.storage.run_in_subprocess", side_effect=fake_run)
+
+    with pytest.raises(CalledProcessError):
+        await _tune_with_recovery(Path("/dev/mapper/x"))
+
+    # No zero-log attempt — only the initial btrfstune ran.
+    assert calls == [["btrfstune", "-m", "/dev/mapper/x"]]
+
+
+@pytest.mark.asyncio
+async def test_tune_with_recovery_propagates_when_zero_log_itself_fails(mocker):
+    calls: list[list[str]] = []
+
+    async def fake_run(cmd, *args, **kwargs):
+        calls.append(list(cmd))
+        if cmd[0] == "btrfstune" and len(calls) == 1:
+            raise _corruption_error()
+        if cmd[:2] == ["btrfs", "rescue"]:
+            err = CalledProcessError(1, cmd)
+            err.output = "rescue failed"
+            raise err
+        return b""
+
+    mocker.patch("aleph.vm.storage.run_in_subprocess", side_effect=fake_run)
+
+    with pytest.raises(CalledProcessError):
+        await _tune_with_recovery(Path("/dev/mapper/x"))
+
+    # Bailed after zero-log; did NOT loop trying btrfstune a third time.
+    assert [cmd[:2] for cmd in calls] == [["btrfstune", "-m"], ["btrfs", "rescue"]]
