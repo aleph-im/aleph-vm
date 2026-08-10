@@ -2137,6 +2137,51 @@ fn snp_config_slice(_state: &DaemonState, spec: &pb::VmSpec) -> Result<Option<Sn
     }
     let kernel_cmdline =
         format!("console=ttyS0 root=/dev/mapper/verity-root ro roothash={roothash}");
+    // Optional measured workload: if the launcher staged a
+    // {rootfs}.workload_roothash sidecar (from content.workload.roothash), bind
+    // the workload volume into the launch digest via the cmdline too. The
+    // proto has no workload field (frozen), so this mirrors the dm-verity
+    // roothash sidecar convention above. An absent sidecar leaves the cmdline
+    // byte-identical to a workload-less SNP VM (parity with every existing
+    // measured image).
+    let workload_roothash_path = format!("{rootfs_path}.workload_roothash");
+    let kernel_cmdline = match std::fs::File::open(&workload_roothash_path) {
+        Ok(file) => {
+            use std::io::Read as _;
+            let mut contents = String::new();
+            file.take(MAX_ROOTHASH_SIDECAR_BYTES + 1)
+                .read_to_string(&mut contents)
+                .map_err(|error| {
+                    RpcError::InvalidBackend(format!(
+                        "cannot read the workload roothash sidecar {workload_roothash_path}: \
+                         {error}"
+                    ))
+                })?;
+            if contents.len() as u64 > MAX_ROOTHASH_SIDECAR_BYTES {
+                return Err(RpcError::InvalidBackend(format!(
+                    "the workload roothash sidecar {workload_roothash_path} exceeds \
+                     {MAX_ROOTHASH_SIDECAR_BYTES} bytes"
+                )));
+            }
+            let workload_roothash = contents.trim().to_string();
+            // Like the platform roothash, this is spliced verbatim into
+            // -append, so only a bare hex string is accepted.
+            if workload_roothash.is_empty()
+                || !workload_roothash.bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                return Err(RpcError::InvalidBackend(format!(
+                    "the workload roothash in {workload_roothash_path} is not a hex string"
+                )));
+            }
+            format!("{kernel_cmdline} workload_roothash={workload_roothash}")
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => kernel_cmdline,
+        Err(error) => {
+            return Err(RpcError::InvalidBackend(format!(
+                "cannot read the workload roothash sidecar {workload_roothash_path}: {error}"
+            )));
+        }
+    };
     let sev_policy = if tee.policy.is_empty() {
         DEFAULT_SNP_POLICY
     } else {
@@ -4319,6 +4364,109 @@ mod tests {
         match snp_config_slice(state, &spec) {
             Err(RpcError::InvalidBackend(_)) => {}
             other => panic!("an oversized roothash sidecar must be InvalidBackend, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn snp_config_slice_appends_the_workload_roothash_when_the_sidecar_is_present() {
+        // The V-PROGRAM workload roothash arrives out-of-band as a
+        // {rootfs}.workload_roothash sidecar (the proto is frozen, no wire
+        // field). When staged, it must be bound into the measured cmdline so
+        // the launch attestation covers the workload volume too.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+
+        let vm_id = hash('k');
+        let spec = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+        let rootfs = root.join(format!("{vm_id}-rootfs.ext4"));
+        std::fs::write(
+            format!("{}.workload_roothash", rootfs.display()),
+            "cafef00d00\n",
+        )
+        .unwrap();
+
+        let slice = snp_config_slice(state, &spec).unwrap().unwrap();
+        assert_eq!(
+            slice.kernel_cmdline,
+            "console=ttyS0 root=/dev/mapper/verity-root ro roothash=deadbeef00 \
+             workload_roothash=cafef00d00",
+            "the workload roothash is appended to the measured cmdline"
+        );
+    }
+
+    #[test]
+    fn snp_config_slice_leaves_the_cmdline_unchanged_without_a_workload_sidecar() {
+        // Regression guard: a workload-less SNP VM (no
+        // {rootfs}.workload_roothash sidecar) must derive the EXACT same
+        // cmdline as before the workload mechanism existed, byte for byte, or
+        // every existing measured image's attestation breaks.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+
+        let vm_id = hash('l');
+        let spec = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+
+        let slice = snp_config_slice(state, &spec).unwrap().unwrap();
+        assert_eq!(
+            slice.kernel_cmdline,
+            "console=ttyS0 root=/dev/mapper/verity-root ro roothash=deadbeef00",
+            "no workload sidecar must leave the cmdline byte-identical to before"
+        );
+    }
+
+    #[test]
+    fn snp_config_slice_rejects_a_non_hex_workload_roothash() {
+        // Like the platform roothash, the workload roothash is spliced
+        // verbatim into -append, so it must fail closed on anything but bare
+        // hex rather than let an injected/partial string reach the guest.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+
+        let vm_id = hash('m');
+        let spec = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+        let rootfs = root.join(format!("{vm_id}-rootfs.ext4"));
+        std::fs::write(
+            format!("{}.workload_roothash", rootfs.display()),
+            "not hex; init=/bin/sh",
+        )
+        .unwrap();
+
+        match snp_config_slice(state, &spec) {
+            Err(RpcError::InvalidBackend(_)) => {}
+            other => panic!("a non-hex workload roothash must be InvalidBackend, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn snp_config_slice_rejects_an_oversized_workload_roothash_sidecar() {
+        // Like the platform roothash, a workload sidecar larger than the read
+        // cap fails closed rather than loading unbounded into RAM. The content
+        // is all-hex, so only the size guard can reject it.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+
+        let vm_id = hash('n');
+        let spec = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+        let rootfs = root.join(format!("{vm_id}-rootfs.ext4"));
+        let oversized = "a".repeat(MAX_ROOTHASH_SIDECAR_BYTES as usize + 1);
+        std::fs::write(format!("{}.workload_roothash", rootfs.display()), oversized).unwrap();
+        match snp_config_slice(state, &spec) {
+            Err(RpcError::InvalidBackend(_)) => {}
+            other => panic!(
+                "an oversized workload roothash sidecar must be InvalidBackend, got {other:?}"
+            ),
         }
     }
 
