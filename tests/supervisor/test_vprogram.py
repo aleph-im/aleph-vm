@@ -26,6 +26,7 @@ from aleph.vm.agent.supervisor import setup_webapp
 from aleph.vm.agent.tasks import _group_executions_by_payment
 from aleph.vm.agent.vm_registry import AgentVmRecord, AgentVmRegistry
 from aleph.vm.conf import settings
+from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.supervisor_interface.errors import VmSetupError
 from aleph.vm.supervisor_interface.types import (
@@ -303,6 +304,33 @@ async def test_create_vm_execution_vprogram_build_failure_forgets_record(mocker)
             supervisor=supervisor,
             registry=registry,
             capacity=MagicMock(),
+            persistent=True,
+        )
+
+    supervisor.create_vm.assert_not_awaited()
+    assert message.item_hash not in registry
+
+
+@pytest.mark.asyncio
+async def test_create_vm_execution_vprogram_capacity_failure_forgets_record(mocker):
+    """Capacity admission runs after the bundle is staged and before create_vm:
+    an InsufficientResourcesError there must forget the record and never reach
+    create_vm (a distinct failure path from a build failure)."""
+    message = load_vprogram_message()
+    mocker.patch("aleph.vm.agent.run.load_updated_message", new_callable=AsyncMock, return_value=(message, message))
+    mocker.patch("aleph.vm.agent.run.build_vprogram_spec", new_callable=AsyncMock, return_value=MagicMock())
+
+    capacity = MagicMock()
+    capacity.check_capacity.side_effect = InsufficientResourcesError("no room", required={}, available={})
+    supervisor = MagicMock(create_vm=AsyncMock())
+    registry = AgentVmRegistry()
+
+    with pytest.raises(InsufficientResourcesError):
+        await create_vm_execution(
+            message.item_hash,
+            supervisor=supervisor,
+            registry=registry,
+            capacity=capacity,
             persistent=True,
         )
 

@@ -23,6 +23,7 @@ must never reach create_vm.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import logging
 import shutil
 import tarfile
@@ -95,7 +96,9 @@ def _verify_bundle(tar_path: Path, manifest: RuntimeManifest) -> None:
         msg = f"runtime bundle {manifest.bundle.ref} size mismatch: expected {manifest.bundle.size}, got {actual_size}"
         raise VmSetupError(msg)
     actual_sha256 = _sha256_file(tar_path)
-    if actual_sha256 != manifest.bundle.sha256:
+    # Constant-time compare: defense-in-depth for the hash gate, even though the
+    # manifest is content-addressed and the timing surface here is negligible.
+    if not hmac.compare_digest(actual_sha256, manifest.bundle.sha256):
         msg = (
             f"runtime bundle {manifest.bundle.ref} sha256 mismatch: "
             f"expected {manifest.bundle.sha256}, got {actual_sha256}"
