@@ -290,6 +290,7 @@ async def test_system_capability_mock(aiohttp_client, mocker):
     mocker.patch("aleph.vm.agent.resources.check_amd_sev_supported", return_value=True)
     mocker.patch("aleph.vm.agent.resources.check_amd_sev_es_supported", return_value=True)
     mocker.patch("aleph.vm.agent.resources.check_amd_sev_snp_supported", return_value=False)
+    mocker.patch("aleph.vm.agent.resources.get_supported_snp_vcpu_types", new_callable=AsyncMock, return_value=[])
     mocker.patch(
         "psutil.getloadavg",
         lambda: [1, 2, 3],
@@ -314,6 +315,7 @@ async def test_system_capability_mock(aiohttp_client, mocker):
             "count": 200,
         },
         "memory": {"size": 17179869184, "units": "bytes", "type": "", "clock": None, "clock_units": None},
+        "tee": None,
     }
 
 
