@@ -381,3 +381,12 @@ def test_payment_sweep_excludes_vprograms():
 
     grouped = _group_executions_by_payment([_running_vm_info(vm_hash)], registry, PaymentType.credit)
     assert grouped == {}
+
+
+def test_update_refs_returns_nothing_for_a_v_program():
+    """V-PROGRAMs are immutable: the update watcher must not derive refs from
+    them (regression: the program arm crashed on the missing .data/.code)."""
+    from aleph.vm.agent.update_watcher import update_refs
+
+    message = load_vprogram_message()
+    assert update_refs(message.content) == []

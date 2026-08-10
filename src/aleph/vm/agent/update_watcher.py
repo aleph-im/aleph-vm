@@ -2,7 +2,12 @@ import asyncio
 import logging
 from collections.abc import Callable
 
-from aleph_message.models import ExecutableContent, InstanceContent, ItemHash
+from aleph_message.models import (
+    ExecutableContent,
+    InstanceContent,
+    ItemHash,
+    VerifiableProgramContent,
+)
 
 from aleph.vm.agent.pubsub import PubSub
 from aleph.vm.agent.vm_registry import AgentVmRegistry
@@ -19,6 +24,11 @@ def update_refs(original: ExecutableContent) -> list[str]:
     Adapted from VmExecution.watch_for_updates: instances watch their
     volume refs; programs also watch code / runtime / data.
     """
+    if isinstance(original, VerifiableProgramContent):
+        # V-PROGRAMs are immutable (allow_amend is schema-rejected) and every
+        # reference is pinned by exact hash: nothing can update, nothing to
+        # watch. Falling through would crash on the program-only attributes.
+        return []
     volume_refs = [volume.ref for volume in (original.volumes or []) if hasattr(volume, "ref")]
     if isinstance(original, InstanceContent):
         return volume_refs
