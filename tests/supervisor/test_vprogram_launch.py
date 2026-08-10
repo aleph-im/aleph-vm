@@ -292,3 +292,26 @@ async def test_missing_member_fails_closed(tmp_path, storage_files):
     message = load_vprogram_message()
     with pytest.raises(VmSetupError, match="kernel missing"):
         await build_vprogram_spec(message.item_hash, message.content)
+
+
+@pytest.mark.asyncio
+async def test_corrupt_tarball_fails_closed_on_extract(tmp_path, storage_files):
+    """A blob that passes the sha256+size gate but is not a valid gzip/tar
+    stream must surface as VmSetupError from the extract step (fail closed),
+    not an opaque tarfile/OS error, and stage no members."""
+    blob = tmp_path / "snp-image.tar.gz"
+    blob.write_bytes(b"not a gzip stream, but of the right length" * 4)
+    # Digest and size are computed from the blob, so integrity passes and the
+    # failure is forced into _extract_bundle rather than the sha256/size gate.
+    storage_files[MANIFEST_REF] = make_manifest(blob, tmp_path)
+    storage_files[BUNDLE_REF] = blob
+
+    message = load_vprogram_message()
+    staging = vprogram_staging_dir(message.item_hash)
+    if staging.exists():  # leftover from a previous pytest run: EXECUTION_ROOT persists
+        shutil.rmtree(staging)
+    with pytest.raises(VmSetupError, match="cannot extract runtime bundle"):
+        await build_vprogram_spec(message.item_hash, message.content)
+    # Nothing was extracted: the staging dir is absent or empty (open fails
+    # before any member is written), so no partial members are left behind.
+    assert not staging.exists() or not any(staging.iterdir())

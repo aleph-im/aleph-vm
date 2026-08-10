@@ -115,8 +115,12 @@ def _extract_bundle(tar_path: Path, dest: Path) -> None:
     dest.mkdir(parents=True)
     try:
         with tarfile.open(tar_path, mode="r:gz") as tar:
+            # filter="data" (PEP 706) needs CPython >= 3.12 / 3.11.4 / 3.10.12.
+            # On an older patch release the keyword is absent and extractall
+            # raises TypeError; catch it so we fail closed as VmSetupError
+            # rather than an opaque error (never extract without the filter).
             tar.extractall(dest, filter="data")
-    except (tarfile.TarError, OSError) as error:
+    except (tarfile.TarError, OSError, TypeError) as error:
         msg = f"cannot extract runtime bundle {tar_path} into {dest}: {error}"
         raise VmSetupError(msg) from error
 
