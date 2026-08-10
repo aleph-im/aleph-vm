@@ -193,8 +193,14 @@ async def test_bundle_size_mismatch_fails_closed(tmp_path, storage_files):
     storage_files[BUNDLE_REF] = tar_path
 
     message = load_vprogram_message()
+    staging = vprogram_staging_dir(message.item_hash)
+    if staging.exists():  # leftover from a previous pytest run: EXECUTION_ROOT persists
+        shutil.rmtree(staging)
     with pytest.raises(VmSetupError, match="size mismatch"):
         await build_vprogram_spec(message.item_hash, message.content)
+    # The size gate runs before extraction, so nothing is staged (symmetric
+    # with the sha256 mismatch test).
+    assert not staging.exists()
 
 
 @pytest.mark.asyncio
