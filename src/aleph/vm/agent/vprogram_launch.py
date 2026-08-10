@@ -31,6 +31,7 @@ import tarfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from aleph_message.models.execution.vprogram import VERITY_ROOTHASH_PATTERN
 from pydantic import ValidationError
 
 from aleph.vm.conf import settings
@@ -58,11 +59,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _SHA256_CHUNK_SIZE = 1024 * 1024
-
-# The workload roothash sidecar content is trusted verbatim by the daemon
-# (snp_config_slice appends it to the measured cmdline unquoted): bare hex
-# only, no length pinned here since the daemon does not pin one either.
-HEX64 = re.compile(r"\A[0-9a-fA-F]+\Z")
 
 
 def vprogram_staging_dir(vm_hash: ItemHash) -> Path:
@@ -212,8 +208,8 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
 
     # Disk ORDER is load-bearing: the guest init reads the rootfs from the
     # first virtio disk (/dev/vda), the platform dm-verity hash tree from
-    # /dev/vdb, and (when a workload is present) the workload data from
-    # /dev/vdc and its hash tree from /dev/vdd.
+    # /dev/vdb, the workload data from /dev/vdc and its hash tree from
+    # /dev/vdd.
     #
     # The platform hash tree is NOT attached here: the daemon force-inserts
     # `{rootfs}.verity` (written by _ensure_verity_sidecars above) as the
@@ -224,18 +220,21 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
         DiskSpec(path=rootfs_path, readonly=True, format=DiskFormat.RAW, role=DiskRole.ROOTFS),
     ]
 
-    if content.workload is not None:
-        wl_roothash = content.workload.roothash
-        if not HEX64.match(wl_roothash):
-            msg = f"V-PROGRAM {vm_hash} workload roothash is not bare hex"
-            raise VmSetupError(msg)
-        workload_data = await get_existing_file(str(content.workload.ref))
-        workload_hashtree = await get_existing_file(str(content.workload.hash_tree))
-        # The daemon derives ' workload_roothash=' from this sidecar next to the
-        # rootfs (proto has no cmdline field). Fail closed on a bad roothash.
-        (rootfs_path.parent / f"{rootfs_path.name}.workload_roothash").write_text(wl_roothash)
-        disks.append(DiskSpec(path=workload_data, readonly=True, format=DiskFormat.RAW, role=DiskRole.EXTRA))
-        disks.append(DiskSpec(path=workload_hashtree, readonly=True, format=DiskFormat.RAW, role=DiskRole.EXTRA))
+    # The daemon trusts the sidecar content verbatim (snp_config_slice appends
+    # it to the measured cmdline unquoted). The schema already pins the field
+    # to this pattern on message validation; re-checking it here fails closed
+    # on the unvalidated construction routes (model_copy/model_construct).
+    wl_roothash = content.workload.roothash
+    if not re.fullmatch(VERITY_ROOTHASH_PATTERN, wl_roothash):
+        msg = f"V-PROGRAM {vm_hash} workload roothash is not a bare sha256 hex string"
+        raise VmSetupError(msg)
+    workload_data = await get_existing_file(str(content.workload.ref))
+    workload_hashtree = await get_existing_file(str(content.workload.hash_tree))
+    # The daemon derives ' workload_roothash=' from this sidecar next to the
+    # rootfs (proto has no cmdline field).
+    (rootfs_path.parent / f"{rootfs_path.name}.workload_roothash").write_text(wl_roothash + "\n")
+    disks.append(DiskSpec(path=workload_data, readonly=True, format=DiskFormat.RAW, role=DiskRole.EXTRA))
+    disks.append(DiskSpec(path=workload_hashtree, readonly=True, format=DiskFormat.RAW, role=DiskRole.EXTRA))
 
     session_base = settings.CONFIDENTIAL_SESSION_DIRECTORY or (Path(settings.EXECUTION_ROOT) / "sessions")
 

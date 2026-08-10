@@ -381,24 +381,34 @@ async def test_workload_attached_and_sidecar_written(staged_bundle):
     assert spec.disks[1].path == staged_bundle["data"]
     assert spec.disks[2].path == staged_bundle["hashtree"]
     assert all(d.readonly for d in spec.disks[1:])
-    assert all(d.format is DiskFormat.RAW for d in spec.disks[2:])
+    assert all(d.format is DiskFormat.RAW for d in spec.disks[1:])
 
     rootfs = spec.rootfs.path
     sidecar = rootfs.with_name(rootfs.name + ".workload_roothash")
     assert sidecar.is_file()
-    assert sidecar.read_text() == content.workload.roothash
+    assert sidecar.read_text().strip() == content.workload.roothash
 
 
 @pytest.mark.asyncio
-async def test_workload_roothash_non_hex_fails_closed(staged_bundle):
-    """A workload roothash that is not bare hex must never be staged or
-    attached: the daemon trusts the sidecar content verbatim, appending it to
-    the measured cmdline unquoted."""
+@pytest.mark.parametrize(
+    "bad_roothash",
+    [
+        "not-bare-hex!!",
+        "cafef00d",  # valid hex but not a full sha256
+        "CD" * 32,  # right length, but the schema pins lowercase
+    ],
+)
+async def test_workload_roothash_non_hex_fails_closed(staged_bundle, bad_roothash):
+    """A workload roothash that does not match the schema's
+    VERITY_ROOTHASH_PATTERN must never be staged or attached: the daemon
+    trusts the sidecar content verbatim, appending it to the measured
+    cmdline unquoted. model_copy bypasses field validation, so this exercises
+    the launch-path re-check."""
     message = load_vprogram_message()
-    bad_workload = message.content.workload.model_copy(update={"roothash": "not-bare-hex!!"})
+    bad_workload = message.content.workload.model_copy(update={"roothash": bad_roothash})
     content = message.content.model_copy(update={"workload": bad_workload})
 
-    with pytest.raises(VmSetupError, match="not bare hex"):
+    with pytest.raises(VmSetupError, match="not a bare sha256 hex"):
         await build_vprogram_spec(message.item_hash, content)
 
     staging = vprogram_staging_dir(message.item_hash)
