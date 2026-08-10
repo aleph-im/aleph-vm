@@ -4447,6 +4447,30 @@ mod tests {
     }
 
     #[test]
+    fn snp_config_slice_rejects_an_oversized_workload_roothash_sidecar() {
+        // Like the platform roothash, a workload sidecar larger than the read
+        // cap fails closed rather than loading unbounded into RAM. The content
+        // is all-hex, so only the size guard can reject it.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+
+        let vm_id = hash('n');
+        let spec = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+        let rootfs = root.join(format!("{vm_id}-rootfs.ext4"));
+        let oversized = "a".repeat(MAX_ROOTHASH_SIDECAR_BYTES as usize + 1);
+        std::fs::write(format!("{}.workload_roothash", rootfs.display()), oversized).unwrap();
+        match snp_config_slice(state, &spec) {
+            Err(RpcError::InvalidBackend(_)) => {}
+            other => panic!(
+                "an oversized workload roothash sidecar must be InvalidBackend, got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
     fn sev_policy_parses_like_python_int_base_zero() {
         // The accept table (each value confirmed against CPython int(x, 0)).
         for (input, expected) in [
