@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -194,7 +193,7 @@ async def test_eligible_instance_timeout_tears_down(monkeypatch):
     supervisor = _fake_supervisor(get_status=VmStatus.BOOTING)  # never RUNNING
     registry = AgentVmRegistry()
 
-    with pytest.raises(asyncio.TimeoutError):
+    with pytest.raises(run_module.VmStartupError):
         await run_module.create_vm_execution(
             _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
         )
@@ -614,3 +613,29 @@ async def test_start_persistent_arms_update_watch(monkeypatch):
         update_watcher=watcher,
     )
     watcher.watch.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_startup_failure_maps_to_specific_http_reason(monkeypatch):
+    """A VmStartupError (never reached RUNNING) surfaces as a specific HTTP
+    reason, not the generic 'unhandled error during initialisation' bucket."""
+    from aiohttp.web_exceptions import HTTPInternalServerError
+
+    content = _make_qemu_instance_message(hypervisor=HypervisorType.qemu)
+    message = MagicMock(content=content)
+    monkeypatch.setattr(
+        run_module, "load_updated_message", AsyncMock(return_value=(message, MagicMock(content=content)))
+    )
+    monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock(return_value=_spec()))
+    monkeypatch.setattr(run_module, "get_user_settings", AsyncMock(return_value={}))
+    monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(run_module, "_START_POLL_TIMEOUT_SECONDS", 0)
+
+    supervisor = _fake_supervisor(get_status=VmStatus.BOOTING)  # never RUNNING
+    registry = AgentVmRegistry()
+
+    with pytest.raises(HTTPInternalServerError) as excinfo:
+        await run_module.create_vm_execution_or_raise_http_error(
+            _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
+        )
+    assert excinfo.value.reason == "VM failed to start"
