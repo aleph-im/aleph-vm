@@ -128,6 +128,35 @@ def test_committed_memory_from_registry_is_bucketed(mocker):
         manager.check_capacity(memory_mib=2048, vcpus=1, disk_mib=0, is_instance=False)
 
 
+def test_committed_vprogram_memory_uses_instance_bucket(mocker):
+    # Regression: a V-PROGRAM is admitted against the instance bucket
+    # (run.py passes is_instance=True), so a *running* V-PROGRAM's memory must
+    # also be counted there. Bucketing it as a program would starve the small
+    # program bucket and hide its memory from instance admission (over-commit).
+    from test_vprogram import load_vprogram_message
+
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
+    mocker.patch.object(settings, "HOST_MEMORY_RESERVED_MIB", 2048)
+    mocker.patch.object(settings, "PROGRAM_MEMORY_RESERVED_MIB", 4096)
+
+    content = load_vprogram_message().content
+    committed = content.resources.memory  # MiB the running V-PROGRAM holds
+    instance_cap = 64 * 1024 - 2048 - 4096
+
+    registry = AgentVmRegistry()
+    registry.record("v" * 64, message=content, original=content, persistent=True)
+    manager = _manager(registry=registry)
+
+    # Instance bucket sees the V-PROGRAM's memory committed: a request that
+    # exactly fills the remainder passes, one MiB more does not.
+    assert manager.check_capacity(memory_mib=instance_cap - committed, vcpus=1, disk_mib=0, is_instance=True) is None
+    with pytest.raises(InsufficientResourcesError):
+        manager.check_capacity(memory_mib=instance_cap - committed + 1, vcpus=1, disk_mib=0, is_instance=True)
+
+    # Program bucket sees nothing committed by the V-PROGRAM: its full cap is free.
+    assert manager.check_capacity(memory_mib=4096, vcpus=1, disk_mib=0, is_instance=False) is None
+
+
 def test_exclude_vm_hash_skips_the_vms_own_record(mocker):
     # The create paths record the VM before admission (owner record, or a
     # leftover record on a recreate): its own record must not count against
