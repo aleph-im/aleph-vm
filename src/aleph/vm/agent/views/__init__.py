@@ -592,7 +592,7 @@ async def update_allocations(request: web.Request):
             )
 
         # First, free resources from persistent programs and instances that are not scheduled anymore.
-        allocations = allocation.persistent_vms | allocation.instances
+        allocations = allocation.persistent_vms | allocation.instances | allocation.v_programs
         stopped_vms = []
         # Status comes from the supervisor (VmInfo); persistence, payment tier
         # and owner come from the agent registry. A VM with no registry record is
@@ -607,10 +607,18 @@ async def update_allocations(request: web.Request):
                 and record.persistent
                 and vm_hash not in allocations
                 and info.status is VmStatus.RUNNING
-                and not record.uses_payment_stream
-                and not record.uses_payment_credit
-                and not info.gpus
-                and info.confidential_mode is ConfidentialMode.NONE
+                and (
+                    # The scheduler is the single source of truth for
+                    # v-programs: absence from the allocation stops them,
+                    # even though they are credit-paid and confidential.
+                    record.is_vprogram
+                    or (
+                        not record.uses_payment_stream
+                        and not record.uses_payment_credit
+                        and not info.gpus
+                        and info.confidential_mode is ConfidentialMode.NONE
+                    )
+                )
             ):
                 vm_type = VmType.from_message_content(record.message).name
                 logger.info("Stopping %s %s", vm_type, vm_hash)
@@ -684,6 +692,27 @@ async def update_allocations(request: web.Request):
                 # Handle unknown exception separately, to avoid leaking data
                 logger.exception("Unhandled Error while starting VM '%s': %s", instance_hash, error)
                 scheduling_errors[instance_hash] = Exception("Unhandled Error")
+
+        # Schedule the start of v-programs (verifiable SEV-SNP programs):
+        for vprogram_hash in allocation.v_programs:
+            vprogram_item_hash = ItemHash(vprogram_hash)
+            try:
+                await start_persistent_vm(
+                    vprogram_item_hash,
+                    pubsub,
+                    supervisor=supervisor,
+                    registry=registry,
+                    capacity=capacity,
+                    expiry=expiry,
+                    update_watcher=update_watcher,
+                )
+            except vm_creation_exceptions as error:
+                logger.exception("Error while starting VM '%s': %s", vprogram_hash, error)
+                scheduling_errors[vprogram_item_hash] = error
+            except Exception as error:
+                # Handle unknown exception separately, to avoid leaking data
+                logger.exception("Unhandled Error while starting VM '%s': %s", vprogram_hash, error)
+                scheduling_errors[vprogram_item_hash] = Exception("Unhandled Error")
 
         # Log unsupported features
         if allocation.on_demand_vms:
