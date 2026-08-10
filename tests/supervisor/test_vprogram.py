@@ -227,7 +227,58 @@ async def test_create_vm_execution_vprogram_launches_snp(mocker):
     assert vm_hash in registry
     record = registry.get(vm_hash)
     assert record is not None and record.persistent
-    mock_persist.assert_awaited_once()
+    mock_persist.assert_awaited_once_with(vm_hash, record)
+
+
+def _failed_vm_info(vm_hash: str) -> VmInfo:
+    return VmInfo(
+        vm_id=VmId(vm_hash),
+        status=VmStatus.FAILED,
+        ipv4=IpAssignment(),
+        ipv6=IpAssignment(),
+        uptime_secs=0,
+        backend=Backend.QEMU,
+        numa_node=None,
+        status_message="boot failed",
+        confidential_mode=ConfidentialMode.SEV_SNP,
+        gpus=[],
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_vm_execution_vprogram_wait_failure_tears_down(mocker):
+    """create_vm succeeds but the VM never reaches RUNNING: the launch path
+    must tear the half-started VM down (supervisor.delete_vm) and forget its
+    registry record, without persisting."""
+    message = load_vprogram_message()
+    vm_hash = message.item_hash
+    mocker.patch("aleph.vm.agent.run.load_updated_message", new_callable=AsyncMock, return_value=(message, message))
+
+    fake_spec = MagicMock()
+    mocker.patch("aleph.vm.agent.run.build_vprogram_spec", new_callable=AsyncMock, return_value=fake_spec)
+    mock_persist = mocker.patch("aleph.vm.agent.run.persist_record", new_callable=AsyncMock)
+
+    info = _failed_vm_info(str(vm_hash))
+    supervisor = MagicMock(
+        create_vm=AsyncMock(return_value=info),
+        # get_vm reports FAILED, so _wait_until_running raises.
+        get_vm=AsyncMock(return_value=info),
+        delete_vm=AsyncMock(),
+    )
+    registry = AgentVmRegistry()
+
+    with pytest.raises(RuntimeError):
+        await create_vm_execution(
+            vm_hash,
+            supervisor=supervisor,
+            registry=registry,
+            capacity=MagicMock(),
+            persistent=True,
+        )
+
+    supervisor.delete_vm.assert_awaited_once_with(info.vm_id)
+    assert vm_hash not in registry
+    mock_persist.assert_not_awaited()
 
 
 @pytest.mark.asyncio
