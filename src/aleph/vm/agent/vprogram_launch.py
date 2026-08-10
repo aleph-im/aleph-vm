@@ -121,6 +121,8 @@ def _extract_bundle(tar_path: Path, dest: Path) -> None:
             # rather than an opaque error (never extract without the filter).
             tar.extractall(dest, filter="data")
     except (tarfile.TarError, OSError, TypeError) as error:
+        # Never leave a partially-populated staging dir behind on failure.
+        shutil.rmtree(dest, ignore_errors=True)
         msg = f"cannot extract runtime bundle {tar_path} into {dest}: {error}"
         raise VmSetupError(msg) from error
 
@@ -188,6 +190,7 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
 
     bundle_dir = vprogram_staging_dir(vm_hash)
     _extract_bundle(tar_path, bundle_dir)
+    logger.debug("Staged V-PROGRAM %s runtime bundle at %s", vm_hash, bundle_dir)
 
     members = manifest.bundle.members
     ovmf_path = _member_path(bundle_dir, members.ovmf, "ovmf")

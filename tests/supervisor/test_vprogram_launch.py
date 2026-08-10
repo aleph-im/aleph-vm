@@ -312,6 +312,5 @@ async def test_corrupt_tarball_fails_closed_on_extract(tmp_path, storage_files):
         shutil.rmtree(staging)
     with pytest.raises(VmSetupError, match="cannot extract runtime bundle"):
         await build_vprogram_spec(message.item_hash, message.content)
-    # Nothing was extracted: the staging dir is absent or empty (open fails
-    # before any member is written), so no partial members are left behind.
-    assert not staging.exists() or not any(staging.iterdir())
+    # Fail closed leaves no partial staging behind: the except branch removes it.
+    assert not staging.exists()

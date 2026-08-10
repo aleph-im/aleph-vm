@@ -19,11 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 import psutil
-from aleph_message.models import (
-    ExecutableContent,
-    ItemHash,
-    VerifiableProgramContent,
-)
+from aleph_message.models import ExecutableContent, ItemHash, VerifiableProgramContent
 from aleph_message.models.execution.instance import InstanceContent
 
 from aleph.vm import storage_pools
