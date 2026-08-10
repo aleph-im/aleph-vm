@@ -35,6 +35,7 @@ from aleph.vm.agent.utils import (
     is_after_community_wallet_start,
 )
 from aleph.vm.agent.vm_registry import AgentVmRegistry
+from aleph.vm.agent.vprogram_launch import remove_vprogram_staging
 from aleph.vm.conf import settings
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
@@ -402,6 +403,7 @@ async def check_payment(supervisor: Supervisor, registry: AgentVmRegistry):
             await supervisor.delete_vm(VmId(str(vm_hash)))
             registry.forget(vm_hash)
             await delete_records_for_vm(str(vm_hash))
+            remove_vprogram_staging(vm_hash)
         else:
             # Status is healthy — reset any previous strikes
             _terminal_strike_count.pop(str(vm_hash), None)
