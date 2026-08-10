@@ -29,6 +29,7 @@ from aleph.vm.agent.translate import build_create_vm_spec, build_program_create_
 from aleph.vm.agent.update_watcher import UpdateWatcher
 from aleph.vm.agent.vm.program_client import ProgramGuestClient
 from aleph.vm.agent.vm_registry import AgentVmRegistry, persist_record
+from aleph.vm.agent.vprogram_launch import build_vprogram_spec
 from aleph.vm.conf import settings
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor_interface import errors as supervisor_errors
@@ -344,13 +345,41 @@ async def create_vm_execution(
         return None
 
     if isinstance(content, VerifiableProgramContent):
-        # Scheduler wiring for V-Programs lands before the launch path: the
-        # allocation is accepted, but building a CreateVmSpec for an SNP guest
-        # (runtime manifest fetch, measured cmdline, verified volumes) is not
-        # implemented yet. Fail with the create-path vocabulary so
-        # update_allocations reports it per-VM and the scheduler can react.
-        msg = f"V-PROGRAM {vm_hash} accepted, but this CRN does not implement the SEV-SNP launch path yet"
-        raise VmSetupError(msg)
+        # V-PROGRAM: an auto-booting SEV-SNP VM. build_vprogram_spec fetches
+        # the runtime manifest, integrity-checks and stages the measured
+        # bundle, and returns a spec whose TeeConfig takes the SNP launch
+        # path. Mirrors the instance path above: record early, build spec,
+        # create, wait, persist; forget (and tear down) on failure. Unlike
+        # SEV instances there is no owner session to wait for: the daemon
+        # boots an SNP VM immediately (awaiting_confidential_init is never
+        # set), so the plain readiness wait applies.
+        record = registry.record(vm_hash, message=content, original=original_message.content, persistent=True)
+        try:
+            spec = await build_vprogram_spec(vm_hash, content)
+            # Agent-side admission after the download, like the instance path:
+            # a failed bundle fetch never consumes capacity.
+            capacity.check_capacity(
+                memory_mib=content.resources.memory,
+                vcpus=content.resources.vcpus,
+                disk_mib=0,
+                is_instance=True,
+                exclude_vm_hash=vm_hash,
+            )
+            info = await supervisor.create_vm(spec)
+        except Exception:
+            registry.forget(vm_hash)
+            raise
+        try:
+            await _wait_until_running(supervisor, info.vm_id)
+        except Exception:
+            registry.forget(vm_hash)
+            try:
+                await supervisor.delete_vm(info.vm_id)
+            except Exception:
+                logger.exception("Teardown of half-started V-PROGRAM %s failed", vm_hash)
+            raise
+        await persist_record(vm_hash, record)
+        return None
 
     # Every supported content type is handled above: programs through the spec
     # program path, instances (plain, GPU, confidential) through the spec path.

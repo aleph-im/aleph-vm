@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 import psutil
-from aleph_message.models import ExecutableContent, ItemHash
+from aleph_message.models import ExecutableContent, ItemHash, VerifiableProgramContent
 from aleph_message.models.execution.instance import InstanceContent
 
 from aleph.vm import storage_pools
@@ -217,7 +217,12 @@ class CapacityManager:
             record_vcpus = resources.vcpus
             if not memory and not record_vcpus:
                 continue
-            if isinstance(record.message, InstanceContent):
+            # V-PROGRAMs are full SNP VMs, admitted against the instance
+            # bucket (run.py passes is_instance=True), so they must also be
+            # counted there. Bucketing them as programs would both starve the
+            # small program bucket and hide their memory from instance
+            # admission (silent over-commit).
+            if isinstance(record.message, (InstanceContent, VerifiableProgramContent)):
                 committed_instance_memory_mib += memory
             else:
                 committed_program_memory_mib += memory
