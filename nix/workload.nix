@@ -36,6 +36,9 @@ pkgs.runCommand "workload.ext4" {
   #     dm-verity, so a journal is useless AND a nondeterminism source,
   #   - non-lazy inode-table/journal init so nothing is written lazily/randomly.
   truncate -s ''${size}M $out
+  # Note: the hash_seed must be NON-zero; mke2fs treats an all-zero hash_seed
+  # as "unset" and generates a random one, breaking reproducibility (the UUID,
+  # by contrast, may be all-zero). See rootfs.nix for the full rationale.
   mkfs.ext4 -b 4096 -U 00000000-0000-0000-0000-000000000000 \
     -E hash_seed=a1e5c0de-1111-2222-3333-444455556666,lazy_itable_init=0,lazy_journal_init=0 \
     -O ^has_journal \

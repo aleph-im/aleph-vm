@@ -188,7 +188,7 @@
       # expect for extra-disk sidecars.
       workload = pkgs.runCommand "aleph-vm-workload" {} ''
         mkdir -p $out
-        cp ${workloadImage} $out/workload.ext4
+        ln -s ${workloadImage} $out/workload.ext4
         cp ${workloadVerity}/hashtree $out/workload.ext4.verity
         cp ${workloadVerity}/roothash $out/workload.ext4.roothash
       '';
