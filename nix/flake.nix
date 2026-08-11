@@ -86,6 +86,25 @@
         CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = "${muslCC}/bin/x86_64-unknown-linux-musl-cc";
       };
 
+      # fib-service demo workload (static musl binary): a trivial actix-web app
+      # exposing GET /fib/{n} (saturating u64 Fibonacci) and GET /health, later
+      # baked into the measured guest as a V-PROGRAM workload. It has no C
+      # dependencies (plain actix-web HTTP, no TLS/openssl), so unlike
+      # attest-agent/attest-cli it needs only the musl cross-CC env, not the
+      # static-openssl buildInputs/OPENSSL_* env those carry.
+      fib-service = craneToolchain.buildPackage {
+        src = craneToolchain.cleanCargoSource ./fib-service;
+        # There is no test harness to run for a musl cross build here.
+        doCheck = false;
+        CARGO_BUILD_TARGET = "x86_64-unknown-linux-musl";
+        CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+        # Use the musl-targeting C compiler for any C dependencies.
+        nativeBuildInputs = [ muslCC ];
+        CC_x86_64_unknown_linux_musl = "${muslCC}/bin/x86_64-unknown-linux-musl-cc";
+        AR_x86_64_unknown_linux_musl = "${muslCC}/bin/x86_64-unknown-linux-musl-ar";
+        CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = "${muslCC}/bin/x86_64-unknown-linux-musl-cc";
+      };
+
       # OVMF firmware built with the AmdSev variant (kernel hashing support), so
       # the SEV-SNP launch measurement covers OVMF + kernel + initrd + cmdline.
       ovmf = import ./ovmf.nix { inherit pkgs; };
@@ -181,6 +200,7 @@
         inherit
           attest-agent
           attest-cli
+          fib-service
           ovmf
           kernel
           initrd
