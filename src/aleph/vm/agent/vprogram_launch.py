@@ -25,11 +25,13 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import re
 import shutil
 import tarfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from aleph_message.models.execution.vprogram import VERITY_ROOTHASH_PATTERN
 from pydantic import ValidationError
 
 from aleph.vm.conf import settings
@@ -204,6 +206,36 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
 
     _ensure_verity_sidecars(rootfs_path, hash_tree_path, manifest.boot.platform_roothash)
 
+    # Disk ORDER is load-bearing: the guest init reads the rootfs from the
+    # first virtio disk (/dev/vda), the platform dm-verity hash tree from
+    # /dev/vdb, the workload data from /dev/vdc and its hash tree from
+    # /dev/vdd.
+    #
+    # The platform hash tree is NOT attached here: the daemon force-inserts
+    # `{rootfs}.verity` (written by _ensure_verity_sidecars above) as the
+    # first SNP host volume (-> /dev/vdb). Attaching it here too would
+    # duplicate it and shift the workload disks to vdd/vde, breaking the
+    # guest's vdc/vdd workload-verity assumption.
+    disks = [
+        DiskSpec(path=rootfs_path, readonly=True, format=DiskFormat.RAW, role=DiskRole.ROOTFS),
+    ]
+
+    # The daemon trusts the sidecar content verbatim (snp_config_slice appends
+    # it to the measured cmdline unquoted). The schema already pins the field
+    # to this pattern on message validation; re-checking it here fails closed
+    # on the unvalidated construction routes (model_copy/model_construct).
+    wl_roothash = content.workload.roothash
+    if not re.fullmatch(VERITY_ROOTHASH_PATTERN, wl_roothash):
+        msg = f"V-PROGRAM {vm_hash} workload roothash is not a bare sha256 hex string"
+        raise VmSetupError(msg)
+    workload_data = await get_existing_file(str(content.workload.ref))
+    workload_hashtree = await get_existing_file(str(content.workload.hash_tree))
+    # The daemon derives ' workload_roothash=' from this sidecar next to the
+    # rootfs (proto has no cmdline field).
+    (rootfs_path.parent / f"{rootfs_path.name}.workload_roothash").write_text(wl_roothash + "\n")
+    disks.append(DiskSpec(path=workload_data, readonly=True, format=DiskFormat.RAW, role=DiskRole.EXTRA))
+    disks.append(DiskSpec(path=workload_hashtree, readonly=True, format=DiskFormat.RAW, role=DiskRole.EXTRA))
+
     session_base = settings.CONFIDENTIAL_SESSION_DIRECTORY or (Path(settings.EXECUTION_ROOT) / "sessions")
 
     return CreateVmSpec(
@@ -211,12 +243,7 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
         backend=Backend.QEMU,
         kernel_path=kernel_path,
         initrd_path=initrd_path,
-        # Disk ORDER is load-bearing: the guest init reads the rootfs from the
-        # first virtio disk (/dev/vda) and the dm-verity hash tree from /dev/vdb.
-        disks=[
-            DiskSpec(path=rootfs_path, readonly=True, format=DiskFormat.RAW, role=DiskRole.ROOTFS),
-            DiskSpec(path=hash_tree_path, readonly=True, format=DiskFormat.RAW, role=DiskRole.EXTRA),
-        ],
+        disks=disks,
         vcpus=content.resources.vcpus,
         memory_mib=content.resources.memory,
         tee=TeeConfig(
