@@ -248,7 +248,7 @@ async def test_start_persistent_vm_running_states_missing_service_falls_through(
     create_mock = mocker.patch("aleph.vm.orchestrator.run.create_vm_execution", new=mocker.AsyncMock())
 
     pool = mocker.Mock(executions={VM_HASH: execution})
-    running_states = {}  # deliberately empty: no snapshot for this service
+    running_states: dict[str, bool] = {}  # deliberately empty: no snapshot for this service
 
     result = await start_persistent_vm(VM_HASH, pubsub=None, pool=pool, running_states=running_states)
 
