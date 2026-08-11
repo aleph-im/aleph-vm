@@ -195,3 +195,91 @@ async def test_start_persistent_vm_stops_and_recreates_on_terminal_systemd_state
     stop_mock.assert_awaited_once()
     create_mock.assert_awaited_once()
     assert result is new_execution
+
+
+# --- Batched running_states lookup -----------------------------------------
+#
+# On CRNs with many persistent VMs, iterating executions and calling
+# execution.is_running per VM issues O(N) synchronous D-Bus round-trips on
+# the event loop. update_allocations now snapshots the state once via
+# get_services_active_states off-thread and passes the map to
+# start_persistent_vm (and to get_persistent_executions). These tests pin
+# the "map wins over D-Bus" invariant so a future refactor can't silently
+# reintroduce the per-VM lookup.
+
+
+@pytest.mark.asyncio
+async def test_start_persistent_vm_uses_running_states_map_for_fast_path(instance_content, mocker):
+    """When running_states says the VM is running, do not touch systemd."""
+    execution = make_execution(instance_content, mocker, controller_active=False)
+    mark_started(execution)
+    execution.vm = mocker.Mock()
+
+    stop_mock = mocker.patch.object(execution, "stop", new=mocker.AsyncMock())
+    create_mock = mocker.patch("aleph.vm.orchestrator.run.create_vm_execution", new=mocker.AsyncMock())
+
+    pool = mocker.Mock(executions={VM_HASH: execution})
+    running_states = {execution.controller_service: True}
+
+    result = await start_persistent_vm(VM_HASH, pubsub=None, pool=pool, running_states=running_states)
+
+    assert result is execution
+    stop_mock.assert_not_called()
+    create_mock.assert_not_called()
+    # Per-VM D-Bus should have been bypassed entirely.
+    execution.systemd_manager.is_service_active.assert_not_called()
+    execution.systemd_manager.get_service_active_state.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_start_persistent_vm_running_states_missing_service_falls_through(instance_content, mocker):
+    """Missing entry in running_states means 'not running per the batch snapshot'.
+
+    Since this is our controlled fast-path decision, the code should treat
+    it as False (not-running) and follow the same else-branch logic as
+    when execution.is_running would have returned False - i.e. check the
+    real systemd state before deciding to stop or leave alone.
+    """
+    execution = make_execution(instance_content, mocker, active_state="active")
+    mark_started(execution)
+    execution.vm = mocker.Mock()
+
+    stop_mock = mocker.patch.object(execution, "stop", new=mocker.AsyncMock())
+    create_mock = mocker.patch("aleph.vm.orchestrator.run.create_vm_execution", new=mocker.AsyncMock())
+
+    pool = mocker.Mock(executions={VM_HASH: execution})
+    running_states = {}  # deliberately empty: no snapshot for this service
+
+    result = await start_persistent_vm(VM_HASH, pubsub=None, pool=pool, running_states=running_states)
+
+    # Falls through to the transient-state guard which sees 'active' and
+    # returns the execution unchanged. Confirms the map path composes
+    # correctly with the systemd-state check in the else branch.
+    assert result is execution
+    stop_mock.assert_not_called()
+    create_mock.assert_not_called()
+
+
+def test_get_persistent_executions_uses_running_states_map(instance_content, mocker):
+    """pool.get_persistent_executions with a map must NOT call is_running per-VM."""
+    from aleph.vm.pool import VmPool
+
+    execution_up = make_execution(instance_content, mocker)
+    execution_up.vm_hash = ItemHash("a" * 64)
+
+    execution_down = make_execution(instance_content, mocker)
+    execution_down.vm_hash = ItemHash("b" * 64)
+
+    pool = VmPool.__new__(VmPool)
+    pool.executions = {execution_up.vm_hash: execution_up, execution_down.vm_hash: execution_down}
+
+    running_states = {
+        execution_up.controller_service: True,
+        execution_down.controller_service: False,
+    }
+
+    result = list(pool.get_persistent_executions(running_states=running_states))
+
+    assert result == [execution_up]
+    execution_up.systemd_manager.is_service_active.assert_not_called()
+    execution_down.systemd_manager.is_service_active.assert_not_called()
