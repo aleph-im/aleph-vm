@@ -119,8 +119,8 @@ def build_bundle(image_dir: Path, out_dir: Path, source_epoch: int, source: Sour
 
 # Fixed format-version-1 values describing what the current image implements
 # (nix/init.sh hardcodes the agent on tcp/8443 proxying 127.0.0.1:8080, and
-# its init parses only roothash=). Changing these is a runtime/format
-# evolution, not a CLI flag.
+# its init parses roothash= plus the optional workload_roothash=). Changing
+# these is a runtime/format evolution, not a CLI flag.
 CMDLINE_TEMPLATE_V1 = "console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash}"
 # Exec-runtime flavor: the daemon measures a workload rootfs alongside the
 # platform rootfs and folds its dm-verity roothash into the cmdline (Task 1's
