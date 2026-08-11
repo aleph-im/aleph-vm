@@ -22,6 +22,10 @@ pkgs.runCommand "rootfs.ext4" {
 } ''
   # Create a minimal ext4 image with /sbin/init entrypoint.
   mkdir -p rootfs/sbin rootfs/bin rootfs/srv rootfs/etc
+  # Mount-point targets for init.sh's prepare_chroot proc/sys/dev bind mounts:
+  # like the resolv.conf and secrets targets below, these cannot be created at
+  # boot on the read-only verity mount, so they must ship in the image.
+  mkdir -p rootfs/proc rootfs/sys rootfs/dev
   cp ${staticBusybox}/bin/busybox rootfs/bin/
 
   # Empty resolv.conf placeholder: the rootfs is mounted read-only under
