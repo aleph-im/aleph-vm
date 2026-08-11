@@ -264,7 +264,7 @@ async def test_create_vm_execution_vprogram_wait_failure_tears_down(mocker):
     mocker.patch("aleph.vm.agent.run.load_updated_message", new_callable=AsyncMock, return_value=(message, message))
 
     fake_spec = MagicMock()
-    mocker.patch("aleph.vm.agent.run.build_vprogram_spec", new_callable=AsyncMock, return_value=fake_spec)
+    mocker.patch("aleph.vm.agent.run.build_vprogram_spec", new_callable=AsyncMock, return_value=(fake_spec, 8443))
     mock_persist = mocker.patch("aleph.vm.agent.run.persist_record", new_callable=AsyncMock)
 
     info = _failed_vm_info(str(vm_hash))
@@ -326,7 +326,7 @@ async def test_create_vm_execution_vprogram_capacity_failure_forgets_record(mock
     create_vm (a distinct failure path from a build failure)."""
     message = load_vprogram_message()
     mocker.patch("aleph.vm.agent.run.load_updated_message", new_callable=AsyncMock, return_value=(message, message))
-    mocker.patch("aleph.vm.agent.run.build_vprogram_spec", new_callable=AsyncMock, return_value=MagicMock())
+    mocker.patch("aleph.vm.agent.run.build_vprogram_spec", new_callable=AsyncMock, return_value=(MagicMock(), 8443))
 
     capacity = MagicMock()
     capacity.check_capacity.side_effect = InsufficientResourcesError("no room", required={}, available={})
