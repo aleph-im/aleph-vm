@@ -21,7 +21,7 @@ from aleph_message.models import (
 
 from aleph.vm.agent.messages import update_message
 from aleph.vm.agent.resources import Allocation
-from aleph.vm.agent.run import create_vm_execution, run_code_on_request
+from aleph.vm.agent.run import VmStartupError, create_vm_execution, run_code_on_request
 from aleph.vm.agent.supervisor import setup_webapp
 from aleph.vm.agent.tasks import _group_executions_by_payment
 from aleph.vm.agent.vm_registry import AgentVmRecord, AgentVmRegistry
@@ -276,7 +276,7 @@ async def test_create_vm_execution_vprogram_wait_failure_tears_down(mocker):
     )
     registry = AgentVmRegistry()
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(VmStartupError):
         await create_vm_execution(
             vm_hash,
             supervisor=supervisor,
