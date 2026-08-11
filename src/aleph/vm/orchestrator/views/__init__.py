@@ -538,7 +538,10 @@ async def update_allocations(request: web.Request):
         persistent_services = [
             execution.controller_service for execution in pool.executions.values() if execution.persistent
         ]
-        running_states: dict[str, bool] = {}
+        # None (not {}) when no batch was performed, so get_persistent_executions
+        # falls back to its per-VM is_running path instead of treating every
+        # service as not-running.
+        running_states: dict[str, bool] | None = None
         if persistent_services and pool.systemd_manager:
             running_states = await asyncio.to_thread(
                 pool.systemd_manager.get_services_active_states,
