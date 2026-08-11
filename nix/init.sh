@@ -49,6 +49,35 @@ else
         # per-tap dnsmasq but never configure its IP. See udhcpc.script.
         /bin/busybox udhcpc -i "$iface" -q -t 5 -A 2 -s /bin/udhcpc.script 2>&1 || echo "init: DHCP failed on ${iface}"
     fi
+
+    # IPv6: SLAAC via Router Advertisements ONLY, never a kernel-cmdline
+    # address. The assigned /124 is per-VM (CRN /64 + vm-hash), so baking it
+    # into cmdline would make the measured SNP kernel cmdline depend on the
+    # address, breaking the publisher's precompute -- the exact reason the
+    # IPv4 path above uses DHCP/static-from-gateway instead of a hardcoded
+    # guest IP. `accept_ra=2` accepts RAs even though this host never
+    # forwards (belt and suspenders: forwarding stays off here regardless).
+    # The wait below is bounded and non-fatal: with no RA source reachable
+    # on this tap the guest simply stays IPv4-only, matching Python's
+    # ipv6_forwarding_enabled=False fallback.
+    # FOLLOW-UP: the host does NOT yet run a per-tap RA sender (no radvd /
+    # RA on the tap today), so IPv6 here is INERT until that host-side piece
+    # lands; the guest is ready, the RA source is the missing half.
+    echo 0 > "/proc/sys/net/ipv6/conf/${iface}/disable_ipv6" 2>/dev/null || true
+    echo 2 > "/proc/sys/net/ipv6/conf/${iface}/accept_ra" 2>/dev/null || true
+    n=0
+    while [ "$n" -lt 20 ]; do
+        if /bin/busybox ip addr show dev "$iface" 2>/dev/null | /bin/busybox grep -q "inet6.*scope global"; then
+            break
+        fi
+        /bin/busybox sleep 0.1
+        n=$((n + 1))
+    done
+    if /bin/busybox ip addr show dev "$iface" 2>/dev/null | /bin/busybox grep -q "inet6.*scope global"; then
+        echo "init: IPv6 SLAAC address configured on ${iface}"
+    else
+        echo "init: no global IPv6 address on ${iface} after RA wait; continuing IPv4-only"
+    fi
 fi
 
 # Parse boot mode from kernel command line.
@@ -161,6 +190,21 @@ prepare_chroot() {
 # The ruleset is STATELESS on purpose: for a TCP connection to the server the
 # inbound packets always carry dport 8443, so `tcp dport 8443 accept` covers the
 # whole flow without a conntrack module. Load order matches modules.dep.
+#
+# The `inet` table family (not `ip`) filters BOTH IPv4 and IPv6 with the same
+# rules (nft(8), ADDRESS FAMILIES: "The IPv4/IPv6/Inet address families
+# handle IPv4, IPv6 or both types of packets"); `tcp dport 8443` carries no
+# implicit protocol dependency the way e.g. `icmp` would, so it already
+# matches TCP/8443 over both v4 and v6 -- no separate ip6-only rule needed
+# once the interface has a v6 address (see the SLAAC bring-up above).
+#
+# The icmpv6 accept rule is control-plane only (no app data crosses it), but
+# without it the firewall would go up and immediately break IPv6 on its own:
+# Router Advertisements refresh the SLAAC address's lifetime, Neighbor
+# Solicitation/Advertisement resolve and keep resolving the gateway's
+# link-layer address (Neighbor Unreachability Detection re-probes every
+# ~30s of idle), and Packet Too Big drives Path MTU Discovery -- dropping any
+# of those silently blackholes v6 minutes into the VM's life, not at boot.
 setup_firewall() {
     /bin/busybox insmod /lib/modules/nfnetlink.ko 2>&1 || echo "init: warning: insmod nfnetlink.ko failed"
     /bin/busybox insmod /lib/modules/libcrc32c.ko 2>&1 || echo "init: warning: insmod libcrc32c.ko failed"
@@ -171,11 +215,12 @@ table inet filter {
 		type filter hook input priority 0; policy drop;
 		iif "lo" accept
 		tcp dport 8443 accept
+		icmpv6 type { nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, destination-unreachable, packet-too-big, time-exceeded, parameter-problem } accept
 	}
 }
 NFT
     then
-        echo "init: firewall active (drop inbound except tcp/8443 and loopback)"
+        echo "init: firewall active (drop inbound except tcp/8443, loopback, and ND/PMTU icmpv6)"
     else
         echo "init: FATAL: failed to install guest firewall"
         exec /bin/busybox poweroff -f
