@@ -639,3 +639,14 @@ async def test_startup_failure_maps_to_specific_http_reason(monkeypatch):
             _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
         )
     assert excinfo.value.reason == "VM failed to start"
+
+
+def test_program_error_mapper_maps_startup_failure():
+    """The on-demand program mapper gives VmStartupError the same specific
+    reason as the instance/v-program create path, so the 'every VM type'
+    contract on VmStartupError holds."""
+    from aiohttp.web_exceptions import HTTPInternalServerError
+
+    with pytest.raises(HTTPInternalServerError) as excinfo:
+        run_module._raise_http_for_program_error(run_module.VmStartupError("never reached RUNNING"), ItemHash(_HASH))
+    assert excinfo.value.reason == "VM failed to start"

@@ -155,8 +155,10 @@ class VmStartupError(Exception):
 
     Agent-internal (raised by ``_wait_until_running``, never crosses the
     Supervisor boundary), so it is not part of the SupervisorError vocabulary.
-    ``create_vm_execution_or_raise_http_error`` maps it to a clear HTTP reason
-    instead of the generic "unhandled error" bucket, for every VM type."""
+    ``create_vm_execution_or_raise_http_error`` (instances, v-programs) and
+    ``_raise_http_for_program_error`` (on-demand programs) map it to a clear
+    HTTP reason instead of the generic "unhandled error" bucket, so the
+    mapping covers every VM type."""
 
 
 async def _wait_until_running(
@@ -479,6 +481,11 @@ def _raise_http_for_program_error(error: Exception, vm_hash: ItemHash) -> None:
         ) from error
     if isinstance(error, FileTooLargeError):
         raise HTTPInternalServerError(reason=str(error) or "File too large") from error
+    if isinstance(error, VmStartupError):
+        # Created but never reached RUNNING (terminal status or start timeout):
+        # a distinct, expected outcome, not the generic "unhandled error".
+        logger.warning("VM %s failed to start: %s", vm_hash, error)
+        raise HTTPInternalServerError(reason="VM failed to start") from error
     if isinstance(error, VmSetupError):
         logger.exception(error)
         raise HTTPInternalServerError(reason="Error during vm initialisation") from error
