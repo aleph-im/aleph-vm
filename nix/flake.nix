@@ -130,6 +130,12 @@
       };
       rootfs = pkgs.callPackage ./rootfs.nix {};
 
+      # fib-service V-PROGRAM workload volume: a content-only ext4 carrying the
+      # fib-service binary as /sbin/init, delivered to the measured guest as an
+      # extra disk (see workload.nix). Distinct from `rootfs`, which is the
+      # platform image (kernel/initrd/OS chain).
+      workloadImage = pkgs.callPackage ./workload.nix { inherit fib-service; };
+
       # dm-verity hash tree + root hash for the rootfs. The root hash is baked
       # into the kernel cmdline, binding rootfs integrity into the SEV-SNP
       # measurement.
@@ -155,6 +161,36 @@
           | grep "Root hash:" \
           | awk '{print $NF}' \
           | tr -d '\n' > $out/roothash
+      '';
+
+      # dm-verity hash tree + root hash for the fib-service workload volume.
+      # Same mechanism as `verity` above (identical fixed salt/uuid), applied to
+      # workloadImage instead of rootfs, so the workload_roothash is reproducible
+      # too and can be baked into the guest config the same way the platform
+      # rootfs roothash is.
+      workloadVerity = pkgs.runCommand "workload-verity" {
+        nativeBuildInputs = [ pkgs.cryptsetup ];
+      } ''
+        mkdir -p $out
+        veritysetup format \
+          --salt=${veritySalt} \
+          --uuid=${verityUuid} \
+          ${workloadImage} \
+          $out/hashtree \
+          | tee /dev/stderr \
+          | grep "Root hash:" \
+          | awk '{print $NF}' \
+          | tr -d '\n' > $out/roothash
+      '';
+
+      # Convenience: the workload volume + its dm-verity sidecars, staged with
+      # the .verity/.roothash suffix convention the launch path and daemon
+      # expect for extra-disk sidecars.
+      workload = pkgs.runCommand "aleph-vm-workload" {} ''
+        mkdir -p $out
+        ln -s ${workloadImage} $out/workload.ext4
+        cp ${workloadVerity}/hashtree $out/workload.ext4.verity
+        cp ${workloadVerity}/roothash $out/workload.ext4.roothash
       '';
 
       # Parameterized SEV-SNP launch measurement builder.
@@ -206,6 +242,9 @@
           initrd
           rootfs
           verity
+          workloadImage
+          workloadVerity
+          workload
           measurement
           image;
         default = image;
