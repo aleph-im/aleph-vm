@@ -186,7 +186,9 @@ def _select_attestation_port(manifest: RuntimeManifest) -> int | None:
     endpoint. Selects the ``aleph.ra-tls`` protocol's tcp transport port;
     None when the manifest declares none (the caller skips port-forward
     setup rather than failing closed on it, since attestation reachability
-    is not required for the VM itself to boot and run)."""
+    is not required for the VM itself to boot and run). First match wins:
+    the schema allows several ``aleph.ra-tls`` entries but a single RA-TLS
+    transport is the expected case, so extra entries are not mapped."""
     for protocol in manifest.attestation:
         if protocol.protocol == "aleph.ra-tls" and protocol.transport.type == "tcp":
             return protocol.transport.port

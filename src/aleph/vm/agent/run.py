@@ -180,9 +180,10 @@ def resolve_vprogram_port_forwards(vm_id: VmId, attest_port: int | None) -> list
 
 async def reconcile_vprogram_port_forwards(supervisor: Supervisor, vm_id: VmId, attest_port: int | None) -> None:
     """Drive the hypervisor's forwards to match the V-PROGRAM's single
-    attestation-port mapping. Reuses ``_reconcile_forwards``, so re-running
-    this on re-adoption (a fresh agent process picking the VM back up) is a
-    no-op once the mapping already exists.
+    attestation-port mapping. Reuses ``_reconcile_forwards``, so it is
+    idempotent by construction: a future re-adoption path (a fresh agent
+    process picking the VM back up) can call it safely, though today only
+    the create path does.
     """
     await _reconcile_forwards(supervisor, vm_id, resolve_vprogram_port_forwards(vm_id, attest_port))
 
@@ -413,6 +414,12 @@ async def create_vm_execution(
             # the guest's RA-TLS attestation endpoint; measurement-neutral
             # (no guest image/cmdline change) and idempotent via the same
             # reconcile machinery the instance path uses.
+            #
+            # A reconcile failure lands in the teardown branch below on
+            # purpose, mirroring the instance path: a V-PROGRAM whose
+            # attestation endpoint cannot be mapped is unreachable for its
+            # sole consumer, so failing the create loudly (and letting the
+            # scheduler retry) beats keeping an unusable VM alive.
             await reconcile_vprogram_port_forwards(supervisor, info.vm_id, attest_port)
         except Exception:
             registry.forget(vm_hash)
