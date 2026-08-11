@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from aleph.vm.vprogram.bundle import (
     BUNDLE_INFO_NAME,
     BUNDLE_NAME,
+    CMDLINE_TEMPLATE_EXEC_V1,
     BundleInfo,
     build_bundle,
     make_manifest,
@@ -146,6 +147,18 @@ def test_make_manifest_does_not_alias_module_defaults(image_dir: Path, tmp_path:
     assert first.workload is not second.workload
     assert first.attestation[0] == second.attestation[0]
     assert first.attestation[0] is not second.attestation[0]
+
+
+def test_exec_manifest_uses_workload_template(image_dir: Path, tmp_path: Path) -> None:
+    out = _out(tmp_path, "out")
+    info = build_bundle(image_dir=image_dir, out_dir=out, source_epoch=EPOCH, source=SOURCE)
+    manifest = make_manifest(
+        info=info, bundle_ref=BUNDLE_REF, name="aleph-exec", runtime_version="2026.07.08", exec_runtime=True
+    )
+    RuntimeManifest.model_validate(manifest.model_dump(mode="json"))
+    assert manifest.boot.cmdline_template == CMDLINE_TEMPLATE_EXEC_V1
+    assert manifest.workload.contract == "aleph.exec/1"
+    assert manifest.workload.upstream_port == 8080
 
 
 def test_make_manifest_rejects_bad_ref(image_dir: Path, tmp_path: Path) -> None:
