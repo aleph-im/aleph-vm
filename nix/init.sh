@@ -86,6 +86,7 @@ fi
 # (/dev/vdc, /dev/vdd) below, so each disk is waited for explicitly instead
 # of assuming a single fixed device name.
 wait_for_dev() {
+    local dev n
     dev="$1"
     n=0
     while [ "$n" -lt 30 ]; do
@@ -100,46 +101,55 @@ wait_for_dev() {
 
 /bin/busybox mkdir -p /mnt/root
 
-# Prepare the chroot environment: bind-mount /proc, /sys, /dev, the secret dir,
-# and set up DNS. Called after mounting rootfs, before starting /sbin/init.
+# Prepare a chroot environment: bind-mount /proc, /sys, /dev, the secret dir,
+# and set up DNS in the given target. Called with the chroot that will
+# actually run its /sbin/init (/mnt/workload when a V-PROGRAM workload volume
+# is mounted, /mnt/root otherwise), after mounting it.
+#
+# The target is mounted read-only under dm-verity, so the mkdirs below cannot
+# create anything there: the mount-point directories (and the resolv.conf
+# placeholder file) are shipped in the image (rootfs.nix / workload.nix) and
+# the mkdirs no-op. They only do real work on the legacy writable-mount path.
 prepare_chroot() {
-    /bin/busybox mkdir -p /mnt/root/proc /mnt/root/sys /mnt/root/dev /mnt/root/etc
-    /bin/busybox mount --bind /proc /mnt/root/proc
-    /bin/busybox mount --bind /sys /mnt/root/sys
-    /bin/busybox mount --bind /dev /mnt/root/dev
+    local target
+    target="$1"
+    /bin/busybox mkdir -p "$target/proc" "$target/sys" "$target/dev" "$target/etc"
+    /bin/busybox mount --bind /proc "$target/proc"
+    /bin/busybox mount --bind /sys "$target/sys"
+    /bin/busybox mount --bind /dev "$target/dev"
     # Secret delivery: the attest-agent writes injected secrets under /tmp/secrets
     # in THIS (initramfs) mount namespace, but the workload runs chrooted into
-    # /mnt/root, where /tmp/secrets is a different filesystem. Bind-mount the
+    # the target, where /tmp/secrets is a different filesystem. Bind-mount the
     # agent's secret dir into the chroot so the app reads exactly what the agent
     # writes. The source path matches the agent's DEFAULT_SECRETS_DIR
     # (/tmp/secrets in secrets.rs); pre-create it 0700 so the agent's hardened
     # directory check accepts it (real dir, agent-owned, owner-only).
     /bin/busybox mkdir -m 0700 -p /tmp/secrets
-    /bin/busybox mkdir -m 0700 -p /mnt/root/tmp/secrets
-    /bin/busybox mount --bind /tmp/secrets /mnt/root/tmp/secrets
-    # DNS for the chrooted workload. The rootfs is mounted read-only under
-    # dm-verity, so writing /mnt/root/etc/resolv.conf directly cannot work
+    /bin/busybox mkdir -m 0700 -p "$target/tmp/secrets"
+    /bin/busybox mount --bind /tmp/secrets "$target/tmp/secrets"
+    # DNS for the chrooted workload. The target is mounted read-only under
+    # dm-verity, so writing its /etc/resolv.conf directly cannot work
     # there (the old `echo >` only ever worked on legacy writable mounts).
     # Instead, expose the initramfs /etc/resolv.conf (written by udhcpc.script
     # from the DHCP option-6 nameservers) via a file bind-mount over the
-    # rootfs placeholder. On the static ip= path there is no DHCP lease, so
+    # image's placeholder. On the static ip= path there is no DHCP lease, so
     # seed the initramfs copy from the gateway first (common for VM bridges).
     if [ ! -f /etc/resolv.conf ] && [ -n "$gateway" ]; then
         /bin/busybox mkdir -p /etc
         echo "nameserver ${gateway}" > /etc/resolv.conf
     fi
     if [ -f /etc/resolv.conf ]; then
-        if [ -f /mnt/root/etc/resolv.conf ]; then
-            /bin/busybox mount --bind /etc/resolv.conf /mnt/root/etc/resolv.conf \
+        if [ -f "$target/etc/resolv.conf" ]; then
+            /bin/busybox mount --bind /etc/resolv.conf "$target/etc/resolv.conf" \
                 || echo "init: WARNING: resolv.conf bind-mount failed; workload DNS unavailable"
         else
-            # Legacy rootfs without the placeholder: best-effort copy (works
-            # only if the rootfs is mounted writable).
-            /bin/busybox cp /etc/resolv.conf /mnt/root/etc/resolv.conf 2>/dev/null \
-                || echo "init: WARNING: rootfs has no /etc/resolv.conf placeholder; workload DNS unavailable"
+            # Legacy image without the placeholder: best-effort copy (works
+            # only if the target is mounted writable).
+            /bin/busybox cp /etc/resolv.conf "$target/etc/resolv.conf" 2>/dev/null \
+                || echo "init: WARNING: ${target} has no /etc/resolv.conf placeholder; workload DNS unavailable"
         fi
     fi
-    echo "init: chroot environment prepared (proc, sys, dev, secrets, DNS)"
+    echo "init: chroot environment prepared at ${target} (proc, sys, dev, secrets, DNS)"
 }
 
 # Install a minimal guest firewall so only the attested TLS port is reachable
@@ -247,7 +257,15 @@ if [ -n "$workload_roothash" ]; then
     fi
 fi
 
-prepare_chroot
+# Prepare only the chroot that will actually run its /sbin/init: when a
+# workload volume is mounted, the workload runs INSTEAD OF the platform
+# /sbin/init, so the bind mounts (proc, sys, dev, secrets, DNS) belong in
+# /mnt/workload and preparing /mnt/root would be wasted work (and vice versa).
+if [ -n "$workload_roothash" ]; then
+    prepare_chroot /mnt/workload
+else
+    prepare_chroot /mnt/root
+fi
 
 # Install the guest firewall BEFORE starting the workload, so the app can never
 # be reached directly even during the window before the agent is up.
@@ -261,7 +279,12 @@ if [ -n "$workload_roothash" ]; then
         echo "init: starting /sbin/init from workload volume"
         /bin/busybox chroot /mnt/workload /sbin/init &
     else
-        echo "init: WARNING: no /sbin/init found in workload volume"
+        # dm-verity already proved the volume authentic, so a missing
+        # /sbin/init means a malformed workload image: fail closed like every
+        # other error path instead of leaving the attest-agent proxying to a
+        # dead upstream.
+        echo "init: FATAL: no /sbin/init found in workload volume"
+        exec /bin/busybox poweroff -f
     fi
 elif [ -x /mnt/root/sbin/init ]; then
     echo "init: starting /sbin/init from rootfs"
