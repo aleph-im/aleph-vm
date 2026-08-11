@@ -66,6 +66,21 @@ def vprogram_staging_dir(vm_hash: ItemHash) -> Path:
     return Path(settings.EXECUTION_ROOT) / "vprogram" / str(vm_hash)
 
 
+def remove_vprogram_staging(vm_hash: ItemHash) -> None:
+    """Delete a V-PROGRAM's staging directory once its VM is gone for good.
+
+    The extracted runtime bundle lives at EXECUTION_ROOT/vprogram/<vm_hash>;
+    the launch path only clears it on re-extraction, so a churned V-PROGRAM
+    would otherwise leak it on disk. Idempotent and safe for any VM type: a
+    non-V-PROGRAM has no such directory, so this is a no-op. Call it from the
+    teardown paths, after the supervisor delete and registry.forget.
+    """
+    staging = vprogram_staging_dir(vm_hash)
+    if staging.exists():
+        logger.debug("Removing V-PROGRAM %s staging directory %s", vm_hash, staging)
+        shutil.rmtree(staging, ignore_errors=True)
+
+
 async def fetch_runtime_manifest(runtime_ref: str) -> RuntimeManifest:
     """Download and parse the runtime manifest pinned by ``runtime.ref``.
 

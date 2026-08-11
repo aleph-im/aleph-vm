@@ -22,8 +22,10 @@ from aleph_message.models import VerifiableProgramMessage, parse_message
 from aleph.vm.agent.vprogram_launch import (
     build_vprogram_spec,
     fetch_runtime_manifest,
+    remove_vprogram_staging,
     vprogram_staging_dir,
 )
+from aleph.vm.conf import settings
 from aleph.vm.supervisor_interface.errors import VmSetupError
 from aleph.vm.supervisor_interface.types import (
     Backend,
@@ -439,3 +441,22 @@ async def test_workload_roothash_non_hex_fails_closed(staged_bundle, bad_roothas
     staging = vprogram_staging_dir(message.item_hash)
     rootfs = staging / "image" / "rootfs.ext4"
     assert not rootfs.with_name(rootfs.name + ".workload_roothash").is_file()
+
+
+def test_remove_vprogram_staging_is_idempotent(tmp_path, monkeypatch):
+    """The teardown paths call remove_vprogram_staging so a churned V-PROGRAM
+    does not leak its extracted bundle. It must remove a populated staging
+    dir and be a no-op (never raise) when there is nothing to remove."""
+    monkeypatch.setattr(settings, "EXECUTION_ROOT", str(tmp_path))
+    vm_hash = load_vprogram_message().item_hash
+    staging = vprogram_staging_dir(vm_hash)
+    (staging / "image").mkdir(parents=True)
+    (staging / "image" / "rootfs.ext4").write_bytes(b"platform rootfs")
+    assert staging.exists()
+
+    remove_vprogram_staging(vm_hash)
+    assert not staging.exists()
+
+    # Already gone (second teardown, or a non-V-PROGRAM VM with no staging dir).
+    remove_vprogram_staging(vm_hash)
+    assert not staging.exists()

@@ -29,7 +29,7 @@ from aleph.vm.agent.translate import build_create_vm_spec, build_program_create_
 from aleph.vm.agent.update_watcher import UpdateWatcher
 from aleph.vm.agent.vm.program_client import ProgramGuestClient
 from aleph.vm.agent.vm_registry import AgentVmRegistry, persist_record
-from aleph.vm.agent.vprogram_launch import build_vprogram_spec
+from aleph.vm.agent.vprogram_launch import build_vprogram_spec, remove_vprogram_staging
 from aleph.vm.conf import settings
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor_interface import errors as supervisor_errors
@@ -407,6 +407,9 @@ async def create_vm_execution(
             info = await supervisor.create_vm(spec)
         except Exception:
             registry.forget(vm_hash)
+            # build_vprogram_spec may have already extracted the bundle (e.g.
+            # capacity admission fails after staging): do not leak it.
+            remove_vprogram_staging(vm_hash)
             raise
         try:
             await _wait_until_running(supervisor, info.vm_id)
@@ -427,6 +430,7 @@ async def create_vm_execution(
                 await supervisor.delete_vm(info.vm_id)
             except Exception:
                 logger.exception("Teardown of half-started V-PROGRAM %s failed", vm_hash)
+            remove_vprogram_staging(vm_hash)
             raise
         await persist_record(vm_hash, record)
         return None
