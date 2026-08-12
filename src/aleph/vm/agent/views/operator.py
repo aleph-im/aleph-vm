@@ -27,6 +27,7 @@ from aleph.vm.agent.views.authentication import (
     require_jwk_authentication,
 )
 from aleph.vm.agent.vm_registry import AgentVmRecord
+from aleph.vm.agent.vprogram_launch import remove_vprogram_staging
 from aleph.vm.backup_staging import download_volume_by_ref, get_backup_directory
 from aleph.vm.conf import settings
 from aleph.vm.supervisor_interface.abc import Supervisor
@@ -663,6 +664,9 @@ async def operate_erase(request: web.Request, authenticated_sender: str) -> web.
             raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
         request.app["vm_registry"].forget(vm_hash)
         await metrics.delete_records_for_vm(str(vm_hash))
+        # wipe=True clears the daemon-side disks; the agent-side staging dir
+        # (extracted runtime bundle) is ours to remove.
+        remove_vprogram_staging(vm_hash)
         return web.Response(status=200, body=f"Erased VM with ref {vm_hash}")
 
 
