@@ -233,7 +233,8 @@ async def test_build_vprogram_spec(staged_bundle):
     persistent."""
     message = load_vprogram_message()
     content = message.content
-    spec = await build_vprogram_spec(message.item_hash, content)
+    spec, attest_port = await build_vprogram_spec(message.item_hash, content)
+    assert attest_port == 8443
 
     staging = vprogram_staging_dir(message.item_hash)
     assert spec.vm_id == str(message.item_hash)
@@ -277,12 +278,36 @@ async def test_build_vprogram_spec(staged_bundle):
 
 
 @pytest.mark.asyncio
+async def test_build_vprogram_spec_no_ra_tls_attestation_port(tmp_path, storage_files):
+    """A manifest whose attestation list has no aleph.ra-tls tcp entry
+    surfaces attest_port=None: the caller (run.py) skips port-forward setup
+    rather than failing the create path on it."""
+    tar_path = make_bundle(tmp_path)
+    manifest_path = make_manifest(
+        tar_path,
+        tmp_path,
+        **{
+            "attestation": [
+                {"protocol": "aleph.other-attest", "version": "1", "transport": {"type": "tcp", "port": 9000}}
+            ]
+        },
+    )
+    storage_files[MANIFEST_REF] = manifest_path
+    storage_files[BUNDLE_REF] = tar_path
+    stage_workload(storage_files, tmp_path)
+
+    message = load_vprogram_message()
+    _spec, attest_port = await build_vprogram_spec(message.item_hash, message.content)
+    assert attest_port is None
+
+
+@pytest.mark.asyncio
 async def test_roothash_sidecar_present_after_staging(staged_bundle):
     """The daemon derives the measured cmdline from <rootfs>.roothash and the
     hash tree from <rootfs>.verity next to the rootfs disk: both must be in
     place after staging, with the manifest's platform roothash."""
     message = load_vprogram_message()
-    spec = await build_vprogram_spec(message.item_hash, message.content)
+    spec, _attest_port = await build_vprogram_spec(message.item_hash, message.content)
 
     rootfs = spec.rootfs.path
     roothash_sidecar = rootfs.with_name(rootfs.name + ".roothash")
@@ -303,7 +328,7 @@ async def test_roothash_sidecar_written_when_bundle_lacks_it(tmp_path, storage_f
     stage_workload(storage_files, tmp_path)
 
     message = load_vprogram_message()
-    spec = await build_vprogram_spec(message.item_hash, message.content)
+    spec, _attest_port = await build_vprogram_spec(message.item_hash, message.content)
     rootfs = spec.rootfs.path
     assert rootfs.with_name(rootfs.name + ".roothash").read_text().strip() == PLATFORM_ROOTHASH
 
@@ -370,7 +395,7 @@ async def test_workload_attached_and_sidecar_written(staged_bundle):
     message = load_vprogram_message()
     content = message.content
     assert content.workload.roothash == WORKLOAD_ROOTHASH
-    spec = await build_vprogram_spec(message.item_hash, content)
+    spec, _attest_port = await build_vprogram_spec(message.item_hash, content)
 
     assert len(spec.disks) == 3
     assert [d.role for d in spec.disks] == [
