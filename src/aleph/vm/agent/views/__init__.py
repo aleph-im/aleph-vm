@@ -62,6 +62,7 @@ from aleph.vm.agent.views.host_status import (
 )
 from aleph.vm.agent.views.operator import get_itemhash_or_400
 from aleph.vm.agent.vm_registry import AgentVmRecord, AgentVmRegistry
+from aleph.vm.agent.vprogram_launch import remove_vprogram_staging
 from aleph.vm.chains import STREAM_CHAINS
 from aleph.vm.conf import settings
 from aleph.vm.resources import InsufficientResourcesError
@@ -628,6 +629,7 @@ async def update_allocations(request: web.Request):
                     pass
                 registry.forget(vm_hash)
                 await delete_records_for_vm(str(vm_hash))
+                remove_vprogram_staging(vm_hash)
                 stopped_vms.append(vm_hash)
 
         # Second start persistent VMs and instances sequentially to limit resource usage.
