@@ -149,6 +149,18 @@ async def reconcile_port_forwards(supervisor: Supervisor, vm_id: VmId, content) 
             await supervisor.add_port_forward(spec)
 
 
+class VmStartupError(Exception):
+    """A VM was created but never reached the running state: it entered a
+    terminal status (FAILED/STOPPED) or timed out before RUNNING.
+
+    Agent-internal (raised by ``_wait_until_running``, never crosses the
+    Supervisor boundary), so it is not part of the SupervisorError vocabulary.
+    ``create_vm_execution_or_raise_http_error`` (instances, v-programs) and
+    ``_raise_http_for_program_error`` (on-demand programs) map it to a clear
+    HTTP reason instead of the generic "unhandled error" bucket, so the
+    mapping covers every VM type."""
+
+
 async def _wait_until_running(
     supervisor: Supervisor,
     vm_id: VmId,
@@ -159,8 +171,8 @@ async def _wait_until_running(
     """Poll get_vm until the VM reports RUNNING.
 
     In-process the first poll already reports RUNNING (create_vm blocked until
-    boot); across a future gRPC boundary this does real work. Raises on a
-    terminal status or after `timeout` seconds.
+    boot); across a future gRPC boundary this does real work. Raises
+    VmStartupError on a terminal status or after `timeout` seconds.
 
     `timeout`/`interval` default to the module constants, resolved at call time
     so tests (and operators) can override them by patching the constants.
@@ -176,10 +188,10 @@ async def _wait_until_running(
             return info
         if info.status in (VmStatus.STOPPED, VmStatus.FAILED):
             msg = f"VM {vm_id} entered status {info.status.value} while waiting to start"
-            raise RuntimeError(msg)
+            raise VmStartupError(msg)
         if asyncio.get_running_loop().time() >= deadline:
             msg = f"VM {vm_id} did not reach RUNNING within {timeout}s"
-            raise asyncio.TimeoutError(msg)
+            raise VmStartupError(msg)
         await asyncio.sleep(interval)
 
 
@@ -423,6 +435,11 @@ async def create_vm_execution_or_raise_http_error(
         ) from error
     except FileTooLargeError as error:
         raise HTTPInternalServerError(reason=error.args[0]) from error
+    except VmStartupError as error:
+        # Created but never reached RUNNING (terminal status or start timeout):
+        # a distinct, expected outcome, not the generic "unhandled error".
+        logger.warning("VM %s failed to start: %s", vm_hash, error)
+        raise HTTPInternalServerError(reason="VM failed to start") from error
     except VmSetupError as error:
         logger.exception(error)
         raise HTTPInternalServerError(reason="Error during vm initialisation") from error
@@ -468,6 +485,11 @@ def _raise_http_for_program_error(error: Exception, vm_hash: ItemHash) -> None:
         ) from error
     if isinstance(error, FileTooLargeError):
         raise HTTPInternalServerError(reason=str(error) or "File too large") from error
+    if isinstance(error, VmStartupError):
+        # Created but never reached RUNNING (terminal status or start timeout):
+        # a distinct, expected outcome, not the generic "unhandled error".
+        logger.warning("VM %s failed to start: %s", vm_hash, error)
+        raise HTTPInternalServerError(reason="VM failed to start") from error
     if isinstance(error, VmSetupError):
         logger.exception(error)
         raise HTTPInternalServerError(reason="Error during vm initialisation") from error
