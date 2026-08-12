@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -77,7 +76,7 @@ async def test_wait_until_running_raises_on_terminal_status(monkeypatch):
     supervisor = SimpleNamespace(get_vm=AsyncMock(return_value=SimpleNamespace(status=VmStatus.FAILED)))
     monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(run_module.VmStartupError):
         await run_module._wait_until_running(supervisor, _VM_ID, timeout=10, interval=0)
 
 
@@ -86,7 +85,7 @@ async def test_wait_until_running_times_out(monkeypatch):
     supervisor = SimpleNamespace(get_vm=AsyncMock(return_value=SimpleNamespace(status=VmStatus.BOOTING)))
     monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
 
-    with pytest.raises(asyncio.TimeoutError):
+    with pytest.raises(run_module.VmStartupError):
         await run_module._wait_until_running(supervisor, _VM_ID, timeout=0, interval=0)
 
 
