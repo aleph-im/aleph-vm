@@ -195,13 +195,33 @@ def _ensure_verity_sidecars(rootfs_path: Path, hash_tree_path: Path, platform_ro
             shutil.copyfile(hash_tree_path, verity_path)
 
 
-async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramContent) -> CreateVmSpec:
+def _select_attestation_port(manifest: RuntimeManifest) -> int | None:
+    """The RA-TLS attestation port a CRN maps to a host IPv4 port, so an
+    external client (the aleph CLI) can reach the guest's attestation
+    endpoint. Selects the ``aleph.ra-tls`` protocol's tcp transport port;
+    None when the manifest declares none (the caller skips port-forward
+    setup rather than failing closed on it, since attestation reachability
+    is not required for the VM itself to boot and run). First match wins:
+    the schema allows several ``aleph.ra-tls`` entries but a single RA-TLS
+    transport is the expected case, so extra entries are not mapped."""
+    for protocol in manifest.attestation:
+        if protocol.protocol == "aleph.ra-tls" and protocol.transport.type == "tcp":
+            return protocol.transport.port
+    return None
+
+
+async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramContent) -> tuple[CreateVmSpec, int | None]:
     """Fetch, verify and stage the runtime bundle, then build the SNP spec.
 
     Mirrors the on-host launch template (aleph-testnets test_vm_snp.py): QEMU
     backend, direct-kernel boot from the measured bundle members, and a disk
     order that IS the contract: the guest init reads the platform rootfs from
     /dev/vda and the dm-verity hash tree from /dev/vdb.
+
+    Also returns the manifest's RA-TLS attestation port (or None), so the
+    caller can map it to a host port after the VM reaches RUNNING. Nothing
+    here touches spec construction to surface it: the attestation port is a
+    host-only DNAT concern, entirely orthogonal to the measured launch.
     """
     manifest = await fetch_runtime_manifest(str(content.runtime.ref))
 
@@ -253,7 +273,7 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
 
     session_base = settings.CONFIDENTIAL_SESSION_DIRECTORY or (Path(settings.EXECUTION_ROOT) / "sessions")
 
-    return CreateVmSpec(
+    spec = CreateVmSpec(
         vm_id=VmId(str(vm_hash)),
         backend=Backend.QEMU,
         kernel_path=kernel_path,
@@ -281,3 +301,4 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
         persistent=True,
         hostname=get_hostname_from_hash(vm_hash),
     )
+    return spec, _select_attestation_port(manifest)
