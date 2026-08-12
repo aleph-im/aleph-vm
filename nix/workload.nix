@@ -24,6 +24,16 @@ pkgs.runCommand "workload.ext4" {
   cp ${fib-service}/bin/fib-service workload/sbin/init
   chmod +x workload/sbin/init
 
+  # Mount-point targets for init.sh's prepare_chroot: the volume is mounted
+  # read-only under dm-verity, so init.sh cannot create these at boot; they
+  # must ship in the image for the proc/sys/dev bind mounts, the /tmp/secrets
+  # secret-delivery bind mount, and the /etc/resolv.conf file bind mount
+  # (a file bind-mount needs an existing target). Mirrors rootfs.nix.
+  mkdir -p workload/proc workload/sys workload/dev workload/etc workload/tmp/secrets
+  touch workload/etc/resolv.conf
+  chmod 1777 workload/tmp
+  chmod 0700 workload/tmp/secrets
+
   # Calculate size (add 10MB padding).
   size=$(du -sm workload | cut -f1)
   size=$((size + 10))

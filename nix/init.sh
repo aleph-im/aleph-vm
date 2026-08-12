@@ -53,6 +53,13 @@ fi
 
 # Parse boot mode from kernel command line.
 roothash=$(/bin/busybox sed -n 's/.*\broothash=\([0-9a-fA-F]*\).*/\1/p' /proc/cmdline)
+# Parse the V-PROGRAM workload root hash, if present. `\b` requires a
+# non-word character immediately before the match: since "_" and letters are
+# both word characters, `\broothash=` above never matches inside
+# "workload_roothash=" (no boundary between the "d" of "workload" and the "_"
+# that follows, nor between that "_" and "r"), and this `\bworkload_roothash=`
+# match is unambiguous on its own. The two tokens never cross-match.
+workload_roothash=$(/bin/busybox sed -n 's/.*\bworkload_roothash=\([0-9a-fA-F]*\).*/\1/p' /proc/cmdline)
 
 # Wait for the rootfs block device to appear.
 blkdev=""
@@ -73,48 +80,76 @@ if [ -z "$blkdev" ]; then
     exec /bin/busybox poweroff -f
 fi
 
+# Wait (up to 3s) for a block device to appear, e.g. a dm-verity hash tree
+# disk attached by QEMU as an extra virtio-blk device. Used for both the
+# platform hash tree (/dev/vdb) and the workload data + hash tree devices
+# (/dev/vdc, /dev/vdd) below, so each disk is waited for explicitly instead
+# of assuming a single fixed device name.
+wait_for_dev() {
+    local dev n
+    dev="$1"
+    n=0
+    while [ "$n" -lt 30 ]; do
+        if [ -b "$dev" ]; then
+            return 0
+        fi
+        /bin/busybox sleep 0.1
+        n=$((n + 1))
+    done
+    return 1
+}
+
 /bin/busybox mkdir -p /mnt/root
 
-# Prepare the chroot environment: bind-mount /proc, /sys, /dev, the secret dir,
-# and set up DNS. Called after mounting rootfs, before starting /sbin/init.
+# Prepare a chroot environment: bind-mount /proc, /sys, /dev, the secret dir,
+# and set up DNS in the given target. Called with the chroot that will
+# actually run its /sbin/init (/mnt/workload when a V-PROGRAM workload volume
+# is mounted, /mnt/root otherwise), after mounting it.
+#
+# The target is mounted read-only under dm-verity, so the mkdirs below cannot
+# create anything there: the mount-point directories (and the resolv.conf
+# placeholder file) are shipped in the image (rootfs.nix / workload.nix) and
+# the mkdirs no-op. They only do real work on the legacy writable-mount path.
 prepare_chroot() {
-    /bin/busybox mkdir -p /mnt/root/proc /mnt/root/sys /mnt/root/dev /mnt/root/etc
-    /bin/busybox mount --bind /proc /mnt/root/proc
-    /bin/busybox mount --bind /sys /mnt/root/sys
-    /bin/busybox mount --bind /dev /mnt/root/dev
+    local target
+    target="$1"
+    /bin/busybox mkdir -p "$target/proc" "$target/sys" "$target/dev" "$target/etc"
+    /bin/busybox mount --bind /proc "$target/proc"
+    /bin/busybox mount --bind /sys "$target/sys"
+    /bin/busybox mount --bind /dev "$target/dev"
     # Secret delivery: the attest-agent writes injected secrets under /tmp/secrets
     # in THIS (initramfs) mount namespace, but the workload runs chrooted into
-    # /mnt/root, where /tmp/secrets is a different filesystem. Bind-mount the
+    # the target, where /tmp/secrets is a different filesystem. Bind-mount the
     # agent's secret dir into the chroot so the app reads exactly what the agent
     # writes. The source path matches the agent's DEFAULT_SECRETS_DIR
     # (/tmp/secrets in secrets.rs); pre-create it 0700 so the agent's hardened
     # directory check accepts it (real dir, agent-owned, owner-only).
     /bin/busybox mkdir -m 0700 -p /tmp/secrets
-    /bin/busybox mkdir -m 0700 -p /mnt/root/tmp/secrets
-    /bin/busybox mount --bind /tmp/secrets /mnt/root/tmp/secrets
-    # DNS for the chrooted workload. The rootfs is mounted read-only under
-    # dm-verity, so writing /mnt/root/etc/resolv.conf directly cannot work
+    /bin/busybox mkdir -m 0700 -p "$target/tmp/secrets"
+    /bin/busybox mount --bind /tmp/secrets "$target/tmp/secrets"
+    # DNS for the chrooted workload. The target is mounted read-only under
+    # dm-verity, so writing its /etc/resolv.conf directly cannot work
     # there (the old `echo >` only ever worked on legacy writable mounts).
     # Instead, expose the initramfs /etc/resolv.conf (written by udhcpc.script
     # from the DHCP option-6 nameservers) via a file bind-mount over the
-    # rootfs placeholder. On the static ip= path there is no DHCP lease, so
+    # image's placeholder. On the static ip= path there is no DHCP lease, so
     # seed the initramfs copy from the gateway first (common for VM bridges).
     if [ ! -f /etc/resolv.conf ] && [ -n "$gateway" ]; then
         /bin/busybox mkdir -p /etc
         echo "nameserver ${gateway}" > /etc/resolv.conf
     fi
     if [ -f /etc/resolv.conf ]; then
-        if [ -f /mnt/root/etc/resolv.conf ]; then
-            /bin/busybox mount --bind /etc/resolv.conf /mnt/root/etc/resolv.conf \
+        if [ -f "$target/etc/resolv.conf" ]; then
+            /bin/busybox mount --bind /etc/resolv.conf "$target/etc/resolv.conf" \
                 || echo "init: WARNING: resolv.conf bind-mount failed; workload DNS unavailable"
         else
-            # Legacy rootfs without the placeholder: best-effort copy (works
-            # only if the rootfs is mounted writable).
-            /bin/busybox cp /etc/resolv.conf /mnt/root/etc/resolv.conf 2>/dev/null \
-                || echo "init: WARNING: rootfs has no /etc/resolv.conf placeholder; workload DNS unavailable"
+            # Legacy image without the placeholder: best-effort copy (works
+            # only if the target is mounted writable).
+            /bin/busybox cp /etc/resolv.conf "$target/etc/resolv.conf" 2>/dev/null \
+                || echo "init: WARNING: ${target} has no /etc/resolv.conf placeholder; workload DNS unavailable"
         fi
     fi
-    echo "init: chroot environment prepared (proc, sys, dev, secrets, DNS)"
+    echo "init: chroot environment prepared at ${target} (proc, sys, dev, secrets, DNS)"
 }
 
 # Install a minimal guest firewall so only the attested TLS port is reachable
@@ -147,8 +182,9 @@ NFT
     fi
 }
 
-# Load dm-verity kernel modules if verity is requested.
-if [ -n "$roothash" ]; then
+# Load dm-verity kernel modules if verity is requested (platform rootfs
+# and/or workload volume: either token alone is enough to need dm-verity).
+if [ -n "$roothash" ] || [ -n "$workload_roothash" ]; then
     echo "init: loading dm-verity kernel modules"
     /bin/busybox insmod /lib/modules/dax.ko 2>&1 || echo "init: warning: insmod dax.ko failed"
     /bin/busybox insmod /lib/modules/dm-mod.ko 2>&1 || echo "init: warning: insmod dm-mod.ko failed"
@@ -160,34 +196,25 @@ if [ -n "$roothash" ]; then
 fi
 
 if [ -n "$roothash" ]; then
-    # dm-verity: wait for hash tree device (/dev/vdb)
-    hashdev=""
-    n=0
-    while [ "$n" -lt 30 ]; do
-        if [ -b /dev/vdb ]; then
-            hashdev="/dev/vdb"
-            break
-        fi
-        /bin/busybox sleep 0.1
-        n=$((n + 1))
-    done
-
-    if [ -z "$hashdev" ]; then
+    # dm-verity: wait for the platform hash tree device (/dev/vdb).
+    if wait_for_dev /dev/vdb; then
+        hashdev="/dev/vdb"
+    else
         echo "init: FATAL: roothash set but /dev/vdb (hash tree) not found"
         exec /bin/busybox poweroff -f
-    else
-        echo "init: setting up dm-verity on ${blkdev} with hash tree ${hashdev}"
-        echo "init: roothash=${roothash}"
-        if /bin/veritysetup open "$blkdev" verity-root "$hashdev" "$roothash" 2>&1; then
-            echo "init: mounting /dev/mapper/verity-root"
-            if ! /bin/busybox mount -t ext4 -o ro /dev/mapper/verity-root /mnt/root; then
-                echo "init: FATAL: verity mount failed"
-                exec /bin/busybox poweroff -f
-            fi
-        else
-            echo "init: FATAL: dm-verity verification failed - rootfs may be tampered"
+    fi
+
+    echo "init: setting up dm-verity on ${blkdev} with hash tree ${hashdev}"
+    echo "init: roothash=${roothash}"
+    if /bin/veritysetup open "$blkdev" verity-root "$hashdev" "$roothash" 2>&1; then
+        echo "init: mounting /dev/mapper/verity-root"
+        if ! /bin/busybox mount -t ext4 -o ro /dev/mapper/verity-root /mnt/root; then
+            echo "init: FATAL: verity mount failed"
             exec /bin/busybox poweroff -f
         fi
+    else
+        echo "init: FATAL: dm-verity verification failed - rootfs may be tampered"
+        exec /bin/busybox poweroff -f
     fi
 else
     # No dm-verity: direct mount (backwards compatible)
@@ -199,13 +226,67 @@ else
     fi
 fi
 
-prepare_chroot
+# V-PROGRAM workload volume: verity-verify and mount the workload data disk
+# (/dev/vdc) against its hash tree (/dev/vdd), distinct devices from the
+# platform rootfs (/dev/vda) and its hash tree (/dev/vdb) above. Only present
+# when the daemon attached a workload; when workload_roothash is empty this
+# whole block is skipped and behavior is unchanged (platform /sbin/init runs
+# below, as today).
+if [ -n "$workload_roothash" ]; then
+    if ! wait_for_dev /dev/vdc; then
+        echo "init: FATAL: workload_roothash set but /dev/vdc (workload data) not found"
+        exec /bin/busybox poweroff -f
+    fi
+    if ! wait_for_dev /dev/vdd; then
+        echo "init: FATAL: workload_roothash set but /dev/vdd (workload hash tree) not found"
+        exec /bin/busybox poweroff -f
+    fi
+
+    echo "init: setting up dm-verity on /dev/vdc with hash tree /dev/vdd (workload)"
+    echo "init: workload_roothash=${workload_roothash}"
+    if /bin/veritysetup open /dev/vdc verity-workload /dev/vdd "$workload_roothash" 2>&1; then
+        /bin/busybox mkdir -p /mnt/workload
+        echo "init: mounting /dev/mapper/verity-workload"
+        if ! /bin/busybox mount -t ext4 -o ro /dev/mapper/verity-workload /mnt/workload; then
+            echo "init: FATAL: workload verity mount failed"
+            exec /bin/busybox poweroff -f
+        fi
+    else
+        echo "init: FATAL: dm-verity verification failed for the workload volume - it may be tampered"
+        exec /bin/busybox poweroff -f
+    fi
+fi
+
+# Prepare only the chroot that will actually run its /sbin/init: when a
+# workload volume is mounted, the workload runs INSTEAD OF the platform
+# /sbin/init, so the bind mounts (proc, sys, dev, secrets, DNS) belong in
+# /mnt/workload and preparing /mnt/root would be wasted work (and vice versa).
+if [ -n "$workload_roothash" ]; then
+    prepare_chroot /mnt/workload
+else
+    prepare_chroot /mnt/root
+fi
 
 # Install the guest firewall BEFORE starting the workload, so the app can never
 # be reached directly even during the window before the agent is up.
 setup_firewall
 
-if [ -x /mnt/root/sbin/init ]; then
+# When a V-PROGRAM workload is mounted, its /sbin/init (the workload
+# entrypoint, e.g. fib-service) runs INSTEAD OF the baked platform
+# /sbin/init (the busybox httpd fallback used when no workload is present).
+if [ -n "$workload_roothash" ]; then
+    if [ -x /mnt/workload/sbin/init ]; then
+        echo "init: starting /sbin/init from workload volume"
+        /bin/busybox chroot /mnt/workload /sbin/init &
+    else
+        # dm-verity already proved the volume authentic, so a missing
+        # /sbin/init means a malformed workload image: fail closed like every
+        # other error path instead of leaving the attest-agent proxying to a
+        # dead upstream.
+        echo "init: FATAL: no /sbin/init found in workload volume"
+        exec /bin/busybox poweroff -f
+    fi
+elif [ -x /mnt/root/sbin/init ]; then
     echo "init: starting /sbin/init from rootfs"
     /bin/busybox chroot /mnt/root /sbin/init &
 else
