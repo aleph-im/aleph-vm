@@ -60,6 +60,18 @@ async def test_resolve_port_forwards_tolerates_settings_error(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_resolve_port_forwards_strict_raises_on_settings_error(monkeypatch):
+    """strict=True is for convergence callers: a fetch failure must abort the
+    reconcile, not converge the VM onto the SSH-only fallback set (which would
+    remove the user's aggregate-declared forwards on a transient CCN error)."""
+    monkeypatch.setattr(run_module, "get_user_settings", AsyncMock(side_effect=RuntimeError("boom")))
+    content = SimpleNamespace(address="0xabc")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await run_module.resolve_port_forwards(_VM_ID, content, strict=True)
+
+
+@pytest.mark.asyncio
 async def test_wait_until_running_returns_on_running(monkeypatch):
     booting = SimpleNamespace(status=VmStatus.BOOTING)
     running = SimpleNamespace(status=VmStatus.RUNNING)

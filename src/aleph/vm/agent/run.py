@@ -29,7 +29,10 @@ from aleph.vm.agent.translate import build_create_vm_spec, build_program_create_
 from aleph.vm.agent.update_watcher import UpdateWatcher
 from aleph.vm.agent.vm.program_client import ProgramGuestClient
 from aleph.vm.agent.vm_registry import AgentVmRegistry, persist_record
-from aleph.vm.agent.vprogram_launch import build_vprogram_spec
+from aleph.vm.agent.vprogram_launch import (
+    build_vprogram_spec,
+    resolve_vprogram_attestation_port,
+)
 from aleph.vm.conf import settings
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor_interface import errors as supervisor_errors
@@ -97,13 +100,20 @@ def _is_spec_eligible(content) -> bool:
     return isinstance(content, InstanceContent)
 
 
-async def resolve_port_forwards(vm_id: VmId, content) -> list[PortForwardSpec]:
+async def resolve_port_forwards(vm_id: VmId, content, *, strict: bool = False) -> list[PortForwardSpec]:
     """Agent-side policy: translate the user's port-forwarding aggregate settings
     into the set of forwards the hypervisor should apply.
 
     This is the agent half of the old VmExecution.fetch_port_redirect_config_and_setup.
     Nothing here touches nftables; the caller applies each spec through
     supervisor.add_port_forward. host_port is left 0; the hypervisor assigns it.
+
+    ``strict=True`` turns an aggregate-fetch failure into an exception instead
+    of the SSH-only fallback. The fallback is right on create (worst case the
+    VM starts with SSH only), but a convergence caller reconciling an already
+    forwarded VM must not treat "could not fetch" as "the user removed every
+    port": converging on the fallback set would tear the user's forwards down
+    on a transient CCN error. Strict callers skip reconciling instead.
     """
     ports_requests: dict[int, dict[str, bool]] = {}
     try:
@@ -112,6 +122,8 @@ async def resolve_port_forwards(vm_id: VmId, content) -> list[PortForwardSpec]:
         fetched = vm_port_forwarding.get("ports", {})
         ports_requests = {int(port): flags for port, flags in fetched.items()}
     except Exception:
+        if strict:
+            raise
         logger.info("Could not fetch port redirect settings for %s", content.address, exc_info=True)
 
     # Always forward SSH.
@@ -181,11 +193,48 @@ def resolve_vprogram_port_forwards(vm_id: VmId, attest_port: int | None) -> list
 async def reconcile_vprogram_port_forwards(supervisor: Supervisor, vm_id: VmId, attest_port: int | None) -> None:
     """Drive the hypervisor's forwards to match the V-PROGRAM's single
     attestation-port mapping. Reuses ``_reconcile_forwards``, so it is
-    idempotent by construction: a future re-adoption path (a fresh agent
-    process picking the VM back up) can call it safely, though today only
-    the create path does.
+    idempotent by construction: both the create path and the re-adoption
+    path (``reconcile_adopted_port_forwards``) call it safely.
     """
     await _reconcile_forwards(supervisor, vm_id, resolve_vprogram_port_forwards(vm_id, attest_port))
+
+
+async def reconcile_adopted_port_forwards(supervisor: Supervisor, registry: AgentVmRegistry, vm_hash: ItemHash) -> None:
+    """Best-effort port-forward healing for a VM adopted already-created.
+
+    The create path applies forwards right after the VM first reaches RUNNING;
+    a VM re-adopted on a later allocation (typically after an agent restart)
+    skipped that step in this agent's lifetime. If the previous life crashed
+    in the window between RUNNING and the forward setup, the VM is up but
+    unreachable (no SSH for an instance, no attestation endpoint for a
+    V-PROGRAM); for instances, the port-forwarding aggregate may also have
+    changed while the agent was down, past the live aggregate watcher.
+    Converge the hypervisor state here.
+
+    Best-effort by design, unlike the create path (which fails loudly and
+    tears the VM down): the adopted VM is already up and possibly serving, so
+    a healing failure must never fail the allocation and invite scheduler
+    churn. Skipping leaves exactly the state we found.
+    """
+    record = registry.get(vm_hash)
+    if record is None:
+        # Nothing to derive the desired forward set from (agent DB loss).
+        logger.warning("No agent record for adopted VM %s; port forwards left as found", vm_hash)
+        return
+    vm_id = VmId(str(vm_hash))
+    content = record.message
+    try:
+        if isinstance(content, VerifiableProgramContent):
+            attest_port = await resolve_vprogram_attestation_port(content)
+            await reconcile_vprogram_port_forwards(supervisor, vm_id, attest_port)
+        elif _is_spec_eligible(content):
+            # strict: a failed aggregate fetch must skip healing, not converge
+            # the VM onto the SSH-only fallback set (which would remove the
+            # user's aggregate-declared forwards on a transient CCN error).
+            await _reconcile_forwards(supervisor, vm_id, await resolve_port_forwards(vm_id, content, strict=True))
+        # Programs get no agent-side forwards: nothing to heal.
+    except Exception:
+        logger.warning("Could not reconcile port forwards for adopted VM %s; left as found", vm_hash, exc_info=True)
 
 
 async def _wait_until_running(
@@ -855,6 +904,14 @@ async def start_persistent_vm(
             # them) so the recreated VM reloads the same host ports.
             await supervisor.delete_vm(vm_id, keep_port_mappings=True)
             info = None
+        if info is not None and not info.awaiting_confidential_init:
+            # Every branch that kept `info` ends with a RUNNING VM this agent
+            # did not create in its own lifetime. Only the create path applies
+            # forwards, so heal them here: a previous life crashing between
+            # RUNNING and the forward setup leaves the VM up but unreachable
+            # forever otherwise. Best-effort; never fails the allocation.
+            # The recreate branches (info = None) reconcile in the create path.
+            await reconcile_adopted_port_forwards(supervisor, registry, vm_hash)
 
     if info is None:
         logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
