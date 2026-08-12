@@ -528,14 +528,36 @@ async def update_allocations(request: web.Request):
 
     async with allocation_lock:
         logger.debug("Got allocation_lock, updating allocations")
+
+        # Snapshot systemd's ActiveState for every persistent controller
+        # in one batched D-Bus ListUnits() call off the event loop. The
+        # per-VM path (execution.is_running -> is_service_active) would
+        # otherwise issue O(N) synchronous D-Bus round-trips inside this
+        # loop; on CRNs with dozens of persistent VMs that stalls the
+        # loop long enough for the aleph-admin HTTP client to time out.
+        persistent_services = [
+            execution.controller_service for execution in pool.executions.values() if execution.persistent
+        ]
+        # None (not {}) when no batch was performed, so get_persistent_executions
+        # falls back to its per-VM is_running path instead of treating every
+        # service as not-running.
+        running_states: dict[str, bool] | None = None
+        if persistent_services and pool.systemd_manager:
+            running_states = await asyncio.to_thread(
+                pool.systemd_manager.get_services_active_states,
+                persistent_services,
+            )
+
         # First, free resources from persistent programs and instances that are not scheduled anymore.
         allocations = allocation.persistent_vms | allocation.instances
         stopped_vms = []
-        # Make a copy since the pool is modified
-        for execution in list(pool.get_persistent_executions()):
+        # Make a copy since the pool is modified. get_persistent_executions
+        # already filtered by "running" via the batched map, so the extra
+        # is_running check the old code did here is both redundant and a
+        # per-VM D-Bus round-trip we now avoid.
+        for execution in list(pool.get_persistent_executions(running_states=running_states)):
             if (
                 execution.vm_hash not in allocations
-                and execution.is_running
                 and not execution.uses_payment_stream
                 and not execution.uses_payment_credit
                 and not execution.gpus
@@ -571,7 +593,7 @@ async def update_allocations(request: web.Request):
                 # a VM; firing an unconditional log here just adds noise
                 # when the scheduler re-pushes the full allocation list.
                 vm_hash = ItemHash(vm_hash)
-                await start_persistent_vm(vm_hash, pubsub, pool)
+                await start_persistent_vm(vm_hash, pubsub, pool, running_states=running_states)
             except vm_creation_exceptions as error:
                 logger.exception("Error while starting VM '%s': %s", vm_hash, error)
                 scheduling_errors[vm_hash] = error
@@ -584,7 +606,7 @@ async def update_allocations(request: web.Request):
         for instance_hash in allocation.instances:
             instance_item_hash = ItemHash(instance_hash)
             try:
-                await start_persistent_vm(instance_item_hash, pubsub, pool)
+                await start_persistent_vm(instance_item_hash, pubsub, pool, running_states=running_states)
             except vm_creation_exceptions as error:
                 logger.exception("Error while starting VM '%s': %s", instance_hash, error)
                 scheduling_errors[instance_item_hash] = error

@@ -267,10 +267,27 @@ async def run_code_on_event(vm_hash: ItemHash, event, pubsub: PubSub, pool: VmPo
             await execution.stop()
 
 
-async def start_persistent_vm(vm_hash: ItemHash, pubsub: PubSub | None, pool: VmPool) -> VmExecution:
+async def start_persistent_vm(
+    vm_hash: ItemHash,
+    pubsub: PubSub | None,
+    pool: VmPool,
+    running_states: dict[str, bool] | None = None,
+) -> VmExecution:
+    """Start (or attach to) a persistent VM.
+
+    ``running_states`` is an optional pre-computed mapping of
+    controller_service name -> active state, used to replace the
+    per-VM ``is_running`` D-Bus round-trip with a dict lookup. Callers
+    reconciling many VMs in a row (``update_allocations``) should pass
+    it to avoid stalling the event loop for seconds at a time.
+    """
     execution: VmExecution | None = pool.executions.get(vm_hash)
     if execution:
-        if execution.is_running:
+        if running_states is not None and execution.persistent:
+            is_running_now = running_states.get(execution.controller_service, False)
+        else:
+            is_running_now = execution.is_running
+        if is_running_now:
             logger.debug(f"{vm_hash} is already running")
         elif execution.is_starting:
             logger.debug(f"{vm_hash} is already starting")

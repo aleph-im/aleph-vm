@@ -788,13 +788,31 @@ class VmPool:
         )
         return executions or []
 
-    def get_persistent_executions(self) -> Iterable[VmExecution]:
-        executions = (
-            execution
-            for _vm_hash, execution in self.executions.items()
-            if execution.is_running and execution.persistent
-        )
-        return executions or []
+    def get_persistent_executions(
+        self,
+        running_states: dict[str, bool] | None = None,
+    ) -> Iterable[VmExecution]:
+        """Yield persistent executions that are currently running.
+
+        Args:
+            running_states: Optional pre-computed mapping of
+                controller_service name -> active state (e.g. the result
+                of ``SystemDManager.get_services_active_states()``). When
+                provided, replaces the per-VM ``is_running`` D-Bus round-
+                trip with a dict lookup. Callers iterating over many
+                executions should pass this to avoid stalling the event
+                loop, same shortcut used by ``load_persistent_executions``
+                and ``get_executions_by_address``.
+        """
+        for _vm_hash, execution in self.executions.items():
+            if not execution.persistent:
+                continue
+            if running_states is not None:
+                is_running_now = running_states.get(execution.controller_service, False)
+            else:
+                is_running_now = execution.is_running
+            if is_running_now:
+                yield execution
 
     def get_instance_executions(self) -> Iterable[VmExecution]:
         executions = (

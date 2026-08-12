@@ -352,7 +352,12 @@ async def test_allocation_valid_token(aiohttp_client):
     This is a very simple test that don't start or stop any VM so the mock is minimal"""
 
     class FakeVmPool:
-        def get_persistent_executions(self):
+        # update_allocations reads these before get_persistent_executions:
+        # no executions means no batched systemd lookup is attempted.
+        executions: dict = {}
+        systemd_manager = None
+
+        def get_persistent_executions(self, running_states=None):
             return []
 
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
@@ -1148,7 +1153,12 @@ async def test_regenerate_proxy_exception(aiohttp_client, mocker, mock_app_with_
 
 
 class _FakeVmPool:
-    def get_persistent_executions(self):
+    # update_allocations reads these before get_persistent_executions:
+    # no executions means no batched systemd lookup is attempted.
+    executions: dict = {}
+    systemd_manager = None
+
+    def get_persistent_executions(self, running_states=None):
         return []
 
 
