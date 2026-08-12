@@ -560,7 +560,9 @@ async def test_start_persistent_readopt_instance_heals_with_strict_resolve(monke
     await _start_persistent(sup, _instance_registry())
 
     resolve.assert_awaited_once()
-    assert resolve.await_args.kwargs.get("strict") is True
+    await_args = resolve.await_args
+    assert await_args is not None
+    assert await_args.kwargs.get("strict") is True
     sup.add_port_forward.assert_awaited_once_with(ssh)
     sup.remove_port_forward.assert_not_awaited()
 
