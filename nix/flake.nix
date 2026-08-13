@@ -131,6 +131,7 @@
         inherit attest-agent kernel;
         init-script = ./init.sh;
         udhcpc-script = ./udhcpc.script;
+        udhcpc6-script = ./udhcpc6.script;
       };
       rootfs = pkgs.callPackage ./rootfs.nix {};
 

@@ -48,6 +48,24 @@ else
         # by running this script; without it the guest would lease from the host's
         # per-tap dnsmasq but never configure its IP. See udhcpc.script.
         /bin/busybox udhcpc -i "$iface" -q -t 5 -A 2 -s /bin/udhcpc.script 2>&1 || echo "init: DHCP failed on ${iface}"
+
+        # IPv6: stateful DHCPv6 from the same per-tap dnsmasq that served the
+        # IPv4 lease above, handing this guest EXACTLY its allocated
+        # /124-scheme address; the default route comes from the kernel
+        # processing that dnsmasq's Router Advertisements (DHCPv6 cannot
+        # convey routes). Never a kernel-cmdline address: baking the per-VM
+        # address into the measured cmdline would break the publisher's
+        # precomputed SNP measurement, the exact reason the IPv4 path above
+        # uses DHCP. accept_ra=2 keeps RA processing on regardless of
+        # forwarding settings; both sysctls are best-effort (a v6-less
+        # kernel stays IPv4-only). The client is bounded and non-fatal like
+        # udhcpc above: with no DHCPv6 server on the tap the guest simply
+        # stays IPv4-only. -q exits after the lease (the script applies the
+        # address permanently), so no client survives into the firewalled
+        # steady state and no DHCP firewall rule is needed.
+        echo 0 > "/proc/sys/net/ipv6/conf/${iface}/disable_ipv6" 2>/dev/null || true
+        echo 2 > "/proc/sys/net/ipv6/conf/${iface}/accept_ra" 2>/dev/null || true
+        /bin/busybox udhcpc6 -i "$iface" -q -t 5 -A 2 -s /bin/udhcpc6.script 2>&1 || echo "init: DHCPv6 failed on ${iface}; continuing IPv4-only"
     fi
 fi
 
@@ -161,6 +179,17 @@ prepare_chroot() {
 # The ruleset is STATELESS on purpose: for a TCP connection to the server the
 # inbound packets always carry dport 8443, so `tcp dport 8443 accept` covers the
 # whole flow without a conntrack module. Load order matches modules.dep.
+#
+# The `inet` table family filters BOTH IPv4 and IPv6 with one ruleset, so
+# `tcp dport 8443` already covers v6 connections. The icmpv6 accept rule is
+# control-plane only (no app data crosses it), but without it the firewall
+# would break IPv6 on its own: Router Advertisements refresh the SLAAC-free
+# default route's lifetime, Neighbor Solicitation/Advertisement keep
+# resolving the gateway (NUD re-probes after ~30s idle), and Packet Too Big
+# drives Path MTU Discovery. Dropping any of those silently blackholes v6
+# minutes into the VM's life, not at boot. No DHCP rules (udp 68/546): both
+# clients run with -q and exit before this firewall exists (see init
+# networking above).
 setup_firewall() {
     /bin/busybox insmod /lib/modules/nfnetlink.ko 2>&1 || echo "init: warning: insmod nfnetlink.ko failed"
     /bin/busybox insmod /lib/modules/libcrc32c.ko 2>&1 || echo "init: warning: insmod libcrc32c.ko failed"
@@ -171,11 +200,12 @@ table inet filter {
 		type filter hook input priority 0; policy drop;
 		iif "lo" accept
 		tcp dport 8443 accept
+		icmpv6 type { nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, destination-unreachable, packet-too-big, time-exceeded, parameter-problem } accept
 	}
 }
 NFT
     then
-        echo "init: firewall active (drop inbound except tcp/8443 and loopback)"
+        echo "init: firewall active (drop inbound except tcp/8443, loopback, and ND/PMTU icmpv6)"
     else
         echo "init: FATAL: failed to install guest firewall"
         exec /bin/busybox poweroff -f

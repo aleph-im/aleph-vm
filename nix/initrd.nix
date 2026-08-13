@@ -1,4 +1,4 @@
-{ pkgs, attest-agent, kernel, init-script, udhcpc-script, ... }:
+{ pkgs, attest-agent, kernel, init-script, udhcpc-script, udhcpc6-script, ... }:
 
 let
   # veritysetup needs to be statically linked for the initrd environment.
@@ -47,6 +47,7 @@ pkgs.makeInitrd {
     { object = "${pkgs.busybox}/bin/busybox"; symlink = "/bin/busybox"; }
     { object = init-script; symlink = "/init"; }
     { object = udhcpc-script; symlink = "/bin/udhcpc.script"; }
+    { object = udhcpc6-script; symlink = "/bin/udhcpc6.script"; }
     { object = "${attest-agent}/bin/aleph-attest-agent"; symlink = "/bin/aleph-attest-agent"; }
     { object = "${staticCryptsetup}/bin/veritysetup"; symlink = "/bin/veritysetup"; }
     { object = "${staticNft}/bin/nft"; symlink = "/bin/nft"; }
