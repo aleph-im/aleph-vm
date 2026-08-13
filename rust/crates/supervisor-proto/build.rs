@@ -19,6 +19,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_build::configure()
         .build_client(true)
         .build_server(true)
+        // serde::Serialize on every generated type: alephctl's --json output.
+        // Generated Rust code only; the wire contract is untouched.
+        .type_attribute(".", "#[derive(serde::Serialize)]")
         .compile_protos(&[proto], &[include])?;
     Ok(())
 }
