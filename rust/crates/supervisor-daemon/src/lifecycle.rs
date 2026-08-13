@@ -542,7 +542,8 @@ fn nft_remove_redirect(
 pub fn initialize_nftables(state: &DaemonState) -> Result<(), String> {
     let prefix = chain_prefix(state);
     let ruleset = nft::fetch_ruleset(&*state.nft);
-    let commands = nft::initialize_ipv4_commands(&ruleset, prefix)?;
+    let commands =
+        nft::initialize_ipv4_commands(&ruleset, prefix).map_err(|error| error.to_string())?;
     nft::run_commands_logged(&*state.nft, &commands);
     if !state.host.settings.ipv6_forwarding_enabled {
         return Ok(());
@@ -3314,7 +3315,7 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
             match result {
                 Ok(()) => removed_chains.push(chain.clone()),
                 Err(error) => {
-                    tracing::warn!(chain, error, "failed to remove chain");
+                    tracing::warn!(chain, %error, "failed to remove chain");
                 }
             }
         }
