@@ -2821,7 +2821,8 @@ fn create_vm_inner(
                 dns_nameservers: state.host.dns_nameservers.as_deref(),
                 confidential,
             }
-            .create_image()?;
+            .create_image()
+            .map_err(|error| error.to_string())?;
         }
         controller_config::save_controller_config(&state.host.settings.execution_root, &written)?;
 
