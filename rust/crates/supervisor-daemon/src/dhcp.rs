@@ -64,6 +64,14 @@ pub struct DhcpConfig {
     pub gateway: String,
     /// The tap netmask, e.g. "255.255.255.0", the `--dhcp-range` mask.
     pub netmask: String,
+    /// The single IPv6 address the guest may lease (`VmInfo.ipv6.address`).
+    /// Always populated: `derive_tap_assignment` computes an IPv6 pair for
+    /// every VM (static or dynamic policy), like cloud-init always writes
+    /// static v6 config for non-SNP instances.
+    pub guest_ipv6: String,
+    /// The tap IPv6 prefix length (from the /124-per-VM scheme), the
+    /// DHCPv6 `--dhcp-range` prefix and the RA on-link prefix.
+    pub ipv6_prefix_len: u8,
     /// The daemon's resolved nameservers, DHCP option 6. Empty omits the
     /// option (the guest gets no DNS, the same as a nameserver-less host).
     pub nameservers: Vec<String>,
@@ -94,25 +102,16 @@ impl DhcpConfig {
         nameservers: &[String],
         lease_dir: &std::path::Path,
     ) -> Result<Self, DhcpError> {
-        let (_, prefix_str) =
-            tap.ipv4
-                .network_cidr
-                .split_once('/')
-                .ok_or_else(|| DhcpError::CidrNoPrefix {
-                    cidr: tap.ipv4.network_cidr.clone(),
-                })?;
-        let prefix = prefix_str
-            .parse::<u8>()
-            .map_err(|source| DhcpError::CidrBadPrefix {
-                cidr: tap.ipv4.network_cidr.clone(),
-                source,
-            })?;
+        let prefix = cidr_prefix_len(&tap.ipv4.network_cidr, "IPv4")?;
+        let ipv6_prefix_len = cidr_prefix_len(&tap.ipv6.network_cidr, "IPv6")?;
         Ok(Self {
             vm_hash: vm_hash.to_string(),
             device_name: tap.device_name.clone(),
             guest_ip: tap.ipv4.address.clone(),
             gateway: tap.ipv4.gateway.clone(),
             netmask: netmask_for_prefix(prefix),
+            guest_ipv6: tap.ipv6.address.clone(),
+            ipv6_prefix_len,
             nameservers: nameservers.to_vec(),
             lease: DEFAULT_LEASE.to_string(),
             lease_file: lease_file_path(lease_dir, vm_hash)
@@ -157,6 +156,18 @@ impl DhcpConfig {
             ),
             // Option 3: router / default gateway = the host tap address.
             format!("--dhcp-option=3,{}", self.gateway),
+            // The v6 twin of the single-address range above: stateful DHCPv6
+            // (dnsmasq detects the family from the address syntax) handing the
+            // guest EXACTLY its allocated /124-scheme address. --enable-ra
+            // makes dnsmasq advertise on the tap; for a stateful (non-slaac)
+            // range the RA carries M=1/A=0, so the guest takes its default
+            // route from the RA (DHCPv6 cannot convey routes) and never
+            // autoconfigures a second address. No radvd needed.
+            format!(
+                "--dhcp-range={},{},{},{}",
+                self.guest_ipv6, self.guest_ipv6, self.ipv6_prefix_len, self.lease
+            ),
+            "--enable-ra".to_string(),
         ];
         // Option 6: DNS servers, only when the daemon resolved some.
         if !self.nameservers.is_empty() {
@@ -191,6 +202,25 @@ impl DhcpConfig {
     }
 }
 
+/// The prefix length of a CIDR string, fail-closed: a malformed prefix must
+/// surface at config-build time rather than as a dnsmasq startup failure
+/// (v4) or an unroutable netmask (see `for_snp`).
+fn cidr_prefix_len(network_cidr: &str, family: &'static str) -> Result<u8, DhcpError> {
+    let (_, prefix_str) = network_cidr
+        .split_once('/')
+        .ok_or_else(|| DhcpError::CidrNoPrefix {
+            family,
+            cidr: network_cidr.to_string(),
+        })?;
+    prefix_str
+        .parse::<u8>()
+        .map_err(|source| DhcpError::CidrBadPrefix {
+            family,
+            cidr: network_cidr.to_string(),
+            source,
+        })
+}
+
 /// The dotted netmask for an IPv4 prefix length (`/24` -> "255.255.255.0").
 fn netmask_for_prefix(prefix: u8) -> String {
     let bits = if prefix >= 32 {
@@ -222,11 +252,15 @@ pub trait DhcpBackend: Send + Sync {
 /// Failures deriving a [`DhcpConfig`] or driving the per-tap DHCP server.
 #[derive(Debug, thiserror::Error)]
 pub enum DhcpError {
-    #[error("tap IPv4 network CIDR {cidr:?} has no prefix length")]
-    CidrNoPrefix { cidr: String },
+    #[error("tap {family} network CIDR {cidr:?} has no prefix length")]
+    CidrNoPrefix { family: &'static str, cidr: String },
 
-    #[error("tap IPv4 network CIDR {cidr:?} has an invalid prefix length: {source}")]
-    CidrBadPrefix { cidr: String, source: ParseIntError },
+    #[error("tap {family} network CIDR {cidr:?} has an invalid prefix length: {source}")]
+    CidrBadPrefix {
+        family: &'static str,
+        cidr: String,
+        source: ParseIntError,
+    },
 
     #[error("cannot run {program}: {source}")]
     Run {
@@ -616,6 +650,51 @@ mod tests {
             backend.stop(&"e".repeat(64), lease),
             Err(DhcpError::StopFailed { stderr, .. }) if stderr == "nope"
         ));
+    }
+
+    #[test]
+    fn dnsmasq_args_hand_the_guest_exactly_its_allocated_ipv6() {
+        // The v6 twin of the IPv4 single-address range: a stateful DHCPv6
+        // range with low == high == the allocated address, plus --enable-ra.
+        // dnsmasq's RA for a stateful (non-slaac) range carries M=1/A=0, so
+        // the guest gets its default route from the RA (DHCPv6 cannot convey
+        // routes) and never SLAACs a second address.
+        let config = DhcpConfig::for_snp(
+            &"e".repeat(64),
+            &snp_tap(),
+            &["1.1.1.1".to_string()],
+            std::path::Path::new("/run/aleph/dhcp"),
+        )
+        .unwrap();
+        assert_eq!(config.guest_ipv6, "fc00:1:2:3::11");
+        assert_eq!(config.ipv6_prefix_len, 124);
+        let args = config.dnsmasq_args();
+        assert!(args.contains(&"--enable-ra".to_string()));
+        assert!(
+            args.contains(&"--dhcp-range=fc00:1:2:3::11,fc00:1:2:3::11,124,1h".to_string()),
+            "the guest can only lease its allocated IPv6, got {args:?}"
+        );
+    }
+
+    #[test]
+    fn for_snp_rejects_an_ipv6_cidr_without_a_prefix() {
+        // Same fail-closed rule as the v4 CIDR: a malformed prefix must error
+        // rather than silently produce a dnsmasq range dnsmasq would reject at
+        // startup (an Err here surfaces at create; a bad range would instead
+        // fail the transient unit and leave the guest v4-only with no trace in
+        // the create response).
+        let mut tap = snp_tap();
+        tap.ipv6.network_cidr = "fc00:1:2:3::10".into(); // no prefix length
+        assert!(
+            DhcpConfig::for_snp(
+                &"e".repeat(64),
+                &tap,
+                &[],
+                std::path::Path::new("/run/aleph/dhcp"),
+            )
+            .is_err(),
+            "an IPv6 CIDR with no prefix must be rejected"
+        );
     }
 
     #[test]

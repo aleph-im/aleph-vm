@@ -4135,6 +4135,16 @@ mod tests {
             )),
             "the guest can only lease its allocated IP"
         );
+        // The same dnsmasq also serves the allocated IPv6 (stateful DHCPv6 +
+        // RA): the started config carries exactly the entry's derived v6
+        // address, so guest and daemon can never disagree on the address.
+        let entry_ipv6 = entry.ipv6.as_ref().expect("SNP create allocates IPv6");
+        assert_eq!(config.guest_ipv6, entry_ipv6.address);
+        assert!(config.dnsmasq_args().contains(&"--enable-ra".to_string()));
+        assert!(config.dnsmasq_args().contains(&format!(
+            "--dhcp-range={},{},124,1h",
+            entry_ipv6.address, entry_ipv6.address
+        )));
         assert!(harness.dhcp.is_running(&vm_id));
     }
 
