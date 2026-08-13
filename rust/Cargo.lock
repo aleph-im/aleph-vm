@@ -2874,6 +2874,7 @@ name = "supervisor-controller"
 version = "0.1.0"
 dependencies = [
  "aleph-tee",
+ "anyhow",
  "clap",
  "memsizes",
  "serde",

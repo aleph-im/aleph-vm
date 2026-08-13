@@ -20,13 +20,40 @@
 //! `int` subclass), so `mem_size_mb` is read strictly as [`memsizes::MiB`]:
 //! a float, negative or string is a parse error, never coerced.
 
+use std::path::PathBuf;
+
 use memsizes::MiB;
 use serde::{Deserialize, Serialize};
 
-/// A failure to read or parse a controller config file.
+/// A failure to read or parse a controller config file. Every variant
+/// reproduces a message the deleted `ConfigError(String)` newtype used to
+/// build inline via `format!`, so the rendered text is unchanged.
 #[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub struct ConfigError(pub String);
+pub enum ConfigError {
+    #[error("invalid QemuVMConfiguration JSON: {source}")]
+    InvalidQemuJson { source: serde_json::Error },
+
+    #[error("cannot read {}: {source}", .path.display())]
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+
+    #[error("invalid Configuration JSON: {source}")]
+    InvalidJson { source: serde_json::Error },
+
+    #[error("unknown hypervisor {value:?}")]
+    UnknownHypervisor { value: String },
+
+    #[error(
+        "vm_configuration fits no union member: not QEMU ({qemu_error}); \
+         not Firecracker ({firecracker_error})"
+    )]
+    NoUnionMember {
+        qemu_error: serde_json::Error,
+        firecracker_error: serde_json::Error,
+    },
+}
 
 /// The `IPv6AllocationPolicy` str-enum, validated like pydantic (an unknown
 /// value is an error, not a fallback).
@@ -199,8 +226,7 @@ pub struct QemuConfig {
 impl QemuConfig {
     /// Parse the `vm_configuration` object of a controller config.
     pub fn from_json(json: &str) -> Result<Self, ConfigError> {
-        serde_json::from_str(json)
-            .map_err(|error| ConfigError(format!("invalid QemuVMConfiguration JSON: {error}")))
+        serde_json::from_str(json).map_err(|source| ConfigError::InvalidQemuJson { source })
     }
 
     /// True when this is a `QemuConfidentialVMConfiguration` (all four
@@ -297,15 +323,17 @@ fn default_hypervisor() -> String {
 impl Configuration {
     /// Read and parse `{vm_hash}-controller.json` from disk.
     pub fn from_file(path: &std::path::Path) -> Result<Self, ConfigError> {
-        let contents = std::fs::read_to_string(path)
-            .map_err(|error| ConfigError(format!("cannot read {}: {error}", path.display())))?;
+        let contents = std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
         Self::from_json(&contents)
     }
 
     /// Parse one controller configuration file's JSON contents.
     pub fn from_json(json: &str) -> Result<Self, ConfigError> {
-        let raw: RawConfiguration = serde_json::from_str(json)
-            .map_err(|error| ConfigError(format!("invalid Configuration JSON: {error}")))?;
+        let raw: RawConfiguration =
+            serde_json::from_str(json).map_err(|source| ConfigError::InvalidJson { source })?;
         // The hypervisor field is validated like the pydantic HypervisorType
         // enum. It does not pick the union member (the shape does), but the
         // dispatcher checks it first (Python's firecracker-first precedence),
@@ -314,7 +342,9 @@ impl Configuration {
             "qemu" => HypervisorType::Qemu,
             "firecracker" => HypervisorType::Firecracker,
             other => {
-                return Err(ConfigError(format!("unknown hypervisor {other:?}")));
+                return Err(ConfigError::UnknownHypervisor {
+                    value: other.to_string(),
+                });
             }
         };
         let vm_configuration =
@@ -324,10 +354,10 @@ impl Configuration {
                     match serde_json::from_value::<FirecrackerShape>(raw.vm_configuration) {
                         Ok(_) => VmConfiguration::Firecracker,
                         Err(firecracker_error) => {
-                            return Err(ConfigError(format!(
-                                "vm_configuration fits no union member: \
-                                 not QEMU ({qemu_error}); not Firecracker ({firecracker_error})"
-                            )));
+                            return Err(ConfigError::NoUnionMember {
+                                qemu_error,
+                                firecracker_error,
+                            });
                         }
                     }
                 }
