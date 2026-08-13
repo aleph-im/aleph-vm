@@ -1408,7 +1408,8 @@ pub fn delete_vm(
         );
     }
     remove_numa_dropin(state, vm_id);
-    controller_config::remove_controller_configuration(root, vm_id).map_err(RpcError::Internal)?;
+    controller_config::remove_controller_configuration(root, vm_id)
+        .map_err(|error| RpcError::Internal(error.to_string()))?;
     Ok(())
 }
 
@@ -1459,7 +1460,8 @@ fn delete_tracked_vm(
     remove_numa_dropin(state, vm_id);
     // Delete releases the definition: the controller config and the
     // cloud-init seed go too (stop keeps them for reattach).
-    controller_config::remove_controller_configuration(root, vm_id).map_err(RpcError::Internal)?;
+    controller_config::remove_controller_configuration(root, vm_id)
+        .map_err(|error| RpcError::Internal(error.to_string()))?;
     // A delete is final unless the caller says otherwise; delete+recreate
     // cycles pass keep_port_mappings, wipe overrides it.
     if wipe || !keep_port_mappings {
@@ -2823,7 +2825,8 @@ fn create_vm_inner(
             }
             .create_image()?;
         }
-        controller_config::save_controller_config(&state.host.settings.execution_root, &written)?;
+        controller_config::save_controller_config(&state.host.settings.execution_root, &written)
+            .map_err(|error| error.to_string())?;
 
         // Write the AllowedCPUs drop-in before the controller starts so the
         // pin applies on first boot (increment C1). For SEV/SEV-ES VMs the
