@@ -28,6 +28,8 @@
 //! (`aleph-vm-dhcp-{vm_hash}.service`) via `systemd-run`, keyed by vm_hash so
 //! it survives a daemon restart and is torn down by unit name.
 
+use std::num::ParseIntError;
+use std::path::PathBuf;
 use std::process::Command;
 
 use crate::tap::TapAssignment;
@@ -91,19 +93,20 @@ impl DhcpConfig {
         tap: &TapAssignment,
         nameservers: &[String],
         lease_dir: &std::path::Path,
-    ) -> Result<Self, String> {
-        let (_, prefix_str) = tap.ipv4.network_cidr.split_once('/').ok_or_else(|| {
-            format!(
-                "tap IPv4 network CIDR {:?} has no prefix length",
-                tap.ipv4.network_cidr
-            )
-        })?;
-        let prefix = prefix_str.parse::<u8>().map_err(|error| {
-            format!(
-                "tap IPv4 network CIDR {:?} has an invalid prefix length: {error}",
-                tap.ipv4.network_cidr
-            )
-        })?;
+    ) -> Result<Self, DhcpError> {
+        let (_, prefix_str) =
+            tap.ipv4
+                .network_cidr
+                .split_once('/')
+                .ok_or_else(|| DhcpError::CidrNoPrefix {
+                    cidr: tap.ipv4.network_cidr.clone(),
+                })?;
+        let prefix = prefix_str
+            .parse::<u8>()
+            .map_err(|source| DhcpError::CidrBadPrefix {
+                cidr: tap.ipv4.network_cidr.clone(),
+                source,
+            })?;
         Ok(Self {
             vm_hash: vm_hash.to_string(),
             device_name: tap.device_name.clone(),
@@ -206,14 +209,47 @@ pub trait DhcpBackend: Send + Sync {
     /// Stand up the per-tap DHCP server for `config`. A pre-existing unit for
     /// the same VM is replaced (start after a best-effort stop), so a restart
     /// never fails on a leftover.
-    fn start(&self, config: &DhcpConfig) -> Result<(), String>;
+    fn start(&self, config: &DhcpConfig) -> Result<(), DhcpError>;
 
     /// Tear down the per-tap DHCP server for a VM hash and remove its lease
     /// file. A missing unit is a success (idempotent teardown, like the tap
     /// delete). `lease_file` is the per-VM dnsmasq lease database
     /// ([`lease_file_path`]); removing it stops the file leaking on persistent
     /// storage across the VM's lifetime.
-    fn stop(&self, vm_hash: &str, lease_file: &std::path::Path) -> Result<(), String>;
+    fn stop(&self, vm_hash: &str, lease_file: &std::path::Path) -> Result<(), DhcpError>;
+}
+
+/// Failures deriving a [`DhcpConfig`] or driving the per-tap DHCP server.
+#[derive(Debug, thiserror::Error)]
+pub enum DhcpError {
+    #[error("tap IPv4 network CIDR {cidr:?} has no prefix length")]
+    CidrNoPrefix { cidr: String },
+
+    #[error("tap IPv4 network CIDR {cidr:?} has an invalid prefix length: {source}")]
+    CidrBadPrefix { cidr: String, source: ParseIntError },
+
+    #[error("cannot run {program}: {source}")]
+    Run {
+        program: String,
+        source: std::io::Error,
+    },
+
+    #[error("cannot create the DHCP lease directory {path}: {source}")]
+    LeaseDir {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+
+    #[error("systemd-run for {unit} failed: {stderr}")]
+    StartFailed { unit: String, stderr: String },
+
+    #[error("systemctl stop {unit} failed: {stderr}")]
+    StopFailed { unit: String, stderr: String },
+
+    /// A fabricated error for test `DhcpBackend` fakes that need to report a
+    /// specific failure without shelling out to real `systemd-run`/`systemctl`.
+    #[error("{0}")]
+    Injected(String),
 }
 
 /// Whether a `systemctl stop` stderr describes a unit systemd never knew (it
@@ -228,24 +264,27 @@ fn is_absent_unit_error(stderr: &str) -> bool {
 pub struct SystemdRunDhcp;
 
 impl SystemdRunDhcp {
-    fn run(program: &str, args: &[String]) -> Result<std::process::Output, String> {
+    fn run(program: &str, args: &[String]) -> Result<std::process::Output, DhcpError> {
         Command::new(program)
             .args(args)
             .output()
-            .map_err(|error| format!("cannot run {program}: {error}"))
+            .map_err(|source| DhcpError::Run {
+                program: program.to_string(),
+                source,
+            })
     }
 }
 
 impl DhcpBackend for SystemdRunDhcp {
-    fn start(&self, config: &DhcpConfig) -> Result<(), String> {
+    fn start(&self, config: &DhcpConfig) -> Result<(), DhcpError> {
         // Ensure the lease directory exists (dnsmasq will not create it).
         if let Some(parent) = std::path::Path::new(&config.lease_file).parent()
-            && let Err(error) = std::fs::create_dir_all(parent)
+            && let Err(source) = std::fs::create_dir_all(parent)
         {
-            return Err(format!(
-                "cannot create the DHCP lease directory {}: {error}",
-                parent.display()
-            ));
+            return Err(DhcpError::LeaseDir {
+                path: parent.to_path_buf(),
+                source,
+            });
         }
         // Replace any leftover unit from a previous life of this VM: stop is
         // best-effort (a missing unit is fine), reset-failed clears a failed
@@ -263,13 +302,13 @@ impl DhcpBackend for SystemdRunDhcp {
             );
             return Ok(());
         }
-        Err(format!(
-            "systemd-run for {unit} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ))
+        Err(DhcpError::StartFailed {
+            unit,
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        })
     }
 
-    fn stop(&self, vm_hash: &str, lease_file: &std::path::Path) -> Result<(), String> {
+    fn stop(&self, vm_hash: &str, lease_file: &std::path::Path) -> Result<(), DhcpError> {
         let unit = dhcp_unit_name(vm_hash);
         let result = Self::run("systemctl", &["stop".to_string(), unit.clone()]);
         // Best-effort lease-file cleanup, regardless of the stop outcome: the
@@ -294,7 +333,10 @@ impl DhcpBackend for SystemdRunDhcp {
             tracing::warn!(unit, "DHCP unit already gone, treating stop as done");
             return Ok(());
         }
-        Err(format!("systemctl stop {unit} failed: {}", stderr.trim()))
+        Err(DhcpError::StopFailed {
+            unit,
+            stderr: stderr.trim().to_string(),
+        })
     }
 }
 
@@ -365,10 +407,10 @@ impl FakeDhcpBackend {
 }
 
 impl DhcpBackend for FakeDhcpBackend {
-    fn start(&self, config: &DhcpConfig) -> Result<(), String> {
+    fn start(&self, config: &DhcpConfig) -> Result<(), DhcpError> {
         let mut inner = self.lock();
         if let Some(message) = &inner.fail_start {
-            return Err(message.clone());
+            return Err(DhcpError::Injected(message.clone()));
         }
         inner.started.push(config.clone());
         inner.running.insert(config.vm_hash.clone());
@@ -377,10 +419,10 @@ impl DhcpBackend for FakeDhcpBackend {
         Ok(())
     }
 
-    fn stop(&self, vm_hash: &str, _lease_file: &std::path::Path) -> Result<(), String> {
+    fn stop(&self, vm_hash: &str, _lease_file: &std::path::Path) -> Result<(), DhcpError> {
         let mut inner = self.lock();
         if let Some(message) = &inner.fail_stop {
-            return Err(message.clone());
+            return Err(DhcpError::Injected(message.clone()));
         }
         inner.stopped.push(vm_hash.to_string());
         inner.running.remove(vm_hash);
@@ -553,12 +595,15 @@ mod tests {
         .unwrap();
         let lease = std::path::Path::new(&config.lease_file);
         backend.fail_start("boom");
-        assert_eq!(backend.start(&config), Err("boom".to_string()));
+        assert!(matches!(
+            backend.start(&config),
+            Err(DhcpError::Injected(m)) if m == "boom"
+        ));
         backend.fail_stop("nope");
-        assert_eq!(
+        assert!(matches!(
             backend.stop(&"e".repeat(64), lease),
-            Err("nope".to_string())
-        );
+            Err(DhcpError::Injected(m)) if m == "nope"
+        ));
     }
 
     #[test]
