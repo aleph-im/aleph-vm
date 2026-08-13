@@ -76,12 +76,27 @@ pub trait TapBackend: Send + Sync {
     /// ndppd): create the tap, add both host addresses, set the link up.
     /// An already-existing device or address is tolerated with a warning,
     /// like the pyroute2 EEXIST handling.
-    fn create_tap(&self, tap: &TapAssignment) -> Result<(), String>;
+    fn create_tap(&self, tap: &TapAssignment) -> Result<(), TapError>;
 
     /// Python `TapInterface.delete` minus the NDP range: remove the
     /// addresses and the device. A missing device is a warning, not an
     /// error.
-    fn delete_tap(&self, tap: &TapAssignment) -> Result<(), String>;
+    fn delete_tap(&self, tap: &TapAssignment) -> Result<(), TapError>;
+}
+
+/// Failures creating or deleting a tap device via `ip(8)`.
+#[derive(Debug, thiserror::Error)]
+pub enum TapError {
+    #[error("cannot run ip: {source}")]
+    Run { source: std::io::Error },
+
+    #[error("ip {argv} failed: {stderr}")]
+    Command { argv: String, stderr: String },
+
+    /// A fabricated error for test `TapBackend` fakes that need to report a
+    /// specific failure without shelling out to a real `ip`.
+    #[error("{0}")]
+    Injected(String),
 }
 
 /// Production backend over `ip(8)`.
@@ -111,11 +126,11 @@ fn classify_ip_failure(stderr: &str) -> IpFailure {
     }
 }
 
-fn run_ip(args: &[&str]) -> Result<(), String> {
+fn run_ip(args: &[&str]) -> Result<(), TapError> {
     let output = Command::new("ip")
         .args(args)
         .output()
-        .map_err(|error| format!("cannot run ip: {error}"))?;
+        .map_err(|source| TapError::Run { source })?;
     if output.status.success() {
         return Ok(());
     }
@@ -135,7 +150,10 @@ fn run_ip(args: &[&str]) -> Result<(), String> {
             );
             Ok(())
         }
-        IpFailure::Other => Err(format!("ip {} failed: {stderr}", args.join(" "))),
+        IpFailure::Other => Err(TapError::Command {
+            argv: args.join(" "),
+            stderr,
+        }),
     }
 }
 
@@ -146,7 +164,7 @@ impl TapBackend for IpCommand {
             .exists()
     }
 
-    fn create_tap(&self, tap: &TapAssignment) -> Result<(), String> {
+    fn create_tap(&self, tap: &TapAssignment) -> Result<(), TapError> {
         run_ip(&["tuntap", "add", "name", &tap.device_name, "mode", "tap"])?;
         // Address failures are logged and tolerated in Python
         // (add_ip_address catches every NetlinkError); mirror that.
@@ -155,7 +173,7 @@ impl TapBackend for IpCommand {
                 tracing::error!(
                     device = tap.device_name,
                     address,
-                    error,
+                    %error,
                     "cannot add address to tap interface"
                 );
             }
@@ -166,14 +184,14 @@ impl TapBackend for IpCommand {
         if let Err(error) = run_ip(&["link", "set", &tap.device_name, "up"]) {
             tracing::error!(
                 device = tap.device_name,
-                error,
+                %error,
                 "cannot set the tap interface up"
             );
         }
         Ok(())
     }
 
-    fn delete_tap(&self, tap: &TapAssignment) -> Result<(), String> {
+    fn delete_tap(&self, tap: &TapAssignment) -> Result<(), TapError> {
         if !self.interface_exists(&tap.device_name) {
             tracing::warn!(
                 device = tap.device_name,
@@ -188,7 +206,7 @@ impl TapBackend for IpCommand {
         if let Err(error) = run_ip(&["link", "del", &tap.device_name]) {
             tracing::warn!(
                 device = tap.device_name,
-                error,
+                %error,
                 "interface cannot be deleted"
             );
         }
@@ -271,7 +289,7 @@ impl TapBackend for FakeTapBackend {
         self.lock().devices.contains(device_name)
     }
 
-    fn create_tap(&self, tap: &TapAssignment) -> Result<(), String> {
+    fn create_tap(&self, tap: &TapAssignment) -> Result<(), TapError> {
         let mut inner = self.lock();
         if inner.panic_on_create {
             inner.panic_on_create = false;
@@ -279,7 +297,7 @@ impl TapBackend for FakeTapBackend {
             panic!("injected tap creation panic");
         }
         if let Some(message) = &inner.fail_create {
-            return Err(message.clone());
+            return Err(TapError::Injected(message.clone()));
         }
         inner.actions.push(format!(
             "create {} {} {}",
@@ -293,10 +311,10 @@ impl TapBackend for FakeTapBackend {
         Ok(())
     }
 
-    fn delete_tap(&self, tap: &TapAssignment) -> Result<(), String> {
+    fn delete_tap(&self, tap: &TapAssignment) -> Result<(), TapError> {
         let mut inner = self.lock();
         if let Some(message) = &inner.fail_delete {
-            return Err(message.clone());
+            return Err(TapError::Injected(message.clone()));
         }
         inner.actions.push(format!("delete {}", tap.device_name));
         inner.devices.remove(&tap.device_name);
@@ -345,6 +363,16 @@ mod tests {
         assert!(backend.interface_exists("vmtap3"));
         backend.delete_tap(&tap).unwrap();
         assert!(!backend.interface_exists("vmtap3"));
+    }
+
+    #[test]
+    fn fail_create_injects_a_typed_error() {
+        let backend = FakeTapBackend::new();
+        let tap = assignment();
+        backend.fail_create("injected: cannot create tap");
+        let error = backend.create_tap(&tap).unwrap_err();
+        assert!(matches!(error, TapError::Injected(_)));
+        assert_eq!(error.to_string(), "injected: cannot create tap");
     }
 
     #[test]

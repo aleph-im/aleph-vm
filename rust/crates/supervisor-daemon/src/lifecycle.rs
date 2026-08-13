@@ -717,7 +717,7 @@ fn stop_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
                 // Python's TapInterface.delete swallows every deletion
                 // failure with a warning (interfaces.py); a stop must not
                 // fail on a stuck tap device.
-                tracing::warn!(vm_id, error, "cannot delete the tap interface, continuing");
+                tracing::warn!(vm_id, %error, "cannot delete the tap interface, continuing");
             }
         }
     }
@@ -796,7 +796,7 @@ fn stop_program_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcErr
                     .map_err(RpcError::Internal)?;
             }
             if let Err(error) = state.taps.delete_tap(&tap) {
-                tracing::warn!(vm_id, error, "cannot delete the tap interface, continuing");
+                tracing::warn!(vm_id, %error, "cannot delete the tap interface, continuing");
             }
         }
     }
@@ -918,7 +918,10 @@ fn start_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> 
         let tap = tap_assignment(state, vm_id).map_err(RpcError::Internal)?;
         let _net = net_lock(state);
         if !state.taps.interface_exists(&tap.device_name) {
-            state.taps.create_tap(&tap).map_err(RpcError::Internal)?;
+            state
+                .taps
+                .create_tap(&tap)
+                .map_err(|error| RpcError::Internal(error.to_string()))?;
             if let Some(ndp) = &state.ndp {
                 ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)
                     .map_err(RpcError::Internal)?;
@@ -2399,7 +2402,10 @@ fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, 
             let tap = tap_assignment(state, vm_id)?;
             let _net = net_lock(state);
             if !state.taps.interface_exists(&tap.device_name) {
-                state.taps.create_tap(&tap)?;
+                state
+                    .taps
+                    .create_tap(&tap)
+                    .map_err(|error| error.to_string())?;
                 if let Some(ndp) = &state.ndp {
                     ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
                 }
@@ -2780,9 +2786,15 @@ fn create_vm_inner(
                 if let Some(ndp) = &state.ndp {
                     ndp.delete_range(&tap.device_name, true)?;
                 }
-                state.taps.delete_tap(tap)?;
+                state
+                    .taps
+                    .delete_tap(tap)
+                    .map_err(|error| error.to_string())?;
             }
-            state.taps.create_tap(tap)?;
+            state
+                .taps
+                .create_tap(tap)
+                .map_err(|error| error.to_string())?;
             if let Some(ndp) = &state.ndp {
                 ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
             }
@@ -2895,7 +2907,7 @@ fn create_vm_inner(
                 tracing::warn!(ndp_error, "failed to drop the ndp range during cleanup");
             }
             if let Err(delete_error) = state.taps.delete_tap(tap) {
-                tracing::warn!(delete_error, "failed to delete the tap during cleanup");
+                tracing::warn!(%delete_error, "failed to delete the tap during cleanup");
             }
         }
         // Release the reserved vCPUs and drop the AllowedCPUs drop-in (if the
@@ -3057,9 +3069,15 @@ fn create_program_vm(
                         ndp.delete_range(&tap.device_name, true)
                             .map_err(RpcError::Internal)?;
                     }
-                    state.taps.delete_tap(tap).map_err(RpcError::Internal)?;
+                    state
+                        .taps
+                        .delete_tap(tap)
+                        .map_err(|error| RpcError::Internal(error.to_string()))?;
                 }
-                state.taps.create_tap(tap).map_err(RpcError::Internal)?;
+                state
+                    .taps
+                    .create_tap(tap)
+                    .map_err(|error| RpcError::Internal(error.to_string()))?;
                 if let Some(ndp) = &state.ndp {
                     ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)
                         .map_err(RpcError::Internal)?;
@@ -3151,7 +3169,7 @@ fn create_program_vm(
                         tracing::warn!(ndp_error, "failed to drop the ndp range during cleanup");
                     }
                     if let Err(delete_error) = state.taps.delete_tap(tap) {
-                        tracing::warn!(delete_error, "failed to delete the tap during cleanup");
+                        tracing::warn!(%delete_error, "failed to delete the tap during cleanup");
                     }
                 }
             }
@@ -3424,7 +3442,10 @@ pub fn reconcile_boot(state: &DaemonState) {
             {
                 let _net = net_lock(state);
                 if !state.taps.interface_exists(&tap.device_name) {
-                    state.taps.create_tap(&tap)?;
+                    state
+                        .taps
+                        .create_tap(&tap)
+                        .map_err(|error| error.to_string())?;
                     if let Some(ndp) = &state.ndp {
                         ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
                     }
