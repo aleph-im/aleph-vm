@@ -76,6 +76,14 @@ fn main() -> ExitCode {
         .with_writer(std::io::stderr)
         .init();
 
+    // Plain Display, not `{error:#}`: this crate's error Displays are
+    // self-contained by design (they inline their sources to keep
+    // byte-identical text across the type-strictness series), but they also
+    // expose those same sources via `Error::source()` (thiserror auto-links
+    // any field named `source`). anyhow's alternate `{:#}` walks that chain
+    // and appends each source again, so switching this sink to `{:#}`
+    // without first stripping embedded sources from the Display templates
+    // would double-print (e.g. "cannot open X: msg: msg").
     match run(&cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -85,7 +93,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(cli: &Cli) -> Result<(), DaemonError> {
+fn run(cli: &Cli) -> anyhow::Result<()> {
     let mut settings = Settings::from_env()?;
     // --socket overrides the settings-derived path, after settings
     // resolution, like `args.socket or default_socket_path()` in daemon.py.
@@ -109,16 +117,14 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
     // pool.setup() counterparts: the port-mapping store schema, the legacy
     // port-mapping migration, the forwarding sysctls, the NDP proxy, the
     // base nftables ruleset.
-    ports::ensure_schema(&host.settings.supervisor_database)
-        .map_err(|error| DaemonError::Internal(error.to_string()))?;
+    ports::ensure_schema(&host.settings.supervisor_database)?;
     // Before adoption, like pool.setup(): a node upgraded from the
     // pre-split layout and flipped straight to this daemon must adopt its
     // VMs with their persisted forwards, not with zero forwards.
     ports::migrate_port_mappings_from_legacy_db(
         &host.settings.execution_database,
         &host.settings.supervisor_database,
-    )
-    .map_err(|error| DaemonError::Internal(error.to_string()))?;
+    )?;
     let ndp = if host.settings.allow_vm_networking {
         enable_forwarding_sysctls(&host.settings);
         host.settings.use_ndp_proxy.then(|| {
@@ -215,9 +221,7 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
                 lifecycle::reconcile_numa_ledger(&numa_state);
             })
             .await
-            .map_err(|error| {
-                DaemonError::Internal(format!("the NUMA reconcile task failed: {error}"))
-            })?;
+            .map_err(|error| anyhow::anyhow!("the NUMA reconcile task failed: {error}"))?;
         }
 
         // Base ruleset + adoption step 5 inside the runtime (the ndppd
@@ -234,9 +238,7 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
                 lifecycle::reconcile_boot(&boot_state);
             })
             .await
-            .map_err(|error| {
-                DaemonError::Internal(format!("the boot reconcile task failed: {error}"))
-            })?;
+            .map_err(|error| anyhow::anyhow!("the boot reconcile task failed: {error}"))?;
         }
 
         // Retry VMs whose reattach failed above (e.g. host networking not
@@ -248,7 +250,8 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
         // that sees the socket may send SIGTERM right away, and an
         // uninstalled handler would mean death without cleanup.
         let shutdown = spawn_signal_task(guard.clone())?;
-        server::serve(state, guard, shutdown).await
+        server::serve(state, guard, shutdown).await?;
+        Ok(())
     })
 }
 
