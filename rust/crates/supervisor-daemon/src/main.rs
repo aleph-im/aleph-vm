@@ -109,7 +109,8 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
     // pool.setup() counterparts: the port-mapping store schema, the legacy
     // port-mapping migration, the forwarding sysctls, the NDP proxy, the
     // base nftables ruleset.
-    ports::ensure_schema(&host.settings.supervisor_database).map_err(DaemonError::Internal)?;
+    ports::ensure_schema(&host.settings.supervisor_database)
+        .map_err(|error| DaemonError::Internal(error.to_string()))?;
     // Before adoption, like pool.setup(): a node upgraded from the
     // pre-split layout and flipped straight to this daemon must adopt its
     // VMs with their persisted forwards, not with zero forwards.
@@ -117,7 +118,7 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
         &host.settings.execution_database,
         &host.settings.supervisor_database,
     )
-    .map_err(DaemonError::Internal)?;
+    .map_err(|error| DaemonError::Internal(error.to_string()))?;
     let ndp = if host.settings.allow_vm_networking {
         enable_forwarding_sysctls(&host.settings);
         host.settings.use_ndp_proxy.then(|| {

@@ -22,10 +22,93 @@
 //! nftables redirections and a TCP+UDP bind probe per candidate, plus the
 //! rotating fast-path cursor.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::nft;
+
+/// Failures from the port-mapping store and the host-port allocator.
+/// Display strings are copied verbatim from the pre-typed `format!` messages
+/// they replace (they surface in RPC error responses and in warn!/error!
+/// logs at the call sites). `rusqlite::Error` sources are kept typed, never
+/// stringified: `migrate_port_mappings_from_legacy_db` and
+/// `active_host_ports` match on the raw `rusqlite::Error` (its
+/// `QueryReturnedNoRows` variant, or a "no such table" substring) BEFORE
+/// wrapping it here, and that matching must keep working unchanged.
+#[derive(Debug, thiserror::Error)]
+pub enum PortsError {
+    #[error("cannot open {}: {source}", path.display())]
+    Open {
+        path: PathBuf,
+        source: rusqlite::Error,
+    },
+
+    #[error("cannot set a busy timeout on {}: {source}", path.display())]
+    BusyTimeout {
+        path: PathBuf,
+        source: rusqlite::Error,
+    },
+
+    #[error("cannot query port_mappings: {source}")]
+    Query { source: rusqlite::Error },
+
+    #[error("cannot inspect {}: {source}", path.display())]
+    Inspect {
+        path: PathBuf,
+        source: rusqlite::Error,
+    },
+
+    #[error("cannot read port_mappings row: {source}")]
+    ReadRow { source: rusqlite::Error },
+
+    #[error("cannot read port_mappings: {source}")]
+    Read { source: rusqlite::Error },
+
+    #[error("cannot read {}: {source}", path.display())]
+    ReadLegacy {
+        path: PathBuf,
+        source: rusqlite::Error,
+    },
+
+    #[error("cannot query {}: {source}", path.display())]
+    QueryLegacy {
+        path: PathBuf,
+        source: rusqlite::Error,
+    },
+
+    #[error("cannot create port_mappings: {source}")]
+    Ddl { source: rusqlite::Error },
+
+    #[error("cannot soft-delete port mapping {id}: {source}")]
+    SoftDelete { id: i64, source: rusqlite::Error },
+
+    #[error("cannot insert a port mapping: {source}")]
+    Insert { source: rusqlite::Error },
+
+    #[error("cannot copy a legacy port mapping: {source}")]
+    CopyLegacy { source: rusqlite::Error },
+
+    #[error("cannot delete port mappings of {vm_hash}: {source}")]
+    Delete {
+        vm_hash: String,
+        source: rusqlite::Error,
+    },
+
+    #[error("cannot begin a transaction: {source}")]
+    Begin { source: rusqlite::Error },
+
+    #[error("cannot commit port mappings: {source}")]
+    Commit { source: rusqlite::Error },
+
+    #[error("cannot commit the legacy migration: {source}")]
+    CommitMigration { source: rusqlite::Error },
+
+    #[error("cannot read host ports: {source}")]
+    ReadHostPorts { source: rusqlite::Error },
+
+    #[error("No available ports found in range {MIN_DYNAMIC_PORT}-{MAX_PORT}")]
+    Exhausted,
+}
 
 /// One active port mapping of a VM, in Python's `mapped_ports` shape
 /// (vm_port keyed, host port plus per-protocol flags).
@@ -41,7 +124,7 @@ pub struct PortForward {
 ///
 /// A missing database file means no mappings (the read-only daemon never
 /// creates the store; the Python daemon's `pool.setup()` does).
-pub fn load_port_forwards(database: &Path, vm_hash: &str) -> Result<Vec<PortForward>, String> {
+pub fn load_port_forwards(database: &Path, vm_hash: &str) -> Result<Vec<PortForward>, PortsError> {
     if !database.exists() {
         tracing::debug!(
             database = %database.display(),
@@ -51,24 +134,25 @@ pub fn load_port_forwards(database: &Path, vm_hash: &str) -> Result<Vec<PortForw
     }
     let connection =
         rusqlite::Connection::open_with_flags(database, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|error| format!("cannot open {}: {error}", database.display()))?;
+            .map_err(|source| PortsError::Open {
+                path: database.to_path_buf(),
+                source,
+            })?;
     // During adoption the draining Python daemon may still hold the write
     // lock on this database; an immediate SQLITE_BUSY would silently cost a
     // VM its port forwards, so wait up to 5 seconds for the lock instead.
     connection
         .busy_timeout(std::time::Duration::from_secs(5))
-        .map_err(|error| {
-            format!(
-                "cannot set a busy timeout on {}: {error}",
-                database.display()
-            )
+        .map_err(|source| PortsError::BusyTimeout {
+            path: database.to_path_buf(),
+            source,
         })?;
     let mut statement = connection
         .prepare(
             "SELECT vm_port, host_port, tcp, udp FROM port_mappings \
              WHERE vm_hash = ?1 AND deleted_at IS NULL ORDER BY id",
         )
-        .map_err(|error| format!("cannot query port_mappings: {error}"))?;
+        .map_err(|source| PortsError::Query { source })?;
     let rows = statement
         .query_map([vm_hash], |row| {
             Ok(PortForward {
@@ -78,13 +162,13 @@ pub fn load_port_forwards(database: &Path, vm_hash: &str) -> Result<Vec<PortForw
                 udp: row.get(3)?,
             })
         })
-        .map_err(|error| format!("cannot read port_mappings: {error}"))?;
+        .map_err(|source| PortsError::Read { source })?;
 
     // Fold like the Python dict build: last row wins per vm_port, first
     // occurrence keeps its position.
     let mut forwards: Vec<PortForward> = Vec::new();
     for row in rows {
-        let row = row.map_err(|error| format!("cannot read port_mappings row: {error}"))?;
+        let row = row.map_err(|source| PortsError::ReadRow { source })?;
         match forwards
             .iter_mut()
             .find(|forward| forward.vm_port == row.vm_port)
@@ -99,16 +183,16 @@ pub fn load_port_forwards(database: &Path, vm_hash: &str) -> Result<Vec<PortForw
 /// Open the store read-write with the same 5 second lock patience as the
 /// read path (the draining Python daemon may still hold the write lock
 /// during an adoption swap).
-fn open_rw(database: &Path) -> Result<rusqlite::Connection, String> {
-    let connection = rusqlite::Connection::open(database)
-        .map_err(|error| format!("cannot open {}: {error}", database.display()))?;
+fn open_rw(database: &Path) -> Result<rusqlite::Connection, PortsError> {
+    let connection = rusqlite::Connection::open(database).map_err(|source| PortsError::Open {
+        path: database.to_path_buf(),
+        source,
+    })?;
     connection
         .busy_timeout(std::time::Duration::from_secs(5))
-        .map_err(|error| {
-            format!(
-                "cannot set a busy timeout on {}: {error}",
-                database.display()
-            )
+        .map_err(|source| PortsError::BusyTimeout {
+            path: database.to_path_buf(),
+            source,
         })?;
     Ok(connection)
 }
@@ -117,7 +201,7 @@ fn open_rw(database: &Path) -> Result<rusqlite::Connection, String> {
 /// `create_supervisor_tables` (SQLAlchemy metadata.create_all) the daemon
 /// runs in pool.setup(). The DDL matches SQLAlchemy's output exactly so
 /// either daemon can have created the file.
-pub fn ensure_schema(database: &Path) -> Result<(), String> {
+pub fn ensure_schema(database: &Path) -> Result<(), PortsError> {
     let connection = open_rw(database)?;
     let exists: bool = connection
         .query_row(
@@ -125,7 +209,10 @@ pub fn ensure_schema(database: &Path) -> Result<(), String> {
             [],
             |row| row.get::<_, i64>(0).map(|count| count > 0),
         )
-        .map_err(|error| format!("cannot inspect {}: {error}", database.display()))?;
+        .map_err(|source| PortsError::Inspect {
+            path: database.to_path_buf(),
+            source,
+        })?;
     if exists {
         return Ok(());
     }
@@ -146,7 +233,7 @@ pub fn ensure_schema(database: &Path) -> Result<(), String> {
              CREATE UNIQUE INDEX ix_port_mappings_host_port_active \
              ON port_mappings (host_port) WHERE deleted_at IS NULL;",
         )
-        .map_err(|error| format!("cannot create port_mappings: {error}"))
+        .map_err(|source| PortsError::Ddl { source })
 }
 
 /// UTC now in SQLAlchemy's sqlite DATETIME rendering:
@@ -194,11 +281,11 @@ pub fn save_port_mappings(
     vm_hash: &str,
     forwards: &[PortForward],
     now: &str,
-) -> Result<(), String> {
+) -> Result<(), PortsError> {
     let mut connection = open_rw(database)?;
     let transaction = connection
         .transaction()
-        .map_err(|error| format!("cannot begin a transaction: {error}"))?;
+        .map_err(|source| PortsError::Begin { source })?;
 
     // Active rows keyed by vm_port, LAST row winning like the Python dict
     // build (an earlier duplicate simply drops out and stays active).
@@ -210,7 +297,7 @@ pub fn save_port_mappings(
                 "SELECT id, vm_port, host_port, tcp, udp FROM port_mappings \
                  WHERE vm_hash = ?1 AND deleted_at IS NULL",
             )
-            .map_err(|error| format!("cannot query port_mappings: {error}"))?;
+            .map_err(|source| PortsError::Query { source })?;
         let rows = statement
             .query_map([vm_hash], |row| {
                 Ok((
@@ -223,10 +310,9 @@ pub fn save_port_mappings(
                     },
                 ))
             })
-            .map_err(|error| format!("cannot read port_mappings: {error}"))?;
+            .map_err(|source| PortsError::Read { source })?;
         for row in rows {
-            let (id, forward) =
-                row.map_err(|error| format!("cannot read port_mappings row: {error}"))?;
+            let (id, forward) = row.map_err(|source| PortsError::ReadRow { source })?;
             existing.insert(forward.vm_port, (id, forward));
         }
     }
@@ -251,7 +337,7 @@ pub fn save_port_mappings(
                 "UPDATE port_mappings SET deleted_at = ?1 WHERE id = ?2",
                 rusqlite::params![now, id],
             )
-            .map_err(|error| format!("cannot soft-delete port mapping {id}: {error}"))?;
+            .map_err(|source| PortsError::SoftDelete { id, source })?;
     }
     for forward in inserts {
         transaction
@@ -267,11 +353,11 @@ pub fn save_port_mappings(
                     now
                 ],
             )
-            .map_err(|error| format!("cannot insert a port mapping: {error}"))?;
+            .map_err(|source| PortsError::Insert { source })?;
     }
     transaction
         .commit()
-        .map_err(|error| format!("cannot commit port mappings: {error}"))
+        .map_err(|source| PortsError::Commit { source })
 }
 
 /// Python `migrate_port_mappings_from_legacy_db` (networking_db.py), the
@@ -285,7 +371,10 @@ pub fn save_port_mappings(
 /// is missing, or the supervisor table already holds rows (even
 /// soft-deleted ones). created_at is preserved verbatim; id autoincrements
 /// fresh. Returns the number of rows copied.
-pub fn migrate_port_mappings_from_legacy_db(legacy: &Path, target: &Path) -> Result<usize, String> {
+pub fn migrate_port_mappings_from_legacy_db(
+    legacy: &Path,
+    target: &Path,
+) -> Result<usize, PortsError> {
     if legacy == target || !legacy.exists() {
         return Ok(0);
     }
@@ -299,12 +388,20 @@ pub fn migrate_port_mappings_from_legacy_db(legacy: &Path, target: &Path) -> Res
         Err(error) if error.to_string().to_lowercase().contains("no such table") => {
             return Ok(0);
         }
-        Err(error) => return Err(format!("cannot inspect {}: {error}", target.display())),
+        Err(source) => {
+            return Err(PortsError::Inspect {
+                path: target.to_path_buf(),
+                source,
+            });
+        }
     }
 
     let legacy_connection =
         rusqlite::Connection::open_with_flags(legacy, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|error| format!("cannot open {}: {error}", legacy.display()))?;
+            .map_err(|source| PortsError::Open {
+            path: legacy.to_path_buf(),
+            source,
+        })?;
     let mut statement = match legacy_connection.prepare(
         "SELECT vm_hash, vm_port, host_port, tcp, udp, created_at, deleted_at \
          FROM port_mappings WHERE deleted_at IS NULL",
@@ -314,7 +411,12 @@ pub fn migrate_port_mappings_from_legacy_db(legacy: &Path, target: &Path) -> Res
         Err(error) if error.to_string().to_lowercase().contains("no such table") => {
             return Ok(0);
         }
-        Err(error) => return Err(format!("cannot query {}: {error}", legacy.display())),
+        Err(source) => {
+            return Err(PortsError::QueryLegacy {
+                path: legacy.to_path_buf(),
+                source,
+            });
+        }
     };
     // Values are copied verbatim (rusqlite Value passthrough), like the
     // Python sqlite3 row copy: whatever SQLAlchemy stored is what lands.
@@ -324,9 +426,15 @@ pub fn migrate_port_mappings_from_legacy_db(legacy: &Path, target: &Path) -> Res
                 .map(|index| row.get::<_, rusqlite::types::Value>(index))
                 .collect()
         })
-        .map_err(|error| format!("cannot read {}: {error}", legacy.display()))?
+        .map_err(|source| PortsError::ReadLegacy {
+            path: legacy.to_path_buf(),
+            source,
+        })?
         .collect::<Result<_, _>>()
-        .map_err(|error| format!("cannot read {}: {error}", legacy.display()))?;
+        .map_err(|source| PortsError::ReadLegacy {
+            path: legacy.to_path_buf(),
+            source,
+        })?;
     if rows.is_empty() {
         return Ok(0);
     }
@@ -334,7 +442,7 @@ pub fn migrate_port_mappings_from_legacy_db(legacy: &Path, target: &Path) -> Res
     // One transaction, like the Python executemany + commit.
     let transaction = target_connection
         .transaction()
-        .map_err(|error| format!("cannot begin a transaction: {error}"))?;
+        .map_err(|source| PortsError::Begin { source })?;
     for row in &rows {
         transaction
             .execute(
@@ -343,11 +451,11 @@ pub fn migrate_port_mappings_from_legacy_db(legacy: &Path, target: &Path) -> Res
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 rusqlite::params_from_iter(row.iter()),
             )
-            .map_err(|error| format!("cannot copy a legacy port mapping: {error}"))?;
+            .map_err(|source| PortsError::CopyLegacy { source })?;
     }
     transaction
         .commit()
-        .map_err(|error| format!("cannot commit the legacy migration: {error}"))?;
+        .map_err(|source| PortsError::CommitMigration { source })?;
     tracing::info!(
         count = rows.len(),
         "migrated port mappings from the legacy agent DB into the supervisor DB"
@@ -356,7 +464,7 @@ pub fn migrate_port_mappings_from_legacy_db(legacy: &Path, target: &Path) -> Res
 }
 
 /// Python `delete_port_mappings`: soft-delete every active row of a VM.
-pub fn delete_port_mappings(database: &Path, vm_hash: &str, now: &str) -> Result<(), String> {
+pub fn delete_port_mappings(database: &Path, vm_hash: &str, now: &str) -> Result<(), PortsError> {
     let connection = open_rw(database)?;
     connection
         .execute(
@@ -365,7 +473,10 @@ pub fn delete_port_mappings(database: &Path, vm_hash: &str, now: &str) -> Result
             rusqlite::params![now, vm_hash],
         )
         .map(|_| ())
-        .map_err(|error| format!("cannot delete port mappings of {vm_hash}: {error}"))
+        .map_err(|source| PortsError::Delete {
+            vm_hash: vm_hash.to_string(),
+            source,
+        })
 }
 
 // ── Host port allocation (network/port_availability_checker.py) ─────────
@@ -375,7 +486,7 @@ pub const MAX_PORT: u32 = 65535;
 
 /// Python `_get_active_host_ports`: every active host_port in the store; a
 /// missing table (or file) means none yet.
-fn active_host_ports(database: &Path) -> Result<std::collections::HashSet<u32>, String> {
+fn active_host_ports(database: &Path) -> Result<std::collections::HashSet<u32>, PortsError> {
     if !database.exists() {
         return Ok(Default::default());
     }
@@ -389,13 +500,13 @@ fn active_host_ports(database: &Path) -> Result<std::collections::HashSet<u32>, 
                 tracing::debug!("port_mappings table not available yet");
                 return Ok(Default::default());
             }
-            Err(error) => return Err(format!("cannot query port_mappings: {error}")),
+            Err(source) => return Err(PortsError::Query { source }),
         };
     let rows = statement
         .query_map([], |row| row.get::<_, u32>(0))
-        .map_err(|error| format!("cannot read host ports: {error}"))?;
+        .map_err(|source| PortsError::ReadHostPorts { source })?;
     rows.collect::<Result<_, _>>()
-        .map_err(|error| format!("cannot read host ports: {error}"))
+        .map_err(|source| PortsError::ReadHostPorts { source })
 }
 
 /// One transient bind(2) probe on 0.0.0.0 WITHOUT SO_REUSEADDR: Python's
@@ -440,7 +551,7 @@ pub fn get_available_host_port(
     database: &Path,
     executor: &dyn nft::NftExecutor,
     start_port: u32,
-) -> Result<u32, String> {
+) -> Result<u32, PortsError> {
     let start = if start_port >= MIN_DYNAMIC_PORT {
         start_port
     } else {
@@ -462,9 +573,7 @@ pub fn get_available_host_port(
         }
         return Ok(port);
     }
-    Err(format!(
-        "No available ports found in range {MIN_DYNAMIC_PORT}-{MAX_PORT}"
-    ))
+    Err(PortsError::Exhausted)
 }
 
 /// Python `fast_get_available_host_port`'s LAST_ASSIGNED_HOST_PORT global:
@@ -487,7 +596,7 @@ impl PortCursor {
         &self,
         database: &Path,
         executor: &dyn nft::NftExecutor,
-    ) -> Result<u32, String> {
+    ) -> Result<u32, PortsError> {
         use std::sync::atomic::Ordering;
         let start = self.last.load(Ordering::SeqCst);
         let port = get_available_host_port(database, executor, start)?;
@@ -555,7 +664,8 @@ mod tests {
         let path = tmp.path().join("empty.sqlite3");
         rusqlite::Connection::open(&path).unwrap();
         let error = load_port_forwards(&path, test_fixtures::QEMU_HASH).unwrap_err();
-        assert!(error.contains("port_mappings"));
+        assert!(matches!(error, PortsError::Query { .. }));
+        assert!(error.to_string().contains("port_mappings"));
     }
 
     fn schema_dump(path: &std::path::Path) -> Vec<String> {
