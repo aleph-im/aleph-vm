@@ -696,7 +696,7 @@ fn stop_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
             std::thread::sleep(state.pacing.tap_delete_delay);
             if let Some(ndp) = &state.ndp {
                 ndp.delete_range(&device, true)
-                    .map_err(RpcError::Internal)?;
+                    .map_err(|error| RpcError::Internal(error.to_string()))?;
             }
             // Only the device name matters for the deletion; the addresses go
             // with the link (a missing device is a warning inside the backend).
@@ -793,7 +793,7 @@ fn stop_program_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcErr
             std::thread::sleep(state.pacing.tap_delete_delay);
             if let Some(ndp) = &state.ndp {
                 ndp.delete_range(&tap.device_name, true)
-                    .map_err(RpcError::Internal)?;
+                    .map_err(|error| RpcError::Internal(error.to_string()))?;
             }
             if let Err(error) = state.taps.delete_tap(&tap) {
                 tracing::warn!(vm_id, error, "cannot delete the tap interface, continuing");
@@ -921,7 +921,7 @@ fn start_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> 
             state.taps.create_tap(&tap).map_err(RpcError::Internal)?;
             if let Some(ndp) = &state.ndp {
                 ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)
-                    .map_err(RpcError::Internal)?;
+                    .map_err(|error| RpcError::Internal(error.to_string()))?;
             }
         }
         // Even when the interface survived, the nftables rules may have
@@ -2401,12 +2401,14 @@ fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, 
             if !state.taps.interface_exists(&tap.device_name) {
                 state.taps.create_tap(&tap)?;
                 if let Some(ndp) = &state.ndp {
-                    ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
+                    ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)
+                        .map_err(|error| error.to_string())?;
                 }
             } else if let Some(ndp) = &state.ndp {
                 // Prime the ndppd map without touching the service: the
                 // on-disk config already covers this running VM.
-                ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, false)?;
+                ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, false)
+                    .map_err(|error| error.to_string())?;
             }
             nft_setup_vm(state, tap.vm_index, &tap.device_name)?;
         }
@@ -2778,13 +2780,15 @@ fn create_vm_inner(
             if state.taps.interface_exists(&tap.device_name) {
                 std::thread::sleep(state.pacing.tap_delete_delay);
                 if let Some(ndp) = &state.ndp {
-                    ndp.delete_range(&tap.device_name, true)?;
+                    ndp.delete_range(&tap.device_name, true)
+                        .map_err(|error| error.to_string())?;
                 }
                 state.taps.delete_tap(tap)?;
             }
             state.taps.create_tap(tap)?;
             if let Some(ndp) = &state.ndp {
-                ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
+                ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)
+                    .map_err(|error| error.to_string())?;
             }
             nft_setup_vm(state, vm_index, &tap.device_name)?;
             // SNP measured VMs get their IPv4 via a per-tap DHCP server, not
@@ -2892,7 +2896,7 @@ fn create_vm_inner(
             if let Some(ndp) = &state.ndp
                 && let Err(ndp_error) = ndp.delete_range(&tap.device_name, true)
             {
-                tracing::warn!(ndp_error, "failed to drop the ndp range during cleanup");
+                tracing::warn!(%ndp_error, "failed to drop the ndp range during cleanup");
             }
             if let Err(delete_error) = state.taps.delete_tap(tap) {
                 tracing::warn!(delete_error, "failed to delete the tap during cleanup");
@@ -3055,14 +3059,14 @@ fn create_program_vm(
                     std::thread::sleep(state.pacing.tap_delete_delay);
                     if let Some(ndp) = &state.ndp {
                         ndp.delete_range(&tap.device_name, true)
-                            .map_err(RpcError::Internal)?;
+                            .map_err(|error| RpcError::Internal(error.to_string()))?;
                     }
                     state.taps.delete_tap(tap).map_err(RpcError::Internal)?;
                 }
                 state.taps.create_tap(tap).map_err(RpcError::Internal)?;
                 if let Some(ndp) = &state.ndp {
                     ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)
-                        .map_err(RpcError::Internal)?;
+                        .map_err(|error| RpcError::Internal(error.to_string()))?;
                 }
                 nft_setup_vm(state, vm_index, &tap.device_name).map_err(RpcError::Internal)?;
             }
@@ -3148,7 +3152,7 @@ fn create_program_vm(
                     if let Some(ndp) = &state.ndp
                         && let Err(ndp_error) = ndp.delete_range(&tap.device_name, true)
                     {
-                        tracing::warn!(ndp_error, "failed to drop the ndp range during cleanup");
+                        tracing::warn!(%ndp_error, "failed to drop the ndp range during cleanup");
                     }
                     if let Err(delete_error) = state.taps.delete_tap(tap) {
                         tracing::warn!(delete_error, "failed to delete the tap during cleanup");
@@ -3426,7 +3430,8 @@ pub fn reconcile_boot(state: &DaemonState) {
                 if !state.taps.interface_exists(&tap.device_name) {
                     state.taps.create_tap(&tap)?;
                     if let Some(ndp) = &state.ndp {
-                        ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
+                        ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)
+                            .map_err(|error| error.to_string())?;
                     }
                 }
                 if let Some(ndp) = &state.ndp
@@ -3435,7 +3440,8 @@ pub fn reconcile_boot(state: &DaemonState) {
                     // Prime the in-memory map without a config rewrite or
                     // service restart: the on-disk ndppd.conf already covers
                     // running VMs (update_service=False in Python).
-                    ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, false)?;
+                    ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, false)
+                        .map_err(|error| error.to_string())?;
                 }
                 nft_setup_vm(state, tap.vm_index, &tap.device_name)?;
             }
