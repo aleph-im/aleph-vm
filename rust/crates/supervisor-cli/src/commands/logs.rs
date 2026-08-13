@@ -47,13 +47,14 @@ pub async fn logs(
     Ok(())
 }
 
-/// NDJSON in --json mode (streams must stay line-oriented), bare line
-/// otherwise.
+/// NDJSON in --json mode (streams must stay line-oriented); otherwise the
+/// line with control characters escaped, because guest serial output is
+/// untrusted input to the operator's terminal.
 fn write_log_chunk(out: &mut impl Write, chunk: &pb::LogChunk, json: bool) -> Result<()> {
     if json {
         writeln!(out, "{}", serde_json::to_string(chunk)?)?;
     } else {
-        writeln!(out, "{}", chunk.line)?;
+        writeln!(out, "{}", output::sanitize_line(&chunk.line))?;
     }
     Ok(())
 }

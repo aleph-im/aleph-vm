@@ -59,6 +59,23 @@ pub fn or_dash(value: &str) -> &str {
     if value.is_empty() { "-" } else { value }
 }
 
+/// Guest log lines reach the operator's terminal, and a hostile guest can
+/// embed ANSI/OSC escape sequences in its serial output (title spoofing,
+/// screen manipulation, OSC 52 clipboard writes). Render every control
+/// character except tab in escaped form so the sequences arrive inert and
+/// visible. The --json paths need no such step: serde escapes everything.
+pub fn sanitize_line(line: &str) -> String {
+    let mut clean = String::with_capacity(line.len());
+    for character in line.chars() {
+        if character.is_control() && character != '\t' {
+            clean.extend(character.escape_debug());
+        } else {
+            clean.push(character);
+        }
+    }
+    clean
+}
+
 /// fn(i32) -> String rendering a proto enum by name, minus the proto
 /// prefix; out-of-range values render as UNKNOWN(n) instead of panicking.
 macro_rules! enum_name {
@@ -149,6 +166,23 @@ mod tests {
     fn or_dash_replaces_empty_strings() {
         assert_eq!(or_dash(""), "-");
         assert_eq!(or_dash("value"), "value");
+    }
+
+    #[test]
+    fn sanitize_line_escapes_control_characters() {
+        // C0 escapes (the ANSI/OSC introducers) print as \u{..}.
+        assert_eq!(
+            sanitize_line("\x1b]0;evil title\x07done"),
+            "\\u{1b}]0;evil title\\u{7}done"
+        );
+        assert_eq!(sanitize_line("a\rb\u{0}c"), "a\\rb\\0c");
+        // C1 controls (e.g. CSI as a single character) are covered too.
+        assert_eq!(sanitize_line("x\u{9b}31my"), "x\\u{9b}31my");
+    }
+
+    #[test]
+    fn sanitize_line_keeps_tabs_and_printable_text() {
+        assert_eq!(sanitize_line("col1\tcol2 café"), "col1\tcol2 café");
     }
 
     #[test]

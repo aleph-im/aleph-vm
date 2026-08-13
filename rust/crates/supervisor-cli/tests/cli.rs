@@ -346,6 +346,24 @@ async fn logs_prints_plain_lines() {
 }
 
 #[tokio::test]
+async fn logs_escape_guest_control_characters() {
+    let fake = FakeSupervisor {
+        logs: vec![log_chunk("\x1b]52;c;ZXZpbA==\x07pwned?")],
+        ..Default::default()
+    };
+    let (_dir, socket) = spawn(fake).await;
+    let mut client = client::connect(&socket).await.unwrap();
+    let mut out = Vec::new();
+    commands::logs::logs(&mut client, &mut out, "vm-1", false, None, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "\\u{1b}]52;c;ZXZpbA==\\u{7}pwned?\n"
+    );
+}
+
+#[tokio::test]
 async fn logs_tail_maps_to_max_lines_from_tail() {
     let fake = FakeSupervisor::default();
     let requests = fake.log_requests.clone();
