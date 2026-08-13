@@ -86,10 +86,9 @@ impl HostState {
         // when unset; a failure aborts startup, like the Python setup().
         let dns_nameservers = match (&settings.dns_nameservers, &network_interface) {
             (Some(configured), _) => Some(configured.clone()),
-            (None, Some(interface)) => Some(
-                net::obtain_dns_ips(settings.dns_resolution, interface)
-                    .map_err(DaemonError::Internal)?,
-            ),
+            (None, Some(interface)) => {
+                Some(net::obtain_dns_ips(settings.dns_resolution, interface)?)
+            }
             (None, None) => None,
         };
 

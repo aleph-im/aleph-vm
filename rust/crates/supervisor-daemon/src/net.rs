@@ -154,23 +154,46 @@ fn resolv_conf_dns_servers(contents: &str) -> Vec<String> {
         .collect()
 }
 
+/// Failures from DNS nameserver discovery (conf.py `resolvectl_dns_servers`
+/// / `obtain_dns_ips`). Display strings are copied verbatim from the
+/// pre-typed `format!` messages they replace.
+#[derive(Debug, thiserror::Error)]
+pub enum DnsError {
+    #[error("cannot run resolvectl: {source}")]
+    Resolvectl { source: std::io::Error },
+
+    #[error("resolvectl dns -i {interface} failed: {stderr}")]
+    ResolvectlFailed { interface: String, stderr: String },
+
+    #[error("unexpected resolvectl output: {text:?}")]
+    UnexpectedOutput { text: String },
+
+    #[error("cannot read /etc/resolv.conf: {source}")]
+    ReadResolvConf { source: std::io::Error },
+
+    #[error("No DNS resolver found ({source})")]
+    NoResolver { source: Box<DnsError> },
+}
+
 /// conf.py `resolvectl_dns_servers`: `resolvectl dns -i <interface>`,
 /// splitting the "Link N (iface): a b c" output on the first colon.
-fn resolvectl_dns_servers(interface: &str) -> Result<Vec<String>, String> {
+fn resolvectl_dns_servers(interface: &str) -> Result<Vec<String>, DnsError> {
     let output = std::process::Command::new("/usr/bin/resolvectl")
         .args(["dns", "-i", interface])
         .output()
-        .map_err(|error| format!("cannot run resolvectl: {error}"))?;
+        .map_err(|source| DnsError::Resolvectl { source })?;
     if !output.status.success() {
-        return Err(format!(
-            "resolvectl dns -i {interface} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+        return Err(DnsError::ResolvectlFailed {
+            interface: interface.to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
     }
     let text = String::from_utf8_lossy(&output.stdout);
     let (_, servers) = text
         .split_once(':')
-        .ok_or_else(|| format!("unexpected resolvectl output: {text:?}"))?;
+        .ok_or_else(|| DnsError::UnexpectedOutput {
+            text: text.to_string(),
+        })?;
     Ok(servers.split_whitespace().map(str::to_string).collect())
 }
 
@@ -180,7 +203,7 @@ fn resolvectl_dns_servers(interface: &str) -> Result<Vec<String>, String> {
 pub fn obtain_dns_ips(
     resolution: crate::config::DnsResolution,
     interface: &str,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, DnsError> {
     use crate::config::DnsResolution;
     match resolution {
         DnsResolution::Detect => match resolvectl_dns_servers(interface) {
@@ -189,16 +212,18 @@ pub fn obtain_dns_ips(
                 let path = std::path::Path::new("/etc/resolv.conf");
                 if path.exists() {
                     let contents = std::fs::read_to_string(path)
-                        .map_err(|error| format!("cannot read /etc/resolv.conf: {error}"))?;
+                        .map_err(|source| DnsError::ReadResolvConf { source })?;
                     Ok(resolv_conf_dns_servers(&contents))
                 } else {
-                    Err(format!("No DNS resolver found ({error})"))
+                    Err(DnsError::NoResolver {
+                        source: Box::new(error),
+                    })
                 }
             }
         },
         DnsResolution::ResolvConf => {
             let contents = std::fs::read_to_string("/etc/resolv.conf")
-                .map_err(|error| format!("cannot read /etc/resolv.conf: {error}"))?;
+                .map_err(|source| DnsError::ReadResolvConf { source })?;
             Ok(resolv_conf_dns_servers(&contents))
         }
         DnsResolution::Resolvectl => resolvectl_dns_servers(interface),
@@ -263,5 +288,26 @@ mod tests {
     fn missing_interface_is_an_error() {
         let error = get_interface_ipv4("definitely-not-an-iface0").unwrap_err();
         assert!(error.to_string().contains("does not exist"));
+    }
+
+    #[test]
+    fn resolvectl_failure_is_surfaced_with_interface_and_stderr() {
+        // resolvectl_dns_servers shells out to this exact hardcoded path;
+        // skip on hosts/CI images that lack it rather than conflating "no
+        // resolvectl" with the ResolvectlFailed path under test.
+        if !std::path::Path::new("/usr/bin/resolvectl").exists() {
+            eprintln!("skipping: /usr/bin/resolvectl not present on this host");
+            return;
+        }
+        let error = resolvectl_dns_servers("definitely-not-an-iface0").unwrap_err();
+        assert!(matches!(
+            &error,
+            DnsError::ResolvectlFailed { interface, .. } if interface == "definitely-not-an-iface0"
+        ));
+        assert!(
+            error
+                .to_string()
+                .starts_with("resolvectl dns -i definitely-not-an-iface0 failed:")
+        );
     }
 }
