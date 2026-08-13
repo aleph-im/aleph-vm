@@ -59,9 +59,8 @@ guest never autoconfigures.
     allocated address" property as the v4 range;
   - `--enable-ra`: RAs on the tap. With a plain (non-`slaac`, non-`ra-only`)
     DHCPv6 range dnsmasq advertises M=1/A=0: default route yes, SLAAC no.
-  - `--dhcp-option=option6:dns-server,[...]` only if the daemon has
-    v6-capable nameservers; otherwise the guest keeps the v4 DNS servers
-    from udhcpc (acceptable).
+  - v6 DNS is not emitted (no `option6:dns-server`, deferred per section 6);
+    the guest keeps the v4 DNS servers from udhcpc (acceptable).
 - `lifecycle.rs`: no structural change. Same dnsmasq start/stop points,
   same `Type=exec` transient unit, same teardown. The tap already carries
   the host-side gateway (`create_tap` adds `host_ipv6_cidr`), so dnsmasq
@@ -72,9 +71,11 @@ guest never autoconfigures.
 
 - Enable IPv6 on the interface and `accept_ra=2` (kernel installs the
   default route from the RA; reused from the donor branch).
-- `busybox udhcpc6 -i $iface -q -t 5 -A 2 -s /bin/udhcpc6.script`, bounded
-  and non-fatal exactly like the v4 `udhcpc` call: no DHCPv6 server on the
-  tap means the guest simply stays IPv4-only.
+- `busybox udhcpc6 -i $iface -q -n -t 5 -A 2 -s /bin/udhcpc6.script`, bounded
+  and non-fatal exactly like the v4 `udhcpc` call (which also gains `-n`):
+  `-n` makes the client exit 1 once its solicit retries are exhausted
+  instead of looping forever, so `||` in init.sh always runs and no DHCPv6
+  server on the tap means the guest simply stays IPv4-only.
 - `udhcpc6.script` mirrors `udhcpc.script`: applies the leased address to
   the interface. No route handling (the RA covers it), no resolv.conf
   handling unless option6:dns-server was sent.

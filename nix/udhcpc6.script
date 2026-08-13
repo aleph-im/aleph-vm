@@ -21,9 +21,14 @@ case "$1" in
         ;;
     bound | renew)
         if [ -n "$ipv6" ]; then
-            # EEXIST on a re-bound identical address is fine.
-            /bin/busybox ip -6 addr add "${ipv6}/128" dev "$interface" 2>/dev/null
-            echo "init: DHCPv6 configured ${ipv6} on ${interface}"
+            # EEXIST on a re-bound identical address is harmless and stays on
+            # the console; any other failure is real and must not be logged
+            # as success below.
+            if /bin/busybox ip -6 addr add "${ipv6}/128" dev "$interface"; then
+                echo "init: DHCPv6 configured ${ipv6} on ${interface}"
+            else
+                echo "init: WARNING: failed to add ${ipv6}/128 on ${interface}"
+            fi
         else
             echo "init: DHCPv6 bound without an address on ${interface}"
         fi

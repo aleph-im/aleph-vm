@@ -47,7 +47,7 @@ else
         # -s: busybox udhcpc leases an address but only APPLIES it (ip addr/route)
         # by running this script; without it the guest would lease from the host's
         # per-tap dnsmasq but never configure its IP. See udhcpc.script.
-        /bin/busybox udhcpc -i "$iface" -q -t 5 -A 2 -s /bin/udhcpc.script 2>&1 || echo "init: DHCP failed on ${iface}"
+        /bin/busybox udhcpc -i "$iface" -q -n -t 5 -A 2 -s /bin/udhcpc.script 2>&1 || echo "init: DHCP failed on ${iface}"
 
         # IPv6: stateful DHCPv6 from the same per-tap dnsmasq that served the
         # IPv4 lease above, handing this guest EXACTLY its allocated
@@ -59,13 +59,15 @@ else
         # uses DHCP. accept_ra=2 keeps RA processing on regardless of
         # forwarding settings; both sysctls are best-effort (a v6-less
         # kernel stays IPv4-only). The client is bounded and non-fatal like
-        # udhcpc above: with no DHCPv6 server on the tap the guest simply
-        # stays IPv4-only. -q exits after the lease (the script applies the
-        # address permanently), so no client survives into the firewalled
-        # steady state and no DHCP firewall rule is needed.
+        # udhcpc above: `-n` makes it exit 1 (instead of retrying forever)
+        # once its solicit retries are exhausted, so `||` below always runs
+        # and the guest simply stays IPv4-only when no DHCPv6 server answers.
+        # -q exits after the lease (the script applies the address
+        # permanently), so no client survives into the firewalled steady
+        # state and no DHCP firewall rule is needed.
         echo 0 > "/proc/sys/net/ipv6/conf/${iface}/disable_ipv6" 2>/dev/null || true
         echo 2 > "/proc/sys/net/ipv6/conf/${iface}/accept_ra" 2>/dev/null || true
-        /bin/busybox udhcpc6 -i "$iface" -q -t 5 -A 2 -s /bin/udhcpc6.script 2>&1 || echo "init: DHCPv6 failed on ${iface}; continuing IPv4-only"
+        /bin/busybox udhcpc6 -i "$iface" -q -n -t 5 -A 2 -s /bin/udhcpc6.script 2>&1 || echo "init: DHCPv6 failed on ${iface}; continuing IPv4-only"
     fi
 fi
 
