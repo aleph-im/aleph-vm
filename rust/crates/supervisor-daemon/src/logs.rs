@@ -28,6 +28,30 @@
 
 use std::process::Command;
 
+/// Failures reading or following the journal via `journalctl`.
+#[derive(Debug, thiserror::Error)]
+pub enum LogsError {
+    #[error("failed to run journalctl: {source}")]
+    Journalctl { source: std::io::Error },
+
+    #[error("journalctl failed ({status}): {stderr}")]
+    JournalctlFailed {
+        status: std::process::ExitStatus,
+        stderr: String,
+    },
+
+    #[error("failed to run journalctl --follow: {source}")]
+    Follow { source: std::io::Error },
+
+    #[error("journalctl --follow has no stdout")]
+    NoStdout,
+
+    /// A fabricated error for test `LogSource` fakes that need to report a
+    /// specific failure without shelling out to a real `journalctl`.
+    #[error("{0}")]
+    Injected(String),
+}
+
 /// Which stream a journal entry came from (by SYSLOG_IDENTIFIER match).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogStream {
@@ -74,7 +98,7 @@ pub trait LogSource: Send + Sync {
         stdout_id: &str,
         stderr_id: &str,
         last_lines: Option<u32>,
-    ) -> Result<Vec<LogEntry>, String>;
+    ) -> Result<Vec<LogEntry>, LogsError>;
 
     /// Follow the journal live (StreamLogs): the LAST `last_lines` matching
     /// entries first (0 = only new lines from now), then every new entry as
@@ -85,7 +109,7 @@ pub trait LogSource: Send + Sync {
         stdout_id: &str,
         stderr_id: &str,
         last_lines: u32,
-    ) -> Result<LogFollow, String>;
+    ) -> Result<LogFollow, LogsError>;
 }
 
 /// Production implementation: one `journalctl -o json` run per call.
@@ -97,7 +121,7 @@ impl LogSource for JournalctlLogSource {
         stdout_id: &str,
         stderr_id: &str,
         last_lines: Option<u32>,
-    ) -> Result<Vec<LogEntry>, String> {
+    ) -> Result<Vec<LogEntry>, LogsError> {
         // --all: emit MESSAGE for unprintable/binary payloads too (as byte
         // arrays), which the sd-journal reader also yields (as bytes that
         // Python decodes with errors="replace").
@@ -116,14 +140,13 @@ impl LogSource for JournalctlLogSource {
             .arg(format!("SYSLOG_IDENTIFIER={stdout_id}"))
             .arg(format!("SYSLOG_IDENTIFIER={stderr_id}"))
             .output()
-            .map_err(|error| format!("failed to run journalctl: {error}"))?;
+            .map_err(|source| LogsError::Journalctl { source })?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!(
-                "journalctl failed ({}): {}",
-                output.status,
-                stderr.trim()
-            ));
+            return Err(LogsError::JournalctlFailed {
+                status: output.status,
+                stderr: stderr.trim().to_string(),
+            });
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
         Ok(parse_journal_json(&stdout, stdout_id))
@@ -134,7 +157,7 @@ impl LogSource for JournalctlLogSource {
         stdout_id: &str,
         stderr_id: &str,
         last_lines: u32,
-    ) -> Result<LogFollow, String> {
+    ) -> Result<LogFollow, LogsError> {
         // Same flags as read_history plus --follow; --lines bounds the
         // history replay at the source (journalctl -f alone would default
         // to the last 10 lines, so the bound is always explicit).
@@ -150,7 +173,7 @@ impl LogSource for JournalctlLogSource {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .spawn()
-            .map_err(|error| format!("failed to run journalctl --follow: {error}"))?;
+            .map_err(|source| LogsError::Follow { source })?;
         follow_child(child, stdout_id)
     }
 }
@@ -158,13 +181,10 @@ impl LogSource for JournalctlLogSource {
 /// Wrap a spawned journalctl-shaped child (stdout piped) into the follow
 /// reader/stopper pair. Split out of `follow` so the kill-and-reap contract
 /// is testable against a real child process.
-fn follow_child(mut child: std::process::Child, stdout_id: &str) -> Result<LogFollow, String> {
+fn follow_child(mut child: std::process::Child, stdout_id: &str) -> Result<LogFollow, LogsError> {
     use std::io::BufRead;
 
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "journalctl --follow has no stdout".to_string())?;
+    let stdout = child.stdout.take().ok_or(LogsError::NoStdout)?;
     let child = std::sync::Arc::new(std::sync::Mutex::new(child));
     let reader = JournalctlFollowReader {
         child: child.clone(),
@@ -296,7 +316,7 @@ impl LogSource for StaticLogSource {
         _stdout_id: &str,
         _stderr_id: &str,
         last_lines: Option<u32>,
-    ) -> Result<Vec<LogEntry>, String> {
+    ) -> Result<Vec<LogEntry>, LogsError> {
         let mut entries = self.entries.clone();
         // Emulate journalctl -n: keep the LAST n entries, journal order.
         if let Some(lines) = last_lines {
@@ -313,7 +333,7 @@ impl LogSource for StaticLogSource {
         stdout_id: &str,
         stderr_id: &str,
         last_lines: u32,
-    ) -> Result<LogFollow, String> {
+    ) -> Result<LogFollow, LogsError> {
         // The fake replays the bounded history and then ends the stream
         // (no live phase to wait on in hermetic tests).
         let entries = self.read_history(stdout_id, stderr_id, Some(last_lines))?;
@@ -407,6 +427,22 @@ mod tests {
             assert_ne!(state, "Z", "the killed follow child was never reaped");
         }
         pump.join().unwrap();
+    }
+
+    #[test]
+    fn follow_child_without_piped_stdout_reports_no_stdout() {
+        // follow_child expects the child to have been spawned with
+        // Stdio::piped() stdout (as JournalctlLogSource::follow does); a
+        // child spawned without that (stdout inherited/null) has
+        // `child.stdout == None`, which must surface as the typed
+        // `NoStdout` variant, not a generic string.
+        let child = std::process::Command::new("true").spawn().unwrap();
+        let error = match follow_child(child, STDOUT_ID) {
+            Ok(_) => panic!("expected NoStdout, got Ok"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, LogsError::NoStdout));
+        assert_eq!(error.to_string(), "journalctl --follow has no stdout");
     }
 
     #[test]
