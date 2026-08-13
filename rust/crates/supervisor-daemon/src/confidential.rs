@@ -62,9 +62,13 @@ pub fn get_measurement(state: &DaemonState, vm_id: &str) -> Result<pb::Measureme
         entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.to_string()))?;
     let mut client =
         crate::qmp::QmpClient::connect(std::path::Path::new(&entry.config.qmp_socket_path))
-            .map_err(RpcError::Internal)?;
-    let sev_info = client.query_sev_info().map_err(RpcError::Internal)?;
-    let launch_measure = client.query_launch_measure().map_err(RpcError::Internal)?;
+            .map_err(|error| RpcError::Internal(error.to_string()))?;
+    let sev_info = client
+        .query_sev_info()
+        .map_err(|error| RpcError::Internal(error.to_string()))?;
+    let launch_measure = client
+        .query_launch_measure()
+        .map_err(|error| RpcError::Internal(error.to_string()))?;
     // The TEE generation comes from the VM's confidential config (an input
     // the supervisor holds). SEV covers SEV and SEV-ES (the client refines
     // via sev_info.policy); SEV-SNP is a distinct launch path not emitted
@@ -107,11 +111,13 @@ pub fn inject_secret(
         .map_err(|error| RpcError::Internal(format!("secret is not valid UTF-8: {error}")))?;
     let mut client =
         crate::qmp::QmpClient::connect(std::path::Path::new(&entry.config.qmp_socket_path))
-            .map_err(RpcError::Internal)?;
+            .map_err(|error| RpcError::Internal(error.to_string()))?;
     client
         .inject_secret(header, secret)
-        .map_err(RpcError::Internal)?;
-    client.continue_execution().map_err(RpcError::Internal)?;
+        .map_err(|error| RpcError::Internal(error.to_string()))?;
+    client
+        .continue_execution()
+        .map_err(|error| RpcError::Internal(error.to_string()))?;
     Ok(())
 }
 
