@@ -51,6 +51,63 @@ use crate::units::{UnitStateSource, controller_unit_name};
 
 const CONFIG_SUFFIX: &str = "-controller.json";
 
+/// Failures deriving a VM's tap/IP assignment or its vm_index (the "IP
+/// assignment math" section below). Display strings are identical to the
+/// pre-typed messages they replace; every underlying parse error
+/// (ParseIntError/AddrParseError/TryFromIntError) is discarded exactly as
+/// it was before typing, so the enum carries no source.
+#[derive(Debug, thiserror::Error)]
+pub enum WorldError {
+    #[error("No available value for vm_index.")]
+    NoFreeVmIndex,
+
+    #[error("prefix /{prefix} does not subnet the pool {pool}")]
+    PrefixNotSubnet { prefix: u8, pool: String },
+
+    #[error("negative vm_index {vm_index}")]
+    NegativeVmIndex { vm_index: i64 },
+
+    #[error("vm_index {vm_index} out of range for {pool} split into /{prefix} subnets")]
+    IndexOutOfRange {
+        vm_index: i64,
+        pool: String,
+        prefix: u8,
+    },
+
+    #[error("no guest address in a /{prefix} subnet")]
+    NoGuestAddress { prefix: u8 },
+
+    #[error("the static IPv6 allocation scheme requires a /64 or /56 pool, got /{pool_len}")]
+    StaticIpv6PoolLength { pool_len: u8 },
+
+    #[error("vm_hash {vm_hash:?} is too short for the static IPv6 scheme")]
+    VmHashTooShort { vm_hash: String },
+
+    #[error("non-hex vm_hash slice {text:?}")]
+    NonHexHashSlice { text: String },
+
+    #[error("subnet prefix /{subnet_prefix} does not subnet the pool {pool}")]
+    SubnetPrefixNotSubnet { subnet_prefix: u8, pool: String },
+
+    #[error("subnet prefix /0 cannot hold guest networks")]
+    ZeroSubnetPrefix,
+
+    #[error("the IPv6 pool {pool} is out of /{subnet_prefix} subnets")]
+    Ipv6PoolExhausted { pool: String, subnet_prefix: u8 },
+
+    #[error("invalid IPv{family} pool {pool:?}")]
+    InvalidCidr { family: &'static str, pool: String },
+
+    #[error("invalid IPv{family} pool address {pool:?}")]
+    InvalidCidrAddress { family: &'static str, pool: String },
+
+    #[error("invalid IPv{family} pool prefix {pool:?}")]
+    InvalidCidrPrefix { family: &'static str, pool: String },
+
+    #[error("the IPv{family} pool {pool:?} has host bits set")]
+    HostBitsSet { family: &'static str, pool: String },
+}
+
 /// Lifecycle instants in unix nanoseconds UTC, 0 = stage not reached.
 /// Same shape as the Python `VmExecutionTimes` after `_ns()` conversion
 /// (microsecond precision).
@@ -340,7 +397,7 @@ impl WorldView {
 
     /// Python `get_unique_vm_index`: the first free index from
     /// START_ID_INDEX, skipping live entries and hidden VMs' claims.
-    pub fn unique_vm_index(&self, start_id_index: i64) -> Result<i64, String> {
+    pub fn unique_vm_index(&self, start_id_index: i64) -> Result<i64, WorldError> {
         let used: std::collections::HashSet<i64> = self
             .entries
             .values()
@@ -350,7 +407,7 @@ impl WorldView {
         // Python: range(START_ID_INDEX, 255**2).
         (start_id_index..255 * 255)
             .find(|candidate| !used.contains(candidate))
-            .ok_or_else(|| "No available value for vm_index.".to_string())
+            .ok_or(WorldError::NoFreeVmIndex)
     }
 }
 
@@ -363,7 +420,7 @@ pub fn derive_tap_assignment(
     vm_hash: &str,
     vm_type: VmType,
     ipv6_dynamic_ordinal: &mut usize,
-) -> Result<(IpPair, IpPair), String> {
+) -> Result<(IpPair, IpPair), WorldError> {
     let ipv4 = ipv4_assignment(
         &settings.ipv4_address_pool,
         settings.ipv4_network_prefix_length,
@@ -534,7 +591,7 @@ pub fn build_world_view(
                         Err(error) => {
                             tracing::warn!(
                                 vm_hash,
-                                error,
+                                %error,
                                 "cannot compute the IPv4 assignment; hiding the VM \
                                  like a failed Python reattach"
                             );
@@ -564,7 +621,7 @@ pub fn build_world_view(
                         Err(error) => {
                             tracing::warn!(
                                 vm_hash,
-                                error,
+                                %error,
                                 "cannot compute the IPv6 assignment; hiding the VM \
                                  like a failed Python reattach"
                             );
@@ -753,24 +810,29 @@ fn scan_controller_configs(settings: &Settings) -> Vec<ControllerConfig> {
 
 /// The vm_index-th /{prefix} subnet of the pool: guest = network+2,
 /// gateway = network+1, like `TapInterface.guest_ip`/`host_ip`.
-fn ipv4_assignment(pool: &str, prefix: u8, vm_index: i64) -> Result<IpPair, String> {
+fn ipv4_assignment(pool: &str, prefix: u8, vm_index: i64) -> Result<IpPair, WorldError> {
     let (base, pool_len) = parse_ipv4_cidr(pool)?;
     if prefix > 32 || prefix < pool_len {
-        return Err(format!("prefix /{prefix} does not subnet the pool {pool}"));
+        return Err(WorldError::PrefixNotSubnet {
+            prefix,
+            pool: pool.to_string(),
+        });
     }
-    let index = u64::try_from(vm_index).map_err(|_| format!("negative vm_index {vm_index}"))?;
+    let index = u64::try_from(vm_index).map_err(|_| WorldError::NegativeVmIndex { vm_index })?;
     let subnet_count = 1u64 << (prefix - pool_len);
     if index >= subnet_count {
         // Python raises IndexError from `subnets[vm_index]`.
-        return Err(format!(
-            "vm_index {vm_index} out of range for {pool} split into /{prefix} subnets"
-        ));
+        return Err(WorldError::IndexOutOfRange {
+            vm_index,
+            pool: pool.to_string(),
+            prefix,
+        });
     }
     let subnet_size = 1u64 << (32 - prefix);
     let network = u64::from(u32::from(base)) + index * subnet_size;
     let broadcast = network + subnet_size - 1;
     if network + 2 > broadcast {
-        return Err(format!("no guest address in a /{prefix} subnet"));
+        return Err(WorldError::NoGuestAddress { prefix });
     }
     let network_addr = Ipv4Addr::from(network as u32);
     let gateway = Ipv4Addr::from((network + 1) as u32);
@@ -786,24 +848,30 @@ fn ipv4_assignment(pool: &str, prefix: u8, vm_index: i64) -> Result<IpPair, Stri
 /// the vm-type prefix hextet (1 for microvms, 3 for instances), then 44
 /// bits of the item hash with a trailing zero nibble. guest = network+1,
 /// gateway = network address.
-fn ipv6_static_assignment(pool: &str, vm_hash: &str, vm_type: VmType) -> Result<IpPair, String> {
+fn ipv6_static_assignment(
+    pool: &str,
+    vm_hash: &str,
+    vm_type: VmType,
+) -> Result<IpPair, WorldError> {
     let (base, pool_len) = parse_ipv6_cidr(pool)?;
     if pool_len != 56 && pool_len != 64 {
         // Python: StaticIPv6Allocator refuses anything but /56 or /64.
-        return Err(format!(
-            "the static IPv6 allocation scheme requires a /64 or /56 pool, got /{pool_len}"
-        ));
+        return Err(WorldError::StaticIpv6PoolLength { pool_len });
     }
     // Checked slicing: get() returns None both for a short hash and for a
     // range that splits a multibyte character, where byte indexing would
     // panic. The hash comes from a request-reachable path in increment 3.
-    let slice = |range: std::ops::Range<usize>| -> Result<&str, String> {
+    let slice = |range: std::ops::Range<usize>| -> Result<&str, WorldError> {
         vm_hash
             .get(range)
-            .ok_or_else(|| format!("vm_hash {vm_hash:?} is too short for the static IPv6 scheme"))
+            .ok_or_else(|| WorldError::VmHashTooShort {
+                vm_hash: vm_hash.to_string(),
+            })
     };
-    let hextet = |text: &str| -> Result<u16, String> {
-        u16::from_str_radix(text, 16).map_err(|_| format!("non-hex vm_hash slice {text:?}"))
+    let hextet = |text: &str| -> Result<u16, WorldError> {
+        u16::from_str_radix(text, 16).map_err(|_| WorldError::NonHexHashSlice {
+            text: text.to_string(),
+        })
     };
     let segments = base.segments();
     let network = Ipv6Addr::new(
@@ -827,25 +895,27 @@ fn ipv6_dynamic_assignment(
     pool: &str,
     subnet_prefix: u8,
     ordinal: usize,
-) -> Result<IpPair, String> {
+) -> Result<IpPair, WorldError> {
     let (base, pool_len) = parse_ipv6_cidr(pool)?;
     if subnet_prefix > 128 || subnet_prefix < pool_len {
-        return Err(format!(
-            "subnet prefix /{subnet_prefix} does not subnet the pool {pool}"
-        ));
+        return Err(WorldError::SubnetPrefixNotSubnet {
+            subnet_prefix,
+            pool: pool.to_string(),
+        });
     }
     // subnet_prefix 0 would shift step by 128 below (a /0 "subnet" is not a
     // guest network); reject it so both shifts in this function are provably
     // in range.
     if subnet_prefix == 0 {
-        return Err("subnet prefix /0 cannot hold guest networks".to_string());
+        return Err(WorldError::ZeroSubnetPrefix);
     }
     let subnet_count = 1u128 << (subnet_prefix - pool_len).min(127);
     let ordinal = ordinal as u128;
     if ordinal >= subnet_count {
-        return Err(format!(
-            "the IPv6 pool {pool} is out of /{subnet_prefix} subnets"
-        ));
+        return Err(WorldError::Ipv6PoolExhausted {
+            pool: pool.to_string(),
+            subnet_prefix,
+        });
     }
     let step = 1u128 << (128 - subnet_prefix);
     let network = Ipv6Addr::from(u128::from(base) + ordinal * step);
@@ -861,39 +931,62 @@ fn ipv6_pair(network: Ipv6Addr, prefix: u8) -> IpPair {
     }
 }
 
-fn parse_ipv4_cidr(pool: &str) -> Result<(Ipv4Addr, u8), String> {
+fn parse_ipv4_cidr(pool: &str) -> Result<(Ipv4Addr, u8), WorldError> {
     let (address, len) = pool
         .split_once('/')
-        .ok_or_else(|| format!("invalid IPv4 pool {pool:?}"))?;
+        .ok_or_else(|| WorldError::InvalidCidr {
+            family: "4",
+            pool: pool.to_string(),
+        })?;
     let address: Ipv4Addr = address
         .parse()
-        .map_err(|_| format!("invalid IPv4 pool address {pool:?}"))?;
-    let len: u8 = len
-        .parse()
-        .map_err(|_| format!("invalid IPv4 pool prefix {pool:?}"))?;
+        .map_err(|_| WorldError::InvalidCidrAddress {
+            family: "4",
+            pool: pool.to_string(),
+        })?;
+    let len: u8 = len.parse().map_err(|_| WorldError::InvalidCidrPrefix {
+        family: "4",
+        pool: pool.to_string(),
+    })?;
     if len > 32 {
-        return Err(format!("invalid IPv4 pool prefix {pool:?}"));
+        return Err(WorldError::InvalidCidrPrefix {
+            family: "4",
+            pool: pool.to_string(),
+        });
     }
     // Python's IPv4Network is strict: host bits must be zero.
     let mask = if len == 0 { 0 } else { u32::MAX << (32 - len) };
     if u32::from(address) & !mask != 0 {
-        return Err(format!("the IPv4 pool {pool:?} has host bits set"));
+        return Err(WorldError::HostBitsSet {
+            family: "4",
+            pool: pool.to_string(),
+        });
     }
     Ok((address, len))
 }
 
-fn parse_ipv6_cidr(pool: &str) -> Result<(Ipv6Addr, u8), String> {
+fn parse_ipv6_cidr(pool: &str) -> Result<(Ipv6Addr, u8), WorldError> {
     let (address, len) = pool
         .split_once('/')
-        .ok_or_else(|| format!("invalid IPv6 pool {pool:?}"))?;
+        .ok_or_else(|| WorldError::InvalidCidr {
+            family: "6",
+            pool: pool.to_string(),
+        })?;
     let address: Ipv6Addr = address
         .parse()
-        .map_err(|_| format!("invalid IPv6 pool address {pool:?}"))?;
-    let len: u8 = len
-        .parse()
-        .map_err(|_| format!("invalid IPv6 pool prefix {pool:?}"))?;
+        .map_err(|_| WorldError::InvalidCidrAddress {
+            family: "6",
+            pool: pool.to_string(),
+        })?;
+    let len: u8 = len.parse().map_err(|_| WorldError::InvalidCidrPrefix {
+        family: "6",
+        pool: pool.to_string(),
+    })?;
     if len > 128 {
-        return Err(format!("invalid IPv6 pool prefix {pool:?}"));
+        return Err(WorldError::InvalidCidrPrefix {
+            family: "6",
+            pool: pool.to_string(),
+        });
     }
     let mask = if len == 0 {
         0
@@ -901,7 +994,10 @@ fn parse_ipv6_cidr(pool: &str) -> Result<(Ipv6Addr, u8), String> {
         u128::MAX << (128 - len)
     };
     if u128::from(address) & !mask != 0 {
-        return Err(format!("the IPv6 pool {pool:?} has host bits set"));
+        return Err(WorldError::HostBitsSet {
+            family: "6",
+            pool: pool.to_string(),
+        });
     }
     Ok((address, len))
 }
@@ -1225,9 +1321,13 @@ mod tests {
         assert_eq!(pair.network_cidr, "172.17.44.0/24");
 
         assert!(ipv4_assignment("172.16.0.0/12", 24, 4096).is_err());
+        let host_bits_error = ipv4_assignment("172.16.0.1/12", 24, 0).unwrap_err();
         assert!(
-            ipv4_assignment("172.16.0.1/12", 24, 0).is_err(),
-            "host bits set"
+            matches!(
+                &host_bits_error,
+                WorldError::HostBitsSet { family: "4", .. }
+            ),
+            "host bits set: {host_bits_error:?}"
         );
         assert!(
             ipv4_assignment("172.16.0.0/24", 12, 0).is_err(),
@@ -1306,7 +1406,7 @@ mod tests {
         // Without the guard, `1u128 << (128 - 0)` overflows the shift
         // (panic in debug builds) instead of failing cleanly.
         let result = ipv6_dynamic_assignment("::/0", 0, 0);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("/0"));
+        assert!(matches!(&result, Err(WorldError::ZeroSubnetPrefix)));
+        assert!(result.unwrap_err().to_string().contains("/0"));
     }
 }
