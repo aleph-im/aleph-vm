@@ -16,6 +16,7 @@ use supervisor_controller::config::{
     ConfigError, Configuration, HypervisorType, QemuConfig, VmConfiguration,
 };
 use supervisor_controller::qemu;
+use supervisor_controller::qemu::QemuError;
 
 /// The `__main__.main` network pre-check budget: wait up to 120s for the tap.
 const MAX_TAP_WAIT: Duration = Duration::from_secs(120);
@@ -40,10 +41,11 @@ struct Cli {
 
 /// A fatal controller error. `main` logs it once and turns it into a
 /// non-zero exit; each variant is one of the `exit(1)` sites (or the
-/// uncaught-exception exit) in the Python `__main__.main`. The two `String`
+/// uncaught-exception exit) in the Python `__main__.main`. The `String`
 /// variants wrap helpers that already render a full, actionable message
-/// ([`select_run_target`] and [`qemu::run`]); the rest attach the context
-/// (the config path, the failing operation) that Python logged inline.
+/// ([`select_run_target`] and [`wait_for_tap`]); `Qemu` wraps the typed
+/// [`qemu::QemuError`] transparently; the rest attach the context (the
+/// config path, the failing operation) that Python logged inline.
 #[derive(Debug, thiserror::Error)]
 enum ControllerError {
     #[error("Configuration file {} not found", .0.display())]
@@ -64,8 +66,8 @@ enum ControllerError {
     #[error("cannot start the async runtime: {0}")]
     Runtime(#[source] std::io::Error),
 
-    #[error("{0}")]
-    Qemu(String),
+    #[error(transparent)]
+    Qemu(#[from] QemuError),
 }
 
 fn main() -> ExitCode {
@@ -146,7 +148,7 @@ fn run(cli: &Cli) -> Result<(), ControllerError> {
             runtime.block_on(qemu::run_snp(&config.vm_hash, qemu_config))
         }
     };
-    result.map_err(ControllerError::Qemu)?;
+    result?;
     Ok(())
 }
 
