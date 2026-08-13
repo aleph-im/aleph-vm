@@ -116,7 +116,7 @@ pub enum LifecycleError {
     /// The NUMA drop-in writer is anyhow-based; `{0:#}` keeps its whole
     /// context chain on one line, like the `format!("{error:#}")` it replaces.
     #[error("{0:#}")]
-    Numa(#[from] anyhow::Error),
+    Numa(anyhow::Error),
 
     #[error(transparent)]
     Units(#[from] UnitsError),
@@ -292,7 +292,8 @@ fn apply_numa_dropin(
         &state.host.settings.systemd_unit_dir,
         vm_id,
         &placement.cpuset,
-    )?;
+    )
+    .map_err(LifecycleError::Numa)?;
     // A freshly written drop-in only applies after a reload if the unit was
     // already loaded; harmless on first load.
     state.units.reload()?;
