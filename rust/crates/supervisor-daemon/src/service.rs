@@ -340,7 +340,7 @@ impl SupervisorService {
             match units.active_states(std::slice::from_ref(&unit)) {
                 Ok(states) => states.get(&unit).copied().unwrap_or(false),
                 Err(error) => {
-                    tracing::error!(error, "Failed to get services active states");
+                    tracing::error!(%error, "Failed to get services active states");
                     false
                 }
             }
@@ -365,7 +365,7 @@ impl SupervisorService {
         tokio::task::spawn_blocking(move || match units.active_states(&unit_names) {
             Ok(states) => states,
             Err(error) => {
-                tracing::error!(error, "Failed to get services active states");
+                tracing::error!(%error, "Failed to get services active states");
                 unit_names
                     .iter()
                     .map(|unit| (unit.clone(), false))

@@ -473,7 +473,7 @@ pub fn build_world_view(
             Ok(states) => Some(states),
             Err(error) => {
                 tracing::warn!(
-                    error,
+                    %error,
                     "system bus unreachable at adoption; unit states unknown, \
                      deferring every VM's status to live queries"
                 );
@@ -501,7 +501,7 @@ pub fn build_world_view(
             }
             Err(error) => {
                 tracing::warn!(
-                    error,
+                    %error,
                     "could not list controller units for the orphan check"
                 );
             }
