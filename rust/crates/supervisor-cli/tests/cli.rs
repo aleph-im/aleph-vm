@@ -50,7 +50,7 @@ async fn health_prints_status_and_vm_count() {
         ..Default::default()
     };
     let (_dir, socket) = spawn(fake).await;
-    let mut client = client::connect(&socket).await.unwrap();
+    let mut client = client::connect(&socket, None).await.unwrap();
     let mut out = Vec::new();
     commands::host::health(&mut client, &mut out, false)
         .await
@@ -62,7 +62,7 @@ async fn health_prints_status_and_vm_count() {
 async fn health_json_is_the_raw_response() {
     let fake = FakeSupervisor::default();
     let (_dir, socket) = spawn(fake).await;
-    let mut client = client::connect(&socket).await.unwrap();
+    let mut client = client::connect(&socket, None).await.unwrap();
     let mut out = Vec::new();
     commands::host::health(&mut client, &mut out, true)
         .await
@@ -73,13 +73,35 @@ async fn health_json_is_the_raw_response() {
 }
 
 #[tokio::test]
+async fn unary_calls_time_out_on_a_stalled_supervisor() {
+    let fake = FakeSupervisor {
+        health_stall: Some(std::time::Duration::from_secs(30)),
+        ..Default::default()
+    };
+    let (_dir, socket) = spawn(fake).await;
+    let mut client = client::connect(&socket, Some(std::time::Duration::from_millis(200)))
+        .await
+        .unwrap();
+    let mut out = Vec::new();
+    let error = commands::host::health(&mut client, &mut out, false)
+        .await
+        .unwrap_err();
+    let text = error.to_string().to_lowercase();
+    assert!(
+        text.contains("timeout") || text.contains("timed out"),
+        "{text}"
+    );
+    assert!(out.is_empty());
+}
+
+#[tokio::test]
 async fn host_info_prints_a_key_value_block() {
     let fake = FakeSupervisor {
         host: fake_host(),
         ..Default::default()
     };
     let (_dir, socket) = spawn(fake).await;
-    let mut client = client::connect(&socket).await.unwrap();
+    let mut client = client::connect(&socket, None).await.unwrap();
     let mut out = Vec::new();
     commands::host::host_info(&mut client, &mut out, false)
         .await
@@ -125,7 +147,7 @@ async fn vm_list_renders_an_aligned_table() {
         ..Default::default()
     };
     let (_dir, socket) = spawn(fake).await;
-    let mut client = client::connect(&socket).await.unwrap();
+    let mut client = client::connect(&socket, None).await.unwrap();
     let mut out = Vec::new();
     commands::vm::list(&mut client, &mut out, false)
         .await
@@ -144,7 +166,7 @@ async fn vm_get_renders_a_key_value_block() {
         ..Default::default()
     };
     let (_dir, socket) = spawn(fake).await;
-    let mut client = client::connect(&socket).await.unwrap();
+    let mut client = client::connect(&socket, None).await.unwrap();
     let mut out = Vec::new();
     commands::vm::get(&mut client, &mut out, "vm-1", false)
         .await
@@ -164,7 +186,7 @@ async fn vm_get_renders_a_key_value_block() {
 async fn vm_get_unknown_id_maps_the_error_trailer() {
     let fake = FakeSupervisor::default();
     let (_dir, socket) = spawn(fake).await;
-    let mut client = client::connect(&socket).await.unwrap();
+    let mut client = client::connect(&socket, None).await.unwrap();
     let mut out = Vec::new();
     let error = commands::vm::get(&mut client, &mut out, "ghost", false)
         .await
@@ -182,7 +204,7 @@ async fn vm_spec_renders_disks_and_network() {
         ..Default::default()
     };
     let (_dir, socket) = spawn(fake).await;
-    let mut client = client::connect(&socket).await.unwrap();
+    let mut client = client::connect(&socket, None).await.unwrap();
     let mut out = Vec::new();
     commands::vm::spec(&mut client, &mut out, "vm-1", false)
         .await
@@ -207,7 +229,7 @@ async fn vm_stop_reports_the_returned_status() {
         ..Default::default()
     };
     let (_dir, socket) = spawn(fake).await;
-    let mut client = client::connect(&socket).await.unwrap();
+    let mut client = client::connect(&socket, None).await.unwrap();
     let mut out = Vec::new();
     commands::vm::stop(&mut client, &mut out, "vm-1", false)
         .await
@@ -226,7 +248,7 @@ async fn vm_delete_aborts_when_not_confirmed() {
     };
     let deleted = fake.deleted.clone();
     let (_dir, socket) = spawn(fake).await;
-    let mut client = client::connect(&socket).await.unwrap();
+    let mut client = client::connect(&socket, None).await.unwrap();
     let mut out = Vec::new();
     commands::vm::delete(
         &mut client,
@@ -250,7 +272,7 @@ async fn vm_delete_proceeds_on_y() {
     };
     let deleted = fake.deleted.clone();
     let (_dir, socket) = spawn(fake).await;
-    let mut client = client::connect(&socket).await.unwrap();
+    let mut client = client::connect(&socket, None).await.unwrap();
     let mut out = Vec::new();
     commands::vm::delete(
         &mut client,
@@ -274,7 +296,7 @@ async fn vm_delete_with_yes_skips_the_prompt() {
     };
     let deleted = fake.deleted.clone();
     let (_dir, socket) = spawn(fake).await;
-    let mut client = client::connect(&socket).await.unwrap();
+    let mut client = client::connect(&socket, None).await.unwrap();
     let mut out = Vec::new();
     commands::vm::delete(
         &mut client,
@@ -310,7 +332,7 @@ async fn ports_list_filters_by_vm_and_renders_a_table() {
         ..Default::default()
     };
     let (_dir, socket) = spawn(fake).await;
-    let mut client = client::connect(&socket).await.unwrap();
+    let mut client = client::connect(&socket, None).await.unwrap();
     let mut out = Vec::new();
     commands::ports::list(&mut client, &mut out, Some("vm-1".to_string()), false)
         .await
@@ -337,7 +359,7 @@ async fn logs_prints_plain_lines() {
         ..Default::default()
     };
     let (_dir, socket) = spawn(fake).await;
-    let mut client = client::connect(&socket).await.unwrap();
+    let mut client = client::connect(&socket, None).await.unwrap();
     let mut out = Vec::new();
     commands::logs::logs(&mut client, &mut out, "vm-1", false, None, false)
         .await
@@ -352,7 +374,7 @@ async fn logs_escape_guest_control_characters() {
         ..Default::default()
     };
     let (_dir, socket) = spawn(fake).await;
-    let mut client = client::connect(&socket).await.unwrap();
+    let mut client = client::connect(&socket, None).await.unwrap();
     let mut out = Vec::new();
     commands::logs::logs(&mut client, &mut out, "vm-1", false, None, false)
         .await
@@ -368,7 +390,7 @@ async fn logs_tail_maps_to_max_lines_from_tail() {
     let fake = FakeSupervisor::default();
     let requests = fake.log_requests.clone();
     let (_dir, socket) = spawn(fake).await;
-    let mut client = client::connect(&socket).await.unwrap();
+    let mut client = client::connect(&socket, None).await.unwrap();
     let mut out = Vec::new();
     commands::logs::logs(&mut client, &mut out, "vm-1", false, Some(50), false)
         .await
@@ -387,7 +409,7 @@ async fn logs_follow_streams_until_the_server_closes() {
         ..Default::default()
     };
     let (_dir, socket) = spawn(fake).await;
-    let mut client = client::connect(&socket).await.unwrap();
+    let mut client = client::connect(&socket, None).await.unwrap();
     let mut out = Vec::new();
     commands::logs::logs(&mut client, &mut out, "vm-1", true, None, false)
         .await
@@ -407,7 +429,7 @@ async fn events_prints_one_transition_per_line() {
         ..Default::default()
     };
     let (_dir, socket) = spawn(fake).await;
-    let mut client = client::connect(&socket).await.unwrap();
+    let mut client = client::connect(&socket, None).await.unwrap();
     let mut out = Vec::new();
     commands::logs::events(&mut client, &mut out, false)
         .await
@@ -435,7 +457,7 @@ async fn events_json_is_ndjson() {
         ..Default::default()
     };
     let (_dir, socket) = spawn(fake).await;
-    let mut client = client::connect(&socket).await.unwrap();
+    let mut client = client::connect(&socket, None).await.unwrap();
     let mut out = Vec::new();
     commands::logs::events(&mut client, &mut out, true)
         .await

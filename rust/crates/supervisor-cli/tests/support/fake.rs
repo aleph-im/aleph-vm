@@ -32,6 +32,9 @@ pub struct FakeSupervisor {
     pub deleted: Arc<Mutex<Vec<String>>>,
     /// Every GetLogsRequest received; tests assert tail/from_tail mapping.
     pub log_requests: Arc<Mutex<Vec<pb::GetLogsRequest>>>,
+    /// Sleep this long before answering Health: a wedged supervisor for
+    /// the request-timeout test.
+    pub health_stall: Option<std::time::Duration>,
 }
 
 impl FakeSupervisor {
@@ -63,6 +66,9 @@ impl Supervisor for FakeSupervisor {
         &self,
         _request: Request<pb::HealthRequest>,
     ) -> Result<Response<pb::HealthResponse>, Status> {
+        if let Some(stall) = self.health_stall {
+            tokio::time::sleep(stall).await;
+        }
         Ok(Response::new(pb::HealthResponse {
             status: pb::HealthStatus::Ok as i32,
             vm_count: self.vms.len() as u32,
