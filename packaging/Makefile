@@ -22,6 +22,9 @@ debian-package-rust: debian-package-code
 	# flag via controller-launcher. Inert until an operator flips the flag.
 	install -m 0755 ../rust/target/release/aleph-vm-controller ./aleph-vm/opt/aleph-vm/bin/aleph-vm-controller
 	install -m 0755 ./controller-launcher ./aleph-vm/opt/aleph-vm/bin/controller-launcher
+	# Debug CLI (2026-07-07-alephctl): ships next to the supervisor so
+	# operators can poke the gRPC socket on-node without a full agent stack.
+	install -m 0755 ../rust/target/release/alephctl ./aleph-vm/opt/aleph-vm/bin/alephctl
 
 debian-package-code:
 	rm -fr ./aleph-vm/opt/aleph-vm
