@@ -138,8 +138,6 @@ pub enum LifecycleError {
     CloudInit(#[from] cloudinit::CloudInitError),
     #[error(transparent)]
     ControllerConfig(#[from] controller_config::ConfigWriteError),
-    #[error(transparent)]
-    Backup(#[from] crate::backup::BackupError),
 }
 
 impl From<LifecycleError> for RpcError {
@@ -3252,10 +3250,9 @@ fn create_program_vm(
         },
     ))
     .unwrap_or_else(|panic| {
-        Err(RpcError::Internal(format!(
-            "CreateVm panicked: {}",
-            panic_message(&*panic)
-        )))
+        Err(RpcError::from(LifecycleError::Panic(panic_message(
+            &*panic,
+        ))))
     });
 
     match boot {
@@ -5160,6 +5157,23 @@ mod tests {
         }
         assert!(state.world.blocking_read().is_empty(), "the entry leaked");
         assert!(harness.taps.devices().is_empty());
+    }
+
+    #[test]
+    fn create_program_vm_panic_wire_text_is_unchanged() {
+        // Pins that routing create_program_vm's panic path through
+        // LifecycleError::Panic + From<LifecycleError> for RpcError (instead
+        // of the old inline `RpcError::Internal(format!("CreateVm panicked:
+        // {}", ...))`) renders byte-identical wire text.
+        let payload: Box<dyn std::any::Any + Send> = Box::new("boom");
+        let message = panic_message(&*payload);
+        let error = RpcError::from(LifecycleError::Panic(message.clone()));
+        match error {
+            RpcError::Internal(text) => {
+                assert_eq!(text, format!("CreateVm panicked: {message}"));
+            }
+            other => panic!("expected Internal, got {other:?}"),
+        }
     }
 
     #[test]
