@@ -104,8 +104,7 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
 
     // settings.check() slice: the startup preconditions the lifecycle RPCs
     // depend on. Aborts like daemon.py main(), after setup.
-    checks::check(&host.settings, host.network_interface.as_deref())
-        .map_err(DaemonError::Internal)?;
+    checks::check(&host.settings, host.network_interface.as_deref())?;
 
     // pool.setup() counterparts: the port-mapping store schema, the legacy
     // port-mapping migration, the forwarding sysctls, the NDP proxy, the
