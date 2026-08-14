@@ -15,12 +15,33 @@
 //! never blocking boot or VM creation (the fail-safe direction).
 //!
 //! There is NO Python oracle (the Python daemon never reserved hugepages); the
-//! reference is the aleph-cvm Rust donor. Errors surface as `String` to match
-//! the daemon's conventions (the donor used anyhow).
+//! reference is the aleph-cvm Rust donor. Errors are typed via [`HugepagesError`],
+//! surfaced through tracing (warn! on reservation failure is fail-safe).
 
 use std::path::Path;
 
 use crate::numa::NumaTopology;
+
+/// Failures reserving 2M hugepages via sysfs. Display strings are identical
+/// to the pre-typed messages (they surface in the fallback warn! log).
+#[derive(Debug, thiserror::Error)]
+pub enum HugepagesError {
+    #[error("failed to write {}: {source}", path.display())]
+    Write {
+        path: std::path::PathBuf,
+        source: std::io::Error,
+    },
+    #[error("failed to read back {}: {source}", path.display())]
+    ReadBack {
+        path: std::path::PathBuf,
+        source: std::io::Error,
+    },
+    #[error("failed to parse {}: {source}", path.display())]
+    Parse {
+        path: std::path::PathBuf,
+        source: std::num::ParseIntError,
+    },
+}
 
 /// Per-node floor of regular RAM (MB) kept out of the 2M hugepage reservation
 /// so the host and its non-hugepage workloads are never starved. Generous on
@@ -59,17 +80,25 @@ pub fn allocate_2m_pages_on_node(
     sysfs_base: &Path,
     node_id: u32,
     count: u32,
-) -> Result<u32, String> {
+) -> Result<u32, HugepagesError> {
     let path = sysfs_base
         .join(format!("node{node_id}"))
         .join("hugepages/hugepages-2048kB/nr_hugepages");
-    std::fs::write(&path, count.to_string())
-        .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
+    std::fs::write(&path, count.to_string()).map_err(|source| HugepagesError::Write {
+        path: path.clone(),
+        source,
+    })?;
     let actual: u32 = std::fs::read_to_string(&path)
-        .map_err(|error| format!("failed to read back {}: {error}", path.display()))?
+        .map_err(|source| HugepagesError::ReadBack {
+            path: path.clone(),
+            source,
+        })?
         .trim()
         .parse()
-        .map_err(|error| format!("failed to parse {}: {error}", path.display()))?;
+        .map_err(|source| HugepagesError::Parse {
+            path: path.clone(),
+            source,
+        })?;
     Ok(actual)
 }
 
@@ -148,7 +177,7 @@ pub fn reserve_2m_hugepages_in(
                 // pages for VMs placed there); the others still get reserved.
                 tracing::warn!(
                     node = node.id,
-                    error,
+                    %error,
                     "failed to reserve 2M hugepages on this node; falling back to regular pages"
                 );
             }
@@ -194,6 +223,14 @@ mod tests {
         std::fs::write(node.join("nr_hugepages"), "0\n").unwrap();
         // Writing to a regular file "succeeds" and reads back what we wrote.
         assert_eq!(allocate_2m_pages_on_node(dir.path(), 0, 100).unwrap(), 100);
+    }
+
+    #[test]
+    fn allocate_2m_pages_write_error_on_missing_path() {
+        let dir = tempfile::tempdir().unwrap();
+        // No sysfs tree created -> write will fail.
+        let result = allocate_2m_pages_on_node(dir.path(), 0, 100);
+        assert!(matches!(result, Err(HugepagesError::Write { .. })));
     }
 
     fn node(id: u32, ram_mb: u64, hp_1g: u32) -> NumaNode {
