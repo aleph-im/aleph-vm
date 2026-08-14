@@ -27,9 +27,14 @@ from aleph.vm.supervisor_interface.types import (
     DiskRole,
     DiskSpec,
     GpuSpec,
+    GuestPort,
+    HostPort,
     IpAssignment,
     NetworkConfig,
     PciAddress,
+    PortForwardInfo,
+    PortForwardSpec,
+    Protocol,
     VmId,
     VmInfo,
     VmStatus,
@@ -512,6 +517,113 @@ async def test_start_persistent_resumes_stopped(monkeypatch):
     sup.start_vm.assert_awaited_once()  # STOPPED -> resume in place
     sup.delete_vm.assert_not_awaited()  # not deleted
     created.assert_not_awaited()  # not recreated
+
+
+def _readopt_supervisor(*, get_status: VmStatus = VmStatus.RUNNING, current_forwards: list | None = None):
+    sup = _fake_supervisor(get_status=get_status)
+    sup.list_port_forwards = AsyncMock(return_value=current_forwards or [])
+    sup.remove_port_forward = AsyncMock()
+    return sup
+
+
+def _instance_registry() -> AgentVmRegistry:
+    content = _make_qemu_instance_message(hypervisor=HypervisorType.qemu)
+    registry = AgentVmRegistry()
+    registry.record(_HASH, message=content, original=content, persistent=True)
+    return registry
+
+
+async def _start_persistent(sup, registry):
+    return await run_module.start_persistent_vm(
+        ItemHash(_HASH),
+        None,
+        supervisor=sup,
+        registry=registry,
+        capacity=_fake_capacity(),
+        expiry=MagicMock(),
+        update_watcher=MagicMock(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_start_persistent_readopt_instance_heals_with_strict_resolve(monkeypatch):
+    """An instance adopted already-RUNNING gets its forwards reconciled from
+    the aggregate, resolved strictly: on re-adoption "could not fetch" must
+    mean "skip", never "converge onto the SSH-only fallback"."""
+    sup = _readopt_supervisor()
+    monkeypatch.setattr(run_module, "create_vm_execution", AsyncMock())
+    ssh = PortForwardSpec(vm_id=VmId(str(_HASH)), host_port=HostPort(0), vm_port=GuestPort(22), protocol=Protocol.TCP)
+    resolve = AsyncMock(return_value=[ssh])
+    monkeypatch.setattr(run_module, "resolve_port_forwards", resolve)
+
+    await _start_persistent(sup, _instance_registry())
+
+    resolve.assert_awaited_once()
+    await_args = resolve.await_args
+    assert await_args is not None
+    assert await_args.kwargs.get("strict") is True
+    sup.add_port_forward.assert_awaited_once_with(ssh)
+    sup.remove_port_forward.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_start_persistent_readopt_instance_settings_error_removes_nothing(monkeypatch):
+    """A transient aggregate-fetch failure during re-adoption healing must
+    leave existing forwards exactly as found and never fail the allocation."""
+    existing = PortForwardInfo(
+        vm_id=VmId(str(_HASH)), host_port=HostPort(24080), vm_port=GuestPort(8080), protocol=Protocol.TCP
+    )
+    sup = _readopt_supervisor(current_forwards=[existing])
+    monkeypatch.setattr(run_module, "create_vm_execution", AsyncMock())
+    monkeypatch.setattr(run_module, "get_user_settings", AsyncMock(side_effect=RuntimeError("CCN down")))
+
+    await _start_persistent(sup, _instance_registry())
+
+    sup.remove_port_forward.assert_not_awaited()
+    sup.add_port_forward.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_start_persistent_readopt_awaiting_init_not_healed(monkeypatch):
+    """A confidential VM awaiting its owner's session is left untouched: it is
+    not RUNNING, so there is nothing to heal (the create path applies forwards
+    once it comes up)."""
+    sup = _fake_supervisor()
+    sup.get_vm = AsyncMock(return_value=replace(_info(VmStatus.DEFINED), awaiting_confidential_init=True))
+    heal = AsyncMock()
+    monkeypatch.setattr(run_module, "reconcile_adopted_port_forwards", heal)
+    monkeypatch.setattr(run_module, "create_vm_execution", AsyncMock())
+
+    await _start_persistent(sup, AgentVmRegistry())
+
+    heal.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_start_persistent_readopt_stopped_heals_after_resume(monkeypatch):
+    """The resume-in-place branch ends with a RUNNING VM this agent did not
+    create, so it heals forwards too (idempotent when nothing is missing)."""
+    sup = _fake_supervisor(get_status=VmStatus.STOPPED)
+    heal = AsyncMock()
+    monkeypatch.setattr(run_module, "reconcile_adopted_port_forwards", heal)
+    monkeypatch.setattr(run_module, "create_vm_execution", AsyncMock())
+    monkeypatch.setattr(run_module, "_wait_until_running", AsyncMock())
+
+    await _start_persistent(sup, AgentVmRegistry())
+
+    sup.start_vm.assert_awaited_once()
+    heal.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_adopted_program_content_is_a_noop():
+    """Programs get no agent-side forwards: adoption healing must not touch
+    the supervisor at all (a bare namespace would AttributeError if it did)."""
+    registry = AgentVmRegistry()
+    content = MagicMock(spec=ProgramContent)
+    registry.record(_HASH, message=content, original=content, persistent=True)
+
+    await run_module.reconcile_adopted_port_forwards(SimpleNamespace(), registry, _HASH)
 
 
 @pytest.mark.asyncio
