@@ -101,13 +101,14 @@ flowchart LR
     client --> supErr
 ```
 
-**Rust daemon.** Each leaf module owns its own `thiserror` enum
+**Rust daemon.** Each leaf module owns its own typed `thiserror` error
 (`TapError`, `NftError`, `DhcpError`, `NdppdError`, `UnitsError`,
 `PortsError`, `world::WorldError`, `BackupError`, `FirecrackerError`,
-`QmpError`, `LogsError`, `CloudInitError`, `ConfigWriteError`/`ConfigParseError`
-in `controller_config.rs`, `ChecksError`, `HugepagesError`, `DnsError` in
-`net.rs`). `rust/crates/supervisor-daemon/src/lifecycle.rs` defines two more
-types on top:
+`QmpError`, `LogsError`, `CloudInitError`, `ConfigWriteError` (an enum) and
+`ConfigParseError` (a `thiserror` tuple struct) in `controller_config.rs`,
+`ChecksError`, `HugepagesError`, `DnsError` in `net.rs`).
+`rust/crates/supervisor-daemon/src/lifecycle.rs` defines two more types on
+top:
 
 - `LifecycleError` composes several leaf error types transparently (`#[from]`
   on `UnitsError`, `world::WorldError`, `nft::NftError`,
@@ -128,10 +129,11 @@ types on top:
   `RpcError::Internal` for callers that return `Result<_, RpcError>` without
   composing through `LifecycleError` first (`impl From<UnitsError> for
   RpcError`, `impl From<crate::tap::TapError> for RpcError`, and similarly
-  for `world::WorldError`, `dhcp::DhcpError`, `ports::PortsError`,
-  `controller_config::ConfigWriteError`/`ConfigParseError`,
+  for `world::WorldError`, `crate::ndppd::NdppdError`, `dhcp::DhcpError`,
+  `ports::PortsError`, `controller_config::ConfigWriteError`/`ConfigParseError`,
   `crate::backup::BackupError`, `crate::qmp::QmpError`,
-  `crate::firecracker::FirecrackerError`, `crate::error::DaemonError`).
+  `crate::firecracker::FirecrackerError`, `crate::error::DaemonError`: 12
+  direct impls in total).
 
 `rust/crates/supervisor-daemon/src/service.rs` turns an `RpcError` into a
 gRPC `Status`: `rpc_error_status` matches each variant onto a `tonic::Code`
@@ -207,8 +209,13 @@ in `rust/crates/supervisor-controller/src/main.rs`) instead of anyhow's
 alternate `{:#}` form: `{:#}` walks the `source()` chain and reprints each
 source again, and since these `Display` templates already inline their
 sources, switching to `{:#}` without first stripping the embedded text
-would double-print (e.g. "cannot open X: msg: msg"). Both `main.rs` files
-carry this exact comment, cross-referencing each other.
+would double-print (e.g. "cannot open X: msg: msg"). Each sink carries a
+comment documenting this, but the two are not identical: the daemon's
+`main.rs` has the fuller explanation (spelling out the `Error::source()`
+auto-link and the double-print mechanism); the controller's `main.rs` has a
+shorter paraphrase that explicitly points back at "the matching comment in
+supervisor-daemon/src/main.rs". The daemon's comment does not reference the
+controller back.
 
 `anyhow` is confined to the process top level: `run()` in each `main.rs`
 returns `anyhow::Result`, but nothing below the RPC boundary uses an
