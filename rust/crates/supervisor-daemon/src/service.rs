@@ -1030,7 +1030,7 @@ impl Supervisor for SupervisorService {
                 "the journal task failed: {error}"
             )))
         })?
-        .map_err(|error| internal_status(DaemonError::Internal(error)))?;
+        .map_err(|error| internal_status(DaemonError::Internal(error.to_string())))?;
         let mut lines = log_chunks(history);
         let max_lines = request.max_lines as usize;
         if max_lines > 0 && lines.len() > max_lines {
@@ -1082,7 +1082,7 @@ impl Supervisor for SupervisorService {
                     "the journal task failed: {error}"
                 )))
             })?
-            .map_err(|error| internal_status(DaemonError::Internal(error)))?;
+            .map_err(|error| internal_status(DaemonError::Internal(error.to_string())))?;
             let chunks: Vec<Result<pb::LogChunk, Status>> =
                 log_chunks(history).into_iter().map(Ok).collect();
             return Ok(Response::new(Box::pin(tokio_stream::iter(chunks))));
@@ -1122,7 +1122,7 @@ impl Supervisor for SupervisorService {
                         "the journal task failed: {error}"
                     )))
                 })?
-                .map_err(|error| internal_status(DaemonError::Internal(error)))?;
+                .map_err(|error| internal_status(DaemonError::Internal(error.to_string())))?;
         let (sender, receiver) = tokio::sync::mpsc::channel::<Result<pb::LogChunk, Status>>(16);
         let pump_stopper = stopper.clone();
         tokio::task::spawn_blocking(move || {
@@ -1797,7 +1797,7 @@ mod tests {
             _stdout_id: &str,
             _stderr_id: &str,
             _last_lines: Option<u32>,
-        ) -> Result<Vec<crate::logs::LogEntry>, String> {
+        ) -> Result<Vec<crate::logs::LogEntry>, crate::logs::LogsError> {
             Ok(Vec::new())
         }
 
@@ -1806,7 +1806,7 @@ mod tests {
             _stdout_id: &str,
             _stderr_id: &str,
             _last_lines: u32,
-        ) -> Result<crate::logs::LogFollow, String> {
+        ) -> Result<crate::logs::LogFollow, crate::logs::LogsError> {
             let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
             Ok((
                 Box::new(ControlledFollowReader {
