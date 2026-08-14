@@ -157,14 +157,19 @@ pub struct ProgramBootRequest {
     pub init_timeout: Duration,
 }
 
-/// The launch failure vocabulary the wire distinguishes.
-#[derive(Debug)]
+/// The launch failure vocabulary the wire distinguishes. Display is never
+/// sent on the wire for `InitTimeout` (the lifecycle caller maps it to the
+/// MICROVM_INIT_FAILED trailer code explicitly); `Failed`'s Display is the
+/// same text the pre-typed `String` funnels carried.
+#[derive(Debug, thiserror::Error)]
 pub enum ProgramBootError {
     /// MicroVMFailedInitError: the guest never signalled ready. The Python
     /// exception carries an empty message and maps to INTERNAL with the
     /// MICROVM_INIT_FAILED trailer code.
+    #[error("the guest never signalled ready before the init timeout")]
     InitTimeout,
     /// Everything else (spawn failures, config staging errors).
+    #[error("{0}")]
     Failed(String),
 }
 
@@ -294,14 +299,108 @@ fn setfacl() {
     );
 }
 
+/// Failures from the ephemeral Firecracker launcher's setup and spawn
+/// machinery: jailer chroot prep, config assembly/staging, journald
+/// wiring, msgpack shape validation, and the process spawn itself. Display
+/// strings are copied verbatim from the pre-typed `format!` messages they
+/// replace (they surface in RPC error responses via
+/// [`ProgramBootError::Failed`] and in warn!/error! logs at the call
+/// sites).
+#[derive(Debug, thiserror::Error)]
+pub enum FirecrackerError {
+    #[error("user 'jailman' does not exist")]
+    JailmanMissing,
+
+    #[error("path {path} has no file name")]
+    NoFileName { path: String },
+
+    #[error("cannot copy {path} into the jail: {source}")]
+    CopyIntoJail {
+        path: String,
+        source: std::io::Error,
+    },
+
+    #[error("cannot link {path} into the jail: {source}")]
+    LinkIntoJail {
+        path: String,
+        source: std::io::Error,
+    },
+
+    #[error("invalid msgpack payload: {source}")]
+    InvalidMsgpack { source: rmpv::decode::Error },
+
+    #[error("invalid msgpack payload: extra data after the first object")]
+    MsgpackExtraData,
+
+    #[error("invalid msgpack payload: map key {key} is not a str or bin")]
+    MsgpackBadKey { key: String },
+
+    #[error("cannot connect to the journald stream socket: {source}")]
+    JournaldConnect { source: std::io::Error },
+
+    #[error("cannot write the journald stream header: {source}")]
+    JournaldHeader { source: std::io::Error },
+
+    /// Python enable_rootfs: `ValueError("Not a file or a block device:
+    /// {path}")`, no OS error appended (`is_file()`/`is_block_device()`
+    /// both answer false for a missing path).
+    #[error("Not a file or a block device: {path}")]
+    RootfsInvalid { path: String },
+
+    #[error("cannot clear the jail {path}: {source}")]
+    ClearJail {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+
+    #[error("cannot create {path}: {source}")]
+    CreateDir {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+
+    #[error("cannot create the config temp file: {source}")]
+    ConfigTempCreate { source: std::io::Error },
+
+    #[error("cannot persist the config temp file: {source}")]
+    ConfigTempPersist { source: tempfile::PathPersistError },
+
+    #[error("cannot write {path}: {source}")]
+    ConfigWrite {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+
+    #[error("cannot chmod {path}: {source}")]
+    ConfigChmod {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+
+    /// The two bare fd-clone sites in [`FirecrackerLauncher::spawn`]
+    /// previously rendered the raw io error text (`error.to_string()`);
+    /// this reproduces that byte-identically.
+    #[error("{source}")]
+    FdClone { source: std::io::Error },
+
+    #[error("cannot remove the stale socket {path}: {source}")]
+    RemoveStaleSocket {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+
+    #[error("cannot spawn firecracker: {source}")]
+    SpawnFirecracker { source: std::io::Error },
+}
+
 /// getpwnam("jailman") uid/gid, the jailer drop-privileges identity.
-fn jailman_ids() -> Result<(u32, u32), String> {
+fn jailman_ids() -> Result<(u32, u32), FirecrackerError> {
     let name = std::ffi::CString::new("jailman").expect("static name");
     // SAFETY: getpwnam with a valid NUL-terminated name; the returned
     // struct is only read before any other getpwnam call on this thread.
     let record = unsafe { libc::getpwnam(name.as_ptr()) };
     if record.is_null() {
-        return Err("user 'jailman' does not exist".to_string());
+        return Err(FirecrackerError::JailmanMissing);
     }
     // SAFETY: non-null record from getpwnam.
     unsafe { Ok(((*record).pw_uid, (*record).pw_gid)) }
@@ -315,7 +414,11 @@ fn jailman_ids() -> Result<(u32, u32), String> {
 /// (shared wart, ledger entry 42). `exdev_copies` selects the cross-device
 /// behavior: enable_file_rootfs and enable_drive fall back to a copy on
 /// EXDEV, enable_kernel catches only FileExistsError and propagates EXDEV.
-fn stage_into_jail(jailer_root: &Path, source: &str, exdev_copies: bool) -> Result<String, String> {
+fn stage_into_jail(
+    jailer_root: &Path,
+    source: &str,
+    exdev_copies: bool,
+) -> Result<String, FirecrackerError> {
     stage_into_jail_with(
         jailer_root,
         source,
@@ -333,11 +436,13 @@ fn stage_into_jail_with(
     exdev_copies: bool,
     link: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
     copy: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
-) -> Result<String, String> {
+) -> Result<String, FirecrackerError> {
     let source_path = Path::new(source);
     let file_name = source_path
         .file_name()
-        .ok_or_else(|| format!("path {source} has no file name"))?;
+        .ok_or_else(|| FirecrackerError::NoFileName {
+            path: source.to_string(),
+        })?;
     let jail_relative = format!("/opt/{}", file_name.to_string_lossy());
     let target = jailer_root.join(&jail_relative[1..]);
     match link(source_path, &target) {
@@ -349,10 +454,17 @@ fn stage_into_jail_with(
             // Cross-device link: copy instead, like the Python EXDEV branch
             // of enable_file_rootfs / enable_drive. enable_kernel has no
             // such branch: the OSError propagates and fails the create.
-            copy(source_path, &target)
-                .map_err(|error| format!("cannot copy {source} into the jail: {error}"))?;
+            copy(source_path, &target).map_err(|error| FirecrackerError::CopyIntoJail {
+                path: source.to_string(),
+                source: error,
+            })?;
         }
-        Err(error) => return Err(format!("cannot link {source} into the jail: {error}")),
+        Err(error) => {
+            return Err(FirecrackerError::LinkIntoJail {
+                path: source.to_string(),
+                source: error,
+            });
+        }
     }
     Ok(jail_relative)
 }
@@ -364,25 +476,25 @@ fn stage_into_jail_with(
 /// otherwise), and every map key at any depth is a str or bin
 /// (`strict_map_key=True`, the msgpack-python default). The validated
 /// payload is still forwarded as the client's raw bytes, never re-encoded.
-pub fn validate_msgpack(data: &[u8]) -> Result<rmpv::Value, String> {
+pub fn validate_msgpack(data: &[u8]) -> Result<rmpv::Value, FirecrackerError> {
     let mut cursor = std::io::Cursor::new(data);
     let value = rmpv::decode::read_value(&mut cursor)
-        .map_err(|error| format!("invalid msgpack payload: {error}"))?;
+        .map_err(|source| FirecrackerError::InvalidMsgpack { source })?;
     if (cursor.position() as usize) != data.len() {
-        return Err("invalid msgpack payload: extra data after the first object".to_string());
+        return Err(FirecrackerError::MsgpackExtraData);
     }
     check_strict_map_keys(&value)?;
     Ok(value)
 }
 
-fn check_strict_map_keys(value: &rmpv::Value) -> Result<(), String> {
+fn check_strict_map_keys(value: &rmpv::Value) -> Result<(), FirecrackerError> {
     match value {
         rmpv::Value::Map(entries) => {
             for (key, nested) in entries {
                 if !matches!(key, rmpv::Value::String(_) | rmpv::Value::Binary(_)) {
-                    return Err(format!(
-                        "invalid msgpack payload: map key {key} is not a str or bin"
-                    ));
+                    return Err(FirecrackerError::MsgpackBadKey {
+                        key: key.to_string(),
+                    });
                 }
                 check_strict_map_keys(nested)?;
             }
@@ -422,13 +534,13 @@ fn ready_payload_is_valid(payload: &[u8]) -> bool {
 /// sd_journal_stream_fd(3): a stream socket to journald carrying the
 /// identifier header, exactly what the Python `journal.stream(identifier)`
 /// wires the child's stdout/stderr to (priority LOG_INFO, no level prefix).
-fn journal_stream(identifier: &str) -> Result<UnixStream, String> {
+fn journal_stream(identifier: &str) -> Result<UnixStream, FirecrackerError> {
     let stream = UnixStream::connect("/run/systemd/journal/stdout")
-        .map_err(|error| format!("cannot connect to the journald stream socket: {error}"))?;
+        .map_err(|source| FirecrackerError::JournaldConnect { source })?;
     let header = format!("{identifier}\n\n6\n0\n0\n0\n0\n");
     (&stream)
         .write_all(header.as_bytes())
-        .map_err(|error| format!("cannot write the journald stream header: {error}"))?;
+        .map_err(|source| FirecrackerError::JournaldHeader { source })?;
     Ok(stream)
 }
 
@@ -597,7 +709,7 @@ impl FirecrackerLauncher {
         &self,
         paths: &MicroVmPaths,
         request: &ProgramBootRequest,
-    ) -> Result<FirecrackerConfig, String> {
+    ) -> Result<FirecrackerConfig, FirecrackerError> {
         // enable_kernel / enable_rootfs / enable_drive: stage files into
         // the chroot when jailed, pass host paths through otherwise. Block
         // device rootfs (the Python device-mapper branch) is not ported:
@@ -609,10 +721,9 @@ impl FirecrackerLauncher {
             .map(|metadata| metadata.is_file())
             .unwrap_or(false);
         if !rootfs_is_file {
-            return Err(format!(
-                "Not a file or a block device: {}",
-                request.rootfs_path
-            ));
+            return Err(FirecrackerError::RootfsInvalid {
+                path: request.rootfs_path.clone(),
+            });
         }
         let jailer_root = paths.jailer_root();
         let (kernel_path, rootfs_path) = if paths.use_jailer {
@@ -671,16 +782,20 @@ impl FirecrackerLauncher {
     }
 
     /// `MicroVM.prepare_jailer()`.
-    fn prepare_jailer(&self, paths: &MicroVmPaths) -> Result<(), String> {
+    fn prepare_jailer(&self, paths: &MicroVmPaths) -> Result<(), FirecrackerError> {
         let root = paths.jailer_root();
         if root.exists() {
-            std::fs::remove_dir_all(&root)
-                .map_err(|error| format!("cannot clear the jail {}: {error}", root.display()))?;
+            std::fs::remove_dir_all(&root).map_err(|source| FirecrackerError::ClearJail {
+                path: root.clone(),
+                source,
+            })?;
         }
         for dir in ["tmp", "opt", "dev/mapper"] {
             let path = root.join(dir);
-            std::fs::create_dir_all(&path)
-                .map_err(|error| format!("cannot create {}: {error}", path.display()))?;
+            std::fs::create_dir_all(&path).map_err(|source| FirecrackerError::CreateDir {
+                path: path.clone(),
+                source,
+            })?;
         }
         system(
             Command::new("chown")
@@ -697,22 +812,30 @@ impl FirecrackerLauncher {
         &self,
         paths: &MicroVmPaths,
         config: &FirecrackerConfig,
-    ) -> Result<PathBuf, String> {
+    ) -> Result<PathBuf, FirecrackerError> {
         use std::os::unix::fs::PermissionsExt;
         let path = if paths.use_jailer {
             paths.jailer_root().join("tmp/config.json")
         } else {
             let file = tempfile::NamedTempFile::new()
-                .map_err(|error| format!("cannot create the config temp file: {error}"))?;
+                .map_err(|source| FirecrackerError::ConfigTempCreate { source })?;
             // delete=False: the file persists, like the Python tempfile.
             file.into_temp_path()
                 .keep()
-                .map_err(|error| format!("cannot persist the config temp file: {error}"))?
+                .map_err(|source| FirecrackerError::ConfigTempPersist { source })?
         };
-        std::fs::write(&path, config.to_json())
-            .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
-            .map_err(|error| format!("cannot chmod {}: {error}", path.display()))?;
+        std::fs::write(&path, config.to_json()).map_err(|source| {
+            FirecrackerError::ConfigWrite {
+                path: path.clone(),
+                source,
+            }
+        })?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).map_err(
+            |source| FirecrackerError::ConfigChmod {
+                path: path.clone(),
+                source,
+            },
+        )?;
         Ok(path)
     }
 
@@ -724,18 +847,22 @@ impl FirecrackerLauncher {
         request: &ProgramBootRequest,
         config_path: &Path,
         state: &mut FcState,
-    ) -> Result<(), String> {
+    ) -> Result<(), FirecrackerError> {
         let stdout_name = format!("vm-{}-stdout", request.vm_hash);
         let stderr_name = format!("vm-{}-stderr", request.vm_hash);
         let (stdout, stderr): (Stdio, Stdio) = if self.enable_console {
             let out = journal_stream(&stdout_name)?;
             let err = journal_stream(&stderr_name)?;
-            let stdio_out: Stdio =
-                std::os::fd::OwnedFd::from(out.try_clone().map_err(|error| error.to_string())?)
-                    .into();
-            let stdio_err: Stdio =
-                std::os::fd::OwnedFd::from(err.try_clone().map_err(|error| error.to_string())?)
-                    .into();
+            let stdio_out: Stdio = std::os::fd::OwnedFd::from(
+                out.try_clone()
+                    .map_err(|source| FirecrackerError::FdClone { source })?,
+            )
+            .into();
+            let stdio_err: Stdio = std::os::fd::OwnedFd::from(
+                err.try_clone()
+                    .map_err(|source| FirecrackerError::FdClone { source })?,
+            )
+            .into();
             state.journal_stdout = Some(out);
             state.journal_stderr = Some(err);
             (stdio_out, stdio_err)
@@ -770,11 +897,11 @@ impl FirecrackerLauncher {
             // left behind.
             for stale in [PathBuf::from(VSOCK_PATH), paths.socket_path()] {
                 if stale.exists() {
-                    std::fs::remove_file(&stale).map_err(|error| {
-                        format!(
-                            "cannot remove the stale socket {}: {error}",
-                            stale.display()
-                        )
+                    std::fs::remove_file(&stale).map_err(|source| {
+                        FirecrackerError::RemoveStaleSocket {
+                            path: stale.clone(),
+                            source,
+                        }
                     })?;
                 }
             }
@@ -792,7 +919,7 @@ impl FirecrackerLauncher {
             .stdout(stdout)
             .stderr(stderr)
             .spawn()
-            .map_err(|error| format!("cannot spawn firecracker: {error}"))?;
+            .map_err(|source| FirecrackerError::SpawnFirecracker { source })?;
         state.child = Some(child);
         Ok(())
     }
@@ -922,15 +1049,15 @@ impl ProgramLauncher for FirecrackerLauncher {
         let booted = (|| -> Result<Vec<u8>, ProgramBootError> {
             if self.use_jailer {
                 self.prepare_jailer(&paths)
-                    .map_err(ProgramBootError::Failed)?;
+                    .map_err(|error| ProgramBootError::Failed(error.to_string()))?;
             }
             setfacl();
             let config = self
                 .build_config(&paths, request)
-                .map_err(ProgramBootError::Failed)?;
+                .map_err(|error| ProgramBootError::Failed(error.to_string()))?;
             let config_path = self
                 .save_configuration_file(&paths, &config)
-                .map_err(ProgramBootError::Failed)?;
+                .map_err(|error| ProgramBootError::Failed(error.to_string()))?;
             {
                 let mut state = handle
                     .state
@@ -942,7 +1069,7 @@ impl ProgramLauncher for FirecrackerLauncher {
                     state.config_file_path = Some(config_path.clone());
                 }
                 self.spawn(&paths, request, &config_path, &mut state)
-                    .map_err(ProgramBootError::Failed)?;
+                    .map_err(|error| ProgramBootError::Failed(error.to_string()))?;
                 self.wait_for_init(&paths, request.ready_port, request.init_timeout, &mut state)
             }
         })();
@@ -982,13 +1109,19 @@ pub fn duration_from_secs_clamped(secs: f64) -> Duration {
 
 // ── The guest channel exchange (RunProgramCode) ──────────────────────────
 
-/// Failure vocabulary of one run-code exchange.
-#[derive(Debug)]
+/// Failure vocabulary of one run-code exchange. `NotConnected`'s and
+/// `Timeout`'s Display are never sent on the wire (the lifecycle caller
+/// matches the variants explicitly); `Io`'s Display is the same text the
+/// pre-typed `String` funnels carried.
+#[derive(Debug, thiserror::Error)]
 pub enum ChannelError {
     /// VmInitNotConnectedError("MicroVM may have crashed").
+    #[error("the program's guest channel is not connected")]
     NotConnected,
     /// asyncio.TimeoutError: the wire message is empty (str(TimeoutError())).
+    #[error("the guest channel exchange timed out")]
     Timeout,
+    #[error("{0}")]
     Io(String),
 }
 
@@ -1326,7 +1459,9 @@ mod tests {
         );
         let error = result.unwrap_err();
         assert!(
-            error.starts_with("cannot link /other-device/vmlinux.bin"),
+            error
+                .to_string()
+                .starts_with("cannot link /other-device/vmlinux.bin"),
             "got {error:?}"
         );
     }
@@ -1402,8 +1537,9 @@ mod tests {
             init_timeout: Duration::from_secs(1),
         };
         let error = launcher.build_config(&paths, &request).unwrap_err();
+        assert!(matches!(error, FirecrackerError::RootfsInvalid { .. }));
         assert_eq!(
-            error,
+            error.to_string(),
             "Not a file or a block device: /nonexistent/rootfs.squashfs"
         );
     }

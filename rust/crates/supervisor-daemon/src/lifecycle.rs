@@ -3218,7 +3218,8 @@ pub fn run_program_code(
     // the VM (invalid msgpack aborts INTERNAL even for unknown vm_ids); on
     // success the original bytes are still forwarded untouched (the
     // pass-through of ledger entry 38 is shape-checked, never re-encoded).
-    crate::firecracker::validate_msgpack(scope_msgpack).map_err(RpcError::Internal)?;
+    crate::firecracker::validate_msgpack(scope_msgpack)
+        .map_err(|error| RpcError::Internal(error.to_string()))?;
     // The vm_lock stands in for the Python `becomes_ready` wait: CreateVm
     // holds it through the whole boot, so acquiring it means the boot
     // finished (or failed and removed the entry). Released before the
