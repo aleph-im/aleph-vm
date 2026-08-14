@@ -638,7 +638,7 @@ pub fn build_world_view(
                 match ports::load_port_forwards(&settings.supervisor_database, &vm_hash) {
                     Ok(forwards) => port_forwards = forwards,
                     Err(error) => {
-                        tracing::warn!(vm_hash, error, "cannot load persisted port mappings");
+                        tracing::warn!(vm_hash, %error, "cannot load persisted port mappings");
                     }
                 }
 
