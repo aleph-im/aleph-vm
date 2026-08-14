@@ -92,11 +92,6 @@ pub enum TapError {
 
     #[error("ip {argv} failed: {stderr}")]
     Command { argv: String, stderr: String },
-
-    /// A fabricated error for test `TapBackend` fakes that need to report a
-    /// specific failure without shelling out to a real `ip`.
-    #[error("{0}")]
-    Injected(String),
 }
 
 /// Production backend over `ip(8)`.
@@ -217,18 +212,25 @@ impl TapBackend for IpCommand {
 /// Test backend: an in-memory device set, every call recorded. Failures
 /// are injectable per operation, and an optional shared [`EventLog`]
 /// interleaves the tap calls with the other fakes' for ordering checks.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct FakeTapBackend {
     inner: std::sync::Mutex<FakeTapState>,
     event_log: std::sync::OnceLock<crate::test_fixtures::EventLog>,
 }
 
-#[derive(Debug, Default)]
+/// A builder rather than a stored `TapError`: `TapError` deliberately has no
+/// `Clone` impl (its `io::Error` source must stay a real, non-reconstructed
+/// error everywhere outside this test-only injection path), so repeated
+/// failures are produced by calling the closure again instead of cloning a
+/// stored value.
+type TapErrorFn = Box<dyn Fn() -> TapError + Send + Sync>;
+
+#[derive(Default)]
 struct FakeTapState {
     devices: std::collections::HashSet<String>,
     pub actions: Vec<String>,
-    fail_create: Option<String>,
-    fail_delete: Option<String>,
+    fail_create: Option<TapErrorFn>,
+    fail_delete: Option<TapErrorFn>,
     panic_on_create: bool,
 }
 
@@ -257,14 +259,16 @@ impl FakeTapBackend {
         self.lock().devices.clone()
     }
 
-    /// Every create_tap fails with this message until cleared.
-    pub fn fail_create(&self, message: &str) {
-        self.lock().fail_create = Some(message.to_string());
+    /// Every create_tap fails with the error `make` builds, until cleared.
+    /// A builder (not a stored error) so each call gets its own real
+    /// `TapError`, e.g. `backend.fail_create(|| TapError::Command { .. })`.
+    pub fn fail_create(&self, make: impl Fn() -> TapError + Send + Sync + 'static) {
+        self.lock().fail_create = Some(Box::new(make));
     }
 
-    /// Every delete_tap fails with this message until cleared.
-    pub fn fail_delete(&self, message: &str) {
-        self.lock().fail_delete = Some(message.to_string());
+    /// Every delete_tap fails with the error `make` builds, until cleared.
+    pub fn fail_delete(&self, make: impl Fn() -> TapError + Send + Sync + 'static) {
+        self.lock().fail_delete = Some(Box::new(make));
     }
 
     /// The next create_tap panics (for unwind-safety tests).
@@ -296,8 +300,8 @@ impl TapBackend for FakeTapBackend {
             drop(inner);
             panic!("injected tap creation panic");
         }
-        if let Some(message) = &inner.fail_create {
-            return Err(TapError::Injected(message.clone()));
+        if let Some(make) = &inner.fail_create {
+            return Err(make());
         }
         inner.actions.push(format!(
             "create {} {} {}",
@@ -313,8 +317,8 @@ impl TapBackend for FakeTapBackend {
 
     fn delete_tap(&self, tap: &TapAssignment) -> Result<(), TapError> {
         let mut inner = self.lock();
-        if let Some(message) = &inner.fail_delete {
-            return Err(TapError::Injected(message.clone()));
+        if let Some(make) = &inner.fail_delete {
+            return Err(make());
         }
         inner.actions.push(format!("delete {}", tap.device_name));
         inner.devices.remove(&tap.device_name);
@@ -369,10 +373,16 @@ mod tests {
     fn fail_create_injects_a_typed_error() {
         let backend = FakeTapBackend::new();
         let tap = assignment();
-        backend.fail_create("injected: cannot create tap");
+        backend.fail_create(|| TapError::Command {
+            argv: "tuntap add name vmtap3 mode tap".to_string(),
+            stderr: "Operation not permitted".to_string(),
+        });
         let error = backend.create_tap(&tap).unwrap_err();
-        assert!(matches!(error, TapError::Injected(_)));
-        assert_eq!(error.to_string(), "injected: cannot create tap");
+        assert!(matches!(error, TapError::Command { .. }));
+        assert_eq!(
+            error.to_string(),
+            "ip tuntap add name vmtap3 mode tap failed: Operation not permitted"
+        );
     }
 
     #[test]
