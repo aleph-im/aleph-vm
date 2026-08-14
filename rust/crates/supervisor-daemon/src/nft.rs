@@ -32,6 +32,46 @@ pub struct NoBaseChainFound {
     pub hook: String,
 }
 
+/// Failures fetching or applying nftables state via `nft(8)`.
+#[derive(Debug, thiserror::Error)]
+pub enum NftError {
+    #[error("Failed to find or create a 'nat' type prerouting chain")]
+    NoNatPrerouting,
+
+    #[error("cannot run nft: {source}")]
+    Run { source: std::io::Error },
+
+    #[error("nft list ruleset {family} failed ({status}): {stderr}")]
+    ListFailed {
+        family: String,
+        status: std::process::ExitStatus,
+        stderr: String,
+    },
+
+    #[error("nft returned invalid JSON: {source}")]
+    InvalidJson { source: serde_json::Error },
+
+    #[error("cannot serialize nft commands: {source}")]
+    Serialize { source: serde_json::Error },
+
+    #[error("cannot write to nft stdin: {source}")]
+    StdinWrite { source: std::io::Error },
+
+    #[error("nft did not terminate: {source}")]
+    Wait { source: std::io::Error },
+
+    #[error("nft -j -f - failed ({status}): {stderr}")]
+    ApplyFailed {
+        status: std::process::ExitStatus,
+        stderr: String,
+    },
+
+    /// A fabricated error for test `NftExecutor` fakes that need to report a
+    /// specific failure without shelling out to a real `nft`.
+    #[error("injected nft failure (matched {needle:?})")]
+    Injected { needle: String },
+}
+
 // ── Entity presence (the dedup) ─────────────────────────────────────────
 
 /// Python `_is_superset`: every key of `a` exists in `b` with a superset
@@ -159,7 +199,7 @@ pub fn get_table_for_hook(
 /// (created when absent) and the three supervisor chains with their jump
 /// rules. Pure: `ruleset` stands in for every fetch the Python code makes
 /// during this phase (the kernel state does not change under it).
-pub fn initialize_ipv4_commands(ruleset: &[Value], prefix: &str) -> Result<Vec<Value>, String> {
+pub fn initialize_ipv4_commands(ruleset: &[Value], prefix: &str) -> Result<Vec<Value>, NftError> {
     let mut commands: Vec<Value> = Vec::new();
     // hook -> the base chain object the aleph chains attach to.
     let mut base_chains: Vec<(&str, Value)> = Vec::new();
@@ -211,7 +251,7 @@ pub fn initialize_ipv4_commands(ruleset: &[Value], prefix: &str) -> Result<Vec<V
                 // at boot; the Rust boot logs and serves instead (ledger
                 // entry 22) while the RecreateNetwork RPC fails the same
                 // way as Python's.
-                None => return Err("Failed to find or create a 'nat' type prerouting chain".into()),
+                None => return Err(NftError::NoNatPrerouting),
             }
         } else {
             chains.first().expect("chains is non-empty").clone()
@@ -747,10 +787,10 @@ pub fn check_nftables_redirections(ruleset: &[Value], port: u32) -> bool {
 pub trait NftExecutor: Send + Sync {
     /// The parsed entries of `nft -j list ruleset <family>` (without the
     /// wrapping `{"nftables": [...]}`).
-    fn list_ruleset(&self, family: &str) -> Result<Vec<Value>, String>;
+    fn list_ruleset(&self, family: &str) -> Result<Vec<Value>, NftError>;
 
     /// Execute one command batch (`{"nftables": commands}`).
-    fn run_commands(&self, commands: &[Value]) -> Result<(), String>;
+    fn run_commands(&self, commands: &[Value]) -> Result<(), NftError>;
 }
 
 /// Python `get_existing_nftables_ruleset`: ip and ip6 merged; a failing
@@ -761,7 +801,7 @@ pub fn fetch_ruleset(executor: &dyn NftExecutor) -> Vec<Value> {
         match executor.list_ruleset(family) {
             Ok(entries) => combined.extend(entries),
             Err(error) => {
-                tracing::error!(family, error, "failed to list the nftables ruleset");
+                tracing::error!(family, %error, "failed to list the nftables ruleset");
             }
         }
     }
@@ -777,7 +817,7 @@ pub fn run_commands_logged(executor: &dyn NftExecutor, commands: &[Value]) {
     }
     if let Err(error) = executor.run_commands(commands) {
         tracing::error!(
-            error,
+            %error,
             payload = %serde_json::to_string(commands).unwrap_or_default(),
             "failed to apply nftables commands"
         );
@@ -791,20 +831,20 @@ pub fn run_commands_logged(executor: &dyn NftExecutor, commands: &[Value]) {
 pub struct NftCli;
 
 impl NftExecutor for NftCli {
-    fn list_ruleset(&self, family: &str) -> Result<Vec<Value>, String> {
+    fn list_ruleset(&self, family: &str) -> Result<Vec<Value>, NftError> {
         let output = Command::new("nft")
             .args(["-j", "-s", "-p", "list", "ruleset", family])
             .output()
-            .map_err(|error| format!("cannot run nft: {error}"))?;
+            .map_err(|source| NftError::Run { source })?;
         if !output.status.success() {
-            return Err(format!(
-                "nft list ruleset {family} failed ({}): {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
+            return Err(NftError::ListFailed {
+                family: family.to_string(),
+                status: output.status,
+                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            });
         }
         let parsed: Value = serde_json::from_slice(&output.stdout)
-            .map_err(|error| format!("nft returned invalid JSON: {error}"))?;
+            .map_err(|source| NftError::InvalidJson { source })?;
         Ok(parsed
             .get("nftables")
             .and_then(Value::as_array)
@@ -812,31 +852,30 @@ impl NftExecutor for NftCli {
             .unwrap_or_default())
     }
 
-    fn run_commands(&self, commands: &[Value]) -> Result<(), String> {
+    fn run_commands(&self, commands: &[Value]) -> Result<(), NftError> {
         let payload = serde_json::to_vec(&json!({"nftables": commands}))
-            .map_err(|error| format!("cannot serialize nft commands: {error}"))?;
+            .map_err(|source| NftError::Serialize { source })?;
         let mut child = Command::new("nft")
             .args(["-j", "-f", "-"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|error| format!("cannot run nft: {error}"))?;
+            .map_err(|source| NftError::Run { source })?;
         child
             .stdin
             .take()
             .expect("stdin was requested piped")
             .write_all(&payload)
-            .map_err(|error| format!("cannot write to nft stdin: {error}"))?;
+            .map_err(|source| NftError::StdinWrite { source })?;
         let output = child
             .wait_with_output()
-            .map_err(|error| format!("nft did not terminate: {error}"))?;
+            .map_err(|source| NftError::Wait { source })?;
         if !output.status.success() {
-            return Err(format!(
-                "nft -j -f - failed ({}): {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
+            return Err(NftError::ApplyFailed {
+                status: output.status,
+                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            });
         }
         Ok(())
     }
@@ -878,7 +917,7 @@ impl StaticRuleset {
 }
 
 impl NftExecutor for StaticRuleset {
-    fn list_ruleset(&self, family: &str) -> Result<Vec<Value>, String> {
+    fn list_ruleset(&self, family: &str) -> Result<Vec<Value>, NftError> {
         Ok(self
             .entries
             .iter()
@@ -896,7 +935,7 @@ impl NftExecutor for StaticRuleset {
             .collect())
     }
 
-    fn run_commands(&self, commands: &[Value]) -> Result<(), String> {
+    fn run_commands(&self, commands: &[Value]) -> Result<(), NftError> {
         if let Some(log) = self.event_log.get() {
             log.record(&format!(
                 "nft: batch {}",
@@ -912,7 +951,9 @@ impl NftExecutor for StaticRuleset {
                 .unwrap_or_default()
                 .contains(needle)
         {
-            return Err(format!("injected nft failure (matched {needle:?})"));
+            return Err(NftError::Injected {
+                needle: needle.to_string(),
+            });
         }
         self.batches
             .lock()
@@ -1106,6 +1147,20 @@ mod tests {
         );
         // fetch_ruleset merges the families back in order.
         assert_eq!(fetch_ruleset(&executor).len(), executor.entries.len());
+    }
+
+    #[test]
+    fn fail_batches_containing_injects_a_typed_error() {
+        let executor = StaticRuleset::new(Vec::new());
+        executor.fail_batches_containing("supervisor-nat");
+        let error = executor
+            .run_commands(&[json!({"add": {"chain": {"name": "aleph-supervisor-nat"}}})])
+            .unwrap_err();
+        assert!(matches!(error, NftError::Injected { .. }));
+        assert_eq!(
+            error.to_string(),
+            "injected nft failure (matched \"supervisor-nat\")"
+        );
     }
 
     #[test]
