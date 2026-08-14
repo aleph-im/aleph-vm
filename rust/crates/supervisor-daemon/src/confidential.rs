@@ -50,7 +50,7 @@ pub fn initialize_confidential(
     std::fs::write(session_dir.join("vm_godh.b64"), godh_bytes)
         .map_err(|error| RpcError::Internal(format!("cannot write vm_godh.b64: {error}")))?;
     crate::units::enable_and_start(&*state.units, &entry.unit_name())
-        .map_err(RpcError::Internal)?;
+        .map_err(|error| RpcError::Internal(error.to_string()))?;
     Ok(())
 }
 

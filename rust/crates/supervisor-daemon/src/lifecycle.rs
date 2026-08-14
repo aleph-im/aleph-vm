@@ -26,6 +26,8 @@ use crate::controller_config::{
 use crate::firecracker::{ProgramBootError, ProgramBootRequest};
 use crate::service::DaemonState;
 use crate::tap::TapAssignment;
+#[cfg(test)]
+use crate::units::UnitsError;
 use crate::units::{self, controller_unit_name};
 use crate::world::{self, AttachedGpu, ProgramEntry, VmEntry, VmTimes, VmType, now_ns};
 use crate::{checks, cloudinit, dhcp, nft, ports};
@@ -210,7 +212,7 @@ fn apply_numa_dropin(
     .map_err(|error| format!("{error:#}"))?;
     // A freshly written drop-in only applies after a reload if the unit was
     // already loaded; harmless on first load.
-    state.units.reload()?;
+    state.units.reload().map_err(|error| error.to_string())?;
     tracing::info!(
         vm_id,
         node = placement.node,
@@ -281,7 +283,7 @@ fn remove_numa_dropin(state: &DaemonState, vm_id: &str) {
     if let Err(error) = state.units.reload() {
         tracing::warn!(
             vm_id,
-            error,
+            %error,
             "daemon-reload after NUMA drop-in removal failed"
         );
     }
@@ -375,7 +377,7 @@ fn unit_active(state: &DaemonState, unit: &str) -> bool {
     {
         Ok(states) => states.get(unit).copied().unwrap_or(false),
         Err(error) => {
-            tracing::error!(error, "Failed to get services active states");
+            tracing::error!(%error, "Failed to get services active states");
             false
         }
     }
@@ -652,7 +654,8 @@ fn stop_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
         return Ok(());
     }
     let unit = entry.unit_name();
-    units::stop_and_disable(&*state.units, &unit).map_err(RpcError::Internal)?;
+    units::stop_and_disable(&*state.units, &unit)
+        .map_err(|error| RpcError::Internal(error.to_string()))?;
     wait_for_controller_stopped(state, &unit);
     with_entry_mut(state, vm_id, |entry| entry.times.stopping_at_ns = now_ns());
 
@@ -953,7 +956,10 @@ fn start_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> 
     }
 
     let unit = entry.unit_name();
-    state.units.restart(&unit).map_err(RpcError::Internal)?;
+    state
+        .units
+        .restart(&unit)
+        .map_err(|error| RpcError::Internal(error.to_string()))?;
     wait_for_controller_ready(state, &unit).map_err(RpcError::Internal)?;
     with_entry_mut(state, vm_id, |entry| entry.times.started_at_ns = now_ns());
 
@@ -1053,7 +1059,10 @@ pub fn reboot_vm(state: &DaemonState, vm_id: &str) -> Result<(VmEntry, bool), Rp
     let unit = entry.unit_name();
     // RestartUnit only queues a job: wait until the unit is confirmed
     // active so the reported status is truthful.
-    state.units.restart(&unit).map_err(RpcError::Internal)?;
+    state
+        .units
+        .restart(&unit)
+        .map_err(|error| RpcError::Internal(error.to_string()))?;
     wait_for_controller_ready(state, &unit).map_err(RpcError::Internal)?;
     with_entry_mut(state, vm_id, |entry| entry.times.started_at_ns = now_ns());
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
@@ -1375,7 +1384,7 @@ pub fn delete_vm(
     );
     let unit = controller_unit_name(vm_id);
     if let Err(error) = units::stop_and_disable(&*state.units, &unit) {
-        tracing::warn!(unit, error, "failed to stop/disable the stale controller");
+        tracing::warn!(unit, %error, "failed to stop/disable the stale controller");
     }
     // Release the hidden VM's vm_index claim (and its retry-queue entry,
     // the Python `_failed_reattach.pop`) before the config goes. NOTE the
@@ -2873,13 +2882,13 @@ fn create_vm_inner(
             // has no session to wait for) and starts below like a plain VM.
             with_entry_mut(state, &vm_id, |entry| entry.times.started_at_ns = now_ns());
         } else {
-            units::enable_and_start(&*state.units, &unit)?;
+            units::enable_and_start(&*state.units, &unit).map_err(|error| error.to_string())?;
             if let Err(error) = wait_for_controller_ready(state, &unit) {
                 // non_blocking_wait_for_boot: a failed boot stops and cleans up
                 // (stop_and_disable + graceful wait), then the create fails.
                 tracing::warn!(unit, error, "controller not running, stopping");
                 if let Err(stop_error) = units::stop_and_disable(&*state.units, &unit) {
-                    tracing::warn!(unit, stop_error, "failed to stop the failed controller");
+                    tracing::warn!(unit, %stop_error, "failed to stop the failed controller");
                 }
                 wait_for_controller_stopped(state, &unit);
                 return Err(format!("controller failed to start: {error}"));
@@ -3272,7 +3281,7 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
         .units
         .active_states(&unit_names)
         .unwrap_or_else(|error| {
-            tracing::error!(error, "Failed to get services active states");
+            tracing::error!(%error, "Failed to get services active states");
             unit_names
                 .iter()
                 .map(|unit| (unit.clone(), false))
@@ -3585,7 +3594,7 @@ pub fn retry_failed_reattachments_once(state: &DaemonState) {
                      and dropping it from reattach retries"
                 );
                 if let Err(error) = units::stop_and_disable(&*state.units, &unit) {
-                    tracing::warn!(unit, error, "failed to stop/disable the stale controller");
+                    tracing::warn!(unit, %error, "failed to stop/disable the stale controller");
                 }
                 let mut world = state.world.blocking_write();
                 if let Some(queued) = world.failed_reattach.remove(&vm_id) {
@@ -4232,28 +4241,30 @@ mod tests {
             fn active_states(
                 &self,
                 units: &[String],
-            ) -> Result<std::collections::HashMap<String, bool>, String> {
+            ) -> Result<std::collections::HashMap<String, bool>, UnitsError> {
                 self.0.active_states(units)
             }
-            fn controller_units(&self) -> Result<std::collections::HashMap<String, bool>, String> {
+            fn controller_units(
+                &self,
+            ) -> Result<std::collections::HashMap<String, bool>, UnitsError> {
                 self.0.controller_units()
             }
             fn get_active_state(&self, _unit: &str) -> String {
                 "failed".to_string()
             }
-            fn start(&self, unit: &str) -> Result<(), String> {
+            fn start(&self, unit: &str) -> Result<(), UnitsError> {
                 self.0.start(unit)
             }
-            fn stop(&self, unit: &str) -> Result<(), String> {
+            fn stop(&self, unit: &str) -> Result<(), UnitsError> {
                 self.0.stop(unit)
             }
-            fn restart(&self, unit: &str) -> Result<(), String> {
+            fn restart(&self, unit: &str) -> Result<(), UnitsError> {
                 self.0.restart(unit)
             }
-            fn enable(&self, unit: &str) -> Result<(), String> {
+            fn enable(&self, unit: &str) -> Result<(), UnitsError> {
                 self.0.enable(unit)
             }
-            fn disable(&self, unit: &str) -> Result<(), String> {
+            fn disable(&self, unit: &str) -> Result<(), UnitsError> {
                 self.0.disable(unit)
             }
             fn is_enabled(&self, unit: &str) -> bool {
@@ -4627,28 +4638,30 @@ mod tests {
             fn active_states(
                 &self,
                 units: &[String],
-            ) -> Result<std::collections::HashMap<String, bool>, String> {
+            ) -> Result<std::collections::HashMap<String, bool>, UnitsError> {
                 self.0.active_states(units)
             }
-            fn controller_units(&self) -> Result<std::collections::HashMap<String, bool>, String> {
+            fn controller_units(
+                &self,
+            ) -> Result<std::collections::HashMap<String, bool>, UnitsError> {
                 self.0.controller_units()
             }
             fn get_active_state(&self, _unit: &str) -> String {
                 "failed".to_string()
             }
-            fn start(&self, unit: &str) -> Result<(), String> {
+            fn start(&self, unit: &str) -> Result<(), UnitsError> {
                 self.0.start(unit)
             }
-            fn stop(&self, unit: &str) -> Result<(), String> {
+            fn stop(&self, unit: &str) -> Result<(), UnitsError> {
                 self.0.stop(unit)
             }
-            fn restart(&self, unit: &str) -> Result<(), String> {
+            fn restart(&self, unit: &str) -> Result<(), UnitsError> {
                 self.0.restart(unit)
             }
-            fn enable(&self, unit: &str) -> Result<(), String> {
+            fn enable(&self, unit: &str) -> Result<(), UnitsError> {
                 self.0.enable(unit)
             }
-            fn disable(&self, unit: &str) -> Result<(), String> {
+            fn disable(&self, unit: &str) -> Result<(), UnitsError> {
                 self.0.disable(unit)
             }
             fn is_enabled(&self, unit: &str) -> bool {
@@ -6848,28 +6861,30 @@ mod tests {
             fn active_states(
                 &self,
                 units: &[String],
-            ) -> Result<std::collections::HashMap<String, bool>, String> {
+            ) -> Result<std::collections::HashMap<String, bool>, UnitsError> {
                 self.0.active_states(units)
             }
-            fn controller_units(&self) -> Result<std::collections::HashMap<String, bool>, String> {
+            fn controller_units(
+                &self,
+            ) -> Result<std::collections::HashMap<String, bool>, UnitsError> {
                 self.0.controller_units()
             }
             fn get_active_state(&self, _unit: &str) -> String {
                 "failed".to_string()
             }
-            fn start(&self, unit: &str) -> Result<(), String> {
+            fn start(&self, unit: &str) -> Result<(), UnitsError> {
                 self.0.start(unit)
             }
-            fn stop(&self, unit: &str) -> Result<(), String> {
+            fn stop(&self, unit: &str) -> Result<(), UnitsError> {
                 self.0.stop(unit)
             }
-            fn restart(&self, unit: &str) -> Result<(), String> {
+            fn restart(&self, unit: &str) -> Result<(), UnitsError> {
                 self.0.restart(unit)
             }
-            fn enable(&self, unit: &str) -> Result<(), String> {
+            fn enable(&self, unit: &str) -> Result<(), UnitsError> {
                 self.0.enable(unit)
             }
-            fn disable(&self, unit: &str) -> Result<(), String> {
+            fn disable(&self, unit: &str) -> Result<(), UnitsError> {
                 self.0.disable(unit)
             }
             fn is_enabled(&self, unit: &str) -> bool {
@@ -7242,28 +7257,30 @@ mod tests {
             fn active_states(
                 &self,
                 units: &[String],
-            ) -> Result<std::collections::HashMap<String, bool>, String> {
+            ) -> Result<std::collections::HashMap<String, bool>, UnitsError> {
                 self.0.active_states(units)
             }
-            fn controller_units(&self) -> Result<std::collections::HashMap<String, bool>, String> {
+            fn controller_units(
+                &self,
+            ) -> Result<std::collections::HashMap<String, bool>, UnitsError> {
                 self.0.controller_units()
             }
             fn get_active_state(&self, _unit: &str) -> String {
                 "failed".to_string()
             }
-            fn start(&self, unit: &str) -> Result<(), String> {
+            fn start(&self, unit: &str) -> Result<(), UnitsError> {
                 self.0.start(unit)
             }
-            fn stop(&self, unit: &str) -> Result<(), String> {
+            fn stop(&self, unit: &str) -> Result<(), UnitsError> {
                 self.0.stop(unit)
             }
-            fn restart(&self, unit: &str) -> Result<(), String> {
+            fn restart(&self, unit: &str) -> Result<(), UnitsError> {
                 self.0.restart(unit)
             }
-            fn enable(&self, unit: &str) -> Result<(), String> {
+            fn enable(&self, unit: &str) -> Result<(), UnitsError> {
                 self.0.enable(unit)
             }
-            fn disable(&self, unit: &str) -> Result<(), String> {
+            fn disable(&self, unit: &str) -> Result<(), UnitsError> {
                 self.0.disable(unit)
             }
             fn is_enabled(&self, unit: &str) -> bool {

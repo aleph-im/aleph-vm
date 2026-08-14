@@ -48,11 +48,11 @@ pub trait UnitStateSource: Send + Sync {
     /// loaded in systemd report `false`. `Err` means the bus did not answer
     /// (unreachable, timed out, malformed reply): the caller cannot tell
     /// running from stopped and must not pretend it can.
-    fn active_states(&self, units: &[String]) -> Result<HashMap<String, bool>, String>;
+    fn active_states(&self, units: &[String]) -> Result<HashMap<String, bool>, UnitsError>;
 
     /// Every loaded `aleph-vm-controller@*.service` unit with its active
     /// flag, for the boot-time "unit without a config file" sweep.
-    fn controller_units(&self) -> Result<HashMap<String, bool>, String>;
+    fn controller_units(&self) -> Result<HashMap<String, bool>, UnitsError>;
 
     // ── Mutations (increment 3), mirroring the Python SystemDManager ──
 
@@ -64,19 +64,19 @@ pub trait UnitStateSource: Send + Sync {
     fn get_active_state(&self, unit: &str) -> String;
 
     /// `StartUnit(unit, "replace")`.
-    fn start(&self, unit: &str) -> Result<(), String>;
+    fn start(&self, unit: &str) -> Result<(), UnitsError>;
 
     /// `StopUnit(unit, "replace")`.
-    fn stop(&self, unit: &str) -> Result<(), String>;
+    fn stop(&self, unit: &str) -> Result<(), UnitsError>;
 
     /// `RestartUnit(unit, "replace")`.
-    fn restart(&self, unit: &str) -> Result<(), String>;
+    fn restart(&self, unit: &str) -> Result<(), UnitsError>;
 
     /// `EnableUnitFiles([unit], runtime=false, force=true)`.
-    fn enable(&self, unit: &str) -> Result<(), String>;
+    fn enable(&self, unit: &str) -> Result<(), UnitsError>;
 
     /// `DisableUnitFiles([unit], runtime=false)`.
-    fn disable(&self, unit: &str) -> Result<(), String>;
+    fn disable(&self, unit: &str) -> Result<(), UnitsError>;
 
     /// Python `is_service_enabled`: `GetUnitFileState(unit) == "enabled"`,
     /// false on any bus error.
@@ -87,14 +87,14 @@ pub trait UnitStateSource: Send + Sync {
     /// picked up even when systemd already had the unit loaded. NUMA-only;
     /// the default is a no-op for the in-memory test fakes, which have no
     /// on-disk unit files to reread.
-    fn reload(&self) -> Result<(), String> {
+    fn reload(&self) -> Result<(), UnitsError> {
         Ok(())
     }
 }
 
 /// Python `SystemDManager.stop_and_disable`: stop gated on the actual
 /// ActiveState (never on enablement), then disable when enabled.
-pub fn stop_and_disable(units: &dyn UnitStateSource, unit: &str) -> Result<(), String> {
+pub fn stop_and_disable(units: &dyn UnitStateSource, unit: &str) -> Result<(), UnitsError> {
     if !matches!(
         units.get_active_state(unit).as_str(),
         "inactive" | "failed" | "not-loaded"
@@ -110,7 +110,7 @@ pub fn stop_and_disable(units: &dyn UnitStateSource, unit: &str) -> Result<(), S
 /// Python `SystemDManager.enable_and_start`. The active probe mirrors
 /// `is_service_active`, which (wart) checks enablement first; here the unit
 /// was just enabled, so the ActiveState alone decides.
-pub fn enable_and_start(units: &dyn UnitStateSource, unit: &str) -> Result<(), String> {
+pub fn enable_and_start(units: &dyn UnitStateSource, unit: &str) -> Result<(), UnitsError> {
     if !units.is_enabled(unit) {
         units.enable(unit)?;
     }
@@ -118,6 +118,45 @@ pub fn enable_and_start(units: &dyn UnitStateSource, unit: &str) -> Result<(), S
         units.start(unit)?;
     }
     Ok(())
+}
+
+/// The closed error vocabulary for [`UnitStateSource`]: D-Bus method
+/// failures from the production `ZbusUnitStates` (the `source` fields keep
+/// the original `zbus::Error` instead of eagerly stringifying it), plus the
+/// deliberate refusals the in-memory test fakes raise instead of touching a
+/// real bus.
+#[derive(Debug, thiserror::Error)]
+pub enum UnitsError {
+    /// `StartUnit`/`StopUnit`/`RestartUnit`, all funneled through
+    /// `ZbusUnitStates::unit_job`.
+    #[error("{method}({unit}) failed: {source}")]
+    Job {
+        method: &'static str,
+        unit: String,
+        source: zbus::Error,
+    },
+
+    #[error("EnableUnitFiles({unit}) failed: {source}")]
+    EnableUnitFiles { unit: String, source: zbus::Error },
+
+    #[error("DisableUnitFiles({unit}) failed: {source}")]
+    DisableUnitFiles { unit: String, source: zbus::Error },
+
+    #[error("Reload() failed: {source}")]
+    Reload { source: zbus::Error },
+
+    /// `ListUnits()` failed, from `active_states`/`controller_units`.
+    #[error(transparent)]
+    Bus(#[from] zbus::Error),
+
+    /// [`StaticUnitStates`] refuses every mutation; it has no bus to
+    /// mutate.
+    #[error("StaticUnitStates cannot {verb} {unit}")]
+    StaticRefusal { verb: &'static str, unit: String },
+
+    /// [`UnreachableBus`]: every call fails, like a dead system bus.
+    #[error("test bus is unreachable")]
+    Unreachable,
 }
 
 /// The `ListUnits()` reply row: (name, description, load_state,
@@ -212,7 +251,7 @@ impl ZbusUnitStates {
 
     /// One Manager method taking the unit name plus the "replace" job mode
     /// (StartUnit/StopUnit/RestartUnit).
-    fn unit_job(&self, method: &str, unit: &str) -> Result<(), String> {
+    fn unit_job(&self, method: &'static str, unit: &str) -> Result<(), UnitsError> {
         self.with_connection(|connection| {
             connection
                 .call_method(
@@ -224,7 +263,11 @@ impl ZbusUnitStates {
                 )
                 .map(|_| ())
         })
-        .map_err(|error| format!("{method}({unit}) failed: {error}"))
+        .map_err(|source| UnitsError::Job {
+            method,
+            unit: unit.to_string(),
+            source,
+        })
     }
 }
 
@@ -242,11 +285,11 @@ impl Default for ZbusUnitStates {
 }
 
 impl UnitStateSource for ZbusUnitStates {
-    fn active_states(&self, units: &[String]) -> Result<HashMap<String, bool>, String> {
+    fn active_states(&self, units: &[String]) -> Result<HashMap<String, bool>, UnitsError> {
         if units.is_empty() {
             return Ok(HashMap::new());
         }
-        let listed = self.list_units().map_err(|error| error.to_string())?;
+        let listed = self.list_units()?;
         let by_name: HashMap<&str, &str> = listed
             .iter()
             .map(|(name, state)| (name.as_str(), state.as_str()))
@@ -260,8 +303,8 @@ impl UnitStateSource for ZbusUnitStates {
             .collect())
     }
 
-    fn controller_units(&self) -> Result<HashMap<String, bool>, String> {
-        let listed = self.list_units().map_err(|error| error.to_string())?;
+    fn controller_units(&self) -> Result<HashMap<String, bool>, UnitsError> {
+        let listed = self.list_units()?;
         Ok(listed
             .into_iter()
             .filter(|(name, _)| {
@@ -307,19 +350,19 @@ impl UnitStateSource for ZbusUnitStates {
         }
     }
 
-    fn start(&self, unit: &str) -> Result<(), String> {
+    fn start(&self, unit: &str) -> Result<(), UnitsError> {
         self.unit_job("StartUnit", unit)
     }
 
-    fn stop(&self, unit: &str) -> Result<(), String> {
+    fn stop(&self, unit: &str) -> Result<(), UnitsError> {
         self.unit_job("StopUnit", unit)
     }
 
-    fn restart(&self, unit: &str) -> Result<(), String> {
+    fn restart(&self, unit: &str) -> Result<(), UnitsError> {
         self.unit_job("RestartUnit", unit)
     }
 
-    fn enable(&self, unit: &str) -> Result<(), String> {
+    fn enable(&self, unit: &str) -> Result<(), UnitsError> {
         // EnableUnitFiles(files, runtime=false, force=true), the Python
         // manager.EnableUnitFiles([service], False, True).
         self.with_connection(|connection| {
@@ -333,10 +376,13 @@ impl UnitStateSource for ZbusUnitStates {
                 )
                 .map(|_| ())
         })
-        .map_err(|error| format!("EnableUnitFiles({unit}) failed: {error}"))
+        .map_err(|source| UnitsError::EnableUnitFiles {
+            unit: unit.to_string(),
+            source,
+        })
     }
 
-    fn disable(&self, unit: &str) -> Result<(), String> {
+    fn disable(&self, unit: &str) -> Result<(), UnitsError> {
         self.with_connection(|connection| {
             connection
                 .call_method(
@@ -348,10 +394,13 @@ impl UnitStateSource for ZbusUnitStates {
                 )
                 .map(|_| ())
         })
-        .map_err(|error| format!("DisableUnitFiles({unit}) failed: {error}"))
+        .map_err(|source| UnitsError::DisableUnitFiles {
+            unit: unit.to_string(),
+            source,
+        })
     }
 
-    fn reload(&self) -> Result<(), String> {
+    fn reload(&self) -> Result<(), UnitsError> {
         // Manager.Reload(): reread unit files + drop-ins. Applied after a
         // NUMA AllowedCPUs drop-in is written so an already-loaded unit
         // picks it up before start.
@@ -366,7 +415,7 @@ impl UnitStateSource for ZbusUnitStates {
                 )
                 .map(|_| ())
         })
-        .map_err(|error| format!("Reload() failed: {error}"))
+        .map_err(|source| UnitsError::Reload { source })
     }
 
     fn is_enabled(&self, unit: &str) -> bool {
@@ -413,7 +462,7 @@ impl StaticUnitStates {
 }
 
 impl UnitStateSource for StaticUnitStates {
-    fn active_states(&self, units: &[String]) -> Result<HashMap<String, bool>, String> {
+    fn active_states(&self, units: &[String]) -> Result<HashMap<String, bool>, UnitsError> {
         Ok(units
             .iter()
             .map(|unit| {
@@ -425,7 +474,7 @@ impl UnitStateSource for StaticUnitStates {
             .collect())
     }
 
-    fn controller_units(&self) -> Result<HashMap<String, bool>, String> {
+    fn controller_units(&self) -> Result<HashMap<String, bool>, UnitsError> {
         Ok(self
             .states
             .iter()
@@ -442,24 +491,39 @@ impl UnitStateSource for StaticUnitStates {
         }
     }
 
-    fn start(&self, unit: &str) -> Result<(), String> {
-        Err(format!("StaticUnitStates cannot start {unit}"))
+    fn start(&self, unit: &str) -> Result<(), UnitsError> {
+        Err(UnitsError::StaticRefusal {
+            verb: "start",
+            unit: unit.to_string(),
+        })
     }
 
-    fn stop(&self, unit: &str) -> Result<(), String> {
-        Err(format!("StaticUnitStates cannot stop {unit}"))
+    fn stop(&self, unit: &str) -> Result<(), UnitsError> {
+        Err(UnitsError::StaticRefusal {
+            verb: "stop",
+            unit: unit.to_string(),
+        })
     }
 
-    fn restart(&self, unit: &str) -> Result<(), String> {
-        Err(format!("StaticUnitStates cannot restart {unit}"))
+    fn restart(&self, unit: &str) -> Result<(), UnitsError> {
+        Err(UnitsError::StaticRefusal {
+            verb: "restart",
+            unit: unit.to_string(),
+        })
     }
 
-    fn enable(&self, unit: &str) -> Result<(), String> {
-        Err(format!("StaticUnitStates cannot enable {unit}"))
+    fn enable(&self, unit: &str) -> Result<(), UnitsError> {
+        Err(UnitsError::StaticRefusal {
+            verb: "enable",
+            unit: unit.to_string(),
+        })
     }
 
-    fn disable(&self, unit: &str) -> Result<(), String> {
-        Err(format!("StaticUnitStates cannot disable {unit}"))
+    fn disable(&self, unit: &str) -> Result<(), UnitsError> {
+        Err(UnitsError::StaticRefusal {
+            verb: "disable",
+            unit: unit.to_string(),
+        })
     }
 
     fn is_enabled(&self, _unit: &str) -> bool {
@@ -473,12 +537,12 @@ impl UnitStateSource for StaticUnitStates {
 pub struct UnreachableBus;
 
 impl UnitStateSource for UnreachableBus {
-    fn active_states(&self, _units: &[String]) -> Result<HashMap<String, bool>, String> {
-        Err("test bus is unreachable".to_string())
+    fn active_states(&self, _units: &[String]) -> Result<HashMap<String, bool>, UnitsError> {
+        Err(UnitsError::Unreachable)
     }
 
-    fn controller_units(&self) -> Result<HashMap<String, bool>, String> {
-        Err("test bus is unreachable".to_string())
+    fn controller_units(&self) -> Result<HashMap<String, bool>, UnitsError> {
+        Err(UnitsError::Unreachable)
     }
 
     fn get_active_state(&self, _unit: &str) -> String {
@@ -487,24 +551,24 @@ impl UnitStateSource for UnreachableBus {
         "unknown".to_string()
     }
 
-    fn start(&self, _unit: &str) -> Result<(), String> {
-        Err("test bus is unreachable".to_string())
+    fn start(&self, _unit: &str) -> Result<(), UnitsError> {
+        Err(UnitsError::Unreachable)
     }
 
-    fn stop(&self, _unit: &str) -> Result<(), String> {
-        Err("test bus is unreachable".to_string())
+    fn stop(&self, _unit: &str) -> Result<(), UnitsError> {
+        Err(UnitsError::Unreachable)
     }
 
-    fn restart(&self, _unit: &str) -> Result<(), String> {
-        Err("test bus is unreachable".to_string())
+    fn restart(&self, _unit: &str) -> Result<(), UnitsError> {
+        Err(UnitsError::Unreachable)
     }
 
-    fn enable(&self, _unit: &str) -> Result<(), String> {
-        Err("test bus is unreachable".to_string())
+    fn enable(&self, _unit: &str) -> Result<(), UnitsError> {
+        Err(UnitsError::Unreachable)
     }
 
-    fn disable(&self, _unit: &str) -> Result<(), String> {
-        Err("test bus is unreachable".to_string())
+    fn disable(&self, _unit: &str) -> Result<(), UnitsError> {
+        Err(UnitsError::Unreachable)
     }
 
     fn is_enabled(&self, _unit: &str) -> bool {
@@ -578,7 +642,7 @@ impl FakeSystemd {
 }
 
 impl UnitStateSource for FakeSystemd {
-    fn active_states(&self, units: &[String]) -> Result<HashMap<String, bool>, String> {
+    fn active_states(&self, units: &[String]) -> Result<HashMap<String, bool>, UnitsError> {
         let inner = self.lock();
         Ok(units
             .iter()
@@ -589,7 +653,7 @@ impl UnitStateSource for FakeSystemd {
             .collect())
     }
 
-    fn controller_units(&self) -> Result<HashMap<String, bool>, String> {
+    fn controller_units(&self) -> Result<HashMap<String, bool>, UnitsError> {
         let inner = self.lock();
         Ok(inner
             .states
@@ -607,13 +671,13 @@ impl UnitStateSource for FakeSystemd {
             .unwrap_or_else(|| "not-loaded".to_string())
     }
 
-    fn start(&self, unit: &str) -> Result<(), String> {
+    fn start(&self, unit: &str) -> Result<(), UnitsError> {
         self.record_action(format!("start {unit}"));
         self.lock().states.insert(unit.into(), "active".to_string());
         Ok(())
     }
 
-    fn stop(&self, unit: &str) -> Result<(), String> {
+    fn stop(&self, unit: &str) -> Result<(), UnitsError> {
         self.record_action(format!("stop {unit}"));
         self.lock()
             .states
@@ -621,19 +685,19 @@ impl UnitStateSource for FakeSystemd {
         Ok(())
     }
 
-    fn restart(&self, unit: &str) -> Result<(), String> {
+    fn restart(&self, unit: &str) -> Result<(), UnitsError> {
         self.record_action(format!("restart {unit}"));
         self.lock().states.insert(unit.into(), "active".to_string());
         Ok(())
     }
 
-    fn enable(&self, unit: &str) -> Result<(), String> {
+    fn enable(&self, unit: &str) -> Result<(), UnitsError> {
         self.record_action(format!("enable {unit}"));
         self.lock().enabled.insert(unit.into());
         Ok(())
     }
 
-    fn disable(&self, unit: &str) -> Result<(), String> {
+    fn disable(&self, unit: &str) -> Result<(), UnitsError> {
         self.record_action(format!("disable {unit}"));
         self.lock().enabled.remove(unit);
         Ok(())
@@ -643,7 +707,7 @@ impl UnitStateSource for FakeSystemd {
         self.lock().enabled.contains(unit)
     }
 
-    fn reload(&self) -> Result<(), String> {
+    fn reload(&self) -> Result<(), UnitsError> {
         self.record_action("daemon-reload".to_string());
         Ok(())
     }
@@ -662,12 +726,27 @@ mod tests {
         assert!(states[&controller_unit_name("aa")]);
         assert!(!states[&controller_unit_name("bb")]);
         assert_eq!(source.controller_units().unwrap().len(), 1);
+
+        let unit = controller_unit_name("aa");
+        let error = source.start(&unit).unwrap_err();
+        assert!(matches!(
+            error,
+            UnitsError::StaticRefusal { verb: "start", unit: ref refused } if *refused == unit
+        ));
+        assert_eq!(
+            error.to_string(),
+            format!("StaticUnitStates cannot start {unit}")
+        );
     }
 
     #[test]
     fn the_unreachable_bus_errors_instead_of_reporting_inactive() {
         let source = UnreachableBus;
-        assert!(source.active_states(&[controller_unit_name("aa")]).is_err());
+        let error = source
+            .active_states(&[controller_unit_name("aa")])
+            .unwrap_err();
+        assert!(matches!(error, UnitsError::Unreachable));
+        assert_eq!(error.to_string(), "test bus is unreachable");
         assert!(source.controller_units().is_err());
         assert_eq!(
             source.get_active_state(&controller_unit_name("aa")),
