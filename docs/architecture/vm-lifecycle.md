@@ -112,19 +112,29 @@ Admission happens in two layers that never overlap in what they check:
   V-PROGRAMs, which are full SNP VMs admitted against the instance bucket)
   share `physical - HOST_MEMORY_RESERVED_MIB - PROGRAM_MEMORY_RESERVED_MIB`;
   programs share `PROGRAM_MEMORY_RESERVED_MIB` alone. vCPUs are capped at
-  `physical_cores * VCPU_OVERCOMMIT_FACTOR` across both buckets. Disk
-  admission checks the aggregate free space across storage pools plus,
-  separately, whether the single largest requested volume fits the roomiest
-  individual pool (`_check_max_volume`), since no pool splits one volume
-  across disks. The VM's own early registry record (recorded before the
-  spec build, to make owner-auth answerable during a slow confidential
-  download) is excluded from the committed sums via `exclude_vm_hash`, or a
-  create would count its own request against itself. GPU admission is a
-  separate reservation ledger (`CapacityManager.holds`, keyed by concrete
-  `pci_host`) with a short-lived hold/resolve two-step: `reserve_gpus` holds
-  a card for a user for `RESERVATION_TTL_SECONDS`, `resolve_gpus` (called
-  from the create path) consumes the caller's own holds and skips cards held
-  by another user.
+  `physical_cores * VCPU_OVERCOMMIT_FACTOR` across both buckets. Every real
+  create-path caller in `src/aleph/vm/agent/run.py` (`create_vm_execution`,
+  which covers instances, programs and V-PROGRAMs, and `_ensure_program_vm`,
+  the on-demand program path) passes `disk_mib=0` and no `max_volume_mib`,
+  so `check_capacity`'s disk checks no-op on create: disk is not actually
+  gated at create time. `check_capacity` also implements an
+  aggregate-free-space check and a single-largest-volume-fits-the-roomiest-
+  pool check (`_check_max_volume`), but the only caller that exercises them
+  with real figures is the separate `/control/reserve_resources` dry-run
+  endpoint (`operate_reserve_resources` in
+  `src/aleph/vm/agent/views/__init__.py`), which reports capacity ahead of a
+  scheduler placement decision without creating anything. The VM's own
+  early registry record (recorded before the spec build, to make owner-auth
+  answerable during a slow confidential download) is excluded from the
+  committed memory/vCPU sums via `exclude_vm_hash`, or a create would count
+  its own request against itself. GPU admission is a separate reservation
+  ledger (`CapacityManager.holds`, keyed by concrete `pci_host`) with a
+  short-lived hold/resolve two-step: `reserve_gpus` (used by the same
+  dry-run endpoint) holds a card for a user for `RESERVATION_TTL_SECONDS`,
+  `resolve_gpus` (called from the create path) consumes the caller's own
+  holds and skips cards held by another user. So create-time admission is,
+  in practice, memory plus vCPUs plus GPU holds; disk admission is a
+  dry-run-only feature of the same `CapacityManager`.
 - **Supervisor mechanism backstops** (`check_memory_backstop`,
   `validate_spec_gpus` in `lifecycle.rs`) run under `creation_lock` inside
   `create_vm_inner` itself: committed memory (summed from every tracked
@@ -141,10 +151,16 @@ Admission happens in two layers that never overlap in what they check:
 
 A daemon restart never destroys or restarts a live VM. In short: at startup
 the daemon rebuilds its world view from on-disk controller configs plus
-systemd unit states, `reconcile_boot` recreates any missing tap/nftables/DHCP
-state for VMs it adopted running (create-if-absent, never flush-and-rebuild),
-and any VM that fails reconciliation is hidden from the world and queued for
-background retry rather than torn down. The full mechanism, including the
+systemd unit states, `reconcile_boot` recreates any missing tap/nftables
+state (plus persisted port-redirect rules) for VMs it adopted running
+(create-if-absent, never flush-and-rebuild), and any VM that fails
+reconciliation is hidden from the world and queued for background retry
+rather than torn down. `reconcile_boot` never touches DHCP: an SNP VM's
+per-tap dnsmasq runs as its own transient systemd unit
+(`aleph-vm-dhcp-{vm_hash}.service`, started via `systemd-run`), independent
+of the daemon process, so it survives a daemon restart on its own and needs
+no boot-time reconciliation; only `create_vm`/`start_vm` (re)start it, and
+only the teardown paths stop it. The full mechanism, including the
 retry loop's liveness gating and give-up behavior, is described in
 [`process-model.md`](process-model.md#adoption-and-the-zero-downtime-model);
 `create_vm` also participates in it directly through
@@ -179,6 +195,11 @@ stateDiagram-v2
     Running --> [*]: DeleteVm
 ```
 
+(`DeleteVm` is drawn only from `Stopped`/`Running` above for readability; the
+code has no status precondition on it at all, it accepts a VM in any state,
+including mid-boot or awaiting confidential init, and stops whatever is
+running before tearing down.)
+
 ### Stop, start, reboot: stop means stop
 
 `StopVm` on a persistent QEMU VM is idempotent (a VM with `stopped_at_ns`
@@ -212,6 +233,36 @@ have to restart. `StopVm` and `StartVm` on an ephemeral program are flatly
 `Unimplemented`: "the cycle is DeleteVm + CreateVm". There is no meaningful
 "stopped but still defined" state for a program (no on-disk config, no
 systemd unit to restart), so the daemon refuses rather than faking one.
+
+### Idle expiry
+
+Idle teardown is agent policy, not something the supervisor knows about: the
+supervisor has no concept of "idle" (persistence itself is read from the
+agent's registry, not carried on `VmInfo`, per `process-model.md`). The
+agent's `ExpiryManager` (`src/aleph/vm/agent/expiry.py`) holds one
+`asyncio.Task` per `vm_id`, armed with `settings.REUSE_TIMEOUT` after each
+request an on-demand program serves (`src/aleph/vm/agent/run.py`,
+`run_code_on_request`/`run_code_on_event`); persistent VMs are never
+scheduled for expiry (`if not persistent: expiry.schedule(...)`). Every
+handler that is about to serve a VM cancels its pending timer first
+(`expiry.cancel(vm_id)  # do not reap a VM we are about to serve`) and
+re-arms a fresh one in the request's `finally` block, so a timer only ever
+fires after a VM has sat idle for the full window with no intervening
+request. When it fires, `_expire` reaps the VM through
+`self.supervisor.delete_vm(vm_id)` with no `wipe` argument, which defaults
+to `wipe=False` (`src/aleph/vm/supervisor_interface/abc.py`): an idle reap
+tears the VM down and releases its definition but never erases its
+persistent data volumes, only its (already-ephemeral) rootfs disk stays
+gone via the normal delete path. Each timer task removes only its own dict
+entry on exit (a current-task identity check in the `finally`), so a
+concurrent re-schedule that already replaced the entry is never clobbered,
+and `VmNotFoundError` during the reap is treated as success (the VM is
+already gone, nothing to do). `UpdateWatcher`
+(`src/aleph/vm/agent/update_watcher.py`) is `ExpiryManager`'s sibling and
+follows the identical cancel/finally discipline for a different trigger
+(the watched Aleph message being updated); each cancels the other's timer
+on a successful reap via the `on_reaped` callback, so reaping through one
+path never leaves the other's subscription or timer leaking.
 
 ### Reinstall and restore
 
