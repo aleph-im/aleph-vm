@@ -20,9 +20,18 @@ use std::time::Duration;
 /// startup or teardown) coalesce into a single ndppd restart.
 const RESTART_DEBOUNCE: Duration = Duration::from_millis(500);
 
+/// Error type for NDP proxy operations.
+#[derive(Debug, thiserror::Error)]
+pub enum NdppdError {
+    #[error("cannot write /etc/ndppd.conf: {source}")]
+    WriteConf { source: std::io::Error },
+    #[error("{0}")]
+    Injected(String),
+}
+
 /// Where the config lands and how the service restarts.
 pub trait NdppdEdge: Send + Sync {
-    fn write_conf(&self, contents: &str) -> Result<(), String>;
+    fn write_conf(&self, contents: &str) -> Result<(), NdppdError>;
     fn restart_service(&self);
 }
 
@@ -31,9 +40,9 @@ pub trait NdppdEdge: Send + Sync {
 pub struct SystemNdppd;
 
 impl NdppdEdge for SystemNdppd {
-    fn write_conf(&self, contents: &str) -> Result<(), String> {
+    fn write_conf(&self, contents: &str) -> Result<(), NdppdError> {
         std::fs::write("/etc/ndppd.conf", contents)
-            .map_err(|error| format!("cannot write /etc/ndppd.conf: {error}"))
+            .map_err(|source| NdppdError::WriteConf { source })
     }
 
     fn restart_service(&self) {
@@ -74,7 +83,7 @@ impl FakeNdppd {
 }
 
 impl NdppdEdge for FakeNdppd {
-    fn write_conf(&self, contents: &str) -> Result<(), String> {
+    fn write_conf(&self, contents: &str) -> Result<(), NdppdError> {
         self.writes
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -126,7 +135,7 @@ impl NdpProxy {
         config
     }
 
-    fn update_conf(&self, state: &mut NdpState) -> Result<(), String> {
+    fn update_conf(&self, state: &mut NdpState) -> Result<(), NdppdError> {
         let contents = self.render(&state.ranges);
         // A failed config write propagates and fails the calling RPC,
         // exactly like the Python `Path.write_text` in _update_ndppd_conf.
@@ -156,7 +165,7 @@ impl NdpProxy {
         interface: &str,
         address_range: &str,
         update_service: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), NdppdError> {
         let mut state = self.lock();
         tracing::debug!(interface, address_range, "proxying range");
         match state
@@ -176,7 +185,7 @@ impl NdpProxy {
     }
 
     /// Python `delete_range`: absent interfaces are a silent no-op.
-    pub fn delete_range(&self, interface: &str, update_service: bool) -> Result<(), String> {
+    pub fn delete_range(&self, interface: &str, update_service: bool) -> Result<(), NdppdError> {
         let mut state = self.lock();
         let Some(position) = state
             .ranges
@@ -262,8 +271,8 @@ mod tests {
     struct FailingEdge;
 
     impl NdppdEdge for FailingEdge {
-        fn write_conf(&self, _contents: &str) -> Result<(), String> {
-            Err("read-only /etc".to_string())
+        fn write_conf(&self, _contents: &str) -> Result<(), NdppdError> {
+            Err(NdppdError::Injected("read-only /etc".to_string()))
         }
         fn restart_service(&self) {}
     }
@@ -274,10 +283,10 @@ mod tests {
         let error = proxy
             .add_range("vmtap3", "fc00:1:2:3::10/124", true)
             .unwrap_err();
-        assert!(error.contains("read-only /etc"));
+        assert!(error.to_string().contains("read-only /etc"));
         // Priming (update_service=false) never writes, so it cannot fail.
         proxy.add_range("vmtap4", "fc00::20/124", false).unwrap();
         let error = proxy.delete_range("vmtap4", true).unwrap_err();
-        assert!(error.contains("read-only /etc"));
+        assert!(error.to_string().contains("read-only /etc"));
     }
 }
