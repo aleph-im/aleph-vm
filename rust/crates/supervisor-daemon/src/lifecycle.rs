@@ -5433,7 +5433,7 @@ mod tests {
         harness
             .nft
             .fail_batches_containing("aleph-vm-nat-3", || nft::NftError::ApplyFailed {
-                status: std::process::ExitStatus::default(),
+                status: std::os::unix::process::ExitStatusExt::from_raw(1 << 8),
                 stderr: "aleph-vm-nat-3: rule busy".to_string(),
             });
 

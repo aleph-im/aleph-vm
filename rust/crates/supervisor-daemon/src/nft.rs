@@ -1159,7 +1159,7 @@ mod tests {
     fn fail_batches_containing_injects_a_typed_error() {
         let executor = StaticRuleset::new(Vec::new());
         executor.fail_batches_containing("supervisor-nat", || NftError::ApplyFailed {
-            status: std::process::ExitStatus::default(),
+            status: std::os::unix::process::ExitStatusExt::from_raw(1 << 8),
             stderr: "supervisor-nat: rule busy".to_string(),
         });
         let error = executor
