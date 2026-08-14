@@ -1098,7 +1098,7 @@ fn try_fsfreeze(state: &DaemonState, vm_id: &str) -> Option<PathBuf> {
             Some(qga_socket)
         }
         Err(error) => {
-            tracing::warn!(vm_id, error, "fsfreeze unavailable, proceeding without");
+            tracing::warn!(vm_id, %error, "fsfreeze unavailable, proceeding without");
             None
         }
     }
@@ -1107,7 +1107,7 @@ fn try_fsfreeze(state: &DaemonState, vm_id: &str) -> Option<PathBuf> {
 /// `_try_fsthaw`: best-effort thaw; a failure is logged, never fatal.
 fn try_fsthaw(qga_socket: &Path, vm_id: &str) {
     if let Err(error) = crate::qmp::qga_fsfreeze_thaw(qga_socket) {
-        tracing::error!(vm_id, error, "Failed to thaw filesystems");
+        tracing::error!(vm_id, %error, "Failed to thaw filesystems");
     }
 }
 
