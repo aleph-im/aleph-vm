@@ -13,9 +13,60 @@
 //! (SEV_CTL_PATH, the SEV/SEV-ES kernel modules) are ported, gated on
 //! ENABLE_CONFIDENTIAL_COMPUTING (increment 6).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::config::Settings;
+
+/// Startup precondition failures from [`check`]. Display strings are
+/// identical to the pre-typed messages they replace (pinned by the Python
+/// `settings.check()` assert text and by tests below).
+#[derive(Debug, thiserror::Error)]
+pub enum ChecksError {
+    #[error("KVM not found on `/dev/kvm`.")]
+    KvmMissing,
+
+    #[error(
+        "EXECUTION_ROOT '{}' is too long for QEMU control sockets (UNIX socket paths are limited to 108 bytes)",
+        root.display()
+    )]
+    ExecutionRootTooLong { root: PathBuf },
+
+    #[error("File not found {}", path.display())]
+    FileNotFound { path: PathBuf },
+
+    #[error("Network interface is not specified")]
+    NoNetworkInterface,
+
+    #[error("Network interface {interface} does not exist")]
+    InterfaceMissing { interface: String },
+
+    #[error("invalid IPv4 pool {pool:?}")]
+    InvalidIpv4Pool { pool: String },
+
+    #[error("The IPv4 address pool prefix must be shorter than an individual VM network prefix")]
+    PoolPrefixTooLong,
+
+    #[error("The IPv6 subnet prefix cannot be larger than /124.")]
+    Ipv6PrefixTooLarge,
+
+    #[error("Command `{command}` not found, run `apt install {package}`")]
+    CommandMissing {
+        command: &'static str,
+        package: &'static str,
+    },
+
+    #[error("SEV feature isn't enabled, enable it in BIOS")]
+    SevDisabled,
+
+    #[error("SEV-ES feature isn't enabled, enable it in BIOS")]
+    SevEsDisabled,
+
+    #[error("Qemu Support is needed for confidential computing and it's disabled, ")]
+    QemuDisabledConfidential,
+
+    #[error("Qemu Support is needed for GPU support and it's disabled, ")]
+    QemuDisabledGpu,
+}
 
 /// `shutil.which` semantics over PATH: the first executable match.
 pub fn which(command: &str) -> Option<std::path::PathBuf> {
@@ -41,9 +92,9 @@ fn is_command_available(command: &str) -> bool {
 /// The `settings.check()` slice, in the Python assertion order. The
 /// resolved interface is the one HostState detected (None when host
 /// networking is off).
-pub fn check(settings: &Settings, resolved_interface: Option<&str>) -> Result<(), String> {
+pub fn check(settings: &Settings, resolved_interface: Option<&str>) -> Result<(), ChecksError> {
     if !Path::new("/dev/kvm").exists() {
-        return Err("KVM not found on `/dev/kvm`.".to_string());
+        return Err(ChecksError::KvmMissing);
     }
 
     // QEMU control sockets live at EXECUTION_ROOT/<vm-hash>-monitor.socket
@@ -52,11 +103,9 @@ pub fn check(settings: &Settings, resolved_interface: Option<&str>) -> Result<()
     let longest_socket_path =
         settings.execution_root.as_os_str().len() + 1 + 64 + "-monitor.socket".len();
     if longest_socket_path > 108 {
-        return Err(format!(
-            "EXECUTION_ROOT '{}' is too long for QEMU control sockets \
-             (UNIX socket paths are limited to 108 bytes)",
-            settings.execution_root.display()
-        ));
+        return Err(ChecksError::ExecutionRootTooLong {
+            root: settings.execution_root.clone(),
+        });
     }
 
     for path in [
@@ -65,27 +114,28 @@ pub fn check(settings: &Settings, resolved_interface: Option<&str>) -> Result<()
         &settings.linux_path,
     ] {
         if !path.is_file() {
-            return Err(format!("File not found {}", path.display()));
+            return Err(ChecksError::FileNotFound { path: path.clone() });
         }
     }
 
     if settings.allow_vm_networking {
         let Some(interface) = resolved_interface else {
-            return Err("Network interface is not specified".to_string());
+            return Err(ChecksError::NoNetworkInterface);
         };
         if !Path::new("/sys/class/net").join(interface).exists() {
-            return Err(format!("Network interface {interface} does not exist"));
+            return Err(ChecksError::InterfaceMissing {
+                interface: interface.to_string(),
+            });
         }
         let pool_length: u8 = settings
             .ipv4_address_pool
             .split_once('/')
             .and_then(|(_, length)| length.parse().ok())
-            .ok_or_else(|| format!("invalid IPv4 pool {:?}", settings.ipv4_address_pool))?;
+            .ok_or_else(|| ChecksError::InvalidIpv4Pool {
+                pool: settings.ipv4_address_pool.clone(),
+            })?;
         if pool_length > settings.ipv4_network_prefix_length {
-            return Err(
-                "The IPv4 address pool prefix must be shorter than an individual VM network prefix"
-                    .to_string(),
-            );
+            return Err(ChecksError::PoolPrefixTooLong);
         }
         // StaticIPv6Allocator.__init__ (hostnetwork.py): an IPV6_SUBNET_PREFIX
         // below 124 aborts the Python daemon at Network construction (the
@@ -94,33 +144,43 @@ pub fn check(settings: &Settings, resolved_interface: Option<&str>) -> Result<()
         if settings.ipv6_allocation_policy == crate::config::Ipv6AllocationPolicy::Static
             && settings.ipv6_subnet_prefix < 124
         {
-            return Err("The IPv6 subnet prefix cannot be larger than /124.".to_string());
+            return Err(ChecksError::Ipv6PrefixTooLarge);
         }
     }
 
     if !is_command_available("setfacl") {
-        return Err("Command `setfacl` not found, run `apt install acl`".to_string());
+        return Err(ChecksError::CommandMissing {
+            command: "setfacl",
+            package: "acl",
+        });
     }
     if settings.allow_vm_networking && settings.use_ndp_proxy && !is_command_available("ndppd") {
-        return Err("Command `ndppd` not found, run `apt install ndppd`".to_string());
+        return Err(ChecksError::CommandMissing {
+            command: "ndppd",
+            package: "ndppd",
+        });
     }
 
     // Necessary for cloud-init customisation of instances.
     if !is_command_available("cloud-localds") {
-        return Err(
-            "Command `cloud-localds` not found, run `apt install cloud-image-utils`".to_string(),
-        );
+        return Err(ChecksError::CommandMissing {
+            command: "cloud-localds",
+            package: "cloud-image-utils",
+        });
     }
 
     if settings.enable_qemu_support {
         if !is_command_available("qemu-img") {
-            return Err("Command `qemu-img` not found, run `apt install qemu-utils`".to_string());
+            return Err(ChecksError::CommandMissing {
+                command: "qemu-img",
+                package: "qemu-utils",
+            });
         }
         if !is_command_available("qemu-system-x86_64") {
-            return Err(
-                "Command `qemu-system-x86_64` not found, run `apt install qemu-system-x86`"
-                    .to_string(),
-            );
+            return Err(ChecksError::CommandMissing {
+                command: "qemu-system-x86_64",
+                package: "qemu-system-x86",
+            });
         }
     }
 
@@ -130,26 +190,23 @@ pub fn check(settings: &Settings, resolved_interface: Option<&str>) -> Result<()
     // there, so it is not checked here either.
     if settings.enable_confidential_computing {
         if !settings.sev_ctl_path.is_file() {
-            return Err(format!(
-                "File not found {}",
-                settings.sev_ctl_path.display()
-            ));
+            return Err(ChecksError::FileNotFound {
+                path: settings.sev_ctl_path.clone(),
+            });
         }
         if !check_amd_sev_supported() {
-            return Err("SEV feature isn't enabled, enable it in BIOS".to_string());
+            return Err(ChecksError::SevDisabled);
         }
         if !check_amd_sev_es_supported() {
-            return Err("SEV-ES feature isn't enabled, enable it in BIOS".to_string());
+            return Err(ChecksError::SevEsDisabled);
         }
         if !settings.enable_qemu_support {
-            return Err(
-                "Qemu Support is needed for confidential computing and it's disabled, ".to_string(),
-            );
+            return Err(ChecksError::QemuDisabledConfidential);
         }
     }
 
     if settings.enable_gpu_support && !settings.enable_qemu_support {
-        return Err("Qemu Support is needed for GPU support and it's disabled, ".to_string());
+        return Err(ChecksError::QemuDisabledGpu);
     }
 
     Ok(())
@@ -223,8 +280,12 @@ mod tests {
         let mut settings = settings_with_stub_hypervisors(tmp.path());
         settings.firecracker_path = tmp.path().join("absent");
         let error = check(&settings, None).unwrap_err();
+        assert!(matches!(
+            &error,
+            ChecksError::FileNotFound { path } if *path == tmp.path().join("absent")
+        ));
         assert_eq!(
-            error,
+            error.to_string(),
             format!("File not found {}", tmp.path().join("absent").display())
         );
     }
@@ -235,7 +296,14 @@ mod tests {
         let mut settings = settings_with_stub_hypervisors(tmp.path());
         settings.execution_root = PathBuf::from(format!("/{}", "x".repeat(100)));
         let error = check(&settings, None).unwrap_err();
-        assert!(error.contains("too long for QEMU control sockets"));
+        assert!(
+            matches!(&error, ChecksError::ExecutionRootTooLong { root } if *root == settings.execution_root)
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("too long for QEMU control sockets")
+        );
     }
 
     #[test]
@@ -243,19 +311,22 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut settings = settings_with_stub_hypervisors(tmp.path());
         settings.allow_vm_networking = true;
-        assert_eq!(
-            check(&settings, None).unwrap_err(),
-            "Network interface is not specified"
-        );
-        assert!(
-            check(&settings, Some("definitely-not-an-iface0"))
-                .unwrap_err()
-                .contains("does not exist")
-        );
+        let error = check(&settings, None).unwrap_err();
+        assert!(matches!(&error, ChecksError::NoNetworkInterface));
+        assert_eq!(error.to_string(), "Network interface is not specified");
+
+        let error = check(&settings, Some("definitely-not-an-iface0")).unwrap_err();
+        assert!(matches!(
+            &error,
+            ChecksError::InterfaceMissing { interface } if interface == "definitely-not-an-iface0"
+        ));
+        assert!(error.to_string().contains("does not exist"));
+
         settings.ipv4_address_pool = "172.16.0.0/26".to_string();
         // /26 pool cannot be split into /24 VM networks; `lo` always exists.
         let error = check(&settings, Some("lo")).unwrap_err();
-        assert!(error.contains("IPv4 address pool prefix"));
+        assert!(matches!(&error, ChecksError::PoolPrefixTooLong));
+        assert!(error.to_string().contains("IPv4 address pool prefix"));
     }
 
     #[test]
@@ -272,20 +343,24 @@ mod tests {
             return;
         }
         let error = check(&settings, Some("lo")).unwrap_err();
-        assert_eq!(error, "The IPv6 subnet prefix cannot be larger than /124.");
+        assert!(matches!(&error, ChecksError::Ipv6PrefixTooLarge));
+        assert_eq!(
+            error.to_string(),
+            "The IPv6 subnet prefix cannot be larger than /124."
+        );
 
         // The dynamic policy accepts it (Python builds a DynamicIPv6Allocator
         // without the check); /124 and above pass under static.
         settings.ipv6_allocation_policy = crate::config::Ipv6AllocationPolicy::Dynamic;
         assert!(!matches!(
             check(&settings, Some("lo")),
-            Err(error) if error.contains("IPv6 subnet prefix")
+            Err(ChecksError::Ipv6PrefixTooLarge)
         ));
         settings.ipv6_allocation_policy = crate::config::Ipv6AllocationPolicy::Static;
         settings.ipv6_subnet_prefix = 124;
         assert!(!matches!(
             check(&settings, Some("lo")),
-            Err(error) if error.contains("IPv6 subnet prefix")
+            Err(ChecksError::Ipv6PrefixTooLarge)
         ));
     }
 
@@ -299,10 +374,9 @@ mod tests {
         if !Path::new("/dev/kvm").exists() {
             // Containers without KVM: the first check fails, which is the
             // Python behavior too.
-            assert_eq!(
-                check(&settings, None).unwrap_err(),
-                "KVM not found on `/dev/kvm`."
-            );
+            let error = check(&settings, None).unwrap_err();
+            assert!(matches!(&error, ChecksError::KvmMissing));
+            assert_eq!(error.to_string(), "KVM not found on `/dev/kvm`.");
             return;
         }
         check(&settings, None).expect("check must pass on a provisioned host");

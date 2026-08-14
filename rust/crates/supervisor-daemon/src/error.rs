@@ -51,6 +51,9 @@ pub enum DaemonError {
     Internal(String),
 
     #[error(transparent)]
+    Checks(#[from] crate::checks::ChecksError),
+
+    #[error(transparent)]
     Io(#[from] std::io::Error),
 
     #[error(transparent)]
