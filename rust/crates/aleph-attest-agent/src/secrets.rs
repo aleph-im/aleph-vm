@@ -61,29 +61,29 @@ enum InjectOutcome {
 /// followed. If the path exists it must be a genuine directory (not a symlink),
 /// owned by the agent's effective uid; its mode is tightened to 0700. If it does
 /// not exist it is created with mode 0700.
-fn ensure_secret_dir(dir: &Path) -> Result<(), String> {
+fn ensure_secret_dir(dir: &Path) -> anyhow::Result<()> {
     match std::fs::symlink_metadata(dir) {
         Ok(meta) => {
             let file_type = meta.file_type();
             if file_type.is_symlink() {
-                return Err("secret directory path is a symlink".to_string());
+                anyhow::bail!("secret directory path is a symlink");
             }
             if !file_type.is_dir() {
-                return Err("secret directory path exists but is not a directory".to_string());
+                anyhow::bail!("secret directory path exists but is not a directory");
             }
             // Refuse a directory we do not own: it could have been planted.
             // SAFETY: geteuid() takes no pointer arguments and has no
             // preconditions; it cannot cause undefined behavior.
             let euid = unsafe { libc::geteuid() };
             if meta.uid() != euid {
-                return Err("secret directory has unexpected owner".to_string());
+                anyhow::bail!("secret directory has unexpected owner");
             }
             // Tighten perms to owner-only in case it was pre-created looser.
             if meta.permissions().mode() & 0o777 != 0o700
                 && let Err(e) =
                     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
             {
-                return Err(format!("failed to set secret directory mode: {e}"));
+                anyhow::bail!("failed to set secret directory mode: {e}");
             }
             Ok(())
         }
@@ -92,14 +92,14 @@ fn ensure_secret_dir(dir: &Path) -> Result<(), String> {
             if let Some(parent) = dir.parent()
                 && let Err(e) = std::fs::create_dir_all(parent)
             {
-                return Err(format!("failed to create secret directory parent: {e}"));
+                anyhow::bail!("failed to create secret directory parent: {e}");
             }
             std::fs::DirBuilder::new()
                 .mode(0o700)
                 .create(dir)
-                .map_err(|e| format!("failed to create secret directory: {e}"))
+                .map_err(|e| anyhow::anyhow!("failed to create secret directory: {e}"))
         }
-        Err(e) => Err(format!("failed to stat secret directory: {e}")),
+        Err(e) => anyhow::bail!("failed to stat secret directory: {e}"),
     }
 }
 
