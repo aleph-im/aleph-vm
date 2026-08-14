@@ -210,6 +210,22 @@ def _select_attestation_port(manifest: RuntimeManifest) -> int | None:
     return None
 
 
+async def resolve_vprogram_attestation_port(content: VerifiableProgramContent) -> int | None:
+    """Re-derive the RA-TLS attestation port from the runtime manifest alone.
+
+    The re-adoption path (an agent picking an already-RUNNING V-PROGRAM back
+    up) needs the port to reconcile the host DNAT mapping, but must not pay
+    for ``build_vprogram_spec``: that stages the whole runtime bundle, which
+    the running VM already booted from. The manifest is a small STORE file:
+    one message-metadata lookup, with the file itself coming from the local
+    download cache after the first create. Raises VmSetupError when the
+    manifest cannot be fetched or parsed; the caller decides whether that is
+    fatal.
+    """
+    manifest = await fetch_runtime_manifest(str(content.runtime.ref))
+    return _select_attestation_port(manifest)
+
+
 async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramContent) -> tuple[CreateVmSpec, int | None]:
     """Fetch, verify and stage the runtime bundle, then build the SNP spec.
 
