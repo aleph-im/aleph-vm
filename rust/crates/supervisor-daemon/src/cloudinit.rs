@@ -17,6 +17,24 @@ use serde_json::{Value, json};
 
 use crate::tap::TapAssignment;
 
+/// Failures creating cloud-init seed images.
+#[derive(Debug, thiserror::Error)]
+pub enum CloudInitError {
+    #[error("cannot create a temp file: {source}")]
+    TempCreate { source: std::io::Error },
+    #[error("cannot write a temp file: {source}")]
+    TempWrite { source: std::io::Error },
+    #[error("cannot flush a temp file: {source}")]
+    TempFlush { source: std::io::Error },
+    #[error("cannot run cloud-localds: {source}")]
+    Run { source: std::io::Error },
+    #[error("cloud-localds failed ({status}): {stderr}")]
+    Failed {
+        status: std::process::ExitStatus,
+        stderr: String,
+    },
+}
+
 /// The qemu_build.py key merge: the spec's keys plus, when
 /// USE_DEVELOPER_SSH_KEYS is truthy, settings.DEVELOPER_SSH_KEYS.
 pub fn merged_ssh_keys(
@@ -179,7 +197,7 @@ impl CloudInitDrive<'_> {
 
     /// Python `build_cloud_init_drive`: write the three seed files and run
     /// cloud-localds. Blocking (subprocess + temp files).
-    pub fn create_image(&self) -> Result<PathBuf, String> {
+    pub fn create_image(&self) -> Result<PathBuf, CloudInitError> {
         // Hostnames are capped at 63 characters per label; the 64-hex-char
         // vm_hash is truncated to fit (by characters, like Python's
         // vm_hash[:63]; see fallback_hostname).
@@ -190,14 +208,14 @@ impl CloudInitDrive<'_> {
         };
         let (ip, route, ipv6, ipv6_gateway) = network_parameters(self.tap);
 
-        let write_temp = |contents: &str| -> Result<tempfile::NamedTempFile, String> {
+        let write_temp = |contents: &str| -> Result<tempfile::NamedTempFile, CloudInitError> {
             use std::io::Write;
             let mut file = tempfile::NamedTempFile::new()
-                .map_err(|error| format!("cannot create a temp file: {error}"))?;
+                .map_err(|source| CloudInitError::TempCreate { source })?;
             file.write_all(contents.as_bytes())
-                .map_err(|error| format!("cannot write a temp file: {error}"))?;
+                .map_err(|source| CloudInitError::TempWrite { source })?;
             file.flush()
-                .map_err(|error| format!("cannot flush a temp file: {error}"))?;
+                .map_err(|source| CloudInitError::TempFlush { source })?;
             Ok(file)
         };
         let user_data_file = write_temp(&user_data(
@@ -227,13 +245,12 @@ impl CloudInitDrive<'_> {
             .arg(user_data_file.path())
             .arg(metadata_file.path())
             .output()
-            .map_err(|error| format!("cannot run cloud-localds: {error}"))?;
+            .map_err(|source| CloudInitError::Run { source })?;
         if !output.status.success() {
-            return Err(format!(
-                "cloud-localds failed ({}): {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
+            return Err(CloudInitError::Failed {
+                status: output.status,
+                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            });
         }
         Ok(image)
     }
@@ -390,6 +407,21 @@ mod tests {
                 "ssh-ed25519 AAAA user@host".to_string(),
                 "ssh-ed25519 BBBB dev@host".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn cloud_init_error_messages_are_correct() {
+        use std::io;
+
+        let io_error = io::Error::new(io::ErrorKind::PermissionDenied, "no perms");
+
+        let temp_create = CloudInitError::TempCreate {
+            source: io_error.kind().into(),
+        };
+        assert_eq!(
+            temp_create.to_string(),
+            format!("cannot create a temp file: {}", io_error.kind())
         );
     }
 }
