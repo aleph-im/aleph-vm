@@ -75,6 +75,17 @@ measurement inputs: reading them from the live host keeps the supervisor
 architecture-agnostic without perturbing the SNP launch digest, which pins
 the fixed `-cpu EPYC-v4` instead.
 
+Cold migration (`src/aleph/vm/agent/migration/`) refuses every confidential
+mode across the board, gated independently at each end of the transfer. The
+export endpoint (`src/aleph/vm/agent/views/migration.py`) rejects a running
+VM with `info.confidential_mode is not ConfidentialMode.NONE` before
+starting an export job, and the import runner
+(`src/aleph/vm/agent/migration/runner.py`) separately rejects an incoming
+instance message whose `environment.trusted_execution is not None`. Neither
+gate depends on the other: a regression that drops one still leaves the
+other refusing the transfer, for both the SEV/SEV-ES and SEV-SNP families
+alike.
+
 ### Host capability probing
 
 Two independent probes feed what a node advertises. `check_amd_sev_supported`
@@ -189,7 +200,7 @@ rootfs disk and splices it into
 `build_vprogram_spec` in `src/aleph/vm/agent/vprogram_launch.py` from the
 V-PROGRAM message's `workload.roothash`) it appends
 ` workload_roothash={hash}`. Both roothashes go verbatim into `-append`, so
-both are validated as bare lowercase-hex strings before being used; a
+both are validated as bare hex strings before being used; a
 missing or malformed sidecar fails the spec closed (`InvalidBackend`)
 rather than booting a VM whose cmdline the publisher never measured.
 
@@ -247,6 +258,12 @@ byte-identical to the pre-NUMA baseline.
 
 ## Key invariants
 
+- Cold migration refuses every confidential mode at two independent gates,
+  source and destination, so a regression on one side does not open the
+  path: `src/aleph/vm/agent/views/migration.py` (export,
+  `confidential_mode is not ConfidentialMode.NONE`) and
+  `src/aleph/vm/agent/migration/runner.py` (import,
+  `environment.trusted_execution is not None`).
 - An `AttestationReport` carries only the raw AMD-signed blob; every
   consumer derives `report_data`/`measurement` by re-parsing that blob,
   never from an unsigned copy that might travel alongside it:
@@ -267,7 +284,9 @@ byte-identical to the pre-NUMA baseline.
   `rust/crates/aleph-attest-cli/src/verify.rs`.
 - The SEV-SNP guest policy is canonicalized to a bare `0x`-hex literal
   before it reaches the `sev-snp-guest` QEMU object, closing an argv
-  property-injection path: `rust/crates/aleph-tee/src/sev_snp/qemu.rs`,
+  property-injection path; an unparseable policy falls back to the
+  restrictive `DEFAULT_POLICY = 0x30000` (debug disabled) rather than
+  launching attacker-shaped text: `rust/crates/aleph-tee/src/sev_snp/qemu.rs`,
   `canonical_policy`.
 - In-guest secret injection is one-shot and mutex-guarded end to end
   (check-and-write is atomic), and writes are `O_CREAT|O_EXCL|O_NOFOLLOW`
@@ -324,6 +343,8 @@ byte-identical to the pre-NUMA baseline.
   `rust/crates/aleph-attest-cli/src/client.rs`.
 - QEMU argv and host CPUID: `rust/crates/supervisor-controller/src/qemu.rs`,
   `rust/crates/supervisor-controller/src/cpuid.rs`.
+- Migration refusal gates: `src/aleph/vm/agent/views/migration.py`,
+  `src/aleph/vm/agent/migration/runner.py`.
 - Daemon-side confidential mutations and SNP spec build:
   `rust/crates/supervisor-daemon/src/confidential.rs`,
   `rust/crates/supervisor-daemon/src/lifecycle.rs` (`snp_config_slice`),
