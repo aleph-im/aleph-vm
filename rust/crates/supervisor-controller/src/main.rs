@@ -41,11 +41,12 @@ struct Cli {
 
 /// A fatal controller error. `main` logs it once and turns it into a
 /// non-zero exit; each variant is one of the `exit(1)` sites (or the
-/// uncaught-exception exit) in the Python `__main__.main`. The `String`
-/// variants wrap helpers that already render a full, actionable message
-/// ([`select_run_target`] and [`wait_for_tap`]); `Qemu` wraps the typed
-/// [`qemu::QemuError`] transparently; the rest attach the context (the
-/// config path, the failing operation) that Python logged inline.
+/// uncaught-exception exit) in the Python `__main__.main`. The launch-error
+/// variants ([`select_run_target`]'s three and [`wait_for_tap`]'s one) each
+/// reproduce a message the deleted `String` payload used to build inline;
+/// `Qemu` wraps the typed [`qemu::QemuError`] transparently; the rest attach
+/// the context (the config path, the failing operation) that Python logged
+/// inline.
 #[derive(Debug, thiserror::Error)]
 enum ControllerError {
     #[error("Configuration file {} not found", .0.display())]
@@ -57,11 +58,27 @@ enum ControllerError {
     #[error("Controller config {} carries no NETWORK_INTERFACE", .0.display())]
     NoNetworkInterface(PathBuf),
 
-    #[error("{0}")]
-    UnsupportedConfig(String),
+    #[error(
+        "this controller does not run Firecracker VMs (hypervisor=firecracker); \
+         it implements the QEMU (plain and SEV/SEV-ES confidential) paths only"
+    )]
+    NotAFirecrackerController,
 
-    #[error("{0}")]
-    TapUnavailable(String),
+    #[error(
+        "SEV-SNP backend marker (sev_snp=true) is set but the config is missing a \
+         measured-boot field (ovmf_path/sev_policy/kernel_path/initrd_path/kernel_cmdline); \
+         refusing to launch a partial SNP config"
+    )]
+    PartialSnpConfig,
+
+    #[error("this controller only runs QEMU VMs, not Firecracker")]
+    OnlyQemu,
+
+    #[error(
+        "Tap interface {interface} was not created after {seconds}s. The supervisor may \
+         not be running or may have classified this execution as dead. Exiting."
+    )]
+    TapTimeout { interface: String, seconds: u64 },
 
     #[error("cannot start the async runtime: {0}")]
     Runtime(#[source] std::io::Error),
@@ -83,6 +100,11 @@ fn main() -> ExitCode {
     // Python's `main` logs at each `exit(1)` and lets the runtime set the
     // status; here the fallible body returns the error and this one site logs
     // it and maps it to the exit code.
+    //
+    // Plain Display, not `{error:#}`: this crate's error Displays are
+    // self-contained by design (they inline their sources), so anyhow's
+    // alternate render would double-print the chain. See the matching
+    // comment in supervisor-daemon/src/main.rs.
     match run(&cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -97,9 +119,12 @@ fn main() -> ExitCode {
 /// returns after `asyncio.run` regardless of QEMU's return code), the QEMU
 /// exit code is not propagated: a VM that boots and later exits, cleanly or
 /// not, is still a successful controller run.
-fn run(cli: &Cli) -> Result<(), ControllerError> {
+///
+/// `ControllerError` stays the typed mid-layer (tests downcast into it); this
+/// signature is `anyhow::Result` only so `main` has one uniform sink.
+fn run(cli: &Cli) -> anyhow::Result<()> {
     if !cli.config_path.is_file() {
-        return Err(ControllerError::ConfigNotFound(cli.config_path.clone()));
+        return Err(ControllerError::ConfigNotFound(cli.config_path.clone()).into());
     }
 
     let config = Configuration::from_file(&cli.config_path).map_err(|source| {
@@ -122,18 +147,18 @@ fn run(cli: &Cli) -> Result<(), ControllerError> {
         .unwrap_or("")
         .is_empty()
     {
-        return Err(ControllerError::NoNetworkInterface(cli.config_path.clone()));
+        return Err(ControllerError::NoNetworkInterface(cli.config_path.clone()).into());
     }
 
     // Dispatch with Python's `execute_persistent_vm` precedence: the hypervisor
     // field first (firecracker rejected), then SNP, then the confidential-
     // superset shape, then the plain QEMU path.
-    let target = select_run_target(&config).map_err(ControllerError::UnsupportedConfig)?;
+    let target = select_run_target(&config)?;
 
     // Wait for the supervisor to create the tap interface. The controller
     // starts before the supervisor finishes loading persistent executions, so
     // the tap may not exist yet. Do NOT create it here.
-    wait_for_tap(config.vm_id).map_err(ControllerError::TapUnavailable)?;
+    wait_for_tap(config.vm_id)?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -148,7 +173,7 @@ fn run(cli: &Cli) -> Result<(), ControllerError> {
             runtime.block_on(qemu::run_snp(&config.vm_hash, qemu_config))
         }
     };
-    result?;
+    result.map_err(ControllerError::from)?;
     Ok(())
 }
 
@@ -156,17 +181,16 @@ fn run(cli: &Cli) -> Result<(), ControllerError> {
 /// `__main__.main` wait loop: log every 10s, `exit(1)` if the tap never
 /// appears. Existence is a `/sys/class/net/{name}` check, the same probe the
 /// Rust daemon's tap backend uses for `Network.interface_exists`.
-fn wait_for_tap(vm_id: i64) -> Result<(), String> {
+fn wait_for_tap(vm_id: i64) -> Result<(), ControllerError> {
     let interface_name = format!("vmtap{vm_id}");
     let mut waited = 0u64;
     let max = MAX_TAP_WAIT.as_secs();
     while !interface_exists(&interface_name) {
         if waited >= max {
-            return Err(format!(
-                "Tap interface {interface_name} was not created after {max}s. \
-                 The supervisor may not be running or may have classified this \
-                 execution as dead. Exiting."
-            ));
+            return Err(ControllerError::TapTimeout {
+                interface: interface_name,
+                seconds: max,
+            });
         }
         if waited.is_multiple_of(10) {
             tracing::info!("Waiting for network interface {interface_name} ({waited}/{max}s)...");
@@ -200,13 +224,9 @@ enum RunTarget {
 /// QemuConfidentialVMConfiguration` branch) to the confidential path, then the
 /// plain QEMU path. The Rust rejects where Python would assert; both fail
 /// closed, never open.
-fn select_run_target(config: &Configuration) -> Result<RunTarget, String> {
+fn select_run_target(config: &Configuration) -> Result<RunTarget, ControllerError> {
     if config.hypervisor == HypervisorType::Firecracker {
-        return Err(
-            "this controller does not run Firecracker VMs (hypervisor=firecracker); \
-             it implements the QEMU (plain and SEV/SEV-ES confidential) paths only"
-                .to_string(),
-        );
+        return Err(ControllerError::NotAFirecrackerController);
     }
     match &config.vm_configuration {
         // SEV-SNP is checked first: it is a distinct measured-boot path with no
@@ -223,19 +243,14 @@ fn select_run_target(config: &Configuration) -> Result<RunTarget, String> {
         // launch of a config the daemon meant to be measured. This mirrors the
         // daemon-side `QemuVmConfig::snp` soft-fail (marker set, field missing
         // -> `None`, treated as non-SNP fail-closed).
-        VmConfiguration::Qemu(qemu_config) if qemu_config.is_snp_marked() => Err(
-            "SEV-SNP backend marker (sev_snp=true) is set but the config is missing a \
-             measured-boot field (ovmf_path/sev_policy/kernel_path/initrd_path/kernel_cmdline); \
-             refusing to launch a partial SNP config"
-                .to_string(),
-        ),
+        VmConfiguration::Qemu(qemu_config) if qemu_config.is_snp_marked() => {
+            Err(ControllerError::PartialSnpConfig)
+        }
         VmConfiguration::Qemu(qemu_config) if qemu_config.is_confidential() => {
             Ok(RunTarget::Confidential((**qemu_config).clone()))
         }
         VmConfiguration::Qemu(qemu_config) => Ok(RunTarget::Plain((**qemu_config).clone())),
-        VmConfiguration::Firecracker => {
-            Err("this controller only runs QEMU VMs, not Firecracker".to_string())
-        }
+        VmConfiguration::Firecracker => Err(ControllerError::OnlyQemu),
     }
 }
 
@@ -269,7 +284,11 @@ mod tests {
         // ConfigNotFound before touching anything else (no tap wait, no
         // runtime), so this returns immediately.
         let cli = cli_for(PathBuf::from("/definitely/not/a/real/controller.json"));
-        assert!(matches!(run(&cli), Err(ControllerError::ConfigNotFound(_))));
+        let error = run(&cli).unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<ControllerError>(),
+            Some(ControllerError::ConfigNotFound(_))
+        ));
     }
 
     #[test]
@@ -279,9 +298,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("broken-controller.json");
         std::fs::write(&path, b"{ not valid json").unwrap();
+        let error = run(&cli_for(path)).unwrap_err();
         assert!(matches!(
-            run(&cli_for(path)),
-            Err(ControllerError::ConfigLoad { .. })
+            error.downcast_ref::<ControllerError>(),
+            Some(ControllerError::ConfigLoad { .. })
         ));
     }
 
@@ -370,10 +390,13 @@ mod tests {
         );
         let config = parse("qemu", &partial);
         match select_run_target(&config) {
-            Err(message) => assert!(
-                message.contains("SEV-SNP") && message.contains("missing"),
-                "unexpected refusal message: {message}"
-            ),
+            Err(error) => {
+                let message = error.to_string();
+                assert!(
+                    message.contains("SEV-SNP") && message.contains("missing"),
+                    "unexpected refusal message: {message}"
+                );
+            }
             Ok(target) => panic!(
                 "a partial SNP config must be refused, not dispatched to {}",
                 match target {
