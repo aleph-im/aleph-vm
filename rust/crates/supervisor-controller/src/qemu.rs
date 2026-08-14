@@ -19,6 +19,33 @@ use crate::cpuid::SevHostInfo;
 use crate::journal;
 use crate::qmp;
 
+/// The closed error vocabulary for the QEMU launch paths: the pre-launch
+/// guards (`confidential_prelaunch_check`) and the spawn/supervise lifecycle
+/// (`spawn_and_supervise`). Every variant reproduces a message the deleted
+/// `Result<_, String>` code used to build inline; `main.rs`'s
+/// `ControllerError::Qemu` wraps this transparently, so the rendered text at
+/// the process boundary is unchanged.
+#[derive(Debug, thiserror::Error)]
+pub enum QemuError {
+    #[error("Not running on an AMD SEV platform?")]
+    NotSevPlatform,
+
+    #[error("Missing guest owner certificates, cannot start the VM.")]
+    MissingCerts,
+
+    #[error("cannot spawn qemu: {source}")]
+    Spawn { source: std::io::Error },
+
+    #[error("cannot install the SIGTERM handler: {source}")]
+    Sigterm { source: std::io::Error },
+
+    #[error("cannot wait for qemu: {source}")]
+    Wait { source: std::io::Error },
+
+    #[error("cannot wait for qemu after stop: {source}")]
+    WaitAfterStop { source: std::io::Error },
+}
+
 /// Seconds to wait for guest ACPI shutdown before escalating to QMP `quit`.
 /// Shorter than the systemd `TimeoutStopSec=60` so QEMU still has time to
 /// flush disk caches via `quit` before the SIGKILL deadline
@@ -601,7 +628,7 @@ pub fn build_snp_argv(config: &QemuConfig, sev: SevHostInfo) -> Vec<String> {
 /// Spawn qemu and supervise it: block on the child, and on SIGTERM run the
 /// graceful-stop escalation. The port of `execute_persistent_vm` +
 /// `handle_persistent_vm` for the non-confidential QEMU path.
-pub async fn run(vm_hash: &str, config: &QemuConfig) -> Result<i32, String> {
+pub async fn run(vm_hash: &str, config: &QemuConfig) -> Result<i32, QemuError> {
     let argv = build_argv(config);
     spawn_and_supervise(vm_hash, config, argv).await
 }
@@ -610,7 +637,7 @@ pub async fn run(vm_hash: &str, config: &QemuConfig) -> Result<i32, String> {
 /// `QemuConfidentialVM.start()` plus its two pre-launch guards. The VM starts
 /// paused (`-S`); this controller does NOT inject the launch secret or resume
 /// the CPU (that is the supervisor session flow).
-pub async fn run_confidential(vm_hash: &str, config: &QemuConfig) -> Result<i32, String> {
+pub async fn run_confidential(vm_hash: &str, config: &QemuConfig) -> Result<i32, QemuError> {
     // Read the host SEV info, then run the two pre-launch guards (factored into
     // `confidential_prelaunch_check` so they are unit-testable off-SEV). The
     // real read returns None off-SEV, which the check turns into the platform
@@ -631,9 +658,8 @@ pub async fn run_confidential(vm_hash: &str, config: &QemuConfig) -> Result<i32,
 /// measurement inputs, so the host-derived value does not change the launch
 /// measurement (which pins the fixed `-cpu EPYC-v4`). An SNP VM cannot run off
 /// an AMD SEV platform, so a `None` read is refused up front.
-pub async fn run_snp(vm_hash: &str, config: &QemuConfig) -> Result<i32, String> {
-    let sev =
-        SevHostInfo::read().ok_or_else(|| "Not running on an AMD SEV platform?".to_string())?;
+pub async fn run_snp(vm_hash: &str, config: &QemuConfig) -> Result<i32, QemuError> {
+    let sev = SevHostInfo::read().ok_or(QemuError::NotSevPlatform)?;
     let argv = build_snp_argv(config, sev);
     spawn_and_supervise(vm_hash, config, argv).await
 }
@@ -651,7 +677,7 @@ pub async fn run_snp(vm_hash: &str, config: &QemuConfig) -> Result<i32, String> 
 fn confidential_prelaunch_check(
     config: &QemuConfig,
     sev: Option<SevHostInfo>,
-) -> Result<SevHostInfo, String> {
+) -> Result<SevHostInfo, QemuError> {
     // The two `.expect()`s rely on `select_run_target` only dispatching a
     // confidential-shaped config here; a future unguarded caller trips this in
     // debug builds instead of panicking cryptically.
@@ -661,7 +687,7 @@ fn confidential_prelaunch_check(
     );
 
     // Guard (a): must be on an AMD SEV platform.
-    let sev = sev.ok_or_else(|| "Not running on an AMD SEV platform?".to_string())?;
+    let sev = sev.ok_or(QemuError::NotSevPlatform)?;
 
     // Guard (b): the guest-owner certificate + session files must exist. The
     // dispatcher only routes a confidential-shaped config here, so both fields
@@ -675,7 +701,7 @@ fn confidential_prelaunch_check(
         .as_deref()
         .expect("confidential config carries sev_session_file");
     if !Path::new(godh).is_file() || !Path::new(session).is_file() {
-        return Err("Missing guest owner certificates, cannot start the VM.".to_string());
+        return Err(QemuError::MissingCerts);
     }
 
     Ok(sev)
@@ -689,7 +715,7 @@ async fn spawn_and_supervise(
     vm_hash: &str,
     config: &QemuConfig,
     argv: Vec<String>,
-) -> Result<i32, String> {
+) -> Result<i32, QemuError> {
     tracing::debug!(?argv, "QEMU args");
 
     // stdout/stderr to the systemd journal, tagged like the Python controller
@@ -705,18 +731,18 @@ async fn spawn_and_supervise(
         .stderr(stderr);
     let mut child = command
         .spawn()
-        .map_err(|error| format!("cannot spawn qemu: {error}"))?;
+        .map_err(|source| QemuError::Spawn { source })?;
     tracing::info!(
         pid = child.id(),
         "Started QemuVm {vm_hash}. Log: journalctl -t vm-{vm_hash}-stdout -t vm-{vm_hash}-stderr"
     );
 
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .map_err(|error| format!("cannot install the SIGTERM handler: {error}"))?;
+        .map_err(|source| QemuError::Sigterm { source })?;
 
     let status = tokio::select! {
         status = child.wait() => {
-            status.map_err(|error| format!("cannot wait for qemu: {error}"))?
+            status.map_err(|source| QemuError::Wait { source })?
         }
         _ = sigterm.recv() => {
             tracing::debug!("Received SIGTERM");
@@ -724,7 +750,7 @@ async fn spawn_and_supervise(
             child
                 .wait()
                 .await
-                .map_err(|error| format!("cannot wait for qemu after stop: {error}"))?
+                .map_err(|source| QemuError::WaitAfterStop { source })?
         }
     };
 
@@ -834,7 +860,8 @@ mod tests {
     fn prelaunch_check_refuses_when_not_on_a_sev_platform() {
         let config = confidential_config("/nonexistent/godh.b64", "/nonexistent/session.b64");
         let error = confidential_prelaunch_check(&config, None).unwrap_err();
-        assert_eq!(error, "Not running on an AMD SEV platform?");
+        assert!(matches!(error, QemuError::NotSevPlatform));
+        assert_eq!(error.to_string(), "Not running on an AMD SEV platform?");
     }
 
     /// Guard (b): a missing godh OR session file yields the missing-certificate
@@ -854,8 +881,9 @@ mod tests {
         std::fs::write(&godh, b"cert").unwrap();
         let config = confidential_config(godh.to_str().unwrap(), session.to_str().unwrap());
         let error = confidential_prelaunch_check(&config, Some(sev)).unwrap_err();
+        assert!(matches!(error, QemuError::MissingCerts));
         assert_eq!(
-            error,
+            error.to_string(),
             "Missing guest owner certificates, cannot start the VM."
         );
 
@@ -864,8 +892,9 @@ mod tests {
         std::fs::write(&session, b"blob").unwrap();
         let config = confidential_config(godh.to_str().unwrap(), session.to_str().unwrap());
         let error = confidential_prelaunch_check(&config, Some(sev)).unwrap_err();
+        assert!(matches!(error, QemuError::MissingCerts));
         assert_eq!(
-            error,
+            error.to_string(),
             "Missing guest owner certificates, cannot start the VM."
         );
     }
