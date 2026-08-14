@@ -1306,7 +1306,7 @@ pub fn restore_from_image(
         let new_size = state
             .disk_tools
             .virtual_size(image)
-            .map_err(RpcError::Internal)?;
+            .map_err(|error| RpcError::Internal(error.to_string()))?;
         if new_size > max_virtual_size_bytes {
             return Err(RpcError::InvalidBackend(format!(
                 "New rootfs virtual size ({new_size} bytes) exceeds the declared rootfs size \
