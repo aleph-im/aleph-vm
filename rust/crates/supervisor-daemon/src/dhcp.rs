@@ -245,11 +245,6 @@ pub enum DhcpError {
 
     #[error("systemctl stop {unit} failed: {stderr}")]
     StopFailed { unit: String, stderr: String },
-
-    /// A fabricated error for test `DhcpBackend` fakes that need to report a
-    /// specific failure without shelling out to real `systemd-run`/`systemctl`.
-    #[error("{0}")]
-    Injected(String),
 }
 
 /// Whether a `systemctl stop` stderr describes a unit systemd never knew (it
@@ -343,19 +338,26 @@ impl DhcpBackend for SystemdRunDhcp {
 /// Test backend: records every started [`DhcpConfig`] and stopped hash, with
 /// an optional shared [`crate::test_fixtures::EventLog`] to interleave with
 /// the tap/nft fakes for ordering checks. Failures are injectable.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct FakeDhcpBackend {
     inner: std::sync::Mutex<FakeDhcpState>,
     event_log: std::sync::OnceLock<crate::test_fixtures::EventLog>,
 }
 
-#[derive(Debug, Default)]
+/// A builder rather than a stored `DhcpError`: `DhcpError` deliberately has
+/// no `Clone` impl (its `io::Error` sources must stay real, non-reconstructed
+/// errors everywhere outside this test-only injection path), so repeated
+/// failures are produced by calling the closure again instead of cloning a
+/// stored value.
+type DhcpErrorFn = Box<dyn Fn() -> DhcpError + Send + Sync>;
+
+#[derive(Default)]
 struct FakeDhcpState {
     started: Vec<DhcpConfig>,
     stopped: Vec<String>,
     running: std::collections::HashSet<String>,
-    fail_start: Option<String>,
-    fail_stop: Option<String>,
+    fail_start: Option<DhcpErrorFn>,
+    fail_stop: Option<DhcpErrorFn>,
 }
 
 impl FakeDhcpBackend {
@@ -384,14 +386,16 @@ impl FakeDhcpBackend {
         self.lock().running.contains(vm_hash)
     }
 
-    /// Every `start` fails with this message until cleared.
-    pub fn fail_start(&self, message: &str) {
-        self.lock().fail_start = Some(message.to_string());
+    /// Every `start` fails with the error `make` builds, until cleared. A
+    /// builder (not a stored error) so each call gets its own real
+    /// `DhcpError`, e.g. `backend.fail_start(|| DhcpError::StartFailed { .. })`.
+    pub fn fail_start(&self, make: impl Fn() -> DhcpError + Send + Sync + 'static) {
+        self.lock().fail_start = Some(Box::new(make));
     }
 
-    /// Every `stop` fails with this message until cleared.
-    pub fn fail_stop(&self, message: &str) {
-        self.lock().fail_stop = Some(message.to_string());
+    /// Every `stop` fails with the error `make` builds, until cleared.
+    pub fn fail_stop(&self, make: impl Fn() -> DhcpError + Send + Sync + 'static) {
+        self.lock().fail_stop = Some(Box::new(make));
     }
 
     /// Attach a shared chronological event log.
@@ -409,8 +413,8 @@ impl FakeDhcpBackend {
 impl DhcpBackend for FakeDhcpBackend {
     fn start(&self, config: &DhcpConfig) -> Result<(), DhcpError> {
         let mut inner = self.lock();
-        if let Some(message) = &inner.fail_start {
-            return Err(DhcpError::Injected(message.clone()));
+        if let Some(make) = &inner.fail_start {
+            return Err(make());
         }
         inner.started.push(config.clone());
         inner.running.insert(config.vm_hash.clone());
@@ -421,8 +425,8 @@ impl DhcpBackend for FakeDhcpBackend {
 
     fn stop(&self, vm_hash: &str, _lease_file: &std::path::Path) -> Result<(), DhcpError> {
         let mut inner = self.lock();
-        if let Some(message) = &inner.fail_stop {
-            return Err(DhcpError::Injected(message.clone()));
+        if let Some(make) = &inner.fail_stop {
+            return Err(make());
         }
         inner.stopped.push(vm_hash.to_string());
         inner.running.remove(vm_hash);
@@ -594,15 +598,23 @@ mod tests {
         )
         .unwrap();
         let lease = std::path::Path::new(&config.lease_file);
-        backend.fail_start("boom");
+        let unit = config.unit_name();
+        backend.fail_start(move || DhcpError::StartFailed {
+            unit: unit.clone(),
+            stderr: "boom".to_string(),
+        });
         assert!(matches!(
             backend.start(&config),
-            Err(DhcpError::Injected(m)) if m == "boom"
+            Err(DhcpError::StartFailed { stderr, .. }) if stderr == "boom"
         ));
-        backend.fail_stop("nope");
+        let unit = config.unit_name();
+        backend.fail_stop(move || DhcpError::StopFailed {
+            unit: unit.clone(),
+            stderr: "nope".to_string(),
+        });
         assert!(matches!(
             backend.stop(&"e".repeat(64), lease),
-            Err(DhcpError::Injected(m)) if m == "nope"
+            Err(DhcpError::StopFailed { stderr, .. }) if stderr == "nope"
         ));
     }
 

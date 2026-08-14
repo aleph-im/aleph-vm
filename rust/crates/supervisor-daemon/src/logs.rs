@@ -45,11 +45,6 @@ pub enum LogsError {
 
     #[error("journalctl --follow has no stdout")]
     NoStdout,
-
-    /// A fabricated error for test `LogSource` fakes that need to report a
-    /// specific failure without shelling out to a real `journalctl`.
-    #[error("{0}")]
-    Injected(String),
 }
 
 /// Which stream a journal entry came from (by SYSLOG_IDENTIFIER match).
