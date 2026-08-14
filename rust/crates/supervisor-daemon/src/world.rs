@@ -217,6 +217,19 @@ impl VmType {
             VmType::VProgram => 0x4,
         }
     }
+
+    /// The vm type of a QEMU controller config: SEV-SNP measured boot is the
+    /// exclusive V-PROGRAM launch path (see [`VmType::VProgram`]), everything
+    /// else is a plain instance. Shared by [`VmEntry::vm_type`] and the
+    /// adoption path in [`build_world_view`], which classifies persisted
+    /// configs before any `VmEntry` exists, so the two can never diverge.
+    pub fn of_qemu(config: &QemuVmConfig) -> VmType {
+        if config.snp().is_some() {
+            VmType::VProgram
+        } else {
+            VmType::Instance
+        }
+    }
 }
 
 /// One adopted VM.
@@ -332,10 +345,8 @@ impl VmEntry {
     pub fn vm_type(&self) -> VmType {
         if self.is_program {
             VmType::Microvm
-        } else if self.config.snp().is_some() {
-            VmType::VProgram
         } else {
-            VmType::Instance
+            VmType::of_qemu(&self.config)
         }
     }
 }
@@ -626,11 +637,7 @@ pub fn build_world_view(
                             continue;
                         }
                     }
-                    let adopted_vm_type = if qemu.snp().is_some() {
-                        VmType::VProgram
-                    } else {
-                        VmType::Instance
-                    };
+                    let adopted_vm_type = VmType::of_qemu(&qemu);
                     let ipv6_result = match settings.ipv6_allocation_policy {
                         Ipv6AllocationPolicy::Static => ipv6_static_assignment(
                             &settings.ipv6_address_pool,
