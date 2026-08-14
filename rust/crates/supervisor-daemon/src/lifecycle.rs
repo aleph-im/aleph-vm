@@ -148,6 +148,72 @@ impl From<LifecycleError> for RpcError {
     }
 }
 
+/// Direct leaf-to-`RpcError` conversions for the callers below that return
+/// `Result<_, RpcError>` straight off, without composing through
+/// `LifecycleError` first: each wire text is the leaf's own `Display`,
+/// unchanged from the `.map_err(|error| RpcError::Internal(error.to_string()))`
+/// shim it replaces.
+impl From<UnitsError> for RpcError {
+    fn from(error: UnitsError) -> Self {
+        RpcError::Internal(error.to_string())
+    }
+}
+impl From<world::WorldError> for RpcError {
+    fn from(error: world::WorldError) -> Self {
+        RpcError::Internal(error.to_string())
+    }
+}
+impl From<crate::tap::TapError> for RpcError {
+    fn from(error: crate::tap::TapError) -> Self {
+        RpcError::Internal(error.to_string())
+    }
+}
+impl From<crate::ndppd::NdppdError> for RpcError {
+    fn from(error: crate::ndppd::NdppdError) -> Self {
+        RpcError::Internal(error.to_string())
+    }
+}
+impl From<dhcp::DhcpError> for RpcError {
+    fn from(error: dhcp::DhcpError) -> Self {
+        RpcError::Internal(error.to_string())
+    }
+}
+impl From<ports::PortsError> for RpcError {
+    fn from(error: ports::PortsError) -> Self {
+        RpcError::Internal(error.to_string())
+    }
+}
+impl From<controller_config::ConfigWriteError> for RpcError {
+    fn from(error: controller_config::ConfigWriteError) -> Self {
+        RpcError::Internal(error.to_string())
+    }
+}
+impl From<controller_config::ConfigParseError> for RpcError {
+    fn from(error: controller_config::ConfigParseError) -> Self {
+        RpcError::Internal(error.to_string())
+    }
+}
+impl From<crate::backup::BackupError> for RpcError {
+    fn from(error: crate::backup::BackupError) -> Self {
+        RpcError::Internal(error.to_string())
+    }
+}
+impl From<crate::qmp::QmpError> for RpcError {
+    fn from(error: crate::qmp::QmpError) -> Self {
+        RpcError::Internal(error.to_string())
+    }
+}
+impl From<crate::firecracker::FirecrackerError> for RpcError {
+    fn from(error: crate::firecracker::FirecrackerError) -> Self {
+        RpcError::Internal(error.to_string())
+    }
+}
+impl From<crate::error::DaemonError> for RpcError {
+    fn from(error: crate::error::DaemonError) -> Self {
+        RpcError::Internal(error.to_string())
+    }
+}
+
 /// Poll/sleep pacing; production values mirror the Python constants, tests
 /// shrink them to keep hermetic runs fast.
 #[derive(Debug, Clone)]
@@ -743,8 +809,7 @@ fn stop_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
         return Ok(());
     }
     let unit = entry.unit_name();
-    units::stop_and_disable(&*state.units, &unit)
-        .map_err(|error| RpcError::Internal(error.to_string()))?;
+    units::stop_and_disable(&*state.units, &unit)?;
     wait_for_controller_stopped(state, &unit);
     with_entry_mut(state, vm_id, |entry| entry.times.stopping_at_ns = now_ns());
 
@@ -787,8 +852,7 @@ fn stop_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
             nft_teardown_vm(state, entry.vm_index);
             std::thread::sleep(state.pacing.tap_delete_delay);
             if let Some(ndp) = &state.ndp {
-                ndp.delete_range(&device, true)
-                    .map_err(|error| RpcError::Internal(error.to_string()))?;
+                ndp.delete_range(&device, true)?;
             }
             // Only the device name matters for the deletion; the addresses go
             // with the link (a missing device is a warning inside the backend).
@@ -843,8 +907,7 @@ fn stop_program_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcErr
         &state.host.settings.supervisor_database,
         vm_id,
         &ports::sqlalchemy_utc_now(),
-    )
-    .map_err(|error| RpcError::Internal(error.to_string()))?;
+    )?;
 
     // removed_all_ports_redirection (udp then tcp, the Python
     // SUPPORTED_PROTOCOL_FOR_REDIRECT order).
@@ -883,8 +946,7 @@ fn stop_program_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcErr
             let tap = TapAssignment::new(entry.vm_index, ipv4.clone(), ipv6.clone());
             std::thread::sleep(state.pacing.tap_delete_delay);
             if let Some(ndp) = &state.ndp {
-                ndp.delete_range(&tap.device_name, true)
-                    .map_err(|error| RpcError::Internal(error.to_string()))?;
+                ndp.delete_range(&tap.device_name, true)?;
             }
             if let Err(error) = state.taps.delete_tap(&tap) {
                 tracing::warn!(vm_id, %error, "cannot delete the tap interface, continuing");
@@ -1007,13 +1069,9 @@ fn start_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> 
         let tap = tap_assignment(state, vm_id)?;
         let _net = net_lock(state);
         if !state.taps.interface_exists(&tap.device_name) {
-            state
-                .taps
-                .create_tap(&tap)
-                .map_err(|error| RpcError::Internal(error.to_string()))?;
+            state.taps.create_tap(&tap)?;
             if let Some(ndp) = &state.ndp {
-                ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)
-                    .map_err(|error| RpcError::Internal(error.to_string()))?;
+                ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
             }
         }
         // Even when the interface survived, the nftables rules may have
@@ -1030,27 +1088,19 @@ fn start_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> 
                 &tap,
                 state.host.dns_nameservers.as_deref().unwrap_or(&[]),
                 &dhcp_lease_dir(state),
-            )
-            .map_err(|error| RpcError::Internal(error.to_string()))?;
-            state
-                .dhcp
-                .start(&config)
-                .map_err(|error| RpcError::Internal(error.to_string()))?;
+            )?;
+            state.dhcp.start(&config)?;
         }
     }
 
     let unit = entry.unit_name();
-    state
-        .units
-        .restart(&unit)
-        .map_err(|error| RpcError::Internal(error.to_string()))?;
+    state.units.restart(&unit)?;
     wait_for_controller_ready(state, &unit)?;
     with_entry_mut(state, vm_id, |entry| entry.times.started_at_ns = now_ns());
 
     // stop() cleared the in-memory mappings; the store keeps them for
     // persistent VMs.
-    let forwards = ports::load_port_forwards(&state.host.settings.supervisor_database, vm_id)
-        .map_err(|error| RpcError::Internal(error.to_string()))?;
+    let forwards = ports::load_port_forwards(&state.host.settings.supervisor_database, vm_id)?;
     let has_forwards = !forwards.is_empty();
     with_entry_mut(state, vm_id, |entry| entry.port_forwards = forwards);
     if has_forwards {
@@ -1143,10 +1193,7 @@ pub fn reboot_vm(state: &DaemonState, vm_id: &str) -> Result<(VmEntry, bool), Rp
     let unit = entry.unit_name();
     // RestartUnit only queues a job: wait until the unit is confirmed
     // active so the reported status is truthful.
-    state
-        .units
-        .restart(&unit)
-        .map_err(|error| RpcError::Internal(error.to_string()))?;
+    state.units.restart(&unit)?;
     wait_for_controller_ready(state, &unit)?;
     with_entry_mut(state, vm_id, |entry| entry.times.started_at_ns = now_ns());
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
@@ -1391,10 +1438,7 @@ pub fn restore_from_image(
         }
     }
     if max_virtual_size_bytes != 0 {
-        let new_size = state
-            .disk_tools
-            .virtual_size(image)
-            .map_err(|error| RpcError::Internal(error.to_string()))?;
+        let new_size = state.disk_tools.virtual_size(image)?;
         if new_size > max_virtual_size_bytes {
             return Err(RpcError::InvalidBackend(format!(
                 "New rootfs virtual size ({new_size} bytes) exceeds the declared rootfs size \
@@ -1513,8 +1557,7 @@ pub fn delete_vm(
         );
     }
     remove_numa_dropin(state, vm_id);
-    controller_config::remove_controller_configuration(root, vm_id)
-        .map_err(|error| RpcError::Internal(error.to_string()))?;
+    controller_config::remove_controller_configuration(root, vm_id)?;
     Ok(())
 }
 
@@ -1565,8 +1608,7 @@ fn delete_tracked_vm(
     remove_numa_dropin(state, vm_id);
     // Delete releases the definition: the controller config and the
     // cloud-init seed go too (stop keeps them for reattach).
-    controller_config::remove_controller_configuration(root, vm_id)
-        .map_err(|error| RpcError::Internal(error.to_string()))?;
+    controller_config::remove_controller_configuration(root, vm_id)?;
     // A delete is final unless the caller says otherwise; delete+recreate
     // cycles pass keep_port_mappings, wipe overrides it.
     if wipe || !keep_port_mappings {
@@ -1574,8 +1616,7 @@ fn delete_tracked_vm(
             &state.host.settings.supervisor_database,
             vm_id,
             &ports::sqlalchemy_utc_now(),
-        )
-        .map_err(|error| RpcError::Internal(error.to_string()))?;
+        )?;
     }
     if wipe {
         // Mirrors operate_erase: writable data volumes go, the rootfs stays.
@@ -1652,13 +1693,10 @@ fn update_port_redirects(
             None => {
                 // A new vm_port: allocate a host port, then add the rules
                 // for the active protocols.
-                let host_port = state
-                    .port_cursor
-                    .fast_get_available_host_port(
-                        &state.host.settings.supervisor_database,
-                        &*state.nft,
-                    )
-                    .map_err(|error| RpcError::Internal(error.to_string()))?;
+                let host_port = state.port_cursor.fast_get_available_host_port(
+                    &state.host.settings.supervisor_database,
+                    &*state.nft,
+                )?;
                 // SUPPORTED_PROTOCOL_FOR_REDIRECT order: udp, then tcp.
                 for (active, protocol) in [(udp, "udp"), (tcp, "tcp")] {
                     if active {
@@ -1717,8 +1755,7 @@ fn update_port_redirects(
             vm_id,
             &forwards,
             &ports::sqlalchemy_utc_now(),
-        )
-        .map_err(|error| RpcError::Internal(error.to_string()))?;
+        )?;
     }
     with_entry_mut(state, vm_id, |entry| entry.port_forwards = forwards);
     Ok(())
@@ -1885,8 +1922,7 @@ fn check_memory_backstop(state: &DaemonState, required_memory_mib: u64) -> Resul
         .values()
         .map(|entry| entry.config.mem_size_mb.count())
         .sum();
-    let physical =
-        crate::host::memory_total_mib().map_err(|error| RpcError::Internal(error.to_string()))?;
+    let physical = crate::host::memory_total_mib()?;
     let cap = physical.saturating_sub(state.host.settings.host_memory_reserved_mib);
     // saturating_add: a hostile memory_mib request must fail the backstop,
     // not overflow the sum (Python ints are unbounded).
@@ -2411,8 +2447,7 @@ fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, 
     let path = controller_config::controller_config_path(root, vm_id);
     let contents = std::fs::read_to_string(&path)
         .map_err(|error| RpcError::Internal(format!("cannot read {}: {error}", path.display())))?;
-    let config = parse_controller_config(&contents)
-        .map_err(|error| RpcError::Internal(error.to_string()))?;
+    let config = parse_controller_config(&contents)?;
     let qemu = match config.vm {
         VmConfiguration::Qemu(qemu) => *qemu,
         VmConfiguration::Firecracker => {
@@ -2448,8 +2483,7 @@ fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, 
     );
 
     let gpus = world::rebuild_attached_gpus(&qemu.gpus, &state.host.gpus);
-    let port_forwards = ports::load_port_forwards(&state.host.settings.supervisor_database, vm_id)
-        .map_err(|error| RpcError::Internal(error.to_string()))?;
+    let port_forwards = ports::load_port_forwards(&state.host.settings.supervisor_database, vm_id)?;
     // Rebuild the NUMA ledger entry for this live-but-untracked controller
     // from its effective AllowedCPUs drop-in (increment C1); unpinned when
     // no drop-in maps to a node. This registers the VM exactly once: it fires
@@ -2740,9 +2774,7 @@ fn create_vm_inner(
                 (node, stale.config.vcpu_count, memory_mb, hugepage_size)
             })
         });
-        let vm_index = world
-            .unique_vm_index(state.host.settings.start_id_index)
-            .map_err(|error| RpcError::Internal(error.to_string()))?;
+        let vm_index = world.unique_vm_index(state.host.settings.start_id_index)?;
         let assignment = if state.host.settings.allow_vm_networking {
             let mut ordinal = world.ipv6_dynamic_ordinal;
             let pair = world::derive_tap_assignment(
@@ -2751,8 +2783,7 @@ fn create_vm_inner(
                 &vm_id,
                 VmType::Instance,
                 &mut ordinal,
-            )
-            .map_err(|error| RpcError::Internal(error.to_string()))?;
+            )?;
             world.ipv6_dynamic_ordinal = ordinal;
             Some(pair)
         } else {
@@ -2761,8 +2792,7 @@ fn create_vm_inner(
 
         let interface_name = assignment.as_ref().map(|_| format!("vmtap{vm_index}"));
         let written = build_written_config(state, &request, vm_index, interface_name)?;
-        let parsed = parse_controller_config(&written.to_json())
-            .map_err(|error| RpcError::Internal(error.to_string()))?;
+        let parsed = parse_controller_config(&written.to_json())?;
         let VmConfiguration::Qemu(qemu) = parsed.vm else {
             return Err(RpcError::Internal(
                 "the written config did not round-trip as QEMU".to_string(),
@@ -3100,9 +3130,7 @@ fn create_program_vm(
     let (vm_index, assignment) = {
         let mut world = state.world.blocking_write();
         let stale_ordinal = world.entries.remove(&vm_id).map(|stale| stale.ordinal);
-        let vm_index = world
-            .unique_vm_index(state.host.settings.start_id_index)
-            .map_err(|error| RpcError::Internal(error.to_string()))?;
+        let vm_index = world.unique_vm_index(state.host.settings.start_id_index)?;
         let assignment = if state.host.settings.allow_vm_networking && internet_access {
             let mut ordinal = world.ipv6_dynamic_ordinal;
             let pair = world::derive_tap_assignment(
@@ -3111,8 +3139,7 @@ fn create_program_vm(
                 &vm_id,
                 VmType::Microvm,
                 &mut ordinal,
-            )
-            .map_err(|error| RpcError::Internal(error.to_string()))?;
+            )?;
             world.ipv6_dynamic_ordinal = ordinal;
             Some(pair)
         } else {
@@ -3165,21 +3192,13 @@ fn create_program_vm(
                 if state.taps.interface_exists(&tap.device_name) {
                     std::thread::sleep(state.pacing.tap_delete_delay);
                     if let Some(ndp) = &state.ndp {
-                        ndp.delete_range(&tap.device_name, true)
-                            .map_err(|error| RpcError::Internal(error.to_string()))?;
+                        ndp.delete_range(&tap.device_name, true)?;
                     }
-                    state
-                        .taps
-                        .delete_tap(tap)
-                        .map_err(|error| RpcError::Internal(error.to_string()))?;
+                    state.taps.delete_tap(tap)?;
                 }
-                state
-                    .taps
-                    .create_tap(tap)
-                    .map_err(|error| RpcError::Internal(error.to_string()))?;
+                state.taps.create_tap(tap)?;
                 if let Some(ndp) = &state.ndp {
-                    ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)
-                        .map_err(|error| RpcError::Internal(error.to_string()))?;
+                    ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
                 }
                 nft_setup_vm(state, vm_index, &tap.device_name)?;
             }
@@ -3290,8 +3309,7 @@ pub fn run_program_code(
     // the VM (invalid msgpack aborts INTERNAL even for unknown vm_ids); on
     // success the original bytes are still forwarded untouched (the
     // pass-through of ledger entry 38 is shape-checked, never re-encoded).
-    crate::firecracker::validate_msgpack(scope_msgpack)
-        .map_err(|error| RpcError::Internal(error.to_string()))?;
+    crate::firecracker::validate_msgpack(scope_msgpack)?;
     // The vm_lock stands in for the Python `becomes_ready` wait: CreateVm
     // holds it through the whole boot, so acquiring it means the boot
     // finished (or failed and removed the entry). Released before the
