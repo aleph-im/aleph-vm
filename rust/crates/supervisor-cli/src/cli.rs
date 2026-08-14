@@ -21,6 +21,11 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub json: bool,
 
+    /// Seconds before a call to a wedged supervisor is abandoned (0 waits
+    /// forever). Streaming commands (logs -f, events) are never cut short.
+    #[arg(long, global = true, default_value_t = 10)]
+    pub timeout: u64,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -49,6 +54,14 @@ pub enum Command {
     /// Port forwards.
     #[command(subcommand)]
     Ports(PortsCommand),
+}
+
+impl Command {
+    /// Long-lived server streams that must outlive any per-request
+    /// deadline; main.rs skips the request timeout for these.
+    pub fn is_streaming(&self) -> bool {
+        matches!(self, Command::Events | Command::Logs { follow: true, .. })
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -110,5 +123,23 @@ mod tests {
         let error = Cli::try_parse_from(["alephctl", "logs", "vm-1", "--follow", "--tail", "10"])
             .unwrap_err();
         assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn timeout_defaults_to_ten_seconds() {
+        let cli = Cli::try_parse_from(["alephctl", "health"]).unwrap();
+        assert_eq!(cli.timeout, 10);
+        let cli = Cli::try_parse_from(["alephctl", "--timeout", "0", "health"]).unwrap();
+        assert_eq!(cli.timeout, 0);
+    }
+
+    #[test]
+    fn only_follow_and_events_are_streaming() {
+        let streaming = |args: &[&str]| Cli::try_parse_from(args).unwrap().command.is_streaming();
+        assert!(streaming(&["alephctl", "events"]));
+        assert!(streaming(&["alephctl", "logs", "vm-1", "--follow"]));
+        assert!(!streaming(&["alephctl", "logs", "vm-1"]));
+        assert!(!streaming(&["alephctl", "logs", "vm-1", "--tail", "5"]));
+        assert!(!streaming(&["alephctl", "health"]));
     }
 }
