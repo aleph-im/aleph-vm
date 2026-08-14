@@ -229,7 +229,7 @@ fn run(cli: &Cli) -> Result<(), DaemonError> {
             tokio::task::spawn_blocking(move || {
                 if let Err(error) = lifecycle::initialize_nftables(&boot_state) {
                     // The Python execute edge only logs nft failures too.
-                    tracing::error!(error, "failed to initialize nftables");
+                    tracing::error!(%error, "failed to initialize nftables");
                 }
                 lifecycle::reconcile_boot(&boot_state);
             })
