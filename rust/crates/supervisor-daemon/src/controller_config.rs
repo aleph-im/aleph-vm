@@ -39,6 +39,24 @@ use serde::Deserialize;
 #[error("{0}")]
 pub struct ConfigParseError(pub String);
 
+/// Failures persisting the controller configuration to disk.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigWriteError {
+    #[error("cannot create a temp config file: {source}")]
+    TempCreate { source: std::io::Error },
+    #[error("cannot write the controller config: {source}")]
+    Write { source: std::io::Error },
+    #[error("cannot chmod the controller config: {source}")]
+    Chmod { source: std::io::Error },
+    #[error("cannot move the controller config in place: {source}")]
+    Persist { source: tempfile::PersistError },
+    #[error("cannot remove the VM artifact {path}: {source}")]
+    RemoveArtifact {
+        path: std::path::PathBuf,
+        source: std::io::Error,
+    },
+}
+
 /// `ControllerSettings`: the node-settings slice a controller reads.
 /// Defaults mirror conf.py so keys absent from an old dump fall back
 /// instead of failing.
@@ -501,7 +519,7 @@ pub fn controller_config_path(execution_root: &std::path::Path, vm_hash: &str) -
 pub fn save_controller_config(
     execution_root: &std::path::Path,
     config: &WrittenControllerConfig,
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf, ConfigWriteError> {
     use std::io::Write;
     let path = controller_config_path(execution_root, &config.vm_hash);
     let file_name = path
@@ -512,19 +530,19 @@ pub fn save_controller_config(
         .prefix(&format!(".{file_name}."))
         .suffix(".tmp")
         .tempfile_in(execution_root)
-        .map_err(|error| format!("cannot create a temp config file: {error}"))?;
+        .map_err(|source| ConfigWriteError::TempCreate { source })?;
     temp.write_all(config.to_json().as_bytes())
         .and_then(|_| temp.flush())
         .and_then(|_| temp.as_file().sync_all())
-        .map_err(|error| format!("cannot write the controller config: {error}"))?;
+        .map_err(|source| ConfigWriteError::Write { source })?;
     // Python chmods 0644 before the rename (mkstemp creates 0600).
     std::fs::set_permissions(temp.path(), {
         use std::os::unix::fs::PermissionsExt;
         std::fs::Permissions::from_mode(0o644)
     })
-    .map_err(|error| format!("cannot chmod the controller config: {error}"))?;
+    .map_err(|source| ConfigWriteError::Chmod { source })?;
     temp.persist(&path)
-        .map_err(|error| format!("cannot move the controller config in place: {error}"))?;
+        .map_err(|source| ConfigWriteError::Persist { source })?;
     Ok(path)
 }
 
@@ -536,7 +554,7 @@ pub fn save_controller_config(
 pub fn remove_controller_configuration(
     execution_root: &std::path::Path,
     vm_hash: &str,
-) -> Result<(), String> {
+) -> Result<(), ConfigWriteError> {
     let mut paths = vec![
         controller_config_path(execution_root, vm_hash),
         execution_root.join(format!("cloud-init-{vm_hash}.img")),
@@ -548,10 +566,10 @@ pub fn remove_controller_configuration(
         if let Err(error) = std::fs::remove_file(&path)
             && error.kind() != std::io::ErrorKind::NotFound
         {
-            return Err(format!(
-                "cannot remove the VM artifact {}: {error}",
-                path.display()
-            ));
+            return Err(ConfigWriteError::RemoveArtifact {
+                path: path.clone(),
+                source: error,
+            });
         }
     }
     Ok(())
@@ -926,5 +944,50 @@ mod tests {
         std::fs::write(tmp.path().join("ab-qmp.socket"), b"dead").unwrap();
         remove_controller_configuration(tmp.path(), hash).unwrap();
         assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn config_write_error_messages_are_correct() {
+        use std::io;
+
+        let io_error = io::Error::new(io::ErrorKind::PermissionDenied, "no perms");
+        let path = PathBuf::from("/tmp/test");
+
+        let temp_create = ConfigWriteError::TempCreate {
+            source: io_error.kind().into(),
+        };
+        assert_eq!(
+            temp_create.to_string(),
+            format!("cannot create a temp config file: {}", io_error.kind())
+        );
+
+        let write = ConfigWriteError::Write {
+            source: io_error.kind().into(),
+        };
+        assert_eq!(
+            write.to_string(),
+            format!("cannot write the controller config: {}", io_error.kind())
+        );
+
+        let chmod = ConfigWriteError::Chmod {
+            source: io_error.kind().into(),
+        };
+        assert_eq!(
+            chmod.to_string(),
+            format!("cannot chmod the controller config: {}", io_error.kind())
+        );
+
+        let remove_artifact = ConfigWriteError::RemoveArtifact {
+            path: path.clone(),
+            source: io_error.kind().into(),
+        };
+        assert_eq!(
+            remove_artifact.to_string(),
+            format!(
+                "cannot remove the VM artifact {}: {}",
+                path.display(),
+                io_error.kind()
+            )
+        );
     }
 }
