@@ -1,6 +1,6 @@
 # Networking
 
-> Verified against: 1153f0bf (2026-08-14)
+> Verified against: b2b31381 (2026-08-14)
 
 ## What this covers
 
@@ -119,12 +119,15 @@ chains named by `vm_index`, `{prefix}-vm-nat-{vm_index}` (jumped from
 `iifname == vmtap{N}` and `oifname == <uplink>`, and
 `{prefix}-vm-filter-{vm_index}` (jumped from `{prefix}-supervisor-filter`,
 and separately from the IPv6 supervisor-filter chain when IPv6 forwarding
-is on) holding the matching forward-accept rule for both families. Port
-redirects add two more rules per (host_port, vm_port, protocol): a DNAT
-rule in `{prefix}-supervisor-prerouting` matched on uplink iifname and
-destination port, and a forward-accept rule in the VM's own filter chain
-matched on tap iifname and the *guest*-side port. DNAT is IPv4-only; there
-is no IPv6 port-redirect path since IPv6 addresses are directly reachable.
+is on) holding the matching forward-accept rule for both families, matched
+on tap iifname and unconditional otherwise (`forward_rule_entities`). Port
+redirects (`port_redirect_entities`) add two more rules per (host_port,
+vm_port, protocol), both matched on **uplink** iifname rather than the
+tap's: a DNAT rule in `{prefix}-supervisor-prerouting` matched on uplink
+iifname and destination port, and a second forward-accept rule (distinct
+from the general per-VM one above) in the VM's own filter chain matched on
+uplink iifname and the *guest*-side port. DNAT is IPv4-only; there is no
+IPv6 port-redirect path since IPv6 addresses are directly reachable.
 
 Chain and rule removal (`remove_chain_commands`, used by `DeleteVm`/`StopVm`
 teardown and by `RecreateNetwork`'s flush) deletes every jump rule pointing
@@ -306,7 +309,7 @@ exactly.
   (`rust/crates/supervisor-daemon/src/lifecycle.rs`, `networking_enabled`).
 - A forwarding sysctl is only written when its current value parses as `0`;
   a host already configured for forwarding-with-RA-acceptance (`2`) is left
-  alone (`rust/crates/supervisor-daemon/src/lifecycle.rs`,
+  alone (`rust/crates/supervisor-daemon/src/main.rs`,
   `enable_forwarding_sysctl`).
 
 ## Pointers into code
@@ -330,11 +333,10 @@ exactly.
   host-IPv4 discovery, DNS nameserver resolution feeding DHCP option 6.
 - `rust/crates/supervisor-daemon/src/lifecycle.rs`: `net_lock`,
   `networking_enabled`, `nft_setup_vm`, `recreate_port_redirect_rules`,
-  `recreate_network`, `enable_forwarding_sysctls`, and every lifecycle RPC's
-  networking side effects.
+  `recreate_network`, and every lifecycle RPC's networking side effects.
 - `rust/crates/supervisor-daemon/src/main.rs`: startup ordering (schema,
   legacy migration, sysctls, NDP proxy construction, base ruleset, boot
-  reconcile).
+  reconcile), `enable_forwarding_sysctls`/`enable_forwarding_sysctl`.
 - `src/aleph/vm/agent/run.py`: `resolve_port_forwards`,
   `reconcile_port_forwards`, the agent-side port-forwarding policy.
 - `src/aleph/vm/agent/tasks.py`: `_handle_port_forwarding_aggregate`, the
