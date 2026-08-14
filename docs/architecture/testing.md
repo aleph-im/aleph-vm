@@ -25,8 +25,13 @@ test gate).
    `rust/crates/supervisor-daemon/tests/grpc.rs` and `read_only.rs`,
    `rust/crates/supervisor-cli/tests/cli.rs`, and
    `rust/crates/supervisor-proto/tests/json.rs`. These run with `cargo
-   test --locked` from `rust/` and need no VM hardware, no root, and no
-   Python.
+   test --locked` from `rust/` and need no VM boot, no root, and no Python
+   interpreter, with one gated exception:
+   `rust/crates/supervisor-daemon/src/checks.rs`'s
+   `the_local_toolchain_passes_when_gated_paths_exist` additionally needs
+   `cloud-localds`, `qemu-system-x86_64` and `setfacl` on `PATH` whenever
+   `/dev/kvm` exists (matching the toolchain `test-rust.yml` installs), so
+   it can fail on a KVM-enabled dev machine that lacks those tools.
 
 2. **Python conformance suite** (`tests/conformance/`). This is the parity
    oracle in test form: it builds the real `aleph-vm-supervisor` binary,
@@ -66,13 +71,19 @@ test gate).
    (`.github/workflows/build-deb-package-and-integration-tests.yml`). This
    is the packaging-and-platform-compatibility gate, distinct from both
    layers above: it builds the `.deb` for debian-12, debian-13,
-   ubuntu-22.04 and ubuntu-24.04, builds the Firecracker rootfs and an
-   example squashfs volume, then provisions an ephemeral DigitalOcean
-   droplet per OS, installs the built package for real (not the checked-out
-   source tree), and asserts the installed systemd units come up
-   (`aleph-vm-supervisor`, `aleph-vm-agent`), the HTTP API answers, and
-   `sevctl` is present. It exists to catch packaging and dependency drift
-   across target platforms that an in-repo checkout can't exercise.
+   ubuntu-22.04 and ubuntu-24.04, and builds two squashfs volumes (the
+   Firecracker rootfs and an example venv volume). It then provisions an
+   ephemeral DigitalOcean droplet per OS and installs the built package for
+   real (not the checked-out source tree); the droplet leg itself only
+   covers three of the four built OSes (debian-12 is skipped there: a
+   workflow comment notes DigitalOcean removed the debian-12-x64 image
+   after Debian 12 reached end of standard support). It waits for
+   `systemctl is-active --quiet aleph-vm-supervisor` plus the supervisor's
+   port 4020 to be listening, then curls the `/about/usage/system` HTTP
+   endpoint (served by the agent, per the workflow's own comment) as an
+   indirect check that the agent is up too, and confirms `sevctl` is
+   present. It exists to catch packaging and dependency drift across
+   target platforms that an in-repo checkout can't exercise.
 
 5. **CodeQL and shellcheck.** `.github/workflows/codeql-analysis.yml` runs
    security scanning on Python on push/PR to `main`/`dev` plus a weekly
@@ -87,11 +98,16 @@ test gate).
 - `.github/workflows/test-using-pytest.yml` (`tests-python` job) runs style
   (ruff/black/isort), mypy, the agent/supervisor/contract import-boundary
   check (import-linter), the proto-bindings-up-to-date check
-  (`scripts/check_proto_clean.sh`), and the Python unit test suite
-  (`tests/supervisor/`) under coverage, uploaded to Codecov. Its
-  `tests-integration` job runs `tests/integration/` twice, once per
-  `supervisor-impl` matrix leg (`python`, `rust`), building the Rust daemon
-  only for the rust leg.
+  (`scripts/check_proto_clean.sh`), and `hatch run testing:cov`
+  (`pytest --cov`) over pytest's configured `testpaths`, which is the whole
+  `tests/` tree: `tests/supervisor/`, `tests/migration/`, `tests/network/`,
+  `tests/vprogram/` and `tests/test_controller_launcher.py`, uploaded to
+  Codecov. `tests/integration/` and `tests/conformance/` are collected in
+  this same run but skip themselves via their own opt-in gates (`AVM_ITEST`,
+  `ALEPH_VM_CONFORMANCE`), not by path exclusion. The
+  `tests-integration` job separately runs `tests/integration/` for real,
+  twice, once per `supervisor-impl` matrix leg (`python`, `rust`), building
+  the Rust daemon only for the rust leg.
 - `.github/workflows/test-rust.yml` is path-filtered to changes under
   `rust/`, `proto/`, `tests/conformance/` and the Python modules that feed
   the Rust port, so pure-Python PRs never pay for it. In one job it runs `cargo
@@ -102,8 +118,10 @@ test gate).
 - `.github/workflows/build-deb-package-and-integration-tests.yml` is the
   droplet CI described above; it runs on push/PR to `main`/`dev` only (no
   `od/**` stacked-branch trigger).
-- `.github/workflows/test-build-examples.yml` builds the example package
-  and volumes to catch packaging regressions in the example flow.
+- `.github/workflows/test-build-examples.yml` runs `hatch build` (the
+  project's own package build) and then builds a squashfs volume from the
+  `examples/example_pip` requirements, to catch packaging regressions in
+  the pip-install example flow.
 - `.github/workflows/codeql-analysis.yml` and the `code-quality-shell` job
   are the static-analysis and shell-lint gates described above.
 
@@ -140,11 +158,14 @@ For contributors who do run the Python suites locally, `Justfile` documents
 the supported path: `just install-system-deps` installs the apt `python3-*`
 C-extension bindings (nftables, dbus, systemd) plus their dev headers, and
 `just setup-venv` creates a `--system-site-packages` virtualenv so those
-bindings are visible without vendoring stubs. `just test`, `just itest`
-(unprivileged, Firecracker-only) and `just itest-root` (full set, needs
-root) wire up the cache/execution roots the suites expect
-(`ALEPH_VM_CACHE_ROOT`, `ALEPH_VM_EXECUTION_ROOT`) to writable directories
-under the repo rather than system paths. On a dev machine whose Python
+bindings are visible without vendoring stubs. `just test` points
+`ALEPH_VM_CACHE_ROOT`/`ALEPH_VM_EXECUTION_ROOT` at writable directories
+under the repo rather than system paths. `just itest` (unprivileged,
+Firecracker-only) and `just itest-root` (full set, needs root) instead set
+`AVM_ITEST=1` and, for the root recipe, `sudo --preserve-env` the
+`AVM_ITEST_FC_KERNEL`/`AVM_ITEST_FC_RUNTIME`/`AVM_ITEST_QEMU_IMAGE`
+artifact-path variables through to pytest; neither recipe touches the
+cache/execution roots. On a dev machine whose Python
 version predates the pinned apt packages (so `--system-site-packages`
 doesn't supply the C modules), the fallback is a `PYTHONPATH` that includes
 the repo's `src/` plus local stubs for `systemd`/`nftables`/`dbus`; this is
@@ -229,8 +250,8 @@ tests.
   conformance suite against the Rust daemon.
 - `.github/workflows/build-deb-package-and-integration-tests.yml`:
   package builds and droplet CI.
-- `.github/workflows/test-build-examples.yml`: example package/volume
-  build checks.
+- `.github/workflows/test-build-examples.yml`: project build plus the
+  example-pip squashfs volume build check.
 - `.github/workflows/codeql-analysis.yml`: CodeQL security scanning.
 - `Justfile`: the supported local Python dev/test workflow.
 
