@@ -54,6 +54,9 @@ pub enum DaemonError {
     Checks(#[from] crate::checks::ChecksError),
 
     #[error(transparent)]
+    Dns(#[from] crate::net::DnsError),
+
+    #[error(transparent)]
     Io(#[from] std::io::Error),
 
     #[error(transparent)]
