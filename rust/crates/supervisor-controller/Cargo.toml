@@ -11,6 +11,7 @@ name = "aleph-vm-controller"
 path = "src/main.rs"
 
 [dependencies]
+anyhow.workspace = true
 clap.workspace = true
 memsizes.workspace = true
 serde.workspace = true
