@@ -293,11 +293,13 @@ seed plus the dead monitor/QMP/QGA control sockets
 backup registry entry so no stale job or disk lock outlives it. Persisted
 port-forward mappings are deleted unless the caller passes
 `keep_port_mappings=true` *and* `wipe` is false; `wipe=true` always deletes
-them even if the caller asked to keep them. `keep_port_mappings=true` exists
-for exactly two callers that redeploy the same `vm_id` right after deleting
-it: the agent's update-watcher reap (a message update is a delete+recreate,
-not a real deallocation) and reboot's delete+recreate cycle for ephemeral
-programs.
+them even if the caller asked to keep them. `keep_port_mappings=true` is used by callers that redeploy the same `vm_id`
+right after deleting it: the agent's update-watcher reap (a message update
+is a delete+recreate, not a real deallocation,
+`src/aleph/vm/agent/update_watcher.py`) and `start_persistent_vm`'s crash
+recovery, which deletes and recreates a persistent VM found in the terminal
+`FAILED` state so the recreated VM reloads the same host ports
+(`src/aleph/vm/agent/run.py`).
 
 A `DeleteVm` against a VM the daemon never adopted (a "hidden" VM left over
 from a failed boot-time reattach) is a distinct code path: it stops and
