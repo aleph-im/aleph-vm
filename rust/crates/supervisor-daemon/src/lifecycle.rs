@@ -691,7 +691,7 @@ fn stop_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
                     .dhcp
                     .stop(vm_id, &dhcp::lease_file_path(&dhcp_lease_dir(state), vm_id))
             {
-                tracing::warn!(vm_id, dhcp_error, "cannot stop the DHCP server, continuing");
+                tracing::warn!(vm_id, %dhcp_error, "cannot stop the DHCP server, continuing");
             }
             nft_teardown_vm(state, entry.vm_index);
             std::thread::sleep(state.pacing.tap_delete_delay);
@@ -944,8 +944,11 @@ fn start_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> 
                 state.host.dns_nameservers.as_deref().unwrap_or(&[]),
                 &dhcp_lease_dir(state),
             )
-            .map_err(RpcError::Internal)?;
-            state.dhcp.start(&config).map_err(RpcError::Internal)?;
+            .map_err(|error| RpcError::Internal(error.to_string()))?;
+            state
+                .dhcp
+                .start(&config)
+                .map_err(|error| RpcError::Internal(error.to_string()))?;
         }
     }
 
@@ -1408,7 +1411,7 @@ pub fn delete_vm(
     {
         tracing::warn!(
             vm_id,
-            dhcp_error,
+            %dhcp_error,
             "cannot stop the DHCP server for a discarded SNP VM, continuing"
         );
     }
@@ -2815,8 +2818,12 @@ fn create_vm_inner(
                     tap,
                     state.host.dns_nameservers.as_deref().unwrap_or(&[]),
                     &dhcp_lease_dir(state),
-                )?;
-                state.dhcp.start(&config)?;
+                )
+                .map_err(|error| error.to_string())?;
+                state
+                    .dhcp
+                    .start(&config)
+                    .map_err(|error| error.to_string())?;
             }
         }
 
@@ -2904,7 +2911,7 @@ fn create_vm_inner(
                     &dhcp::lease_file_path(&dhcp_lease_dir(state), &vm_id),
                 )
             {
-                tracing::warn!(dhcp_error, "failed to stop the DHCP server during cleanup");
+                tracing::warn!(%dhcp_error, "failed to stop the DHCP server during cleanup");
             }
             nft_teardown_vm(state, vm_index);
             std::thread::sleep(state.pacing.tap_delete_delay);
