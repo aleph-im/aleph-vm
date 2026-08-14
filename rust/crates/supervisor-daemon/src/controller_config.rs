@@ -567,7 +567,7 @@ pub fn remove_controller_configuration(
             && error.kind() != std::io::ErrorKind::NotFound
         {
             return Err(ConfigWriteError::RemoveArtifact {
-                path: path.clone(),
+                path,
                 source: error,
             });
         }
