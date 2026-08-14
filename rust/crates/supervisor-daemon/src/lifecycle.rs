@@ -26,41 +26,125 @@ use crate::controller_config::{
 use crate::firecracker::{ProgramBootError, ProgramBootRequest};
 use crate::service::DaemonState;
 use crate::tap::TapAssignment;
-#[cfg(test)]
-use crate::units::UnitsError;
-use crate::units::{self, controller_unit_name};
+use crate::units::{self, UnitsError, controller_unit_name};
 use crate::world::{self, AttachedGpu, ProgramEntry, VmEntry, VmTimes, VmType, now_ns};
 use crate::{checks, cloudinit, dhcp, nft, ports};
 
 /// The closed error vocabulary slice these RPCs can produce, mapped in
 /// service.rs onto the same gRPC status codes and ErrorDetail trailers as
 /// src/aleph/vm/supervisor/grpc_server.py.
-#[derive(Debug)]
+///
+/// Every payload IS the message that reaches the client, so `Display` is
+/// `{0}` verbatim on every variant: `MicroVmInit(String::new())` renders
+/// empty, matching the Python MicroVMFailedInitError whose `str()` is empty.
+#[derive(Debug, thiserror::Error)]
 pub enum RpcError {
     /// VmNotFoundError: message is the vm_id itself.
+    #[error("{0}")]
     NotFound(String),
     /// VmAlreadyExistsError.
+    #[error("{0}")]
     AlreadyExists(String),
     /// InsufficientResourcesError.
+    #[error("{0}")]
     InsufficientResources(String),
     /// InvalidBackendError.
+    #[error("{0}")]
     InvalidBackend(String),
     /// BackupNotFoundError: message is the backup_id itself (NOT_FOUND,
     /// trailer code BACKUP_NOT_FOUND).
+    #[error("{0}")]
     BackupNotFound(String),
     /// MicroVMInitError: the guest never signalled ready (INTERNAL,
     /// trailer code MICROVM_INIT_FAILED; the Python exception text is
     /// empty).
+    #[error("{0}")]
     MicroVmInit(String),
     /// NotImplementedSupervisorError (UNIMPLEMENTED, trailer code INTERNAL).
+    #[error("{0}")]
     Unimplemented(String),
     /// InternalSupervisorError, the translating_errors catch-all.
+    #[error("{0}")]
     Internal(String),
 }
 
-impl From<String> for RpcError {
-    fn from(message: String) -> Self {
-        RpcError::Internal(message)
+/// Everything the lifecycle helpers below can fail with: the handful of
+/// messages this module owns, plus the typed errors of the modules it
+/// drives, composed transparently so the text a leaf produces reaches the
+/// wire byte-for-byte (it used to travel as a `String` through
+/// `.map_err(|error| error.to_string())`).
+///
+/// Only `RpcError` crosses into `service.rs`; a `LifecycleError` becomes
+/// `RpcError::Internal(error.to_string())`, exactly what the removed
+/// `impl From<String> for RpcError` did.
+#[derive(Debug, thiserror::Error)]
+pub enum LifecycleError {
+    /// A unit that samples "active" and then leaves it again right away.
+    #[error("{unit} controller service went '{state}' right after starting (crash loop?)")]
+    CrashLoop { unit: String, state: String },
+
+    #[error("{unit} controller service entered 'failed' state")]
+    UnitFailed { unit: String },
+
+    #[error("{unit} controller service did not become active after {attempts} attempts")]
+    NotActive { unit: String, attempts: u32 },
+
+    /// A vm_id that vanished from the world between two lookups.
+    #[error("no entry for {vm_id}")]
+    NoEntry { vm_id: String },
+
+    #[error("cannot delete the rootfs {path}: {source}")]
+    EraseRootfs {
+        path: String,
+        source: std::io::Error,
+    },
+
+    #[error("cannot delete the volume {path}: {source}")]
+    EraseVolume {
+        path: String,
+        source: std::io::Error,
+    },
+
+    /// The create path's context wrapper around a failed boot wait.
+    #[error("controller failed to start: {source}")]
+    ControllerStart { source: Box<LifecycleError> },
+
+    /// A panic caught inside the create boot closure.
+    #[error("CreateVm panicked: {0}")]
+    Panic(String),
+
+    /// The NUMA drop-in writer is anyhow-based; `{0:#}` keeps its whole
+    /// context chain on one line, like the `format!("{error:#}")` it replaces.
+    #[error("{0:#}")]
+    Numa(anyhow::Error),
+
+    #[error(transparent)]
+    Units(#[from] UnitsError),
+    #[error(transparent)]
+    World(#[from] world::WorldError),
+    #[error(transparent)]
+    Nft(#[from] nft::NftError),
+    #[error(transparent)]
+    BaseChain(#[from] nft::NoBaseChainFound),
+    #[error(transparent)]
+    Tap(#[from] crate::tap::TapError),
+    #[error(transparent)]
+    Ndppd(#[from] crate::ndppd::NdppdError),
+    #[error(transparent)]
+    Dhcp(#[from] dhcp::DhcpError),
+    #[error(transparent)]
+    Ports(#[from] ports::PortsError),
+    #[error(transparent)]
+    CloudInit(#[from] cloudinit::CloudInitError),
+    #[error(transparent)]
+    ControllerConfig(#[from] controller_config::ConfigWriteError),
+    #[error(transparent)]
+    Backup(#[from] crate::backup::BackupError),
+}
+
+impl From<LifecycleError> for RpcError {
+    fn from(error: LifecycleError) -> Self {
+        RpcError::Internal(error.to_string())
     }
 }
 
@@ -203,16 +287,16 @@ fn apply_numa_dropin(
     state: &DaemonState,
     vm_id: &str,
     placement: &crate::numa::NumaPlacement,
-) -> Result<(), String> {
+) -> Result<(), LifecycleError> {
     crate::numa::write_cpuset_dropin(
         &state.host.settings.systemd_unit_dir,
         vm_id,
         &placement.cpuset,
     )
-    .map_err(|error| format!("{error:#}"))?;
+    .map_err(LifecycleError::Numa)?;
     // A freshly written drop-in only applies after a reload if the unit was
     // already loaded; harmless on first load.
-    state.units.reload().map_err(|error| error.to_string())?;
+    state.units.reload()?;
     tracing::info!(
         vm_id,
         node = placement.node,
@@ -428,8 +512,10 @@ fn chain_prefix(state: &DaemonState) -> &str {
 
 /// The tap assignment of an entry; derives (and stores) it when absent
 /// (adopted-stopped entries have none until StartVm).
-fn tap_assignment(state: &DaemonState, vm_id: &str) -> Result<TapAssignment, String> {
-    let entry = entry_snapshot(state, vm_id).ok_or_else(|| format!("no entry for {vm_id}"))?;
+fn tap_assignment(state: &DaemonState, vm_id: &str) -> Result<TapAssignment, LifecycleError> {
+    let entry = entry_snapshot(state, vm_id).ok_or_else(|| LifecycleError::NoEntry {
+        vm_id: vm_id.to_string(),
+    })?;
     if let (Some(ipv4), Some(ipv6)) = (&entry.ipv4, &entry.ipv6) {
         return Ok(TapAssignment::new(
             entry.vm_index,
@@ -450,8 +536,7 @@ fn tap_assignment(state: &DaemonState, vm_id: &str) -> Result<TapAssignment, Str
         vm_id,
         vm_type,
         &mut ordinal,
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
     world.ipv6_dynamic_ordinal = ordinal;
     if let Some(entry) = world.entries.get_mut(vm_id) {
         entry.ipv4 = Some(ipv4.clone());
@@ -462,7 +547,11 @@ fn tap_assignment(state: &DaemonState, vm_id: &str) -> Result<TapAssignment, Str
 
 // ── nftables application (fetch + pure commands + run) ──────────────────
 
-fn nft_setup_vm(state: &DaemonState, vm_index: i64, device_name: &str) -> Result<(), String> {
+fn nft_setup_vm(
+    state: &DaemonState,
+    vm_index: i64,
+    device_name: &str,
+) -> Result<(), LifecycleError> {
     let ruleset = nft::fetch_ruleset(&*state.nft);
     let commands = nft::setup_vm_commands(
         &ruleset,
@@ -471,8 +560,7 @@ fn nft_setup_vm(state: &DaemonState, vm_index: i64, device_name: &str) -> Result
         &network_interface(state),
         chain_prefix(state),
         state.host.settings.ipv6_forwarding_enabled,
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
     nft::run_commands_logged(&*state.nft, &commands);
     Ok(())
 }
@@ -498,7 +586,7 @@ fn nft_add_redirect(
     host_port: u32,
     vm_port: u32,
     protocol: &str,
-) -> Result<(), String> {
+) -> Result<(), LifecycleError> {
     let ruleset = nft::fetch_ruleset(&*state.nft);
     let commands = nft::add_port_redirect_commands(
         &ruleset,
@@ -509,8 +597,7 @@ fn nft_add_redirect(
         protocol,
         &network_interface(state),
         chain_prefix(state),
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
     nft::run_commands_logged(&*state.nft, &commands);
     Ok(())
 }
@@ -522,7 +609,7 @@ fn nft_remove_redirect(
     host_port: u32,
     vm_port: u32,
     protocol: &str,
-) -> Result<(), String> {
+) -> Result<(), LifecycleError> {
     let ruleset = nft::fetch_ruleset(&*state.nft);
     let commands = nft::remove_port_redirect_commands(
         &ruleset,
@@ -533,19 +620,17 @@ fn nft_remove_redirect(
         protocol,
         &network_interface(state),
         chain_prefix(state),
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
     nft::run_commands_logged(&*state.nft, &commands);
     Ok(())
 }
 
 /// Python `initialize_nftables`: the ip phase, then (when IPv6 forwarding
 /// is on) a re-fetch and the ip6 phase.
-pub fn initialize_nftables(state: &DaemonState) -> Result<(), String> {
+pub fn initialize_nftables(state: &DaemonState) -> Result<(), LifecycleError> {
     let prefix = chain_prefix(state);
     let ruleset = nft::fetch_ruleset(&*state.nft);
-    let commands =
-        nft::initialize_ipv4_commands(&ruleset, prefix).map_err(|error| error.to_string())?;
+    let commands = nft::initialize_ipv4_commands(&ruleset, prefix)?;
     nft::run_commands_logged(&*state.nft, &commands);
     if !state.host.settings.ipv6_forwarding_enabled {
         return Ok(());
@@ -560,7 +645,7 @@ pub fn initialize_nftables(state: &DaemonState) -> Result<(), String> {
 
 /// Python `wait_for_controller_ready`: poll ActiveState up to 30 times,
 /// with the anti-crash-loop double check on "active".
-fn wait_for_controller_ready(state: &DaemonState, unit: &str) -> Result<(), String> {
+fn wait_for_controller_ready(state: &DaemonState, unit: &str) -> Result<(), LifecycleError> {
     const MAX_ATTEMPT: u32 = 30;
     for attempt in 1..=MAX_ATTEMPT {
         let active_state = state.units.get_active_state(unit);
@@ -573,12 +658,15 @@ fn wait_for_controller_ready(state: &DaemonState, unit: &str) -> Result<(), Stri
                 if recheck == "active" {
                     return Ok(());
                 }
-                return Err(format!(
-                    "{unit} controller service went '{recheck}' right after starting (crash loop?)"
-                ));
+                return Err(LifecycleError::CrashLoop {
+                    unit: unit.to_string(),
+                    state: recheck,
+                });
             }
             "failed" => {
-                return Err(format!("{unit} controller service entered 'failed' state"));
+                return Err(LifecycleError::UnitFailed {
+                    unit: unit.to_string(),
+                });
             }
             // "inactive"/"deactivating"/"unknown"/... are retried; the
             // attempt cap below bounds them.
@@ -594,9 +682,10 @@ fn wait_for_controller_ready(state: &DaemonState, unit: &str) -> Result<(), Stri
             std::thread::sleep(state.pacing.ready_poll);
         }
     }
-    Err(format!(
-        "{unit} controller service did not become active after {MAX_ATTEMPT} attempts"
-    ))
+    Err(LifecycleError::NotActive {
+        unit: unit.to_string(),
+        attempts: MAX_ATTEMPT,
+    })
 }
 
 /// Python `wait_for_controller_stopped`: up to 75 seconds for the guest's
@@ -675,8 +764,7 @@ fn stop_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
                         forward.host_port,
                         forward.vm_port,
                         protocol,
-                    )
-                    .map_err(RpcError::Internal)?;
+                    )?;
                 }
             }
         }
@@ -774,8 +862,7 @@ fn stop_program_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcErr
                         forward.host_port,
                         forward.vm_port,
                         protocol,
-                    )
-                    .map_err(RpcError::Internal)?;
+                    )?;
                 }
             }
         }
@@ -812,7 +899,7 @@ fn stop_program_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcErr
 
 /// Python `VmExecution.recreate_port_redirect_rules`: create-if-absent
 /// against one fetched ruleset, reassigning unavailable host ports.
-fn recreate_port_redirect_rules(state: &DaemonState, vm_id: &str) -> Result<(), String> {
+fn recreate_port_redirect_rules(state: &DaemonState, vm_id: &str) -> Result<(), LifecycleError> {
     let Some(entry) = entry_snapshot(state, vm_id) else {
         return Ok(());
     };
@@ -826,10 +913,8 @@ fn recreate_port_redirect_rules(state: &DaemonState, vm_id: &str) -> Result<(), 
     let guest_ip = guest_ipv4(state, &entry);
     let ruleset = nft::fetch_ruleset(&*state.nft);
     let prefix = chain_prefix(state);
-    let prerouting_table =
-        nft::get_table_for_hook(&ruleset, "prerouting", "ip").map_err(|error| error.to_string())?;
-    let forward_table =
-        nft::get_table_for_hook(&ruleset, "forward", "ip").map_err(|error| error.to_string())?;
+    let prerouting_table = nft::get_table_for_hook(&ruleset, "prerouting", "ip")?;
+    let forward_table = nft::get_table_for_hook(&ruleset, "forward", "ip")?;
 
     let mut forwards = entry.port_forwards.clone();
     let mut port_changed = false;
@@ -864,10 +949,10 @@ fn recreate_port_redirect_rules(state: &DaemonState, vm_id: &str) -> Result<(), 
             continue;
         }
         if !ports::is_host_port_available(forward.host_port) {
-            let new_port = state
-                .port_cursor
-                .fast_get_available_host_port(&state.host.settings.supervisor_database, &*state.nft)
-                .map_err(|error| error.to_string())?;
+            let new_port = state.port_cursor.fast_get_available_host_port(
+                &state.host.settings.supervisor_database,
+                &*state.nft,
+            )?;
             tracing::warn!(
                 old = forward.host_port,
                 new = new_port,
@@ -902,8 +987,7 @@ fn recreate_port_redirect_rules(state: &DaemonState, vm_id: &str) -> Result<(), 
             vm_id,
             &forwards,
             &ports::sqlalchemy_utc_now(),
-        )
-        .map_err(|error| error.to_string())?;
+        )?;
     }
     with_entry_mut(state, vm_id, |entry| entry.port_forwards = forwards);
     Ok(())
@@ -920,7 +1004,7 @@ fn start_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> 
     });
 
     if networking_enabled(state, &entry) {
-        let tap = tap_assignment(state, vm_id).map_err(RpcError::Internal)?;
+        let tap = tap_assignment(state, vm_id)?;
         let _net = net_lock(state);
         if !state.taps.interface_exists(&tap.device_name) {
             state
@@ -934,7 +1018,7 @@ fn start_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> 
         }
         // Even when the interface survived, the nftables rules may have
         // been flushed; always re-apply (create-if-absent).
-        nft_setup_vm(state, entry.vm_index, &tap.device_name).map_err(RpcError::Internal)?;
+        nft_setup_vm(state, entry.vm_index, &tap.device_name)?;
         // Stop tore the SNP per-tap DHCP server down with the tap and nft
         // rules; recreate it with them, or the rebooting measured guest
         // (whose cmdline has no `ip=`, ledger entry 78) can never lease its
@@ -960,7 +1044,7 @@ fn start_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> 
         .units
         .restart(&unit)
         .map_err(|error| RpcError::Internal(error.to_string()))?;
-    wait_for_controller_ready(state, &unit).map_err(RpcError::Internal)?;
+    wait_for_controller_ready(state, &unit)?;
     with_entry_mut(state, vm_id, |entry| entry.times.started_at_ns = now_ns());
 
     // stop() cleared the in-memory mappings; the store keeps them for
@@ -970,7 +1054,7 @@ fn start_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> 
     let has_forwards = !forwards.is_empty();
     with_entry_mut(state, vm_id, |entry| entry.port_forwards = forwards);
     if has_forwards {
-        recreate_port_redirect_rules(state, vm_id).map_err(RpcError::Internal)?;
+        recreate_port_redirect_rules(state, vm_id)?;
     }
     Ok(())
 }
@@ -1063,7 +1147,7 @@ pub fn reboot_vm(state: &DaemonState, vm_id: &str) -> Result<(VmEntry, bool), Rp
         .units
         .restart(&unit)
         .map_err(|error| RpcError::Internal(error.to_string()))?;
-    wait_for_controller_ready(state, &unit).map_err(RpcError::Internal)?;
+    wait_for_controller_ready(state, &unit)?;
     with_entry_mut(state, vm_id, |entry| entry.times.started_at_ns = now_ns());
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
     let running = unit_active(state, &unit);
@@ -1098,7 +1182,7 @@ pub fn reinstall_vm(
         let stopped =
             entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
         state.world.blocking_write().entries.remove(vm_id);
-        erase_volumes(&stopped, true, wipe_volumes).map_err(RpcError::Internal)?;
+        erase_volumes(&stopped, true, wipe_volumes)?;
         // Status is STOPPED, so no second event (the Python
         // `if info.status is not VmStatus.STOPPED` guard).
         return Ok((stopped, false));
@@ -1107,7 +1191,7 @@ pub fn reinstall_vm(
     stop_vm_execution(state, vm_id)?;
     state.events.emit(vm_id, old_status, pb::VmStatus::Stopped);
     // erase_volumes(include_rootfs=True, include_data_volumes=wipe_volumes).
-    erase_volumes(&entry, true, wipe_volumes).map_err(RpcError::Internal)?;
+    erase_volumes(&entry, true, wipe_volumes)?;
     // prepare(): resources rebuilt from the spec, re-stamping the
     // preparation instants.
     with_entry_mut(state, vm_id, |entry| {
@@ -1132,7 +1216,7 @@ fn erase_volumes(
     entry: &VmEntry,
     include_rootfs: bool,
     include_data_volumes: bool,
-) -> Result<(), String> {
+) -> Result<(), LifecycleError> {
     // The on-disk sources: the controller config for QEMU VMs, the spec's
     // disks for ephemeral programs (SpecProgramResources: the ROOTFS disk
     // plus the EXTRA disks, none of which reach a controller config).
@@ -1170,8 +1254,9 @@ fn erase_volumes(
         let rootfs = std::path::Path::new(&rootfs_path);
         if rootfs.exists() {
             tracing::info!(path = %rootfs.display(), "deleting rootfs");
-            std::fs::remove_file(rootfs).map_err(|error| {
-                format!("cannot delete the rootfs {}: {error}", rootfs.display())
+            std::fs::remove_file(rootfs).map_err(|error| LifecycleError::EraseRootfs {
+                path: rootfs.display().to_string(),
+                source: error,
             })?;
         }
     }
@@ -1184,7 +1269,10 @@ fn erase_volumes(
             if let Err(error) = std::fs::remove_file(path_on_host)
                 && error.kind() != std::io::ErrorKind::NotFound
             {
-                return Err(format!("cannot delete the volume {path_on_host}: {error}"));
+                return Err(LifecycleError::EraseVolume {
+                    path: path_on_host.clone(),
+                    source: error,
+                });
             }
         }
     }
@@ -1491,7 +1579,7 @@ fn delete_tracked_vm(
     }
     if wipe {
         // Mirrors operate_erase: writable data volumes go, the rootfs stays.
-        erase_volumes(&entry, false, true).map_err(RpcError::Internal)?;
+        erase_volumes(&entry, false, true)?;
     }
     // Reap the backup registry entry (jobs, the in-flight task slot, the disk
     // lock) for the now-deleted VM so a completed/failed run does not linger
@@ -1549,8 +1637,7 @@ fn update_port_redirects(
                     forward.host_port,
                     forward.vm_port,
                     protocol,
-                )
-                .map_err(RpcError::Internal)?;
+                )?;
             }
         }
         changed = true;
@@ -1582,8 +1669,7 @@ fn update_port_redirects(
                             host_port,
                             vm_port,
                             protocol,
-                        )
-                        .map_err(RpcError::Internal)?;
+                        )?;
                     }
                 }
                 forwards.push(ports::PortForward {
@@ -1611,13 +1697,11 @@ fn update_port_redirects(
                             host_port,
                             vm_port,
                             protocol,
-                        )
-                        .map_err(RpcError::Internal)?;
+                        )?;
                     } else {
                         nft_remove_redirect(
                             state, &device, &guest_ip, host_port, vm_port, protocol,
-                        )
-                        .map_err(RpcError::Internal)?;
+                        )?;
                     }
                     changed = true;
                 }
@@ -2413,24 +2497,19 @@ fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, 
     // _restore_network + started_at + recreate_port_redirect_rules; a
     // failure leaves the VM untracked again (remove the entry), like the
     // Python readopt propagating out of create.
-    let restore = (|| -> Result<(), String> {
+    let restore = (|| -> Result<(), LifecycleError> {
         if state.host.settings.allow_vm_networking {
             let tap = tap_assignment(state, vm_id)?;
             let _net = net_lock(state);
             if !state.taps.interface_exists(&tap.device_name) {
-                state
-                    .taps
-                    .create_tap(&tap)
-                    .map_err(|error| error.to_string())?;
+                state.taps.create_tap(&tap)?;
                 if let Some(ndp) = &state.ndp {
-                    ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)
-                        .map_err(|error| error.to_string())?;
+                    ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
                 }
             } else if let Some(ndp) = &state.ndp {
                 // Prime the ndppd map without touching the service: the
                 // on-disk config already covers this running VM.
-                ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, false)
-                    .map_err(|error| error.to_string())?;
+                ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, false)?;
             }
             nft_setup_vm(state, tap.vm_index, &tap.device_name)?;
         }
@@ -2463,7 +2542,7 @@ fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, 
         if let Some((node, vcpus, memory_mb, hugepage_size)) = released {
             release_numa_placement(state, node, vcpus, memory_mb, hugepage_size);
         }
-        return Err(RpcError::Internal(error));
+        return Err(error.into());
     }
     // The VM may also be queued for background retry (or given up on): drop
     // the queue entry now that it is tracked again, like the Python
@@ -2793,121 +2872,114 @@ fn create_vm_inner(
     // re-report as an internal error. AssertUnwindSafe: the state the
     // closure touches is either re-read under locks afterwards or removed
     // by the cleanup below.
-    let boot = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
-        if let Some(tap) = &tap {
-            let _net = net_lock(state);
-            // A leftover interface from a previous life of this vm_index is
-            // recreated from scratch, like the create path's
-            // interface_exists -> delete -> create_tap sequence.
-            if state.taps.interface_exists(&tap.device_name) {
-                std::thread::sleep(state.pacing.tap_delete_delay);
+    let boot = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+        || -> Result<(), LifecycleError> {
+            if let Some(tap) = &tap {
+                let _net = net_lock(state);
+                // A leftover interface from a previous life of this vm_index is
+                // recreated from scratch, like the create path's
+                // interface_exists -> delete -> create_tap sequence.
+                if state.taps.interface_exists(&tap.device_name) {
+                    std::thread::sleep(state.pacing.tap_delete_delay);
+                    if let Some(ndp) = &state.ndp {
+                        ndp.delete_range(&tap.device_name, true)?;
+                    }
+                    state.taps.delete_tap(tap)?;
+                }
+                state.taps.create_tap(tap)?;
                 if let Some(ndp) = &state.ndp {
-                    ndp.delete_range(&tap.device_name, true)
-                        .map_err(|error| error.to_string())?;
+                    ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
                 }
-                state
-                    .taps
-                    .delete_tap(tap)
-                    .map_err(|error| error.to_string())?;
-            }
-            state
-                .taps
-                .create_tap(tap)
-                .map_err(|error| error.to_string())?;
-            if let Some(ndp) = &state.ndp {
-                ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)
-                    .map_err(|error| error.to_string())?;
-            }
-            nft_setup_vm(state, vm_index, &tap.device_name)?;
-            // SNP measured VMs get their IPv4 via a per-tap DHCP server, not
-            // cloud-init static config: the measured image DHCPs and its
-            // cmdline omits `ip=` for measurement determinism (ledger entry
-            // 77). The tap already carries the gateway address (create_tap
-            // added host_ipv4_cidr), so dnsmasq can bind and route. Plain and
-            // SEV VMs skip this and keep their cloud-init static config.
-            if snp {
-                let config = dhcp::DhcpConfig::for_snp(
-                    &vm_id,
-                    tap,
-                    state.host.dns_nameservers.as_deref().unwrap_or(&[]),
-                    &dhcp_lease_dir(state),
-                )
-                .map_err(|error| error.to_string())?;
-                state
-                    .dhcp
-                    .start(&config)
-                    .map_err(|error| error.to_string())?;
-            }
-        }
-
-        // The cloud-init seed, then the controller config (same order as
-        // build_qemu_configuration + save_controller_configuration). SNP boots
-        // the measured Nix image directly and carries no cloud-init drive, so
-        // the seed is skipped (build_written_config leaves cloud_init_drive_path
-        // unset for SNP; the two must agree).
-        if !snp {
-            cloudinit::CloudInitDrive {
-                execution_root: &state.host.settings.execution_root,
-                vm_hash: &vm_id,
-                vm_index,
-                tap: tap.as_ref(),
-                ssh_authorized_keys: &ssh_authorized_keys,
-                hostname: &request.hostname,
-                has_gpu: !request.gpus.is_empty(),
-                dns_nameservers: state.host.dns_nameservers.as_deref(),
-                confidential,
-            }
-            .create_image()
-            .map_err(|error| error.to_string())?;
-        }
-        controller_config::save_controller_config(&state.host.settings.execution_root, &written)
-            .map_err(|error| error.to_string())?;
-
-        // Write the AllowedCPUs drop-in before the controller starts so the
-        // pin applies on first boot (increment C1). For SEV/SEV-ES VMs the
-        // controller starts later (InitializeConfidential); the drop-in
-        // persists on disk and applies then.
-        if let Some(placement) = &numa_placement {
-            apply_numa_dropin(state, &vm_id, placement)?;
-        }
-
-        with_entry_mut(state, &vm_id, |entry| entry.times.starting_at_ns = now_ns());
-        let unit = controller_unit_name(&vm_id);
-        if await_session {
-            // execution.start for a SEV/SEV-ES VM: setup/configure/
-            // start_guest_api happen, but `persistent and not is_confidential`
-            // is false, so the controller is NOT enabled/started. started_at
-            // is stamped here; the VM reports awaiting_confidential_init until
-            // InitializeConfidential runs. SNP does NOT take this branch (it
-            // has no session to wait for) and starts below like a plain VM.
-            with_entry_mut(state, &vm_id, |entry| entry.times.started_at_ns = now_ns());
-        } else {
-            units::enable_and_start(&*state.units, &unit).map_err(|error| error.to_string())?;
-            if let Err(error) = wait_for_controller_ready(state, &unit) {
-                // non_blocking_wait_for_boot: a failed boot stops and cleans up
-                // (stop_and_disable + graceful wait), then the create fails.
-                tracing::warn!(unit, error, "controller not running, stopping");
-                if let Err(stop_error) = units::stop_and_disable(&*state.units, &unit) {
-                    tracing::warn!(unit, %stop_error, "failed to stop the failed controller");
+                nft_setup_vm(state, vm_index, &tap.device_name)?;
+                // SNP measured VMs get their IPv4 via a per-tap DHCP server, not
+                // cloud-init static config: the measured image DHCPs and its
+                // cmdline omits `ip=` for measurement determinism (ledger entry
+                // 77). The tap already carries the gateway address (create_tap
+                // added host_ipv4_cidr), so dnsmasq can bind and route. Plain and
+                // SEV VMs skip this and keep their cloud-init static config.
+                if snp {
+                    let config = dhcp::DhcpConfig::for_snp(
+                        &vm_id,
+                        tap,
+                        state.host.dns_nameservers.as_deref().unwrap_or(&[]),
+                        &dhcp_lease_dir(state),
+                    )?;
+                    state.dhcp.start(&config)?;
                 }
-                wait_for_controller_stopped(state, &unit);
-                return Err(format!("controller failed to start: {error}"));
             }
-            with_entry_mut(state, &vm_id, |entry| entry.times.started_at_ns = now_ns());
-        }
 
-        // Reuse persisted host ports across restarts; the agent reconciles
-        // the rest through AddPortForward.
-        let forwards = ports::load_port_forwards(&state.host.settings.supervisor_database, &vm_id)
-            .map_err(|error| error.to_string())?;
-        let has_forwards = !forwards.is_empty();
-        with_entry_mut(state, &vm_id, |entry| entry.port_forwards = forwards);
-        if has_forwards {
-            recreate_port_redirect_rules(state, &vm_id)?;
-        }
-        Ok(())
-    }))
-    .unwrap_or_else(|panic| Err(format!("CreateVm panicked: {}", panic_message(&*panic))));
+            // The cloud-init seed, then the controller config (same order as
+            // build_qemu_configuration + save_controller_configuration). SNP boots
+            // the measured Nix image directly and carries no cloud-init drive, so
+            // the seed is skipped (build_written_config leaves cloud_init_drive_path
+            // unset for SNP; the two must agree).
+            if !snp {
+                cloudinit::CloudInitDrive {
+                    execution_root: &state.host.settings.execution_root,
+                    vm_hash: &vm_id,
+                    vm_index,
+                    tap: tap.as_ref(),
+                    ssh_authorized_keys: &ssh_authorized_keys,
+                    hostname: &request.hostname,
+                    has_gpu: !request.gpus.is_empty(),
+                    dns_nameservers: state.host.dns_nameservers.as_deref(),
+                    confidential,
+                }
+                .create_image()?;
+            }
+            controller_config::save_controller_config(
+                &state.host.settings.execution_root,
+                &written,
+            )?;
+
+            // Write the AllowedCPUs drop-in before the controller starts so the
+            // pin applies on first boot (increment C1). For SEV/SEV-ES VMs the
+            // controller starts later (InitializeConfidential); the drop-in
+            // persists on disk and applies then.
+            if let Some(placement) = &numa_placement {
+                apply_numa_dropin(state, &vm_id, placement)?;
+            }
+
+            with_entry_mut(state, &vm_id, |entry| entry.times.starting_at_ns = now_ns());
+            let unit = controller_unit_name(&vm_id);
+            if await_session {
+                // execution.start for a SEV/SEV-ES VM: setup/configure/
+                // start_guest_api happen, but `persistent and not is_confidential`
+                // is false, so the controller is NOT enabled/started. started_at
+                // is stamped here; the VM reports awaiting_confidential_init until
+                // InitializeConfidential runs. SNP does NOT take this branch (it
+                // has no session to wait for) and starts below like a plain VM.
+                with_entry_mut(state, &vm_id, |entry| entry.times.started_at_ns = now_ns());
+            } else {
+                units::enable_and_start(&*state.units, &unit)?;
+                if let Err(error) = wait_for_controller_ready(state, &unit) {
+                    // non_blocking_wait_for_boot: a failed boot stops and cleans up
+                    // (stop_and_disable + graceful wait), then the create fails.
+                    tracing::warn!(unit, %error, "controller not running, stopping");
+                    if let Err(stop_error) = units::stop_and_disable(&*state.units, &unit) {
+                        tracing::warn!(unit, %stop_error, "failed to stop the failed controller");
+                    }
+                    wait_for_controller_stopped(state, &unit);
+                    return Err(LifecycleError::ControllerStart {
+                        source: Box::new(error),
+                    });
+                }
+                with_entry_mut(state, &vm_id, |entry| entry.times.started_at_ns = now_ns());
+            }
+
+            // Reuse persisted host ports across restarts; the agent reconciles
+            // the rest through AddPortForward.
+            let forwards =
+                ports::load_port_forwards(&state.host.settings.supervisor_database, &vm_id)?;
+            let has_forwards = !forwards.is_empty();
+            with_entry_mut(state, &vm_id, |entry| entry.port_forwards = forwards);
+            if has_forwards {
+                recreate_port_redirect_rules(state, &vm_id)?;
+            }
+            Ok(())
+        },
+    ))
+    .unwrap_or_else(|panic| Err(LifecycleError::Panic(panic_message(&*panic))));
 
     if let Err(error) = boot {
         // The Python create's except branch: teardown networking, forget
@@ -2954,7 +3026,7 @@ fn create_vm_inner(
             remove_numa_dropin(state, &vm_id);
         }
         state.world.blocking_write().entries.remove(&vm_id);
-        return Err(RpcError::Internal(error));
+        return Err(error.into());
     }
 
     let entry = entry_snapshot(state, &vm_id).ok_or_else(|| RpcError::NotFound(vm_id.clone()))?;
@@ -3109,7 +3181,7 @@ fn create_program_vm(
                     ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)
                         .map_err(|error| RpcError::Internal(error.to_string()))?;
                 }
-                nft_setup_vm(state, vm_index, &tap.device_name).map_err(RpcError::Internal)?;
+                nft_setup_vm(state, vm_index, &tap.device_name)?;
             }
 
             // config.py MachineConfig: vcpu_count and mem_size_mib are
@@ -3310,7 +3382,7 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
             Err(error) => {
                 tracing::warn!(
                     vm_hash = entry.vm_hash,
-                    error,
+                    %error,
                     "cannot rederive the IP assignment; skipping the VM"
                 );
             }
@@ -3380,12 +3452,12 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
                 Err(error) => {
                     tracing::error!(
                         vm_hash = entry.vm_hash,
-                        error,
+                        %error,
                         "failed to recreate VM network"
                     );
                     failed_vms.push(serde_json::json!({
                         "vm_hash": entry.vm_hash,
-                        "error": error,
+                        "error": error.to_string(),
                     }));
                 }
             }
@@ -3405,10 +3477,11 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
         if !recreated_vms.contains(&entry.vm_hash) {
             continue;
         }
-        let result = (|| -> Result<(), String> {
-            let forwards =
-                ports::load_port_forwards(&state.host.settings.supervisor_database, &entry.vm_hash)
-                    .map_err(|error| error.to_string())?;
+        let result = (|| -> Result<(), LifecycleError> {
+            let forwards = ports::load_port_forwards(
+                &state.host.settings.supervisor_database,
+                &entry.vm_hash,
+            )?;
             let has_forwards = !forwards.is_empty();
             with_entry_mut(state, &entry.vm_hash, |entry| {
                 entry.port_forwards = forwards
@@ -3421,7 +3494,7 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
         if let Err(error) = result {
             tracing::error!(
                 vm_hash = entry.vm_hash,
-                error,
+                %error,
                 "error recreating port redirects"
             );
         }
@@ -3464,18 +3537,14 @@ pub fn reconcile_boot(state: &DaemonState) {
         .map(|entry| entry.vm_hash.clone())
         .collect();
     for vm_id in running {
-        let result = (|| -> Result<(), String> {
+        let result = (|| -> Result<(), LifecycleError> {
             let tap = tap_assignment(state, &vm_id)?;
             {
                 let _net = net_lock(state);
                 if !state.taps.interface_exists(&tap.device_name) {
-                    state
-                        .taps
-                        .create_tap(&tap)
-                        .map_err(|error| error.to_string())?;
+                    state.taps.create_tap(&tap)?;
                     if let Some(ndp) = &state.ndp {
-                        ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)
-                            .map_err(|error| error.to_string())?;
+                        ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
                     }
                 }
                 if let Some(ndp) = &state.ndp
@@ -3484,8 +3553,7 @@ pub fn reconcile_boot(state: &DaemonState) {
                     // Prime the in-memory map without a config rewrite or
                     // service restart: the on-disk ndppd.conf already covers
                     // running VMs (update_service=False in Python).
-                    ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, false)
-                        .map_err(|error| error.to_string())?;
+                    ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, false)?;
                 }
                 nft_setup_vm(state, tap.vm_index, &tap.device_name)?;
             }
@@ -3495,7 +3563,7 @@ pub fn reconcile_boot(state: &DaemonState) {
         if let Err(error) = result {
             tracing::warn!(
                 vm_id,
-                error,
+                %error,
                 "boot reconcile failed; hiding the VM like a failed Python reattach"
             );
             let mut world = state.world.blocking_write();
