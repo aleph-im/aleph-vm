@@ -29,7 +29,11 @@ from aleph.vm.agent.translate import build_create_vm_spec, build_program_create_
 from aleph.vm.agent.update_watcher import UpdateWatcher
 from aleph.vm.agent.vm.program_client import ProgramGuestClient
 from aleph.vm.agent.vm_registry import AgentVmRegistry, persist_record
-from aleph.vm.agent.vprogram_launch import build_vprogram_spec, remove_vprogram_staging
+from aleph.vm.agent.vprogram_launch import (
+    build_vprogram_spec,
+    remove_vprogram_staging,
+    resolve_vprogram_attestation_port,
+)
 from aleph.vm.conf import settings
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor_interface import errors as supervisor_errors
@@ -97,13 +101,20 @@ def _is_spec_eligible(content) -> bool:
     return isinstance(content, InstanceContent)
 
 
-async def resolve_port_forwards(vm_id: VmId, content) -> list[PortForwardSpec]:
+async def resolve_port_forwards(vm_id: VmId, content, *, strict: bool = False) -> list[PortForwardSpec]:
     """Agent-side policy: translate the user's port-forwarding aggregate settings
     into the set of forwards the hypervisor should apply.
 
     This is the agent half of the old VmExecution.fetch_port_redirect_config_and_setup.
     Nothing here touches nftables; the caller applies each spec through
     supervisor.add_port_forward. host_port is left 0; the hypervisor assigns it.
+
+    ``strict=True`` turns an aggregate-fetch failure into an exception instead
+    of the SSH-only fallback. The fallback is right on create (worst case the
+    VM starts with SSH only), but a convergence caller reconciling an already
+    forwarded VM must not treat "could not fetch" as "the user removed every
+    port": converging on the fallback set would tear the user's forwards down
+    on a transient CCN error. Strict callers skip reconciling instead.
     """
     ports_requests: dict[int, dict[str, bool]] = {}
     try:
@@ -112,6 +123,8 @@ async def resolve_port_forwards(vm_id: VmId, content) -> list[PortForwardSpec]:
         fetched = vm_port_forwarding.get("ports", {})
         ports_requests = {int(port): flags for port, flags in fetched.items()}
     except Exception:
+        if strict:
+            raise
         logger.info("Could not fetch port redirect settings for %s", content.address, exc_info=True)
 
     # Always forward SSH.
@@ -132,14 +145,14 @@ async def resolve_port_forwards(vm_id: VmId, content) -> list[PortForwardSpec]:
     return forwards
 
 
-async def reconcile_port_forwards(supervisor: Supervisor, vm_id: VmId, content) -> None:
-    """Drive the hypervisor's forwards to match the aggregate settings.
-
-    Agent policy half of the old fetch_port_redirect_config_and_setup: compute
-    the desired set, diff against what the hypervisor reports, and issue
-    add/remove calls. The hypervisor owns application and persistence.
+async def _reconcile_forwards(supervisor: Supervisor, vm_id: VmId, desired_specs: list[PortForwardSpec]) -> None:
+    """Diff `desired_specs` against what the hypervisor currently reports for
+    `vm_id` and issue add/remove calls so the two converge. The hypervisor
+    owns application and persistence; this is pure agent policy, and it is
+    idempotent: calling it again with the same desired set (e.g. on
+    re-adoption) issues no calls at all.
     """
-    desired = {(int(spec.vm_port), spec.protocol): spec for spec in await resolve_port_forwards(vm_id, content)}
+    desired = {(int(spec.vm_port), spec.protocol): spec for spec in desired_specs}
     current = {(int(info.vm_port), info.protocol): info for info in await supervisor.list_port_forwards(vm_id)}
     for key, info in current.items():
         if key not in desired:
@@ -147,6 +160,82 @@ async def reconcile_port_forwards(supervisor: Supervisor, vm_id: VmId, content) 
     for key, spec in desired.items():
         if key not in current:
             await supervisor.add_port_forward(spec)
+
+
+async def reconcile_port_forwards(supervisor: Supervisor, vm_id: VmId, content) -> None:
+    """Drive the hypervisor's forwards to match the aggregate settings.
+
+    Agent policy half of the old fetch_port_redirect_config_and_setup: compute
+    the desired set, then converge through ``_reconcile_forwards``.
+    """
+    await _reconcile_forwards(supervisor, vm_id, await resolve_port_forwards(vm_id, content))
+
+
+def resolve_vprogram_port_forwards(vm_id: VmId, attest_port: int | None) -> list[PortForwardSpec]:
+    """The only forward a V-PROGRAM gets: the manifest's RA-TLS attestation
+    port (tcp), mapped to a host IPv4 port so an external client (the aleph
+    CLI) can reach the guest's RA-TLS endpoint. Host-only DNAT,
+    measurement-neutral: unlike instances, no user aggregate is consulted and
+    SSH is never force-added. `attest_port` is None when the manifest
+    declared no aleph.ra-tls tcp transport; that V-PROGRAM gets no mapping.
+    """
+    if attest_port is None:
+        return []
+    return [
+        PortForwardSpec(
+            vm_id=vm_id,
+            host_port=HostPort(0),
+            vm_port=GuestPort(int(attest_port)),
+            protocol=Protocol.TCP,
+        )
+    ]
+
+
+async def reconcile_vprogram_port_forwards(supervisor: Supervisor, vm_id: VmId, attest_port: int | None) -> None:
+    """Drive the hypervisor's forwards to match the V-PROGRAM's single
+    attestation-port mapping. Reuses ``_reconcile_forwards``, so it is
+    idempotent by construction: both the create path and the re-adoption
+    path (``reconcile_adopted_port_forwards``) call it safely.
+    """
+    await _reconcile_forwards(supervisor, vm_id, resolve_vprogram_port_forwards(vm_id, attest_port))
+
+
+async def reconcile_adopted_port_forwards(supervisor: Supervisor, registry: AgentVmRegistry, vm_hash: ItemHash) -> None:
+    """Best-effort port-forward healing for a VM adopted already-created.
+
+    The create path applies forwards right after the VM first reaches RUNNING;
+    a VM re-adopted on a later allocation (typically after an agent restart)
+    skipped that step in this agent's lifetime. If the previous life crashed
+    in the window between RUNNING and the forward setup, the VM is up but
+    unreachable (no SSH for an instance, no attestation endpoint for a
+    V-PROGRAM); for instances, the port-forwarding aggregate may also have
+    changed while the agent was down, past the live aggregate watcher.
+    Converge the hypervisor state here.
+
+    Best-effort by design, unlike the create path (which fails loudly and
+    tears the VM down): the adopted VM is already up and possibly serving, so
+    a healing failure must never fail the allocation and invite scheduler
+    churn. Skipping leaves exactly the state we found.
+    """
+    record = registry.get(vm_hash)
+    if record is None:
+        # Nothing to derive the desired forward set from (agent DB loss).
+        logger.warning("No agent record for adopted VM %s; port forwards left as found", vm_hash)
+        return
+    vm_id = VmId(str(vm_hash))
+    content = record.message
+    try:
+        if isinstance(content, VerifiableProgramContent):
+            attest_port = await resolve_vprogram_attestation_port(content)
+            await reconcile_vprogram_port_forwards(supervisor, vm_id, attest_port)
+        elif _is_spec_eligible(content):
+            # strict: a failed aggregate fetch must skip healing, not converge
+            # the VM onto the SSH-only fallback set (which would remove the
+            # user's aggregate-declared forwards on a transient CCN error).
+            await _reconcile_forwards(supervisor, vm_id, await resolve_port_forwards(vm_id, content, strict=True))
+        # Programs get no agent-side forwards: nothing to heal.
+    except Exception:
+        logger.warning("Could not reconcile port forwards for adopted VM %s; left as found", vm_hash, exc_info=True)
 
 
 class VmStartupError(Exception):
@@ -367,7 +456,7 @@ async def create_vm_execution(
         # set), so the plain readiness wait applies.
         record = registry.record(vm_hash, message=content, original=original_message.content, persistent=True)
         try:
-            spec = await build_vprogram_spec(vm_hash, content)
+            spec, attest_port = await build_vprogram_spec(vm_hash, content)
             # Agent-side admission after the download, like the instance path:
             # a failed bundle fetch never consumes capacity.
             capacity.check_capacity(
@@ -386,6 +475,17 @@ async def create_vm_execution(
             raise
         try:
             await _wait_until_running(supervisor, info.vm_id)
+            # Host-only DNAT so an external client (the aleph CLI) can reach
+            # the guest's RA-TLS attestation endpoint; measurement-neutral
+            # (no guest image/cmdline change) and idempotent via the same
+            # reconcile machinery the instance path uses.
+            #
+            # A reconcile failure lands in the teardown branch below on
+            # purpose, mirroring the instance path: a V-PROGRAM whose
+            # attestation endpoint cannot be mapped is unreachable for its
+            # sole consumer, so failing the create loudly (and letting the
+            # scheduler retry) beats keeping an unusable VM alive.
+            await reconcile_vprogram_port_forwards(supervisor, info.vm_id, attest_port)
         except Exception:
             registry.forget(vm_hash)
             try:
@@ -831,6 +931,14 @@ async def start_persistent_vm(
             # them) so the recreated VM reloads the same host ports.
             await supervisor.delete_vm(vm_id, keep_port_mappings=True)
             info = None
+        if info is not None and not info.awaiting_confidential_init:
+            # Every branch that kept `info` ends with a RUNNING VM this agent
+            # did not create in its own lifetime. Only the create path applies
+            # forwards, so heal them here: a previous life crashing between
+            # RUNNING and the forward setup leaves the VM up but unreachable
+            # forever otherwise. Best-effort; never fails the allocation.
+            # The recreate branches (info = None) reconcile in the create path.
+            await reconcile_adopted_port_forwards(supervisor, registry, vm_hash)
 
     if info is None:
         logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
