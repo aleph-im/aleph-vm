@@ -1,6 +1,7 @@
 //! Socket-path resolution and the UDS gRPC client plumbing.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::Context as _;
 use hyper_util::rt::TokioIo;
@@ -10,15 +11,28 @@ use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
 
 const DEFAULT_EXECUTION_ROOT: &str = "/var/lib/aleph/vm";
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub type SupervisorClient = pb::supervisor_client::SupervisorClient<Channel>;
 
 /// Connect to the supervisor over its Unix socket. The endpoint URI is a
 /// placeholder tonic requires; every connection goes to the socket.
-pub async fn connect(path: &Path) -> anyhow::Result<SupervisorClient> {
+///
+/// `request_timeout` bounds each RPC so a wedged supervisor (the kernel
+/// queues UDS connections even when the daemon never accepts) cannot hang
+/// the CLI forever. None for streaming commands, which run indefinitely.
+pub async fn connect(
+    path: &Path,
+    request_timeout: Option<Duration>,
+) -> anyhow::Result<SupervisorClient> {
     let socket = path.to_path_buf();
-    let channel = Endpoint::try_from("http://socket.invalid")
+    let mut endpoint = Endpoint::try_from("http://socket.invalid")
         .context("static endpoint")?
+        .connect_timeout(CONNECT_TIMEOUT);
+    if let Some(timeout) = request_timeout {
+        endpoint = endpoint.timeout(timeout);
+    }
+    let channel = endpoint
         .connect_with_connector(service_fn(move |_: Uri| {
             let socket = socket.clone();
             async move {
@@ -131,7 +145,7 @@ mod tests {
 
     #[tokio::test]
     async fn connect_reports_a_missing_socket_clearly() {
-        let error = connect(std::path::Path::new("/nonexistent/supervisor.sock"))
+        let error = connect(std::path::Path::new("/nonexistent/supervisor.sock"), None)
             .await
             .unwrap_err();
         let text = format!("{error:#}");

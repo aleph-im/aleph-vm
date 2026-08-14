@@ -16,7 +16,9 @@ async fn main() {
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
     let socket = client::resolve_socket_path(cli.socket.clone(), |name| std::env::var(name).ok());
-    let mut client = client::connect(&socket).await?;
+    let request_timeout = (cli.timeout > 0 && !cli.command.is_streaming())
+        .then(|| std::time::Duration::from_secs(cli.timeout));
+    let mut client = client::connect(&socket, request_timeout).await?;
     let mut out = std::io::stdout().lock();
     let json = cli.json;
     match cli.command {
