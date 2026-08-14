@@ -1,0 +1,36 @@
+#!/bin/busybox sh
+# udhcpc6 lease-application script for the measured SNP guest.
+#
+# The v6 twin of udhcpc.script: busybox udhcpc6 obtains a stateful DHCPv6
+# lease from the host's per-tap dnsmasq but does NOT configure the interface
+# itself; init.sh invokes it with `-s /bin/udhcpc6.script` and udhcpc6 runs
+# this with $1 = action (deconfig|bound|renew) and the lease in the
+# environment ($interface, $ipv6). The address is applied as /128, busybox
+# upstream practice (examples/udhcp/d6_simple_script): on-link reachability
+# and the default route both come from the kernel processing the same
+# dnsmasq's Router Advertisements (accept_ra=2 in init.sh), never from the
+# lease, so no route handling belongs here.
+
+# udhcpc6 passes the lease via environment variables ($interface, $ipv6),
+# which shellcheck cannot see assigned.
+# shellcheck disable=SC2154
+case "$1" in
+    deconfig)
+        # Nothing to tear down: the single address is (re)added on bound,
+        # and flushing here would race the still-active IPv4 config.
+        ;;
+    bound | renew)
+        if [ -n "$ipv6" ]; then
+            # EEXIST on a re-bound identical address is harmless and stays on
+            # the console; any other failure is real and must not be logged
+            # as success below.
+            if /bin/busybox ip -6 addr add "${ipv6}/128" dev "$interface"; then
+                echo "init: DHCPv6 configured ${ipv6} on ${interface}"
+            else
+                echo "init: WARNING: failed to add ${ipv6}/128 on ${interface}"
+            fi
+        else
+            echo "init: DHCPv6 bound without an address on ${interface}"
+        fi
+        ;;
+esac

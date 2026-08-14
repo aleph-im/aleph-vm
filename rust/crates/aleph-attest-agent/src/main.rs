@@ -73,7 +73,12 @@ async fn main() -> Result<()> {
     let secret_store = web::Data::new(SecretStore::with_default_dir());
 
     // 6. Start actix-web HTTPS server.
-    let bind_addr = format!("0.0.0.0:{}", cli.port);
+    // Dual-stack: [::] accepts IPv6 AND IPv4 connections (Linux default
+    // IPV6_V6ONLY=0; actix-web does not set the sockopt), so the existing
+    // IPv4 reachability path keeps working while the DHCPv6-assigned guest
+    // address is served too. 0.0.0.0 was IPv4-only, which made a routable
+    // guest IPv6 useless for reaching the agent.
+    let bind_addr = format!("[::]:{}", cli.port);
     info!(addr = %bind_addr, "binding HTTPS server");
 
     HttpServer::new(move || {

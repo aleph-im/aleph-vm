@@ -587,18 +587,13 @@ fn tap_assignment(state: &DaemonState, vm_id: &str) -> Result<TapAssignment, Lif
             ipv6.clone(),
         ));
     }
-    let vm_type = if entry.is_program {
-        VmType::Microvm
-    } else {
-        VmType::Instance
-    };
     let mut world = state.world.blocking_write();
     let mut ordinal = world.ipv6_dynamic_ordinal;
     let (ipv4, ipv6) = world::derive_tap_assignment(
         &state.host.settings,
         entry.vm_index,
         vm_id,
-        vm_type,
+        entry.vm_type(),
         &mut ordinal,
     )?;
     world.ipv6_dynamic_ordinal = ordinal;
@@ -786,11 +781,7 @@ fn guest_ipv4(state: &DaemonState, entry: &VmEntry) -> String {
         &state.host.settings,
         entry.vm_index,
         &entry.vm_hash,
-        if entry.is_program {
-            VmType::Microvm
-        } else {
-            VmType::Instance
-        },
+        entry.vm_type(),
         &mut ordinal,
     )
     .map(|(ipv4, _)| ipv4.address)
@@ -2774,12 +2765,21 @@ fn create_vm_inner(
         });
         let vm_index = world.unique_vm_index(state.host.settings.start_id_index)?;
         let assignment = if state.host.settings.allow_vm_networking {
+            // `snp` (computed above from `request.tee`) is the V-PROGRAM
+            // signal: SEV-SNP measured boot is its exclusive launch path, so
+            // it is the only QEMU-create shape that gets the VProgram
+            // hextet; a plain or SEV/SEV-ES confidential create is Instance.
+            let create_vm_type = if snp {
+                VmType::VProgram
+            } else {
+                VmType::Instance
+            };
             let mut ordinal = world.ipv6_dynamic_ordinal;
             let pair = world::derive_tap_assignment(
                 &state.host.settings,
                 vm_index,
                 &vm_id,
-                VmType::Instance,
+                create_vm_type,
                 &mut ordinal,
             )?;
             world.ipv6_dynamic_ordinal = ordinal;
@@ -4135,7 +4135,46 @@ mod tests {
             )),
             "the guest can only lease its allocated IP"
         );
+        // The same dnsmasq also serves the allocated IPv6 (stateful DHCPv6 +
+        // RA): the started config carries exactly the entry's derived v6
+        // address, so guest and daemon can never disagree on the address.
+        let entry_ipv6 = entry.ipv6.as_ref().expect("SNP create allocates IPv6");
+        assert_eq!(config.guest_ipv6, entry_ipv6.address);
+        assert!(config.dnsmasq_args().contains(&"--enable-ra".to_string()));
+        assert!(config.dnsmasq_args().contains(&format!(
+            "--dhcp-range={},{},124,1h",
+            entry_ipv6.address, entry_ipv6.address
+        )));
         assert!(harness.dhcp.is_running(&vm_id));
+    }
+
+    #[test]
+    fn create_snp_allocates_the_v_program_ipv6_hextet() {
+        // The static IPv6 scheme keys a vm-type hextet into the /124
+        // (world::VmType::prefix). SEV-SNP is the V-PROGRAM's exclusive
+        // launch path (docs/plans/2026-07-11-vprogram-scheduler-support-
+        // design.md section 2), so an SNP create must get the 0x4 nibble
+        // (Python VmType.v_program / scheduler VmType::ipv6_value()), not
+        // the plain-instance 0x3 it used to get before VmType::VProgram
+        // existed.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('e');
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let request = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+
+        let (entry, _running) = create_vm(state, request).unwrap();
+        assert_eq!(entry.vm_type(), world::VmType::VProgram);
+        let ipv6 = entry
+            .ipv6
+            .expect("networking is enabled in the harness; SNP create allocates an IPv6 pair");
+        assert!(
+            ipv6.address.starts_with("fc00:1:2:3:4:"),
+            "an SNP (V-PROGRAM) create must get the 0x4 vm-type hextet, got {}",
+            ipv6.address
+        );
     }
 
     #[test]
