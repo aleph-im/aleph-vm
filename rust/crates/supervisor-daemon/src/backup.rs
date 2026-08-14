@@ -966,15 +966,9 @@ pub fn start_backup(
     // space of the backup directory. InsufficientResources on shortfall.
     let mut needed: u64 = 0;
     for (_, source) in &disk_paths {
-        needed = needed.saturating_add(
-            state
-                .disk_tools
-                .virtual_size(source)
-                .map_err(|error| RpcError::Internal(error.to_string()))?,
-        );
+        needed = needed.saturating_add(state.disk_tools.virtual_size(source)?);
     }
-    let free = crate::host::available_disk_bytes(&backup_dir)
-        .map_err(|error| RpcError::Internal(error.to_string()))?;
+    let free = crate::host::available_disk_bytes(&backup_dir)?;
     if free < needed {
         return Err(RpcError::InsufficientResources(format!(
             "Insufficient disk space: {free} bytes available, {needed} bytes required for {} disk(s)",

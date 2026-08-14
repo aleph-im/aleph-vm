@@ -49,8 +49,7 @@ pub fn initialize_confidential(
         .map_err(|error| RpcError::Internal(format!("cannot write vm_session.b64: {error}")))?;
     std::fs::write(session_dir.join("vm_godh.b64"), godh_bytes)
         .map_err(|error| RpcError::Internal(format!("cannot write vm_godh.b64: {error}")))?;
-    crate::units::enable_and_start(&*state.units, &entry.unit_name())
-        .map_err(|error| RpcError::Internal(error.to_string()))?;
+    crate::units::enable_and_start(&*state.units, &entry.unit_name())?;
     Ok(())
 }
 
@@ -61,14 +60,9 @@ pub fn get_measurement(state: &DaemonState, vm_id: &str) -> Result<pb::Measureme
     let entry =
         entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.to_string()))?;
     let mut client =
-        crate::qmp::QmpClient::connect(std::path::Path::new(&entry.config.qmp_socket_path))
-            .map_err(|error| RpcError::Internal(error.to_string()))?;
-    let sev_info = client
-        .query_sev_info()
-        .map_err(|error| RpcError::Internal(error.to_string()))?;
-    let launch_measure = client
-        .query_launch_measure()
-        .map_err(|error| RpcError::Internal(error.to_string()))?;
+        crate::qmp::QmpClient::connect(std::path::Path::new(&entry.config.qmp_socket_path))?;
+    let sev_info = client.query_sev_info()?;
+    let launch_measure = client.query_launch_measure()?;
     // The TEE generation comes from the VM's confidential config (an input
     // the supervisor holds). SEV covers SEV and SEV-ES (the client refines
     // via sev_info.policy); SEV-SNP is a distinct launch path not emitted
@@ -110,14 +104,9 @@ pub fn inject_secret(
     let secret = std::str::from_utf8(secret_bytes)
         .map_err(|error| RpcError::Internal(format!("secret is not valid UTF-8: {error}")))?;
     let mut client =
-        crate::qmp::QmpClient::connect(std::path::Path::new(&entry.config.qmp_socket_path))
-            .map_err(|error| RpcError::Internal(error.to_string()))?;
-    client
-        .inject_secret(header, secret)
-        .map_err(|error| RpcError::Internal(error.to_string()))?;
-    client
-        .continue_execution()
-        .map_err(|error| RpcError::Internal(error.to_string()))?;
+        crate::qmp::QmpClient::connect(std::path::Path::new(&entry.config.qmp_socket_path))?;
+    client.inject_secret(header, secret)?;
+    client.continue_execution()?;
     Ok(())
 }
 
