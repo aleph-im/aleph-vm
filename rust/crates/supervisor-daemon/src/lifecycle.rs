@@ -752,7 +752,7 @@ fn stop_program_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcErr
         vm_id,
         &ports::sqlalchemy_utc_now(),
     )
-    .map_err(RpcError::Internal)?;
+    .map_err(|error| RpcError::Internal(error.to_string()))?;
 
     // removed_all_ports_redirection (udp then tcp, the Python
     // SUPPORTED_PROTOCOL_FOR_REDIRECT order).
@@ -860,10 +860,10 @@ fn recreate_port_redirect_rules(state: &DaemonState, vm_id: &str) -> Result<(), 
             continue;
         }
         if !ports::is_host_port_available(forward.host_port) {
-            let new_port = state.port_cursor.fast_get_available_host_port(
-                &state.host.settings.supervisor_database,
-                &*state.nft,
-            )?;
+            let new_port = state
+                .port_cursor
+                .fast_get_available_host_port(&state.host.settings.supervisor_database, &*state.nft)
+                .map_err(|error| error.to_string())?;
             tracing::warn!(
                 old = forward.host_port,
                 new = new_port,
@@ -898,7 +898,8 @@ fn recreate_port_redirect_rules(state: &DaemonState, vm_id: &str) -> Result<(), 
             vm_id,
             &forwards,
             &ports::sqlalchemy_utc_now(),
-        )?;
+        )
+        .map_err(|error| error.to_string())?;
     }
     with_entry_mut(state, vm_id, |entry| entry.port_forwards = forwards);
     Ok(())
@@ -952,7 +953,7 @@ fn start_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> 
     // stop() cleared the in-memory mappings; the store keeps them for
     // persistent VMs.
     let forwards = ports::load_port_forwards(&state.host.settings.supervisor_database, vm_id)
-        .map_err(RpcError::Internal)?;
+        .map_err(|error| RpcError::Internal(error.to_string()))?;
     let has_forwards = !forwards.is_empty();
     with_entry_mut(state, vm_id, |entry| entry.port_forwards = forwards);
     if has_forwards {
@@ -1468,7 +1469,7 @@ fn delete_tracked_vm(
             vm_id,
             &ports::sqlalchemy_utc_now(),
         )
-        .map_err(RpcError::Internal)?;
+        .map_err(|error| RpcError::Internal(error.to_string()))?;
     }
     if wipe {
         // Mirrors operate_erase: writable data volumes go, the rootfs stays.
@@ -1552,7 +1553,7 @@ fn update_port_redirects(
                         &state.host.settings.supervisor_database,
                         &*state.nft,
                     )
-                    .map_err(RpcError::Internal)?;
+                    .map_err(|error| RpcError::Internal(error.to_string()))?;
                 // SUPPORTED_PROTOCOL_FOR_REDIRECT order: udp, then tcp.
                 for (active, protocol) in [(udp, "udp"), (tcp, "tcp")] {
                     if active {
@@ -1615,7 +1616,7 @@ fn update_port_redirects(
             &forwards,
             &ports::sqlalchemy_utc_now(),
         )
-        .map_err(RpcError::Internal)?;
+        .map_err(|error| RpcError::Internal(error.to_string()))?;
     }
     with_entry_mut(state, vm_id, |entry| entry.port_forwards = forwards);
     Ok(())
@@ -2346,7 +2347,7 @@ fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, 
 
     let gpus = world::rebuild_attached_gpus(&qemu.gpus, &state.host.gpus);
     let port_forwards = ports::load_port_forwards(&state.host.settings.supervisor_database, vm_id)
-        .map_err(RpcError::Internal)?;
+        .map_err(|error| RpcError::Internal(error.to_string()))?;
     // Rebuild the NUMA ledger entry for this live-but-untracked controller
     // from its effective AllowedCPUs drop-in (increment C1); unpinned when
     // no drop-in maps to a node. This registers the VM exactly once: it fires
@@ -2860,7 +2861,8 @@ fn create_vm_inner(
 
         // Reuse persisted host ports across restarts; the agent reconciles
         // the rest through AddPortForward.
-        let forwards = ports::load_port_forwards(&state.host.settings.supervisor_database, &vm_id)?;
+        let forwards = ports::load_port_forwards(&state.host.settings.supervisor_database, &vm_id)
+            .map_err(|error| error.to_string())?;
         let has_forwards = !forwards.is_empty();
         with_entry_mut(state, &vm_id, |entry| entry.port_forwards = forwards);
         if has_forwards {
@@ -3360,10 +3362,9 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
             continue;
         }
         let result = (|| -> Result<(), String> {
-            let forwards = ports::load_port_forwards(
-                &state.host.settings.supervisor_database,
-                &entry.vm_hash,
-            )?;
+            let forwards =
+                ports::load_port_forwards(&state.host.settings.supervisor_database, &entry.vm_hash)
+                    .map_err(|error| error.to_string())?;
             let has_forwards = !forwards.is_empty();
             with_entry_mut(state, &entry.vm_hash, |entry| {
                 entry.port_forwards = forwards
