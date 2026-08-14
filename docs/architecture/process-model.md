@@ -190,7 +190,13 @@ Before the gRPC socket is bound, `build_world_view`
    the same `vm_index`, only the first in sorted file order is adopted
    (`world.rs`, mirroring the Python `claimed_vm_ids` guard); the other's
    `vm_index` is still reserved out of the allocator so nothing can later
-   collide with it.
+   collide with it. For each VM adopted running, this step also reads that
+   VM's persisted port-forward rows straight out of the port-mapping
+   sqlite store (`ports::load_port_forwards` in
+   `rust/crates/supervisor-daemon/src/world.rs`, backed by
+   `rust/crates/supervisor-daemon/src/ports.rs`) and attaches them to the
+   `VmEntry`, so the world view is genuinely sourced from disk, systemd
+   *and* sqlite together, before the socket ever binds.
 
 A config whose controller unit is not active is still adopted and reported
 `STOPPED`, not stopped-and-deleted: a read-only-at-boot daemon must not
@@ -205,12 +211,14 @@ never report an already-attached GPU as free.
 inside the async runtime, still before the socket is bound. For every VM the
 world view marked `adopted_running`, it creates the TAP device if absent,
 primes the NDP proxy's in-memory range map, ensures the per-VM nftables
-chain exists, and recreates persisted port-forward redirect rules. Every
-step is **create-if-absent**, never flush-and-rebuild: a full flush would
-drop live guest connections on VMs that never stopped. If any step fails for
-a given VM, that VM is removed from the in-memory world (hidden from
-`ListVms`, its `vm_index` kept reserved) and queued in `failed_reattach` for
-retry, exactly mirroring a failed Python reattach.
+chain exists, and recreates the nftables redirect rules for the port
+forwards already loaded from sqlite during world assembly (step 4 above,
+not a second sqlite read here). Every step is **create-if-absent**, never
+flush-and-rebuild: a full flush would drop live guest connections on VMs
+that never stopped. If any step fails for a given VM, that VM is removed
+from the in-memory world (hidden from `ListVms`, its `vm_index` kept
+reserved) and queued in `failed_reattach` for retry, exactly mirroring a
+failed Python reattach.
 
 ### The reattach retry loop
 
