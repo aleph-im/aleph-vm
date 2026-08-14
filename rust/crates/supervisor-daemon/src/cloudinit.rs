@@ -413,15 +413,23 @@ mod tests {
     #[test]
     fn cloud_init_error_messages_are_correct() {
         use std::io;
-
-        let io_error = io::Error::new(io::ErrorKind::PermissionDenied, "no perms");
+        use std::os::unix::process::ExitStatusExt;
 
         let temp_create = CloudInitError::TempCreate {
-            source: io_error.kind().into(),
+            source: io::Error::new(io::ErrorKind::PermissionDenied, "no perms"),
         };
         assert_eq!(
             temp_create.to_string(),
-            format!("cannot create a temp file: {}", io_error.kind())
+            "cannot create a temp file: no perms"
+        );
+
+        let failed = CloudInitError::Failed {
+            status: std::process::ExitStatus::from_raw(1 << 8),
+            stderr: "boom".to_string(),
+        };
+        assert_eq!(
+            failed.to_string(),
+            "cloud-localds failed (exit status: 1): boom"
         );
     }
 }
