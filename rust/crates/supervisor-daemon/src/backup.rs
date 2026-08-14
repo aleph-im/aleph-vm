@@ -52,15 +52,97 @@ pub const BACKUP_DOWNLOAD_CHUNK_BYTES: usize = 1024 * 1024;
 /// A `qemu-img check` outcome. The Python `verify_qemu_disk` raises
 /// `subprocess.CalledProcessError` when the image is invalid, which
 /// `restore_from_image` catches to map a bad upload to InvalidBackendError
-/// (a 400) while anything else (qemu-img missing) stays INTERNAL.
-#[derive(Debug)]
+/// (a 400) while anything else (qemu-img missing) stays INTERNAL. Kept as
+/// its own type (not folded into [`BackupError`]) because that variant
+/// split is load-bearing at the lifecycle call sites: `CheckFailed` ->
+/// InvalidBackend, `Unavailable` -> Internal.
+#[derive(Debug, thiserror::Error)]
 pub enum QemuImgError {
     /// `qemu-img check` ran and reported a non-zero exit (a corrupt image);
     /// Python's `except subprocess.CalledProcessError`.
+    #[error("{0}")]
     CheckFailed(String),
     /// qemu-img could not be run at all (missing binary, spawn failure);
     /// Python's uncaught FileNotFoundError -> InternalSupervisorError.
+    #[error("{0}")]
     Unavailable(String),
+}
+
+/// Failures from the qemu-img disk tools (convert, info) and the
+/// archive-management layer built on top of them (tar/checksum/metadata
+/// sidecars). Display strings are copied verbatim from the pre-typed
+/// `format!` messages they replace (they surface in
+/// `pb::BackupInfo.error_message` and in warn!/error! logs at the call
+/// sites). [`QemuImgError`] (from `check`) folds in via `#[from]`: the
+/// CheckFailed/Unavailable distinction survives inside `BackupError`, it is
+/// only the [`DiskTools::check`] signature that keeps its own error type.
+#[derive(Debug, thiserror::Error)]
+pub enum BackupError {
+    #[error("qemu-img not found in PATH")]
+    QemuImgMissing,
+
+    #[error("cannot run qemu-img convert: {source}")]
+    ConvertRun { source: std::io::Error },
+
+    #[error("qemu-img convert failed ({status}): {stderr}")]
+    ConvertFailed {
+        status: std::process::ExitStatus,
+        stderr: String,
+    },
+
+    #[error("cannot run qemu-img info: {source}")]
+    InfoRun { source: std::io::Error },
+
+    #[error("qemu-img info failed ({status}): {stderr}")]
+    InfoFailed {
+        status: std::process::ExitStatus,
+        stderr: String,
+    },
+
+    #[error("cannot parse qemu-img info JSON: {source}")]
+    InfoJson { source: serde_json::Error },
+
+    #[error("qemu-img info has no virtual-size")]
+    NoVirtualSize,
+
+    #[error("fake convert failed: {source}")]
+    FakeConvert { source: std::io::Error },
+
+    #[error("cannot create the backup archive: {source}")]
+    ArchiveCreate { source: std::io::Error },
+
+    #[error("cannot add {member} to the archive: {source}")]
+    ArchiveAdd {
+        member: String,
+        source: std::io::Error,
+    },
+
+    #[error("cannot finalize the archive: {source}")]
+    ArchiveFinalize { source: std::io::Error },
+
+    #[error("cannot checksum the archive: {source}")]
+    Checksum { source: std::io::Error },
+
+    #[error("cannot write the checksum sidecar: {source}")]
+    ChecksumSidecar { source: std::io::Error },
+
+    #[error("cannot encode the metadata: {source}")]
+    MetadataEncode { source: serde_json::Error },
+
+    #[error("cannot write the metadata sidecar: {source}")]
+    MetadataSidecar { source: std::io::Error },
+
+    #[error("cannot move the archive into place: {source}")]
+    MoveIntoPlace { source: std::io::Error },
+
+    #[error("cannot stat {}: {source}", path.display())]
+    Stat {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+
+    #[error(transparent)]
+    QemuImg(#[from] QemuImgError),
 }
 
 /// The `qemu-img` operations the backup surface drives. A subprocess seam so
@@ -68,12 +150,12 @@ pub enum QemuImgError {
 pub trait DiskTools: Send + Sync {
     /// `create_qemu_disk_backup`: `qemu-img convert -U -O qcow2 -c src dest`,
     /// a standalone compressed copy with no backing-file dependency.
-    fn convert_compressed(&self, source: &Path, dest: &Path) -> Result<(), String>;
+    fn convert_compressed(&self, source: &Path, dest: &Path) -> Result<(), BackupError>;
     /// `verify_qemu_disk`: `qemu-img check path`.
     fn check(&self, path: &Path) -> Result<(), QemuImgError>;
     /// `get_qemu_disk_virtual_size`: `qemu-img info --force-share
     /// --output=json path`, the `virtual-size` field.
-    fn virtual_size(&self, path: &Path) -> Result<u64, String>;
+    fn virtual_size(&self, path: &Path) -> Result<u64, BackupError>;
 }
 
 /// Production [`DiskTools`]: shells out to `qemu-img` exactly like the Python
@@ -81,34 +163,34 @@ pub trait DiskTools: Send + Sync {
 pub struct QemuImgTools;
 
 impl QemuImgTools {
-    fn qemu_img() -> Result<PathBuf, String> {
+    fn qemu_img() -> Result<PathBuf, BackupError> {
         // Python `_require_qemu_img`: `shutil.which("qemu-img")` or
         // FileNotFoundError("qemu-img not found in PATH").
-        crate::checks::which("qemu-img").ok_or_else(|| "qemu-img not found in PATH".to_string())
+        crate::checks::which("qemu-img").ok_or(BackupError::QemuImgMissing)
     }
 }
 
 impl DiskTools for QemuImgTools {
-    fn convert_compressed(&self, source: &Path, dest: &Path) -> Result<(), String> {
+    fn convert_compressed(&self, source: &Path, dest: &Path) -> Result<(), BackupError> {
         let qemu_img = Self::qemu_img()?;
         let output = std::process::Command::new(qemu_img)
             .args(["convert", "-U", "-O", "qcow2", "-c"])
             .arg(source)
             .arg(dest)
             .output()
-            .map_err(|error| format!("cannot run qemu-img convert: {error}"))?;
+            .map_err(|source| BackupError::ConvertRun { source })?;
         if !output.status.success() {
-            return Err(format!(
-                "qemu-img convert failed ({}): {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
+            return Err(BackupError::ConvertFailed {
+                status: output.status,
+                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            });
         }
         Ok(())
     }
 
     fn check(&self, path: &Path) -> Result<(), QemuImgError> {
-        let qemu_img = Self::qemu_img().map_err(QemuImgError::Unavailable)?;
+        let qemu_img =
+            Self::qemu_img().map_err(|error| QemuImgError::Unavailable(error.to_string()))?;
         let output = std::process::Command::new(qemu_img)
             .arg("check")
             .arg(path)
@@ -126,26 +208,25 @@ impl DiskTools for QemuImgTools {
         Ok(())
     }
 
-    fn virtual_size(&self, path: &Path) -> Result<u64, String> {
+    fn virtual_size(&self, path: &Path) -> Result<u64, BackupError> {
         let qemu_img = Self::qemu_img()?;
         let output = std::process::Command::new(qemu_img)
             .args(["info", "--force-share", "--output=json"])
             .arg(path)
             .output()
-            .map_err(|error| format!("cannot run qemu-img info: {error}"))?;
+            .map_err(|source| BackupError::InfoRun { source })?;
         if !output.status.success() {
-            return Err(format!(
-                "qemu-img info failed ({}): {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
+            return Err(BackupError::InfoFailed {
+                status: output.status,
+                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            });
         }
         let value: serde_json::Value = serde_json::from_slice(&output.stdout)
-            .map_err(|error| format!("cannot parse qemu-img info JSON: {error}"))?;
+            .map_err(|source| BackupError::InfoJson { source })?;
         value
             .get("virtual-size")
             .and_then(serde_json::Value::as_u64)
-            .ok_or_else(|| "qemu-img info has no virtual-size".to_string())
+            .ok_or(BackupError::NoVirtualSize)
     }
 }
 
@@ -168,13 +249,13 @@ impl Default for FakeDiskTools {
 }
 
 impl DiskTools for FakeDiskTools {
-    fn convert_compressed(&self, source: &Path, dest: &Path) -> Result<(), String> {
+    fn convert_compressed(&self, source: &Path, dest: &Path) -> Result<(), BackupError> {
         // Copy the source through so the archive carries deterministic bytes;
         // fall back to a marker when the source does not exist.
         match std::fs::copy(source, dest) {
             Ok(_) => Ok(()),
             Err(_) => std::fs::write(dest, b"fake-qcow2")
-                .map_err(|error| format!("fake convert failed: {error}")),
+                .map_err(|source| BackupError::FakeConvert { source }),
         }
     }
 
@@ -186,7 +267,7 @@ impl DiskTools for FakeDiskTools {
         }
     }
 
-    fn virtual_size(&self, _path: &Path) -> Result<u64, String> {
+    fn virtual_size(&self, _path: &Path) -> Result<u64, BackupError> {
         Ok(self.virtual_size)
     }
 }
@@ -426,11 +507,11 @@ fn create_tar_and_checksum(
     vm_hash: &str,
     timestamp: &str,
     source_sizes: &HashMap<String, u64>,
-) -> Result<(), String> {
+) -> Result<(), BackupError> {
     let staging = sidecar(tar_path, ".partial");
-    let build = || -> Result<(), String> {
+    let build = || -> Result<(), BackupError> {
         let file = std::fs::File::create(&staging)
-            .map_err(|error| format!("cannot create the backup archive: {error}"))?;
+            .map_err(|source| BackupError::ArchiveCreate { source })?;
         let mut builder = tar::Builder::new(file);
         // Write plain regular-file members, never GNU sparse ones. The
         // builder defaults to sparse detection, and a qemu-img converted
@@ -442,15 +523,17 @@ fn create_tar_and_checksum(
         for (member_name, source_path) in backup_files {
             builder
                 .append_path_with_name(source_path, member_name)
-                .map_err(|error| format!("cannot add {member_name} to the archive: {error}"))?;
+                .map_err(|source| BackupError::ArchiveAdd {
+                    member: member_name.clone(),
+                    source,
+                })?;
         }
         builder
             .into_inner()
             .and_then(|file| file.sync_all())
-            .map_err(|error| format!("cannot finalize the archive: {error}"))?;
+            .map_err(|source| BackupError::ArchiveFinalize { source })?;
 
-        let checksum = sha256_file(&staging)
-            .map_err(|error| format!("cannot checksum the archive: {error}"))?;
+        let checksum = sha256_file(&staging).map_err(|source| BackupError::Checksum { source })?;
         let tar_name = tar_path
             .file_name()
             .and_then(|name| name.to_str())
@@ -459,7 +542,7 @@ fn create_tar_and_checksum(
             sidecar(tar_path, ".sha256"),
             format!("{checksum}  {tar_name}\n"),
         )
-        .map_err(|error| format!("cannot write the checksum sidecar: {error}"))?;
+        .map_err(|source| BackupError::ChecksumSidecar { source })?;
 
         let meta = BackupMetaFile {
             vm_hash: vm_hash.to_string(),
@@ -473,12 +556,12 @@ fn create_tar_and_checksum(
         std::fs::write(
             sidecar(tar_path, ".meta.json"),
             serde_json::to_string(&meta)
-                .map_err(|error| format!("cannot encode the metadata: {error}"))?,
+                .map_err(|source| BackupError::MetadataEncode { source })?,
         )
-        .map_err(|error| format!("cannot write the metadata sidecar: {error}"))?;
+        .map_err(|source| BackupError::MetadataSidecar { source })?;
 
         std::fs::rename(&staging, tar_path)
-            .map_err(|error| format!("cannot move the archive into place: {error}"))?;
+            .map_err(|source| BackupError::MoveIntoPlace { source })?;
         Ok(())
     };
     build().inspect_err(|_| {
@@ -493,7 +576,7 @@ pub fn create_backup_archive(
     destination_dir: &Path,
     source_sizes: &HashMap<String, u64>,
     timestamp: &str,
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf, BackupError> {
     let tar_path = destination_dir.join(format!("{vm_hash}-{timestamp}.tar"));
     create_tar_and_checksum(&tar_path, backup_files, vm_hash, timestamp, source_sizes)?;
     Ok(tar_path)
@@ -887,7 +970,7 @@ pub fn start_backup(
             state
                 .disk_tools
                 .virtual_size(source)
-                .map_err(RpcError::Internal)?,
+                .map_err(|error| RpcError::Internal(error.to_string()))?,
         );
     }
     let free = crate::host::available_disk_bytes(&backup_dir)
@@ -980,14 +1063,14 @@ fn run_backup(
         )
     };
     if let Err(error) = outcome {
-        tracing::error!(backup_id, error, "Backup failed");
+        tracing::error!(backup_id, %error, "Backup failed");
         state.backups.insert_job(pb::BackupInfo {
             vm_id: vm_id.to_string(),
             backup_id: backup_id.to_string(),
             status: pb::BackupStatus::Failed as i32,
             size_bytes: 0,
             created_at_unix_secs: now_unix_secs(),
-            error_message: error,
+            error_message: error.to_string(),
             checksum: String::new(),
             volumes: Vec::new(),
             source_sizes: HashMap::new(),
@@ -1009,7 +1092,7 @@ fn run_backup_locked(
     backup_dir: &Path,
     quiesce_guest: bool,
     disk_backups: &mut Vec<PathBuf>,
-) -> Result<(), String> {
+) -> Result<(), BackupError> {
     // Best-effort guest fs-freeze while running, thawed after the copy.
     let frozen = if quiesce_guest && vm_running(state, vm_id) {
         try_fsfreeze(state, vm_id)
@@ -1018,7 +1101,7 @@ fn run_backup_locked(
     };
 
     let mut backup_files: Vec<(String, PathBuf)> = Vec::new();
-    let mut convert = || -> Result<(), String> {
+    let mut convert = || -> Result<(), BackupError> {
         for (member_name, source_path) in disk_paths {
             let disk_backup = create_qemu_disk_backup(state, vm_id, source_path, backup_dir)?;
             disk_backups.push(disk_backup.clone());
@@ -1033,19 +1116,17 @@ fn run_backup_locked(
     convert_result?;
 
     for disk_backup in disk_backups.iter() {
-        match state.disk_tools.check(disk_backup) {
-            Ok(()) => {}
-            Err(QemuImgError::CheckFailed(message)) | Err(QemuImgError::Unavailable(message)) => {
-                return Err(message);
-            }
-        }
+        state.disk_tools.check(disk_backup)?;
     }
 
     let mut source_sizes = HashMap::new();
     for (name, source) in disk_paths {
         let size = std::fs::metadata(source)
             .map(|metadata| metadata.len())
-            .map_err(|error| format!("cannot stat {}: {error}", source.display()))?;
+            .map_err(|error| BackupError::Stat {
+                path: source.clone(),
+                source: error,
+            })?;
         source_sizes.insert(name.clone(), size);
     }
     create_backup_archive(vm_id, &backup_files, backup_dir, &source_sizes, timestamp)?;
@@ -1063,7 +1144,7 @@ fn create_qemu_disk_backup(
     vm_hash: &str,
     source: &Path,
     destination_dir: &Path,
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf, BackupError> {
     let timestamp = strftime_compact(false);
     let dest = destination_dir.join(format!("{vm_hash}-{timestamp}.qcow2"));
     tracing::info!(dest = %dest.display(), source = %source.display(), "Creating backup");
@@ -1294,6 +1375,27 @@ mod tests {
     }
 
     #[test]
+    fn create_backup_archive_reports_a_typed_error_for_a_missing_member() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let missing = dir.join("does-not-exist.bin");
+        let members = vec![(BACKUP_ROOTFS_MEMBER.to_string(), missing)];
+        let error =
+            create_backup_archive(VM, &members, dir, &HashMap::new(), "20260101T000000000000Z")
+                .unwrap_err();
+        match &error {
+            BackupError::ArchiveAdd { member, .. } => assert_eq!(member, BACKUP_ROOTFS_MEMBER),
+            other => panic!("expected ArchiveAdd, got {other:?}"),
+        }
+        assert!(
+            error.to_string().starts_with(&format!(
+                "cannot add {BACKUP_ROOTFS_MEMBER} to the archive: "
+            )),
+            "got: {error}"
+        );
+    }
+
+    #[test]
     fn find_existing_and_cleanup_respect_the_ttl() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
@@ -1398,7 +1500,10 @@ mod tests {
             .job(&backup_id)
             .expect("a FAILED job is recorded");
         assert_eq!(job.status, pb::BackupStatus::Failed as i32);
-        assert!(!job.error_message.is_empty());
+        // The sink stores `BackupError::QemuImg(QemuImgError::CheckFailed)`'s
+        // Display: the #[error(transparent)] wrapper renders exactly the
+        // wrapped QemuImgError's `{0}` message, unchanged by the fold.
+        assert_eq!(job.error_message, "fake check failed");
         assert!(!backup_dir.join(format!("{backup_id}.tar")).exists());
     }
 
@@ -1641,7 +1746,7 @@ mod tests {
     }
 
     impl DiskTools for BlockingDiskTools {
-        fn convert_compressed(&self, _source: &Path, dest: &Path) -> Result<(), String> {
+        fn convert_compressed(&self, _source: &Path, dest: &Path) -> Result<(), BackupError> {
             self.converts
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let (lock, cvar) = &*self.gate;
@@ -1649,14 +1754,15 @@ mod tests {
             while !*released {
                 released = cvar.wait(released).unwrap();
             }
-            std::fs::write(dest, b"fake-qcow2").map_err(|error| error.to_string())
+            std::fs::write(dest, b"fake-qcow2")
+                .map_err(|source| BackupError::FakeConvert { source })
         }
 
         fn check(&self, _path: &Path) -> Result<(), QemuImgError> {
             Ok(())
         }
 
-        fn virtual_size(&self, _path: &Path) -> Result<u64, String> {
+        fn virtual_size(&self, _path: &Path) -> Result<u64, BackupError> {
             Ok(1)
         }
     }
