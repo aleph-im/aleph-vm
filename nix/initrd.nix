@@ -1,4 +1,4 @@
-{ pkgs, attest-agent, kernel, init-script, udhcpc-script, ... }:
+{ pkgs, attest-agent, kernel, init-script, udhcpc-script, udhcpc6-script, ... }:
 
 let
   # veritysetup needs to be statically linked for the initrd environment.
@@ -27,6 +27,22 @@ let
     xz -d -k -c ${modDir}/drivers/md/dm-verity.ko.xz > $out/dm-verity.ko
   '';
 
+  # init.sh treats a failing `udhcpc6` as "stay IPv4-only" (deliberate, to
+  # tolerate daemon/image version skew), so a busybox built without the
+  # applet would silently defeat guest IPv6 instead of failing loudly.
+  # Assert at image build time that the applet is present: the only drift
+  # vector is a nixpkgs flake.lock bump changing the default busybox config,
+  # which is exactly when this check runs again.
+  checkedBusybox = pkgs.runCommand "busybox-with-udhcpc6" { } ''
+    ${pkgs.busybox}/bin/busybox --list | grep -qx udhcpc6 || {
+      echo "error: busybox lacks the udhcpc6 applet; guest DHCPv6 would silently no-op." >&2
+      echo "Enable CONFIG_UDHCPC6 via a busybox extraConfig override." >&2
+      exit 1
+    }
+    mkdir -p $out/bin
+    cp ${pkgs.busybox}/bin/busybox $out/bin/busybox
+  '';
+
   # nftables kernel modules for the guest firewall. NF_TABLES is =m in the
   # kernel config (NETFILTER and NF_TABLES_INET are built in), so the guest
   # firewall needs nf_tables.ko plus its two dependencies (from modules.dep:
@@ -44,9 +60,10 @@ let
 in
 pkgs.makeInitrd {
   contents = [
-    { object = "${pkgs.busybox}/bin/busybox"; symlink = "/bin/busybox"; }
+    { object = "${checkedBusybox}/bin/busybox"; symlink = "/bin/busybox"; }
     { object = init-script; symlink = "/init"; }
     { object = udhcpc-script; symlink = "/bin/udhcpc.script"; }
+    { object = udhcpc6-script; symlink = "/bin/udhcpc6.script"; }
     { object = "${attest-agent}/bin/aleph-attest-agent"; symlink = "/bin/aleph-attest-agent"; }
     { object = "${staticCryptsetup}/bin/veritysetup"; symlink = "/bin/veritysetup"; }
     { object = "${staticNft}/bin/nft"; symlink = "/bin/nft"; }

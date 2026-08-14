@@ -198,14 +198,36 @@ pub struct ProgramEntry {
 pub enum VmType {
     Microvm,
     Instance,
+    /// A V-PROGRAM (`aleph_message.models.VerifiableProgramContent`): the
+    /// QEMU SEV-SNP measured-boot launch path is its exclusive hypervisor
+    /// (design doc docs/plans/2026-07-11-vprogram-scheduler-support-design.md
+    /// section 2), so `QemuVmConfig::snp().is_some()` identifies one on this
+    /// side (see [`VmEntry::vm_type`]).
+    VProgram,
 }
 
 impl VmType {
-    /// `StaticIPv6Allocator.VM_TYPE_PREFIX`.
+    /// `StaticIPv6Allocator.VM_TYPE_PREFIX`. Must match the scheduler's
+    /// `VmType::ipv6_value()` (scheduler-events) and the Python
+    /// `StaticIPv6Allocator.VM_TYPE_PREFIX` (hostnetwork.py).
     fn prefix(self) -> u16 {
         match self {
             VmType::Microvm => 0x1,
             VmType::Instance => 0x3,
+            VmType::VProgram => 0x4,
+        }
+    }
+
+    /// The vm type of a QEMU controller config: SEV-SNP measured boot is the
+    /// exclusive V-PROGRAM launch path (see [`VmType::VProgram`]), everything
+    /// else is a plain instance. Shared by [`VmEntry::vm_type`] and the
+    /// adoption path in [`build_world_view`], which classifies persisted
+    /// configs before any `VmEntry` exists, so the two can never diverge.
+    pub fn of_qemu(config: &QemuVmConfig) -> VmType {
+        if config.snp().is_some() {
+            VmType::VProgram
+        } else {
+            VmType::Instance
         }
     }
 }
@@ -312,6 +334,20 @@ impl VmEntry {
     /// Python `is_stopping`: stopping_at set, stopped_at not yet.
     pub fn is_stopping(&self) -> bool {
         self.times.stopping_at_ns != 0 && self.times.stopped_at_ns == 0
+    }
+
+    /// The vm-type hextet input to the static IPv6 scheme (mirrors the
+    /// Python `VmType.from_message_content` split, ported as the equivalent
+    /// config shape check: there is no message content on this side). An
+    /// ephemeral Firecracker program is `Microvm`; a QEMU SEV-SNP
+    /// measured-boot config is `VProgram` (its exclusive launch path, see
+    /// [`VmType::VProgram`]); everything else is `Instance`.
+    pub fn vm_type(&self) -> VmType {
+        if self.is_program {
+            VmType::Microvm
+        } else {
+            VmType::of_qemu(&self.config)
+        }
     }
 }
 
@@ -601,11 +637,12 @@ pub fn build_world_view(
                             continue;
                         }
                     }
+                    let adopted_vm_type = VmType::of_qemu(&qemu);
                     let ipv6_result = match settings.ipv6_allocation_policy {
                         Ipv6AllocationPolicy::Static => ipv6_static_assignment(
                             &settings.ipv6_address_pool,
                             &vm_hash,
-                            VmType::Instance,
+                            adopted_vm_type,
                         ),
                         Ipv6AllocationPolicy::Dynamic => {
                             dynamic_ordinal += 1;
@@ -1109,6 +1146,71 @@ mod tests {
     }
 
     #[test]
+    fn adopting_a_persisted_snp_config_gives_the_v_program_ipv6_hextet() {
+        // The adoption arm derives adopted_vm_type from
+        // `qemu.snp().is_some()` (world.rs, around the QEMU adoption match
+        // arm); a persisted SNP controller config must adopt with the
+        // VProgram (0x4) hextet, not the plain-instance (0x3) one. This is
+        // the branch's central no-drift invariant: reverting that
+        // derivation to `VmType::Instance` must fail this test while
+        // leaving every other test green.
+        let tmp = tempfile::tempdir().unwrap();
+        let snp_hash = "d".repeat(64);
+        let fixture = std::fs::read_to_string(
+            test_fixtures::fixtures_dir()
+                .join(format!("{}-controller.json", test_fixtures::QEMU_HASH)),
+        )
+        .unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&fixture).unwrap();
+        value["vm_id"] = 9.into();
+        value["vm_hash"] = snp_hash.clone().into();
+        // Persisted SNP measured-boot slice, matching what the QEMU config
+        // writer (lifecycle.rs snp_config_slice / create_vm) stamps for an
+        // SNP VM: `sev_snp: true` plus the four measured-boot fields, so
+        // `QemuVmConfig::snp()` resolves `Some`.
+        let config = value["vm_configuration"].as_object_mut().unwrap();
+        config.insert("sev_snp".to_string(), true.into());
+        config.insert("kernel_path".to_string(), "/boot/bzImage".into());
+        config.insert("initrd_path".to_string(), "/boot/initrd".into());
+        config.insert("kernel_cmdline".to_string(), "console=ttyS0".into());
+        config.insert(
+            "ovmf_path".to_string(),
+            "/opt/aleph-vm/firmware/OVMF.fd".into(),
+        );
+        config.insert("sev_policy".to_string(), 196608.into());
+        std::fs::write(
+            tmp.path().join(format!("{snp_hash}-controller.json")),
+            value.to_string(),
+        )
+        .unwrap();
+
+        let settings = test_settings(tmp.path());
+        let units = StaticUnitStates::with_active_vms(&[snp_hash.as_str()]);
+        let world = build_world_view(&settings, &units, &[]);
+
+        let entry = &world.entries[snp_hash.as_str()];
+        assert!(entry.adopted_running);
+        assert!(
+            entry.config.snp().is_some(),
+            "the persisted config must resolve as SNP"
+        );
+        let expected =
+            ipv6_static_assignment(&settings.ipv6_address_pool, &snp_hash, VmType::VProgram)
+                .unwrap();
+        assert_eq!(
+            entry.ipv6,
+            Some(expected),
+            "an adopted SNP VM must carry the V-PROGRAM (0x4) ipv6 hextet, \
+             not the plain-instance (0x3) one"
+        );
+        let address = entry.ipv6.as_ref().unwrap().address.clone();
+        assert!(
+            address.split(':').nth(4) == Some("4"),
+            "ipv6 address {address} must carry the 0x4 vm-type hextet"
+        );
+    }
+
+    #[test]
     fn an_empty_or_missing_execution_root_is_an_empty_world() {
         let tmp = tempfile::tempdir().unwrap();
         let settings = test_settings(&tmp.path().join("does-not-exist"));
@@ -1358,6 +1460,24 @@ mod tests {
         assert!(
             ipv6_static_assignment("fc00:1:2:3::/64", "nothex-----", VmType::Instance).is_err()
         );
+    }
+
+    #[test]
+    fn ipv6_static_math_gives_v_programs_the_0x4_hextet() {
+        // Python: StaticIPv6Allocator(...).allocate_vm_ipv6_subnet(3, hash,
+        // VmType.v_program) uses VM_TYPE_PREFIX[VmType.v_program] == "4"
+        // (hostnetwork.py), matching the scheduler's VmType::ipv6_value().
+        // Same hash as ipv6_static_math_matches_the_python_allocator, only
+        // the vm-type hextet differs: 4 instead of 3.
+        let pair = ipv6_static_assignment(
+            "2a01:240:2:c8::/64",
+            "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+            VmType::VProgram,
+        )
+        .unwrap();
+        assert_eq!(pair.network_cidr, "2a01:240:2:c8:4:abcd:ef01:2340/124");
+        assert_eq!(pair.address, "2a01:240:2:c8:4:abcd:ef01:2341");
+        assert_eq!(pair.gateway, "2a01:240:2:c8:4:abcd:ef01:2340");
     }
 
     #[test]
