@@ -17,7 +17,7 @@ mechanics (which recreate this same state on restart) are also covered
 there and only summarized here where the networking specifics differ.
 Policy for *which* ports get forwarded belongs to the agent
 (`src/aleph/vm/agent/run.py`) and is described below only at the boundary
-where it hands off to the hypervisor mechanism.
+where it hands off to the supervisor mechanism.
 
 ## The model
 
@@ -158,7 +158,7 @@ would leak an `internet_access=false` VM's tap device and nftables chains
 for the life of the daemon, since such a VM never gets an `interface_name`
 to begin with.
 
-### Port forwards: agent policy, hypervisor mechanism, sqlite persistence
+### Port forwards: agent policy, supervisor mechanism, sqlite persistence
 
 The split is total. The **agent** (`resolve_port_forwards` /
 `reconcile_port_forwards` in `src/aleph/vm/agent/run.py`) reads the user's
@@ -167,7 +167,7 @@ aggregate says (`ports_requests.setdefault(22, {"tcp": True, "udp": False})`),
 diffs the desired set against what `list_port_forwards` reports, and issues
 `add_port_forward`/`remove_port_forward`. It never calls anything that
 mutates nftables state directly, and never recreates persisted redirects
-itself; the **hypervisor** applies, persists, reports and reapplies port
+itself; the **supervisor** applies, persists, reports and reapplies port
 forwards entirely on its own.
 
 Persisted mappings live in `port_mappings` inside
@@ -246,12 +246,16 @@ Type=exec` (`Type=exec` is load-bearing: with the default
 `Type=simple` a failed dnsmasq exec would still report success, and the
 daemon would boot the VM with no working DHCP while believing it worked).
 Lease files live one-per-VM under `{EXECUTION_ROOT}/dhcp/{vm_hash}.leases`
-so concurrent per-tap servers never share a lease database. This server is
-started and stopped alongside the tap on every path that manages SNP
-networking (create, stop, start, boot reconcile); a `debug_assert_eq!`
-in `create_vm_inner` checks the request-level and written-config `snp()`
-predicates agree, specifically to prevent a DHCP server leaking on a VM
-that teardown treats as "plain."
+so concurrent per-tap servers never share a lease database. Only
+`create_vm`/`start_vm` (re)start this server, and only the teardown paths
+stop it; `reconcile_boot` never touches DHCP at all, because the per-tap
+dnsmasq runs as its own transient systemd unit, independent of the daemon
+process, and so survives a daemon restart on its own with no boot-time
+reconciliation needed (see
+[`vm-lifecycle.md`](vm-lifecycle.md#adoption-and-boot-reconcile)). A
+`debug_assert_eq!` in `create_vm_inner` checks the request-level and
+written-config `snp()` predicates agree, specifically to prevent a DHCP
+server leaking on a VM that teardown treats as "plain."
 
 ### Forwarding sysctls
 
@@ -277,9 +281,13 @@ exactly.
   instead of silently serving a fallback subnet; two VMs never share a tap
   network (`rust/crates/supervisor-daemon/src/world.rs`).
 - Boot reconcile, create, start and stop only ever create-if-absent
-  tap/nftables/ndppd/DHCP state; only the operator-invoked
-  `RecreateNetwork` RPC flushes and rebuilds
-  (`rust/crates/supervisor-daemon/src/lifecycle.rs`).
+  tap/nftables/ndppd state; only the operator-invoked `RecreateNetwork` RPC
+  flushes and rebuilds (`rust/crates/supervisor-daemon/src/lifecycle.rs`).
+  DHCP is not part of this: `reconcile_boot` never touches it, since the
+  per-tap dnsmasq is a transient systemd unit that survives a daemon
+  restart on its own; only `create_vm`/`start_vm` (re)start it and only the
+  teardown paths stop it
+  (see [`vm-lifecycle.md`](vm-lifecycle.md#adoption-and-boot-reconcile)).
 - The supervisor is the sole writer of nftables and port-forward state; the
   agent only computes desired forwards and diffs against
   `list_port_forwards`, never recreating persisted rules itself

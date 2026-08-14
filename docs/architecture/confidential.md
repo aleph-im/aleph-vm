@@ -228,14 +228,14 @@ daemon as the first SNP host volume (`/dev/vdb`), then an optional
 workload data disk and its hash tree (`/dev/vdc`, `/dev/vdd`). Every
 integrity check in this path fails closed as `VmSetupError`.
 
-Once a V-Program is scheduled, `allocation.v_programs` is a third
+Once a V-PROGRAM is scheduled, `allocation.v_programs` is a third
 allocation set alongside `persistent_vms` and `instances`, threaded through
 `update_allocations` (`src/aleph/vm/agent/views/__init__.py`) the same way:
-`start_persistent_vm` for each entry present, and, the interesting
-asymmetry (an unconditional stop for any running, persistent VM record with
+`start_persistent_vm` for each entry present, and, as the interesting
+asymmetry, an unconditional stop for any running, persistent VM record with
 `record.is_vprogram` that is *not* in the current allocation, checked ahead
 of the general exemption that otherwise protects owner-paid confidential
-VMs from being stopped. For a V-Program the scheduler is the sole source of
+VMs from being stopped. For a V-PROGRAM the scheduler is the sole source of
 truth: since attestation is deployment-independent, the client re-verifies
 the same measurement wherever the scheduler places it next.
 
@@ -318,7 +318,7 @@ byte-identical to the pre-NUMA baseline.
   advertises nothing: `src/aleph/vm/agent/vcpu_probe.py`.
 - TEE capability is a sibling field of `properties.cpu`, not nested inside
   it: `src/aleph/vm/agent/resources.py`.
-- A V-Program absent from the current allocation is stopped even though it
+- A V-PROGRAM absent from the current allocation is stopped even though it
   is confidential; the stop-guard checks `record.is_vprogram` before the
   general confidential exemption: `src/aleph/vm/agent/views/__init__.py`.
 - Runtime bundle integrity is checked before any bytes are trusted: size
@@ -362,5 +362,5 @@ byte-identical to the pre-NUMA baseline.
 - Capability probing and advertising: `src/aleph/vm/utils/__init__.py`
   (`check_amd_sev_supported` and friends), `src/aleph/vm/agent/vcpu_probe.py`,
   `src/aleph/vm/agent/resources.py`.
-- Scheduler threading and the V-Program stop-guard:
+- Scheduler threading and the V-PROGRAM stop-guard:
   `src/aleph/vm/agent/views/__init__.py` (`update_allocations`).

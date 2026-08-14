@@ -78,7 +78,7 @@ test gate).
    covers three of the four built OSes (debian-12 is skipped there: a
    workflow comment notes DigitalOcean removed the debian-12-x64 image
    after Debian 12 reached end of standard support). It waits for
-   `systemctl is-active --quiet aleph-vm-supervisor` plus the supervisor's
+   `systemctl is-active --quiet aleph-vm-supervisor` plus
    port 4020 to be listening, then curls the `/about/usage/system` HTTP
    endpoint (served by the agent, per the workflow's own comment) as an
    indirect check that the agent is up too, and confirms `sevctl` is

@@ -150,13 +150,13 @@ Admission happens in two layers that never overlap in what they check:
 ### Adoption and boot reconcile
 
 A daemon restart never destroys or restarts a live VM. In short: at startup
-the daemon rebuilds its world view from on-disk controller configs plus
-systemd unit states, `reconcile_boot` recreates any missing tap/nftables
-state (plus persisted port-redirect rules) for VMs it adopted running
-(create-if-absent, never flush-and-rebuild), and any VM that fails
-reconciliation is hidden from the world and queued for background retry
-rather than torn down. `reconcile_boot` never touches DHCP: an SNP VM's
-per-tap dnsmasq runs as its own transient systemd unit
+the daemon rebuilds its world view from on-disk controller configs, systemd
+unit states, and the port-forward sqlite store, `reconcile_boot` recreates
+any missing tap/nftables state (plus persisted port-redirect rules) for VMs
+it adopted running (create-if-absent, never flush-and-rebuild), and any VM
+that fails reconciliation is hidden from the world and queued for
+background retry rather than torn down. `reconcile_boot` never touches
+DHCP: an SNP VM's per-tap dnsmasq runs as its own transient systemd unit
 (`aleph-vm-dhcp-{vm_hash}.service`, started via `systemd-run`), independent
 of the daemon process, so it survives a daemon restart on its own and needs
 no boot-time reconciliation; only `create_vm`/`start_vm` (re)start it, and

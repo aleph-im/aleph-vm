@@ -121,7 +121,9 @@ reimplemented) independently of the daemon: `supervisor-controller`
 Python controller's QEMU path (`src/aleph/vm/supervisor/controllers/qemu`,
 `qemu_confidential`): it parses the same `{vm_hash}-controller.json`,
 waits for the daemon-created `vmtap{vm_id}` interface, spawns QEMU, and
-blocks on it.
+blocks on it. (The config's `vm_id` field is the integer `vm_index`, not
+the wire `vm_id`, which is the VM hash: see
+`src/aleph/vm/controllers/configuration.py`.)
 
 Ephemeral (non-persistent) Firecracker programs are different: they are
 **direct child processes of the supervisor daemon**, not systemd units at
@@ -186,7 +188,9 @@ Before the gRPC socket is bound, `build_world_view`
    `STOPPED` from it: each VM's status instead defers to live per-RPC unit
    queries until the bus answers, rather than guessing.
 4. Build one `VmEntry` per adopted config, keyed on the embedded
-   `vm_hash`/`vm_id` (never the file name). When two ACTIVE configs claim
+   `vm_hash`/`vm_id` (never the file name; here `vm_id` means the wire
+   vm_id, i.e. the VM hash, not the config's integer `vm_id` field, which
+   this doc calls `vm_index`). When two ACTIVE configs claim
    the same `vm_index`, only the first in sorted file order is adopted
    (`world.rs`, mirroring the Python `claimed_vm_ids` guard); the other's
    `vm_index` is still reserved out of the allocator so nothing can later
