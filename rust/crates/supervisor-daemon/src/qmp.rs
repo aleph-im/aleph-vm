@@ -35,60 +35,142 @@ const QMP_TIMEOUT: Duration = Duration::from_secs(30);
 /// ledger entry 50 family).
 const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
 
+/// Failures from the blocking QMP/QGA clients. Display strings are copied
+/// verbatim from the pre-typed `format!` messages they replace (they surface
+/// in RPC error responses and in warn!/error! logs at the call sites).
+#[derive(Debug, thiserror::Error)]
+pub enum QmpError {
+    // ── QGA (guest agent) ────────────────────────────────────────────────
+    #[error("QEMU Guest Agent socket not available")]
+    QgaSocketMissing,
+
+    #[error("cannot connect to QGA: {source}")]
+    QgaConnect { source: std::io::Error },
+
+    #[error("cannot set the QGA read timeout: {source}")]
+    QgaReadTimeout { source: std::io::Error },
+
+    #[error("cannot set the QGA write timeout: {source}")]
+    QgaWriteTimeout { source: std::io::Error },
+
+    #[error("cannot clone the QGA socket: {source}")]
+    QgaClone { source: std::io::Error },
+
+    #[error("cannot send the QGA command: {source}")]
+    QgaSend { source: std::io::Error },
+
+    #[error("cannot read the QGA response: {source}")]
+    QgaRead { source: std::io::Error },
+
+    #[error("QGA socket closed unexpectedly")]
+    QgaClosed,
+
+    #[error("invalid QGA response: {source}")]
+    QgaInvalidJson { source: serde_json::Error },
+
+    #[error("QGA error: {error}")]
+    QgaProtocol { error: Value },
+
+    #[error("guest-fsfreeze-freeze did not return a count")]
+    FreezeNoCount,
+
+    #[error("guest-fsfreeze-thaw did not return a count")]
+    ThawNoCount,
+
+    // ── QMP (monitor) ──────────────────────────────────────────────────
+    #[error("VM is not running (QMP socket missing)")]
+    SocketMissing,
+
+    #[error("cannot connect to QMP: {source}")]
+    Connect { source: std::io::Error },
+
+    #[error("cannot set the QMP read timeout: {source}")]
+    ReadTimeout { source: std::io::Error },
+
+    #[error("cannot set the QMP write timeout: {source}")]
+    WriteTimeout { source: std::io::Error },
+
+    #[error("cannot clone the QMP socket: {source}")]
+    Clone { source: std::io::Error },
+
+    #[error("cannot send the QMP command {execute}: {source}")]
+    Send {
+        execute: String,
+        source: std::io::Error,
+    },
+
+    #[error("cannot read from the QMP socket: {source}")]
+    Read { source: std::io::Error },
+
+    #[error("invalid QMP response: {source}")]
+    InvalidJson { source: serde_json::Error },
+
+    #[error("QMP error for {execute}: {error}")]
+    Protocol { execute: String, error: Value },
+
+    #[error("QMP socket closed")]
+    SocketClosed,
+
+    #[error("no QMP greeting: {source}")]
+    NoGreeting { source: Box<QmpError> },
+}
+
 // ── QGA (guest agent) ────────────────────────────────────────────────────
 
 /// `QemuGuestAgentClient.fsfreeze_freeze`: freeze all freezable guest
 /// filesystems, returning the count.
-pub fn qga_fsfreeze_freeze(socket_path: &Path) -> Result<i64, String> {
+pub fn qga_fsfreeze_freeze(socket_path: &Path) -> Result<i64, QmpError> {
     qga_command(socket_path, "guest-fsfreeze-freeze")?
         .as_i64()
-        .ok_or_else(|| "guest-fsfreeze-freeze did not return a count".to_string())
+        .ok_or(QmpError::FreezeNoCount)
 }
 
 /// `QemuGuestAgentClient.fsfreeze_thaw`: thaw all frozen guest filesystems.
-pub fn qga_fsfreeze_thaw(socket_path: &Path) -> Result<i64, String> {
+pub fn qga_fsfreeze_thaw(socket_path: &Path) -> Result<i64, QmpError> {
     qga_command(socket_path, "guest-fsfreeze-thaw")?
         .as_i64()
-        .ok_or_else(|| "guest-fsfreeze-thaw did not return a count".to_string())
+        .ok_or(QmpError::ThawNoCount)
 }
 
 /// `QemuGuestAgentClient.command`: one QGA request/response. QGA emits no
 /// greeting and no events, so exactly one response line follows the request.
-fn qga_command(socket_path: &Path, command: &str) -> Result<Value, String> {
+fn qga_command(socket_path: &Path, command: &str) -> Result<Value, QmpError> {
     if !socket_path.exists() {
-        return Err("QEMU Guest Agent socket not available".to_string());
+        return Err(QmpError::QgaSocketMissing);
     }
-    let stream = UnixStream::connect(socket_path)
-        .map_err(|error| format!("cannot connect to QGA: {error}"))?;
+    let stream =
+        UnixStream::connect(socket_path).map_err(|source| QmpError::QgaConnect { source })?;
     stream
         .set_read_timeout(Some(QGA_TIMEOUT))
-        .map_err(|error| format!("cannot set the QGA read timeout: {error}"))?;
+        .map_err(|source| QmpError::QgaReadTimeout { source })?;
     // A write timeout matching the read timeout: a guest agent that never
     // drains its socket must not block write_all forever, parking this
     // blocking-pool thread (Rust-only robustness, ledger entry 50).
     stream
         .set_write_timeout(Some(QGA_TIMEOUT))
-        .map_err(|error| format!("cannot set the QGA write timeout: {error}"))?;
+        .map_err(|source| QmpError::QgaWriteTimeout { source })?;
     let mut writer = stream
         .try_clone()
-        .map_err(|error| format!("cannot clone the QGA socket: {error}"))?;
+        .map_err(|source| QmpError::QgaClone { source })?;
     let mut reader = BufReader::new(stream);
 
     let request = json!({ "execute": command });
     writer
         .write_all(format!("{request}\n").as_bytes())
         .and_then(|_| writer.flush())
-        .map_err(|error| format!("cannot send the QGA command: {error}"))?;
+        .map_err(|source| QmpError::QgaSend { source })?;
 
     let line = read_capped_line(&mut reader, MAX_LINE_BYTES)
-        .map_err(|error| format!("cannot read the QGA response: {error}"))?;
+        .map_err(|source| QmpError::QgaRead { source })?;
     if line.is_empty() {
-        return Err("QGA socket closed unexpectedly".to_string());
+        return Err(QmpError::QgaClosed);
     }
-    let response: Value = serde_json::from_str(line.trim())
-        .map_err(|error| format!("invalid QGA response: {error}"))?;
+    let response: Value =
+        serde_json::from_str(line.trim()).map_err(|source| QmpError::QgaInvalidJson { source })?;
     if let Some(error) = response.get("error") {
-        return Err(format!("QGA error: {error}"));
+        return Err(QmpError::QgaProtocol {
+            error: error.clone(),
+        });
     }
     Ok(response.get("return").cloned().unwrap_or(Value::Null))
 }
@@ -119,39 +201,39 @@ impl QmpClient {
     /// running), then connect and negotiate capabilities. The missing-socket
     /// message matches Python's RuntimeError verbatim so the agent surfaces
     /// the same text.
-    pub fn connect(socket_path: &Path) -> Result<Self, String> {
+    pub fn connect(socket_path: &Path) -> Result<Self, QmpError> {
         if !socket_path.exists() {
-            return Err("VM is not running (QMP socket missing)".to_string());
+            return Err(QmpError::SocketMissing);
         }
-        let stream = UnixStream::connect(socket_path)
-            .map_err(|error| format!("cannot connect to QMP: {error}"))?;
+        let stream =
+            UnixStream::connect(socket_path).map_err(|source| QmpError::Connect { source })?;
         stream
             .set_read_timeout(Some(QMP_TIMEOUT))
-            .map_err(|error| format!("cannot set the QMP read timeout: {error}"))?;
+            .map_err(|source| QmpError::ReadTimeout { source })?;
         // A write timeout matching the read timeout: a monitor socket that
         // never drains must not block write_all forever, parking this
         // blocking-pool thread (Rust-only robustness, ledger entry 50).
         stream
             .set_write_timeout(Some(QMP_TIMEOUT))
-            .map_err(|error| format!("cannot set the QMP write timeout: {error}"))?;
+            .map_err(|source| QmpError::WriteTimeout { source })?;
         let writer = stream
             .try_clone()
-            .map_err(|error| format!("cannot clone the QMP socket: {error}"))?;
+            .map_err(|source| QmpError::Clone { source })?;
         let mut client = Self {
             writer,
             reader: BufReader::new(stream),
         };
         // The greeting: `{"QMP": {...}}`.
-        client
-            .read_line()
-            .map_err(|error| format!("no QMP greeting: {error}"))?;
+        client.read_line().map_err(|source| QmpError::NoGreeting {
+            source: Box::new(source),
+        })?;
         // qmp_capabilities enters command mode.
         client.command("qmp_capabilities", None)?;
         Ok(client)
     }
 
     /// `query-sev`.
-    pub fn query_sev_info(&mut self) -> Result<SevInfo, String> {
+    pub fn query_sev_info(&mut self) -> Result<SevInfo, QmpError> {
         let caps = self.command("query-sev", None)?;
         Ok(SevInfo {
             enabled: caps
@@ -172,7 +254,7 @@ impl QmpClient {
     }
 
     /// `query-sev-launch-measure`: the base64 launch measurement (`data`).
-    pub fn query_launch_measure(&mut self) -> Result<String, String> {
+    pub fn query_launch_measure(&mut self) -> Result<String, QmpError> {
         let measure = self.command("query-sev-launch-measure", None)?;
         Ok(measure
             .get("data")
@@ -182,7 +264,7 @@ impl QmpClient {
     }
 
     /// `sev-inject-launch-secret`: the base64 packet header and secret.
-    pub fn inject_secret(&mut self, packet_header: &str, secret: &str) -> Result<(), String> {
+    pub fn inject_secret(&mut self, packet_header: &str, secret: &str) -> Result<(), QmpError> {
         self.command(
             "sev-inject-launch-secret",
             Some(json!({ "packet-header": packet_header, "secret": secret })),
@@ -191,7 +273,7 @@ impl QmpClient {
     }
 
     /// `cont`: resume the VM.
-    pub fn continue_execution(&mut self) -> Result<(), String> {
+    pub fn continue_execution(&mut self) -> Result<(), QmpError> {
         self.command("cont", None)?;
         Ok(())
     }
@@ -199,7 +281,7 @@ impl QmpClient {
     /// One QMP command: send `{"execute": ..., "arguments": ...}` and read
     /// until the matching `return`/`error` reply, skipping asynchronous
     /// `event` messages (the `qmp` library's command loop).
-    fn command(&mut self, execute: &str, arguments: Option<Value>) -> Result<Value, String> {
+    fn command(&mut self, execute: &str, arguments: Option<Value>) -> Result<Value, QmpError> {
         let mut request = json!({ "execute": execute });
         if let Some(arguments) = arguments {
             request["arguments"] = arguments;
@@ -207,13 +289,19 @@ impl QmpClient {
         self.writer
             .write_all(format!("{request}\n").as_bytes())
             .and_then(|_| self.writer.flush())
-            .map_err(|error| format!("cannot send the QMP command {execute}: {error}"))?;
+            .map_err(|source| QmpError::Send {
+                execute: execute.to_string(),
+                source,
+            })?;
         loop {
             let line = self.read_line()?;
             let response: Value = serde_json::from_str(line.trim())
-                .map_err(|error| format!("invalid QMP response: {error}"))?;
+                .map_err(|source| QmpError::InvalidJson { source })?;
             if let Some(error) = response.get("error") {
-                return Err(format!("QMP error for {execute}: {error}"));
+                return Err(QmpError::Protocol {
+                    execute: execute.to_string(),
+                    error: error.clone(),
+                });
             }
             if let Some(result) = response.get("return") {
                 return Ok(result.clone());
@@ -222,11 +310,11 @@ impl QmpClient {
         }
     }
 
-    fn read_line(&mut self) -> Result<String, String> {
+    fn read_line(&mut self) -> Result<String, QmpError> {
         let line = read_capped_line(&mut self.reader, MAX_LINE_BYTES)
-            .map_err(|error| format!("cannot read from the QMP socket: {error}"))?;
+            .map_err(|source| QmpError::Read { source })?;
         if line.is_empty() {
-            return Err("QMP socket closed".to_string());
+            return Err(QmpError::SocketClosed);
         }
         Ok(line)
     }
@@ -407,7 +495,8 @@ mod tests {
     fn a_missing_socket_reports_the_python_message() {
         let dir = tempfile::tempdir().unwrap();
         let error = QmpClient::connect(&dir.path().join("absent.sock")).unwrap_err();
-        assert_eq!(error, "VM is not running (QMP socket missing)");
+        assert_eq!(error.to_string(), "VM is not running (QMP socket missing)");
+        assert!(matches!(error, QmpError::SocketMissing));
     }
 
     #[test]
@@ -419,7 +508,10 @@ mod tests {
         );
         let mut client = QmpClient::connect(&socket).unwrap();
         let error = client.query_launch_measure().unwrap_err();
-        assert!(error.contains("sev not enabled"), "got: {error}");
+        assert!(
+            error.to_string().contains("sev not enabled"),
+            "got: {error}"
+        );
     }
 
     /// A fake QGA server: one plain request/response, no handshake. Records
