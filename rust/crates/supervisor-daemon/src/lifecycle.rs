@@ -5633,7 +5633,7 @@ mod tests {
         );
         harness.taps.delete_tap(&tap).unwrap();
         harness.taps.fail_create(|| TapError::Command {
-            argv: "tuntap add name vmtap mode tap".to_string(),
+            argv: "tuntap add name vmtap4 mode tap".to_string(),
             stderr: "Operation not permitted".to_string(),
         });
 
@@ -6420,7 +6420,7 @@ mod tests {
             .systemd
             .set_state(&controller_unit_name(&vm_id), "active");
         harness.taps.fail_create(|| TapError::Command {
-            argv: "tuntap add name vmtap mode tap".to_string(),
+            argv: "tuntap add name vmtap4 mode tap".to_string(),
             stderr: "Operation not permitted".to_string(),
         });
 
@@ -6489,7 +6489,7 @@ mod tests {
         );
         *state.world.blocking_write() = adopted;
         harness.taps.fail_create(|| TapError::Command {
-            argv: "tuntap add name vmtap mode tap".to_string(),
+            argv: "tuntap add name vmtap4 mode tap".to_string(),
             stderr: "Operation not permitted".to_string(),
         });
 
@@ -7518,7 +7518,7 @@ mod tests {
             .set_state(&controller_unit_name(vm_id), "active");
         // Fail the network restore that runs after placement is reconstructed.
         harness.taps.fail_create(|| TapError::Command {
-            argv: "tuntap add name vmtap mode tap".to_string(),
+            argv: "tuntap add name vmtap4 mode tap".to_string(),
             stderr: "Operation not permitted".to_string(),
         });
 
