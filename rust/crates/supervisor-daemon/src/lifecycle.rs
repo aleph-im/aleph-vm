@@ -3743,7 +3743,7 @@ mod tests {
     use crate::config::Settings;
     use crate::logs::StaticLogSource;
     use crate::service::{HostState, vm_spec_message};
-    use crate::tap::{FakeTapBackend, TapBackend};
+    use crate::tap::{FakeTapBackend, TapBackend, TapError};
     use crate::test_fixtures;
     use crate::units::{FakeSystemd, UnitStateSource};
 
@@ -5293,9 +5293,10 @@ mod tests {
         let root = state.host.settings.execution_root.clone();
         let vm_id = hash('8');
         create_vm(state, spec(&vm_id, &root)).unwrap();
-        harness
-            .taps
-            .fail_delete("injected: Device or resource busy");
+        harness.taps.fail_delete(|| TapError::Command {
+            argv: "link del vmtap4".to_string(),
+            stderr: "Device or resource busy".to_string(),
+        });
         let entry = stop_vm(state, &vm_id).unwrap();
         assert_ne!(entry.times.stopped_at_ns, 0);
         // The fake still holds the device (delete failed), like a stuck tap.
@@ -5429,7 +5430,12 @@ mod tests {
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
         create_vm(state, spec(&hash('a'), &root)).unwrap();
-        harness.nft.fail_batches_containing("aleph-vm-nat-3");
+        harness
+            .nft
+            .fail_batches_containing("aleph-vm-nat-3", || nft::NftError::ApplyFailed {
+                status: std::process::ExitStatus::default(),
+                stderr: "aleph-vm-nat-3: rule busy".to_string(),
+            });
 
         let summary = recreate_network(state).unwrap();
         let removed: Vec<&str> = summary["removed_chains"]
@@ -5626,7 +5632,10 @@ mod tests {
                 .unwrap(),
         );
         harness.taps.delete_tap(&tap).unwrap();
-        harness.taps.fail_create("injected: cannot create tap");
+        harness.taps.fail_create(|| TapError::Command {
+            argv: "tuntap add name vmtap mode tap".to_string(),
+            stderr: "Operation not permitted".to_string(),
+        });
 
         reconcile_boot(state);
         let world = state.world.blocking_read();
@@ -6410,7 +6419,10 @@ mod tests {
         harness
             .systemd
             .set_state(&controller_unit_name(&vm_id), "active");
-        harness.taps.fail_create("injected tap failure");
+        harness.taps.fail_create(|| TapError::Command {
+            argv: "tuntap add name vmtap mode tap".to_string(),
+            stderr: "Operation not permitted".to_string(),
+        });
 
         retry_failed_reattachments_once(state);
 
@@ -6476,7 +6488,10 @@ mod tests {
             &state.host.gpus,
         );
         *state.world.blocking_write() = adopted;
-        harness.taps.fail_create("injected tap failure");
+        harness.taps.fail_create(|| TapError::Command {
+            argv: "tuntap add name vmtap mode tap".to_string(),
+            stderr: "Operation not permitted".to_string(),
+        });
 
         reconcile_boot(state);
 
@@ -7502,7 +7517,10 @@ mod tests {
             .systemd
             .set_state(&controller_unit_name(vm_id), "active");
         // Fail the network restore that runs after placement is reconstructed.
-        harness.taps.fail_create("injected tap failure");
+        harness.taps.fail_create(|| TapError::Command {
+            argv: "tuntap add name vmtap mode tap".to_string(),
+            stderr: "Operation not permitted".to_string(),
+        });
 
         let _ = create_vm(state, spec(vm_id, &root));
 

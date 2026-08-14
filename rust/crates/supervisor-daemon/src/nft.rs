@@ -65,11 +65,6 @@ pub enum NftError {
         status: std::process::ExitStatus,
         stderr: String,
     },
-
-    /// A fabricated error for test `NftExecutor` fakes that need to report a
-    /// specific failure without shelling out to a real `nft`.
-    #[error("injected nft failure (matched {needle:?})")]
-    Injected { needle: String },
 }
 
 // ── Entity presence (the dedup) ─────────────────────────────────────────
@@ -881,6 +876,13 @@ impl NftExecutor for NftCli {
     }
 }
 
+/// A builder rather than a stored `NftError`: `NftError` deliberately has no
+/// `Clone` impl (its `io::Error`/`serde_json::Error` sources must stay real,
+/// non-reconstructed errors everywhere outside this test-only injection
+/// path), so a matching batch calls the closure again instead of cloning a
+/// stored value.
+type NftErrorFn = Box<dyn Fn() -> NftError + Send + Sync>;
+
 /// Test executor: a frozen ruleset, recorded command batches, an optional
 /// shared event log interleaving nft batches with the other fakes' calls.
 #[derive(Default)]
@@ -888,7 +890,7 @@ pub struct StaticRuleset {
     pub entries: Vec<Value>,
     pub batches: std::sync::Mutex<Vec<Vec<Value>>>,
     event_log: std::sync::OnceLock<crate::test_fixtures::EventLog>,
-    fail_matching: std::sync::Mutex<Option<String>>,
+    fail_matching: std::sync::Mutex<Option<(String, NftErrorFn)>>,
 }
 
 impl StaticRuleset {
@@ -907,12 +909,18 @@ impl StaticRuleset {
     }
 
     /// Failure injection: every run_commands whose serialized batch
-    /// contains `needle` errors instead of recording.
-    pub fn fail_batches_containing(&self, needle: &str) {
+    /// contains `needle` returns the error `make` builds, instead of
+    /// recording.
+    pub fn fail_batches_containing(
+        &self,
+        needle: &str,
+        make: impl Fn() -> NftError + Send + Sync + 'static,
+    ) {
         *self
             .fail_matching
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(needle.to_string());
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((needle.to_string(), Box::new(make)));
     }
 }
 
@@ -942,18 +950,16 @@ impl NftExecutor for StaticRuleset {
                 serde_json::to_string(commands).unwrap_or_default()
             ));
         }
-        if let Some(needle) = self
+        if let Some((needle, make)) = self
             .fail_matching
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_deref()
+            .as_ref()
             && serde_json::to_string(commands)
                 .unwrap_or_default()
-                .contains(needle)
+                .contains(needle.as_str())
         {
-            return Err(NftError::Injected {
-                needle: needle.to_string(),
-            });
+            return Err(make());
         }
         self.batches
             .lock()
@@ -1152,15 +1158,15 @@ mod tests {
     #[test]
     fn fail_batches_containing_injects_a_typed_error() {
         let executor = StaticRuleset::new(Vec::new());
-        executor.fail_batches_containing("supervisor-nat");
+        executor.fail_batches_containing("supervisor-nat", || NftError::ApplyFailed {
+            status: std::process::ExitStatus::default(),
+            stderr: "supervisor-nat: rule busy".to_string(),
+        });
         let error = executor
             .run_commands(&[json!({"add": {"chain": {"name": "aleph-supervisor-nat"}}})])
             .unwrap_err();
-        assert!(matches!(error, NftError::Injected { .. }));
-        assert_eq!(
-            error.to_string(),
-            "injected nft failure (matched \"supervisor-nat\")"
-        );
+        assert!(matches!(error, NftError::ApplyFailed { .. }));
+        assert!(error.to_string().contains("supervisor-nat: rule busy"));
     }
 
     #[test]

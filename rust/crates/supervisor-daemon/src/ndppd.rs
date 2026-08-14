@@ -25,8 +25,6 @@ const RESTART_DEBOUNCE: Duration = Duration::from_millis(500);
 pub enum NdppdError {
     #[error("cannot write /etc/ndppd.conf: {source}")]
     WriteConf { source: std::io::Error },
-    #[error("{0}")]
-    Injected(String),
 }
 
 /// Where the config lands and how the service restarts.
@@ -272,7 +270,9 @@ mod tests {
 
     impl NdppdEdge for FailingEdge {
         fn write_conf(&self, _contents: &str) -> Result<(), NdppdError> {
-            Err(NdppdError::Injected("read-only /etc".to_string()))
+            Err(NdppdError::WriteConf {
+                source: std::io::Error::other("read-only /etc"),
+            })
         }
         fn restart_service(&self) {}
     }
