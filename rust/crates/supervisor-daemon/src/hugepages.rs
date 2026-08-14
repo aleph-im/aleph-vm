@@ -95,10 +95,7 @@ pub fn allocate_2m_pages_on_node(
         })?
         .trim()
         .parse()
-        .map_err(|source| HugepagesError::Parse {
-            path: path.clone(),
-            source,
-        })?;
+        .map_err(|source| HugepagesError::Parse { path, source })?;
     Ok(actual)
 }
 
