@@ -448,7 +448,8 @@ fn tap_assignment(state: &DaemonState, vm_id: &str) -> Result<TapAssignment, Str
         vm_id,
         vm_type,
         &mut ordinal,
-    )?;
+    )
+    .map_err(|error| error.to_string())?;
     world.ipv6_dynamic_ordinal = ordinal;
     if let Some(entry) = world.entries.get_mut(vm_id) {
         entry.ipv4 = Some(ipv4.clone());
@@ -2638,7 +2639,7 @@ fn create_vm_inner(
         });
         let vm_index = world
             .unique_vm_index(state.host.settings.start_id_index)
-            .map_err(RpcError::Internal)?;
+            .map_err(|error| RpcError::Internal(error.to_string()))?;
         let assignment = if state.host.settings.allow_vm_networking {
             let mut ordinal = world.ipv6_dynamic_ordinal;
             let pair = world::derive_tap_assignment(
@@ -2648,7 +2649,7 @@ fn create_vm_inner(
                 VmType::Instance,
                 &mut ordinal,
             )
-            .map_err(RpcError::Internal)?;
+            .map_err(|error| RpcError::Internal(error.to_string()))?;
             world.ipv6_dynamic_ordinal = ordinal;
             Some(pair)
         } else {
@@ -2990,7 +2991,7 @@ fn create_program_vm(
         let stale_ordinal = world.entries.remove(&vm_id).map(|stale| stale.ordinal);
         let vm_index = world
             .unique_vm_index(state.host.settings.start_id_index)
-            .map_err(RpcError::Internal)?;
+            .map_err(|error| RpcError::Internal(error.to_string()))?;
         let assignment = if state.host.settings.allow_vm_networking && internet_access {
             let mut ordinal = world.ipv6_dynamic_ordinal;
             let pair = world::derive_tap_assignment(
@@ -3000,7 +3001,7 @@ fn create_program_vm(
                 VmType::Microvm,
                 &mut ordinal,
             )
-            .map_err(RpcError::Internal)?;
+            .map_err(|error| RpcError::Internal(error.to_string()))?;
             world.ipv6_dynamic_ordinal = ordinal;
             Some(pair)
         } else {
