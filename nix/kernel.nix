@@ -1,6 +1,10 @@
 { pkgs, lib, ... }:
 
-pkgs.linuxPackages_6_6.kernel.override {
+# LTS 6.12, not 6.6: the #VC-handler hardening against malicious-hypervisor
+# interrupt/exception injection (HECKLER CVE-2024-25743/25744, WeSee
+# CVE-2024-25742) landed in 6.7-rc5/6.9-rc1 and was never backported to 6.6,
+# and the pvalidate cache-line-eviction fix (CVE-2025-38560) needs >= 6.12.93.
+pkgs.linuxPackages_6_12.kernel.override {
   structuredExtraConfig = with lib.kernel; {
     # SEV-SNP guest support (mkForce to override base config "m" → "y")
     AMD_MEM_ENCRYPT = lib.mkForce yes;
