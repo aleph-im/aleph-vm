@@ -218,7 +218,6 @@ NFT
 # and/or workload volume: either token alone is enough to need dm-verity).
 if [ -n "$roothash" ] || [ -n "$workload_roothash" ]; then
     echo "init: loading dm-verity kernel modules"
-    /bin/busybox insmod /lib/modules/dax.ko 2>&1 || echo "init: warning: insmod dax.ko failed"
     /bin/busybox insmod /lib/modules/dm-mod.ko 2>&1 || echo "init: warning: insmod dm-mod.ko failed"
     /bin/busybox insmod /lib/modules/dm-bufio.ko 2>&1 || echo "init: warning: insmod dm-bufio.ko failed"
     /bin/busybox insmod /lib/modules/dm-verity.ko 2>&1 || echo "init: warning: insmod dm-verity.ko failed"

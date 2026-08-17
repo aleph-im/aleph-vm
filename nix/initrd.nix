@@ -10,18 +10,20 @@ let
   staticNft = pkgs.pkgsStatic.nftables.override { withCli = false; };
 
   # dm-verity kernel modules (default =m in the kernel config).
-  # Load order: dax -> dm-mod -> dm-bufio -> dm-verity.
+  # Load order: dm-mod -> dm-bufio -> dm-verity. dax.ko is gone: nixos-26.05
+  # kernels build CONFIG_DAX=y (built in), so dm-mod no longer has a dax
+  # module dependency. Modules also moved out of the kernel's main output
+  # into a dedicated `modules` output on that channel.
   #
   # The measured-boot chain here is dm-verity for rootfs INTEGRITY only. The
   # aleph-cvm donor also baked dm-crypt.ko for its LUKS encrypted-rootfs mode;
   # that mode is out of scope for this backport (design section 6 non-goals),
   # so dm-crypt is deliberately NOT included. See rust-port-divergences.
-  modDir = "${kernel}/lib/modules/${kernel.modDirVersion}/kernel";
+  modDir = "${kernel.modules}/lib/modules/${kernel.modDirVersion}/kernel";
   dmModules = pkgs.runCommand "dm-modules" {
     nativeBuildInputs = [ pkgs.xz ];
   } ''
     mkdir -p $out
-    xz -d -k -c ${modDir}/drivers/dax/dax.ko.xz > $out/dax.ko
     xz -d -k -c ${modDir}/drivers/md/dm-mod.ko.xz > $out/dm-mod.ko
     xz -d -k -c ${modDir}/drivers/md/dm-bufio.ko.xz > $out/dm-bufio.ko
     xz -d -k -c ${modDir}/drivers/md/dm-verity.ko.xz > $out/dm-verity.ko
@@ -68,7 +70,6 @@ pkgs.makeInitrd {
     { object = "${staticCryptsetup}/bin/veritysetup"; symlink = "/bin/veritysetup"; }
     { object = "${staticNft}/bin/nft"; symlink = "/bin/nft"; }
     # dm-verity kernel modules (loaded by init.sh).
-    { object = "${dmModules}/dax.ko"; symlink = "/lib/modules/dax.ko"; }
     { object = "${dmModules}/dm-mod.ko"; symlink = "/lib/modules/dm-mod.ko"; }
     { object = "${dmModules}/dm-bufio.ko"; symlink = "/lib/modules/dm-bufio.ko"; }
     { object = "${dmModules}/dm-verity.ko"; symlink = "/lib/modules/dm-verity.ko"; }
