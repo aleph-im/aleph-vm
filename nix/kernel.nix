@@ -1,10 +1,15 @@
 { pkgs, lib, ... }:
 
-# LTS 6.12, not 6.6: the #VC-handler hardening against malicious-hypervisor
-# interrupt/exception injection (HECKLER CVE-2024-25743/25744, WeSee
-# CVE-2024-25742) landed in 6.7-rc5/6.9-rc1 and was never backported to 6.6,
-# and the pvalidate cache-line-eviction fix (CVE-2025-38560) needs >= 6.12.93.
-pkgs.linuxPackages_6_12.kernel.override {
+# LTS 6.18 (the 2025 LTS line), not 6.6 or 6.12: the #VC-handler hardening
+# against malicious-hypervisor interrupt/exception injection (HECKLER
+# CVE-2024-25743/25744, WeSee CVE-2024-25742) landed in 6.7-rc5/6.9-rc1 and
+# was never backported to 6.6, and the pvalidate cache-line-eviction fix
+# (CVE-2025-38560) landed in mainline before 6.18.0 (6.12 needed the
+# 6.12.93 backport). 6.12 reaches EOL around Dec 2026; 6.18 is maintained
+# until ~end of 2027. Newer non-LTS lines (7.x) add nothing from that list
+# and would EOL under us within months, recreating the frozen-EOL-kernel
+# failure mode the nixos-26.05 re-pin fixed.
+pkgs.linuxPackages_6_18.kernel.override {
   structuredExtraConfig = with lib.kernel; {
     # SEV-SNP guest support (mkForce to override base config "m" → "y")
     AMD_MEM_ENCRYPT = lib.mkForce yes;
