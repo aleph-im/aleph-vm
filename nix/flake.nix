@@ -125,6 +125,7 @@
       initrd = pkgs.callPackage ./initrd.nix {
         inherit attest-agent kernel;
         init-script = ./init.sh;
+        init-common-script = ./init-common.sh;
         udhcpc-script = ./udhcpc.script;
         udhcpc6-script = ./udhcpc6.script;
       };
