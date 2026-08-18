@@ -266,6 +266,7 @@ dependencies = [
  "der",
  "getrandom 0.2.17",
  "hex",
+ "k256",
  "rcgen",
  "reqwest",
  "rustls",

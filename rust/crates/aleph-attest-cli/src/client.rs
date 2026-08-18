@@ -24,9 +24,47 @@ pub struct AttestedResponse {
     pub body: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct InjectSecretResponse {
     pub injected: Vec<String>,
+}
+
+/// The owner-authenticated inject-secret body, byte-for-byte the envelope the
+/// agent's `InjectSecretEnvelope` deserializes when it runs with `--owner`.
+///
+/// `signature` is an EIP-191 personal-sign signature over
+/// `owner_auth::inject_secret_payload(server_public_key_raw, canonical_secrets_json(secrets))`.
+/// The agent re-canonicalizes the received `secrets` map through a `BTreeMap`
+/// before recomputing the payload, so the JSON key order on the wire does not
+/// matter; only the key/value pairs do.
+#[derive(serde::Serialize)]
+pub struct OwnerEnvelope {
+    pub secrets: HashMap<String, String>,
+    pub signature: String,
+}
+
+/// Build the owner-signed injection envelope for `secrets`, bound to
+/// `server_public_key_raw`.
+///
+/// # Safety-critical precondition
+///
+/// `server_public_key_raw` MUST be a key that attestation verification already
+/// accepted (i.e. `SnpCertVerifier::get_server_public_key()` after a completed
+/// handshake). Signing over an unverified key would hand an attacker a valid
+/// owner signature bound to a key they control.
+pub fn build_owner_envelope(
+    signing_key: &k256::ecdsa::SigningKey,
+    server_public_key_raw: &[u8],
+    secrets: &[(String, String)],
+) -> OwnerEnvelope {
+    let map: std::collections::BTreeMap<String, String> = secrets.iter().cloned().collect();
+    let canonical = aleph_tee::owner_auth::canonical_secrets_json(&map);
+    let payload = aleph_tee::owner_auth::inject_secret_payload(server_public_key_raw, &canonical);
+    let signature = aleph_tee::owner_auth::sign_payload(signing_key, &payload);
+    OwnerEnvelope {
+        secrets: map.into_iter().collect(),
+        signature,
+    }
 }
 
 /// Build a reqwest client with our custom TLS verifier.
@@ -198,14 +236,49 @@ pub async fn fresh_attestation(
 /// TEE. If verification fails, `send()` returns an error and the secret never
 /// leaves the client. This diverges from the aleph-cvm donor, which put the
 /// secret on the wire before running the chain.
+///
+/// # Owner authentication
+///
+/// With `owner_key = Some(..)` the request is sent as the owner-signed envelope
+/// that a confidential-instance agent (started with `--owner`) requires; with
+/// `None` it is the legacy flat body that v-program agents accept.
 pub async fn inject_secret(
     base_url: &str,
     product: &str,
     expected_measurement: Option<&[u8]>,
     secrets: &[(String, String)],
+    owner_key: Option<&k256::ecdsa::SigningKey>,
 ) -> Result<InjectSecretResponse> {
     let verifier = SnpCertVerifier::new(expected_measurement.map(|m| m.to_vec()), product);
-    inject_secret_with_verifier(base_url, &verifier, secrets).await
+    inject_secret_with_verifier(base_url, &verifier, secrets, owner_key).await
+}
+
+/// Drive a verified TLS handshake against the agent and return the served public
+/// key that verification accepted.
+///
+/// The GET is only a vehicle for the handshake: the custom verifier is the gate,
+/// so an `Ok` return means the blob-derived key binding, the measurement pin and
+/// the full AMD chain all passed for the returned key. The HTTP status is
+/// deliberately ignored (any answer means the handshake completed); an empty
+/// capture slot is a hard error, never a fallback.
+async fn fetch_verified_server_key(
+    client: &reqwest::Client,
+    base_url: &url::Url,
+    verifier: &Arc<SnpCertVerifier>,
+) -> Result<Vec<u8>> {
+    let attestation_url = base_url
+        .join(".well-known/attestation")
+        .context("failed to construct attestation URL")?;
+
+    client.get(attestation_url.as_str()).send().await.context(
+        "failed to fetch attestation before signing (the attestation gate rejected the \
+             peer; nothing was signed and no secret was transmitted)",
+    )?;
+
+    verifier.get_server_public_key().context(
+        "no verified server public key was captured from the TLS handshake; refusing to sign \
+         an owner envelope over an unverified key",
+    )
 }
 
 /// Core of [`inject_secret`], parameterised over the verifier so tests can
@@ -215,6 +288,7 @@ async fn inject_secret_with_verifier(
     base_url: &str,
     verifier: &std::sync::Arc<SnpCertVerifier>,
     secrets: &[(String, String)],
+    owner_key: Option<&k256::ecdsa::SigningKey>,
 ) -> Result<InjectSecretResponse> {
     let base = url::Url::parse(base_url).context("failed to parse base URL")?;
     let inject_url = base
@@ -223,9 +297,11 @@ async fn inject_secret_with_verifier(
 
     let client = build_attested_client(verifier)?;
 
-    // Reject duplicate secret keys rather than letting the HashMap silently keep
-    // only the last value: for a secret-injection tool, dropping a value the
-    // caller supplied (e.g. `--secret K=v1 --secret K=v2`) is a footgun.
+    // Reject duplicate secret keys rather than letting the map silently keep only
+    // the last value: for a secret-injection tool, dropping a value the caller
+    // supplied (e.g. `--secret K=v1 --secret K=v2`) is a footgun. This runs
+    // before any network I/O and covers both body shapes (the owner envelope
+    // collects through a BTreeMap, which would deduplicate just as silently).
     let mut secrets_map: HashMap<&str, &str> = HashMap::with_capacity(secrets.len());
     for (key, value) in secrets {
         if secrets_map.insert(key.as_str(), value.as_str()).is_some() {
@@ -236,19 +312,37 @@ async fn inject_secret_with_verifier(
     // send() drives the handshake (the authoritative gate) and only writes the
     // secret body after it completes. A verification failure fails the handshake
     // here, before any secret byte is transmitted.
-    let response = client
-        .post(inject_url.as_str())
-        .json(&secrets_map)
-        .send()
-        .await
-        .context(
-            "failed to send inject-secret request (attestation gate rejected the peer; \
-             no secret was transmitted)",
-        )?;
+    let request = match owner_key {
+        // Owner-authenticated: sign over the server key that verification
+        // accepted. The GET both verifies the peer and fills the capture slot,
+        // so no signature is ever produced over an unverified key. The agent's
+        // key is per-boot stable, so the POST's handshake pins the same key; if
+        // the agent rebooted in between, the agent's own signature check fails
+        // closed and a retry surfaces it.
+        Some(signing_key) => {
+            let server_public_key = fetch_verified_server_key(&client, &base, verifier).await?;
+            let envelope = build_owner_envelope(signing_key, &server_public_key, secrets);
+            client.post(inject_url.as_str()).json(&envelope)
+        }
+        // Legacy flat body, for v-program agents started without `--owner`.
+        None => client.post(inject_url.as_str()).json(&secrets_map),
+    };
+
+    let response = request.send().await.context(
+        "failed to send inject-secret request (attestation gate rejected the peer; \
+         no secret was transmitted)",
+    )?;
 
     let status = response.status().as_u16();
     if status == 409 {
         bail!("secrets already injected (409 Conflict)");
+    }
+    if status == 403 {
+        bail!(
+            "the agent rejected the owner signature (403 Forbidden): the --owner-key does not \
+             match the agent's configured owner, or the VM rebooted mid-request and now serves \
+             a different TLS key (retry)"
+        );
     }
     if status != 200 {
         let body = response.text().await.unwrap_or_default();
@@ -326,18 +420,44 @@ mod tests {
         );
     }
 
+    /// Whether `acc` holds a complete HTTP/1.1 request: headers terminated by a
+    /// blank line, plus `Content-Length` body bytes (0 when the header is
+    /// absent). Only ever used against requests this crate itself sends, so no
+    /// chunked-encoding handling is needed.
+    fn request_is_complete(acc: &[u8]) -> bool {
+        let text = String::from_utf8_lossy(acc);
+        let Some(header_end) = text.find("\r\n\r\n") else {
+            return false;
+        };
+        let headers = &text[..header_end];
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())?
+            })
+            .unwrap_or(0);
+        acc.len() >= header_end + 4 + content_length
+    }
+
     /// Spawn a local TLS server presenting `cert_der`/`key_der` that records
     /// whether it ever received the secret marker in a request body, and always
-    /// answers 200 with an InjectSecretResponse. Returns (base_url, received_flag).
+    /// answers 200 with an InjectSecretResponse. Returns
+    /// (base_url, received_flag, raw_requests). `raw_requests` accumulates the
+    /// bytes each accepted connection sent, so a test can inspect the exact
+    /// request body that went over the wire.
     async fn spawn_recording_tls_server(
         cert_der: Vec<u8>,
         key_der: Vec<u8>,
-    ) -> (String, Arc<AtomicBool>) {
+    ) -> (String, Arc<AtomicBool>, Arc<std::sync::Mutex<Vec<Vec<u8>>>>) {
         use rustls::ServerConfig;
         use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
         use tokio_rustls::TlsAcceptor;
 
         let received = Arc::new(AtomicBool::new(false));
+        let requests: Arc<std::sync::Mutex<Vec<Vec<u8>>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
@@ -354,6 +474,7 @@ mod tests {
         let acceptor = TlsAcceptor::from(Arc::new(config));
 
         let flag = received.clone();
+        let recorder = requests.clone();
         tokio::spawn(async move {
             loop {
                 let (stream, _) = match listener.accept().await {
@@ -362,6 +483,7 @@ mod tests {
                 };
                 let acceptor = acceptor.clone();
                 let flag = flag.clone();
+                let recorder = recorder.clone();
                 tokio::spawn(async move {
                     // If the client's attestation gate rejected our cert, the TLS
                     // handshake fails here and we never read a request body.
@@ -380,12 +502,19 @@ mod tests {
                                 acc.extend_from_slice(&buf[..n]);
                                 if String::from_utf8_lossy(&acc).contains("SUPER_SECRET_VALUE") {
                                     flag.store(true, Ordering::SeqCst);
+                                }
+                                // Stop as soon as the request is complete rather
+                                // than waiting out the read timeout, so a test can
+                                // inspect the WHOLE body (and the bodiless
+                                // key-capture GET is answered immediately).
+                                if request_is_complete(&acc) {
                                     break;
                                 }
                             }
                             _ => break,
                         }
                     }
+                    recorder.lock().unwrap().push(acc);
                     let body = r#"{"injected":["MY_SECRET"]}"#;
                     let resp = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -398,7 +527,7 @@ mod tests {
             }
         });
 
-        (format!("https://{addr}/"), received)
+        (format!("https://{addr}/"), received, requests)
     }
 
     /// ORDERING (task test #3 + M7 mutation kill): when the AMD chain check
@@ -409,12 +538,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn inject_secret_does_not_send_when_chain_fails() {
         let (cert_der, key_der) = test_attested_identity([0xAB; 48]);
-        let (base_url, received) = spawn_recording_tls_server(cert_der, key_der).await;
+        let (base_url, received, _bodies) = spawn_recording_tls_server(cert_der, key_der).await;
 
         // Key binding + measurement are fine; only the chain check fails.
         let verifier = SnpCertVerifier::with_chain_check(None, "Milan", failing_chain_check());
         let secrets = vec![("MY_SECRET".to_string(), "SUPER_SECRET_VALUE".to_string())];
-        let result = inject_secret_with_verifier(&base_url, &verifier, &secrets).await;
+        let result = inject_secret_with_verifier(&base_url, &verifier, &secrets, None).await;
 
         assert!(
             result.is_err(),
@@ -435,11 +564,11 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn inject_secret_sends_when_chain_passes() {
         let (cert_der, key_der) = test_attested_identity([0xAB; 48]);
-        let (base_url, received) = spawn_recording_tls_server(cert_der, key_der).await;
+        let (base_url, received, _bodies) = spawn_recording_tls_server(cert_der, key_der).await;
 
         let verifier = SnpCertVerifier::with_chain_check(None, "Milan", valid_chain_check());
         let secrets = vec![("MY_SECRET".to_string(), "SUPER_SECRET_VALUE".to_string())];
-        let resp = inject_secret_with_verifier(&base_url, &verifier, &secrets)
+        let resp = inject_secret_with_verifier(&base_url, &verifier, &secrets, None)
             .await
             .expect("inject_secret should succeed when fully verified");
 
@@ -447,6 +576,127 @@ mod tests {
         assert!(
             received.load(Ordering::SeqCst),
             "the secret should be delivered once the peer is fully verified"
+        );
+    }
+
+    /// The envelope this client builds must be exactly what the agent-side
+    /// verifier accepts: same canonical secrets JSON, same key-bound payload,
+    /// same EIP-191 signature scheme.
+    #[test]
+    fn owner_envelope_matches_agent_contract() {
+        use std::collections::BTreeMap;
+        let key = k256::ecdsa::SigningKey::from_slice(&[0x42u8; 32]).unwrap();
+        let secrets = vec![("luks_passphrase".to_string(), "hunter2".to_string())];
+        let envelope = build_owner_envelope(&key, b"server-key-raw", &secrets);
+        // The agent-side verifier must accept exactly this envelope.
+        let map: BTreeMap<String, String> = secrets.into_iter().collect();
+        let canonical = aleph_tee::owner_auth::canonical_secrets_json(&map);
+        let payload = aleph_tee::owner_auth::inject_secret_payload(b"server-key-raw", &canonical);
+        let owner = aleph_tee::owner_auth::address_from_verifying_key(key.verifying_key());
+        assert!(aleph_tee::owner_auth::verify_owner(
+            &payload,
+            &envelope.signature,
+            &owner
+        ));
+        assert_eq!(envelope.secrets.get("luks_passphrase").unwrap(), "hunter2");
+    }
+
+    /// The signature is bound to the SERVER key, so an envelope built for one
+    /// key must not verify against a payload derived from another. This is the
+    /// property that makes signing only a VERIFIED key matter.
+    #[test]
+    fn owner_envelope_is_bound_to_the_server_key() {
+        use std::collections::BTreeMap;
+        let key = k256::ecdsa::SigningKey::from_slice(&[0x42u8; 32]).unwrap();
+        let secrets = vec![("k".to_string(), "v".to_string())];
+        let envelope = build_owner_envelope(&key, b"honest-server-key", &secrets);
+
+        let map: BTreeMap<String, String> = secrets.into_iter().collect();
+        let canonical = aleph_tee::owner_auth::canonical_secrets_json(&map);
+        let other_payload =
+            aleph_tee::owner_auth::inject_secret_payload(b"attacker-server-key", &canonical);
+        let owner = aleph_tee::owner_auth::address_from_verifying_key(key.verifying_key());
+        assert!(
+            !aleph_tee::owner_auth::verify_owner(&other_payload, &envelope.signature, &owner),
+            "a signature over the honest server key must not verify for another key"
+        );
+    }
+
+    /// End to end over attested TLS: with `--owner-key` the client drives a
+    /// verified handshake first, then POSTs the envelope body (never the flat
+    /// legacy body). The signature must verify against the key the server
+    /// actually served.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inject_secret_sends_owner_envelope_signed_over_the_served_key() {
+        let (cert_der, key_der) = test_attested_identity([0xAB; 48]);
+        let served_public_key = crate::verify::server_public_key_from_cert(&cert_der).unwrap();
+        let (base_url, _received, bodies) = spawn_recording_tls_server(cert_der, key_der).await;
+
+        let owner_key = k256::ecdsa::SigningKey::from_slice(&[0x42u8; 32]).unwrap();
+        let verifier = SnpCertVerifier::with_chain_check(None, "Milan", valid_chain_check());
+        let secrets = vec![("MY_SECRET".to_string(), "SUPER_SECRET_VALUE".to_string())];
+        let resp =
+            inject_secret_with_verifier(&base_url, &verifier, &secrets, Some(&owner_key)).await;
+        assert!(
+            resp.is_ok(),
+            "owner-mode injection should succeed: {resp:?}"
+        );
+
+        // Find the POSTed envelope among the recorded requests.
+        let requests = bodies.lock().unwrap().clone();
+        let posted = requests
+            .iter()
+            .map(|r| String::from_utf8_lossy(r).to_string())
+            .find(|r| r.starts_with("POST "))
+            .expect("a POST request must have been recorded");
+        let body = posted
+            .split_once("\r\n\r\n")
+            .expect("POST must carry a body")
+            .1;
+        let envelope: serde_json::Value =
+            serde_json::from_str(body).expect("the POST body must be JSON");
+        let signature = envelope["signature"]
+            .as_str()
+            .expect("owner mode must send a `signature` field, not the flat legacy body");
+
+        // Reproduce the agent's check verbatim against the SERVED key.
+        let map: std::collections::BTreeMap<String, String> = secrets.into_iter().collect();
+        let canonical = aleph_tee::owner_auth::canonical_secrets_json(&map);
+        let payload = aleph_tee::owner_auth::inject_secret_payload(&served_public_key, &canonical);
+        let owner = aleph_tee::owner_auth::address_from_verifying_key(owner_key.verifying_key());
+        assert!(
+            aleph_tee::owner_auth::verify_owner(&payload, signature, &owner),
+            "the agent must accept the envelope: signature must be over the served TLS key"
+        );
+        assert_eq!(envelope["secrets"]["MY_SECRET"], "SUPER_SECRET_VALUE");
+    }
+
+    /// Owner mode must not weaken the ordering guarantee: when the AMD chain
+    /// check fails, no handshake completes, so no key is captured, nothing is
+    /// signed and no secret is transmitted.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inject_secret_owner_mode_does_not_send_when_chain_fails() {
+        let (cert_der, key_der) = test_attested_identity([0xAB; 48]);
+        let (base_url, received, _bodies) = spawn_recording_tls_server(cert_der, key_der).await;
+
+        let owner_key = k256::ecdsa::SigningKey::from_slice(&[0x42u8; 32]).unwrap();
+        let verifier = SnpCertVerifier::with_chain_check(None, "Milan", failing_chain_check());
+        let secrets = vec![("MY_SECRET".to_string(), "SUPER_SECRET_VALUE".to_string())];
+        let result =
+            inject_secret_with_verifier(&base_url, &verifier, &secrets, Some(&owner_key)).await;
+
+        assert!(
+            result.is_err(),
+            "owner-mode inject_secret must fail when the chain check fails"
+        );
+        assert!(
+            verifier.get_server_public_key().is_none(),
+            "no server key may be captured (hence signed over) when verification fails"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            !received.load(Ordering::SeqCst),
+            "the secret must NOT be transmitted when the AMD chain verification fails"
         );
     }
 
@@ -460,7 +710,8 @@ mod tests {
             ("K".to_string(), "v1".to_string()),
             ("K".to_string(), "v2".to_string()),
         ];
-        let result = inject_secret_with_verifier("https://127.0.0.1:1/", &verifier, &secrets).await;
+        let result =
+            inject_secret_with_verifier("https://127.0.0.1:1/", &verifier, &secrets, None).await;
         let err = match result {
             Ok(_) => panic!("duplicate secret keys must be rejected"),
             Err(e) => e,
