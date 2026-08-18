@@ -439,7 +439,14 @@ class LocalSupervisor(Supervisor):
             execution = self.pool.executions.get(vm_id)
             if execution is None:
                 raise VmNotFoundError(vm_id)
-            return _to_vm_info(execution, _is_running(execution, self.pool))
+            # Off the event loop, like list_vms: for a persistent VM,
+            # _is_running is a synchronous D-Bus round-trip, and the
+            # allocation reconcile calls get_vm once per pushed hash
+            # (start_persistent_vm), so keeping it on the loop stalls
+            # every other request for the whole sweep on busy CRNs (the
+            # in-process remnant of main's batched-lookup fix, #1084).
+            running = await asyncio.to_thread(_is_running, execution, self.pool)
+            return _to_vm_info(execution, running)
 
     async def list_vms(self) -> list[VmInfo]:
         with translating_errors():
