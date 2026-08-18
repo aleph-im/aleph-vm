@@ -22,18 +22,16 @@ must never reach create_vm.
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import logging
 import re
 import shutil
-import tarfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from aleph_message.models.execution.vprogram import VERITY_ROOTHASH_PATTERN
 from pydantic import ValidationError
 
+from aleph.vm.agent import snp_staging
 from aleph.vm.conf import settings
 from aleph.vm.storage import get_existing_file
 from aleph.vm.supervisor_interface.errors import VmSetupError
@@ -58,12 +56,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_SHA256_CHUNK_SIZE = 1024 * 1024
-
 
 def vprogram_staging_dir(vm_hash: ItemHash) -> Path:
     """The per-VM directory the runtime bundle is extracted into."""
-    return Path(settings.EXECUTION_ROOT) / "vprogram" / str(vm_hash)
+    return snp_staging.staging_dir("vprogram", vm_hash)
 
 
 def remove_vprogram_staging(vm_hash: ItemHash) -> None:
@@ -75,10 +71,7 @@ def remove_vprogram_staging(vm_hash: ItemHash) -> None:
     non-V-PROGRAM has no such directory, so this is a no-op. Call it from the
     teardown paths, after the supervisor delete and registry.forget.
     """
-    staging = vprogram_staging_dir(vm_hash)
-    if staging.exists():
-        logger.debug("Removing V-PROGRAM %s staging directory %s", vm_hash, staging)
-        shutil.rmtree(staging, ignore_errors=True)
+    snp_staging.remove_staging("vprogram", vm_hash)
 
 
 async def fetch_runtime_manifest(runtime_ref: str) -> RuntimeManifest:
@@ -95,70 +88,6 @@ async def fetch_runtime_manifest(runtime_ref: str) -> RuntimeManifest:
     except (ValidationError, ValueError, OSError) as error:
         msg = f"runtime manifest {runtime_ref} is invalid: {error}"
         raise VmSetupError(msg) from error
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as fileobj:
-        while chunk := fileobj.read(_SHA256_CHUNK_SIZE):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _verify_bundle(tar_path: Path, manifest: RuntimeManifest) -> None:
-    """The integrity gate: the downloaded tarball must be byte-identical to
-    the one the manifest measured (sha256 + size), or nothing gets extracted."""
-    actual_size = tar_path.stat().st_size
-    if actual_size != manifest.bundle.size:
-        msg = f"runtime bundle {manifest.bundle.ref} size mismatch: expected {manifest.bundle.size}, got {actual_size}"
-        raise VmSetupError(msg)
-    actual_sha256 = _sha256_file(tar_path)
-    # Constant-time compare: defense-in-depth for the hash gate, even though the
-    # manifest is content-addressed and the timing surface here is negligible.
-    if not hmac.compare_digest(actual_sha256, manifest.bundle.sha256):
-        msg = (
-            f"runtime bundle {manifest.bundle.ref} sha256 mismatch: "
-            f"expected {manifest.bundle.sha256}, got {actual_sha256}"
-        )
-        raise VmSetupError(msg)
-
-
-def _extract_bundle(tar_path: Path, dest: Path) -> None:
-    """Extract the verified tarball into a clean staging directory.
-
-    ``filter="data"`` is the tarfile safety filter: it rejects absolute
-    member names, upward traversal, links pointing outside the destination,
-    and strips setuid/devices, so a hostile tarball cannot escape ``dest``.
-    """
-    if dest.exists():
-        shutil.rmtree(dest)
-    dest.mkdir(parents=True)
-    try:
-        with tarfile.open(tar_path, mode="r:gz") as tar:
-            # filter="data" (PEP 706) needs CPython >= 3.12 / 3.11.4 / 3.10.12.
-            # On an older patch release the keyword is absent and extractall
-            # raises TypeError; catch it so we fail closed as VmSetupError
-            # rather than an opaque error (never extract without the filter).
-            tar.extractall(dest, filter="data")
-    except (tarfile.TarError, OSError, TypeError) as error:
-        # Never leave a partially-populated staging dir behind on failure.
-        shutil.rmtree(dest, ignore_errors=True)
-        msg = f"cannot extract runtime bundle {tar_path} into {dest}: {error}"
-        raise VmSetupError(msg) from error
-
-
-def _member_path(bundle_dir: Path, relative: str, role: str) -> Path:
-    """Resolve a manifest member (already validated relative + no-upward by
-    the model) inside the extracted bundle, failing closed if it is missing
-    or somehow escapes the staging directory."""
-    path = bundle_dir / relative
-    if not path.resolve().is_relative_to(bundle_dir.resolve()):
-        msg = f"bundle member {role} escapes the staging directory: {relative}"
-        raise VmSetupError(msg)
-    if not path.is_file():
-        msg = f"bundle member {role} missing after extraction: {path}"
-        raise VmSetupError(msg)
-    return path
 
 
 def _ensure_verity_sidecars(rootfs_path: Path, hash_tree_path: Path, platform_roothash: str) -> None:
@@ -205,19 +134,25 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
     """
     manifest = await fetch_runtime_manifest(str(content.runtime.ref))
 
+    # The tarball is fetched here (not via snp_staging.fetch_and_stage_bundle)
+    # so it goes through this module's own get_existing_file: run.py and the
+    # launch-path tests patch aleph.vm.agent.vprogram_launch.get_existing_file
+    # and expect every ref (manifest, bundle, workload) to resolve through it.
     tar_path = await get_existing_file(manifest.bundle.ref)
-    _verify_bundle(tar_path, manifest)
+    snp_staging._verify_bundle(
+        tar_path, ref=manifest.bundle.ref, sha256=manifest.bundle.sha256, size=manifest.bundle.size
+    )
 
     bundle_dir = vprogram_staging_dir(vm_hash)
-    _extract_bundle(tar_path, bundle_dir)
+    snp_staging._extract_bundle(tar_path, bundle_dir)
     logger.debug("Staged V-PROGRAM %s runtime bundle at %s", vm_hash, bundle_dir)
 
     members = manifest.bundle.members
-    ovmf_path = _member_path(bundle_dir, members.ovmf, "ovmf")
-    kernel_path = _member_path(bundle_dir, members.kernel, "kernel")
-    initrd_path = _member_path(bundle_dir, members.initrd, "initrd")
-    rootfs_path = _member_path(bundle_dir, members.platform_rootfs, "platform_rootfs")
-    hash_tree_path = _member_path(bundle_dir, members.platform_hash_tree, "platform_hash_tree")
+    ovmf_path = snp_staging.member_path(bundle_dir, members.ovmf, "ovmf")
+    kernel_path = snp_staging.member_path(bundle_dir, members.kernel, "kernel")
+    initrd_path = snp_staging.member_path(bundle_dir, members.initrd, "initrd")
+    rootfs_path = snp_staging.member_path(bundle_dir, members.platform_rootfs, "platform_rootfs")
+    hash_tree_path = snp_staging.member_path(bundle_dir, members.platform_hash_tree, "platform_hash_tree")
 
     _ensure_verity_sidecars(rootfs_path, hash_tree_path, manifest.boot.platform_roothash)
 
