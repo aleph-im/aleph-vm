@@ -194,7 +194,6 @@ prepare_chroot() {
 # networking above).
 setup_firewall() {
     /bin/busybox insmod /lib/modules/nfnetlink.ko 2>&1 || echo "init: warning: insmod nfnetlink.ko failed"
-    /bin/busybox insmod /lib/modules/libcrc32c.ko 2>&1 || echo "init: warning: insmod libcrc32c.ko failed"
     /bin/busybox insmod /lib/modules/nf_tables.ko 2>&1 || echo "init: warning: insmod nf_tables.ko failed"
     if /bin/nft -f - <<'NFT'
 table inet filter {
