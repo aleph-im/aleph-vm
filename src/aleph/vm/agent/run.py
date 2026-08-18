@@ -25,6 +25,11 @@ from multidict import CIMultiDict
 from aleph.vm.agent.aggregate import get_user_settings
 from aleph.vm.agent.capacity import CapacityManager, requested_gpu_ids
 from aleph.vm.agent.expiry import ExpiryManager
+from aleph.vm.agent.snp_instance_launch import (
+    build_snp_instance_spec,
+    is_snp_instance,
+    remove_snp_instance_staging,
+)
 from aleph.vm.agent.translate import build_create_vm_spec, build_program_create_vm_spec
 from aleph.vm.agent.update_watcher import UpdateWatcher
 from aleph.vm.agent.vm.program_client import ProgramGuestClient
@@ -303,8 +308,22 @@ async def create_vm_execution(
         # state before initializing it; the supervisor machinery never reads this
         # record. Spec-eligible VMs are QEMU instances, always persistent.
         record = registry.record(vm_hash, message=content, original=original_message.content, persistent=True)
+        snp_instance = is_snp_instance(content)
+        attest_port: int | None = None
         try:
-            spec = await build_create_vm_spec(vm_hash, content)
+            if snp_instance:
+                # SEV-SNP confidential instances build through the dedicated
+                # LUKS-rootfs SNP launch path, not build_create_vm_spec (which
+                # would build a SEV spec with no firmware, since these
+                # messages carry no trusted_execution.firmware). GPU
+                # passthrough is not supported yet on this path: reject
+                # before any staging I/O runs.
+                if requested_gpu_ids(content):
+                    msg = "GPU passthrough is not supported on SEV-SNP instances yet"
+                    raise VmSetupError(msg)
+                spec, attest_port = await build_snp_instance_spec(vm_hash, content)
+            else:
+                spec = await build_create_vm_spec(vm_hash, content)
             # Agent-side admission, after the download so a failed download
             # never consumes a GPU hold: bucket from the message type, then
             # resolve the requested device_ids to concrete host cards (owner =
@@ -318,10 +337,13 @@ async def create_vm_execution(
                 is_instance=True,
                 exclude_vm_hash=vm_hash,
             )
-            requested_gpus = requested_gpu_ids(content)
-            if requested_gpus:
-                resolved_gpus = await capacity.resolve_gpus(requested_gpus, owner=content.address)
-                spec = replace(spec, gpus=resolved_gpus)
+            if not snp_instance:
+                # GPU resolution only applies to the legacy spec path: SNP
+                # instances are rejected above before reaching here.
+                requested_gpus = requested_gpu_ids(content)
+                if requested_gpus:
+                    resolved_gpus = await capacity.resolve_gpus(requested_gpus, owner=content.address)
+                    spec = replace(spec, gpus=resolved_gpus)
             info = await supervisor.create_vm(spec)
         except Exception:
             # build or create failed: drop the early record so a failed create
@@ -329,6 +351,11 @@ async def create_vm_execution(
             # VM the supervisor knows about). Nothing is persisted yet, so
             # forgetting the in-memory entry is sufficient.
             registry.forget(vm_hash)
+            if snp_instance:
+                # build_snp_instance_spec may have already extracted the
+                # runtime bundle (e.g. capacity admission fails after
+                # staging): do not leak it.
+                remove_snp_instance_staging(vm_hash)
             raise
         if info.awaiting_confidential_init:
             # A confidential VM is created but not started: only the owner can
@@ -336,11 +363,24 @@ async def create_vm_execution(
             # /confidential/initialize. Waiting for RUNNING would block forever,
             # and there are no port forwards to apply on a VM that is not up.
             # This mirrors the message path, which never waits on a confidential
-            # VM either.
+            # VM either. SNP instances never set this: the daemon boots them
+            # immediately, so this branch is SEV-only.
             await persist_record(vm_hash, record)
             return None
         try:
             await finish_instance_create(supervisor, info.vm_id, content)
+            if attest_port is not None:
+                # The guest attestation service (aleph.ra-tls) the runtime
+                # manifest pinned: forward it alongside SSH and the user's
+                # own aggregate so the owner can attest post-boot.
+                await supervisor.add_port_forward(
+                    PortForwardSpec(
+                        vm_id=info.vm_id,
+                        host_port=HostPort(0),
+                        vm_port=GuestPort(attest_port),
+                        protocol=Protocol.TCP,
+                    )
+                )
         except Exception:
             # Readiness or port-forward setup failed: tear the half-started VM
             # down, but never let a teardown error mask the original failure.
@@ -349,6 +389,8 @@ async def create_vm_execution(
                 await supervisor.delete_vm(info.vm_id)
             except Exception:
                 logger.exception("Teardown of half-started VM %s failed", vm_hash)
+            if snp_instance:
+                remove_snp_instance_staging(vm_hash)
             raise
         # Agent persists its own knowledge; the hypervisor object is not
         # touched. Registry rehydration and past-logs owner-auth read the
