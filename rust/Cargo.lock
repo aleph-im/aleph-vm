@@ -280,6 +280,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "x509-parser 0.16.0",
+ "zeroize",
 ]
 
 [[package]]
