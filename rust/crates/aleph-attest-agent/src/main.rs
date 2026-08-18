@@ -13,7 +13,7 @@ use clap::Parser;
 use tracing::info;
 
 use proxy::{AppState, attestation_endpoint, proxy_handler};
-use secrets::{SecretStore, inject_secret_handler};
+use secrets::{OwnerAuth, SecretStore, inject_secret_handler};
 use tls::{build_rustls_config, generate_attested_tls_identity};
 
 /// Aleph attestation agent: in-VM sidecar that provides attested HTTPS
@@ -32,6 +32,27 @@ struct Cli {
     /// AMD product name for the SEV-SNP backend (e.g., "Milan", "Genoa", "Turin").
     #[arg(long, default_value = "Genoa")]
     amd_product: String,
+
+    /// Owner address (0x + 40 hex) allowed to inject secrets. When set, every
+    /// inject-secret request must carry a valid EIP-191 owner signature bound to
+    /// this agent's TLS key. When unset, injection is unauthenticated one-shot
+    /// (v-program images).
+    #[arg(long)]
+    owner: Option<String>,
+}
+
+/// Normalize and validate a `--owner` value: lowercase it, then require it is
+/// exactly `0x` followed by 40 hex digits. Returns the normalized (lowercase)
+/// address.
+fn validate_owner(raw: &str) -> Result<String> {
+    let normalized = raw.to_lowercase();
+    let hex_part = normalized
+        .strip_prefix("0x")
+        .context("--owner must start with 0x")?;
+    if hex_part.len() != 40 || !hex_part.chars().all(|c| c.is_ascii_hexdigit()) {
+        anyhow::bail!("--owner must be 0x followed by 40 hex characters, got: {raw}");
+    }
+    Ok(normalized)
 }
 
 #[actix_web::main]
@@ -46,7 +67,12 @@ async fn main() -> Result<()> {
 
     // 1. Parse CLI args.
     let cli = Cli::parse();
-    info!(port = cli.port, upstream = %cli.upstream, product = %cli.amd_product, "starting aleph-attest-agent");
+    let owner = cli.owner.as_deref().map(validate_owner).transpose()?;
+    info!(
+        port = cli.port, upstream = %cli.upstream, product = %cli.amd_product,
+        owner_mode = owner.is_some(),
+        "starting aleph-attest-agent"
+    );
 
     // 2. Create SEV-SNP backend.
     let backend = Arc::new(SevSnpBackend::new(&cli.amd_product));
@@ -63,13 +89,22 @@ async fn main() -> Result<()> {
     // The fresh-attestation endpoint binds the agent's real served public key
     // into every report, so capture it here before `identity` is consumed.
     let served_public_key_raw = identity.public_key_raw.clone();
+    // Owner-auth data, built from the same served key: `None` on v-program
+    // images (unauthenticated one-shot injection, unchanged), `Some` on
+    // confidential-instance images (owner-signature-gated, overwriting).
+    let owner_auth = web::Data::new(owner.map(|owner| OwnerAuth {
+        owner,
+        server_public_key_raw: served_public_key_raw.clone(),
+    }));
     let app_state = web::Data::new(AppState {
         backend,
         served_public_key_raw,
         upstream: cli.upstream.clone(),
         http_client: reqwest::Client::new(),
     });
-    // One-shot secret store, writing to the production /tmp/secrets directory.
+    // Secret store: one-shot without --owner, overwriting with --owner (see
+    // secrets::inject_secret_handler). Writes to the production
+    // /tmp/secrets directory.
     let secret_store = web::Data::new(SecretStore::with_default_dir());
 
     // 6. Start actix-web HTTPS server.
@@ -85,6 +120,7 @@ async fn main() -> Result<()> {
         App::new()
             .app_data(app_state.clone())
             .app_data(secret_store.clone())
+            .app_data(owner_auth.clone())
             .route(
                 "/.well-known/attestation",
                 web::get().to(attestation_endpoint),

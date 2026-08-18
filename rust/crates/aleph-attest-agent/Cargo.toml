@@ -23,3 +23,7 @@ tracing-subscriber.workspace = true
 clap = { workspace = true }
 zeroize.workspace = true
 libc.workspace = true
+
+[dev-dependencies]
+# Constructs valid/invalid owner-signed envelopes in the inject-secret tests.
+k256 = { workspace = true }
