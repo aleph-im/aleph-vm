@@ -67,6 +67,22 @@ else
         # state and no DHCP firewall rule is needed.
         echo 0 > "/proc/sys/net/ipv6/conf/${iface}/disable_ipv6" 2>/dev/null || true
         echo 2 > "/proc/sys/net/ipv6/conf/${iface}/accept_ra" 2>/dev/null || true
+        # udhcpc6 needs a usable link-local source address and bails out with
+        # "can't get link-local IPv6 address" while the freshly created
+        # link-local is still tentative: the sysctl above (re-)enables IPv6
+        # moments before, so DAD (~1s) is still running when udhcpc6 starts
+        # (seen on the SNP testnet, run 32147657203). Wait for DAD to finish,
+        # bounded: v6 stays best-effort and a v6-less environment must not
+        # stall boot.
+        dad_tries=5
+        while [ "$dad_tries" -gt 0 ]; do
+            ll=$(/bin/busybox ip addr show dev "$iface" 2>/dev/null | /bin/busybox grep 'inet6 fe80' || true)
+            if [ -n "$ll" ] && ! echo "$ll" | /bin/busybox grep -q tentative; then
+                break
+            fi
+            dad_tries=$((dad_tries - 1))
+            /bin/busybox sleep 1
+        done
         /bin/busybox udhcpc6 -i "$iface" -q -n -t 5 -A 2 -s /bin/udhcpc6.script 2>&1 || echo "init: DHCPv6 failed on ${iface}; continuing IPv4-only"
     fi
 fi
