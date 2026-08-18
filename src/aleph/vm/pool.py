@@ -1010,8 +1010,8 @@ class VmPool:
                 provided, replaces the per-VM ``is_running`` D-Bus round-
                 trip with a dict lookup. Callers iterating over many
                 executions should pass this to avoid stalling the event
-                loop, same shortcut used by ``load_persistent_executions``
-                and ``get_executions_by_address``.
+                loop, the same shortcut used by
+                ``load_persistent_executions``.
         """
         for _vm_hash, execution in self.executions.items():
             if not execution.persistent:
