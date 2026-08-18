@@ -9,7 +9,7 @@ item hash, which only exists after uploading):
      -> DIR/snp-image.tar.gz + DIR/bundle-info.json; upload the tarball with
         the printed `aleph file upload` command and note the item hash.
   2. python scripts/vprogram_bundle.py manifest --bundle-info DIR/bundle-info.json \
-         --bundle-ref ITEM_HASH --name NAME --runtime-version VERSION
+         --bundle-ref ITEM_HASH --name NAME --runtime-version VERSION [--exec]
      -> DIR/manifest.json; upload it. Its STORE item hash is what V-PROGRAM
         messages pin as runtime.ref.
 
@@ -101,7 +101,11 @@ def cmd_manifest(args: argparse.Namespace) -> int:
     else:
         print(f"note: {tar_path} not found, skipping bundle cross-check")  # noqa: T201
     manifest = make_manifest(
-        info=info, bundle_ref=args.bundle_ref, name=args.name, runtime_version=args.runtime_version
+        info=info,
+        bundle_ref=args.bundle_ref,
+        name=args.name,
+        runtime_version=args.runtime_version,
+        exec_runtime=args.exec_runtime,
     )
     out: Path = args.out if args.out is not None else args.bundle_info.parent / MANIFEST_NAME
     out.write_text(manifest.to_canonical_json())
@@ -133,6 +137,13 @@ def main(argv: list[str] | None = None) -> int:
     p_manifest.add_argument("--name", required=True, help="runtime name, e.g. aleph-snp-attest")
     p_manifest.add_argument("--runtime-version", required=True, help="runtime version string, e.g. 2026.07.08")
     p_manifest.add_argument("--out", type=Path, default=None, help="manifest path (default: next to bundle-info)")
+    p_manifest.add_argument(
+        "--exec",
+        dest="exec_runtime",
+        action="store_true",
+        help="build the aleph.exec/1 workload-runtime manifest (workload_roothash in the "
+        "cmdline template) instead of the builtin no-workload form",
+    )
     p_manifest.set_defaults(func=cmd_manifest)
 
     args = parser.parse_args(argv)
