@@ -318,6 +318,13 @@
       instanceMeasurementSmoke = instanceMeasurementFor {
         owner = "0x0000000000000000000000000000000000000000";
       };
+
+      # Test fixture for the confidential-instance E2E scenario (Task 14): a
+      # plain ext4 rootfs booting a statically linked dropbear SSH server.
+      # NOT part of the measured chain (no dm-verity, not referenced by any
+      # cmdline roothash) and NOT bit-reproducible (build-time host key). See
+      # test-rootfs.nix for the full rationale.
+      instanceTestRootfs = pkgs.callPackage ./test-rootfs.nix {};
     in {
       # Only concrete derivations are exposed as packages (a function like
       # measurementFor is not a valid flake package and would fail flake check);
@@ -340,7 +347,8 @@
           workloadMeasurement
           image
           instanceImage
-          instanceMeasurementSmoke;
+          instanceMeasurementSmoke
+          instanceTestRootfs;
         default = image;
       };
 
