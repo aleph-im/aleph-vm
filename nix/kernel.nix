@@ -9,7 +9,22 @@
 # until ~end of 2027. Newer non-LTS lines (7.x) add nothing from that list
 # and would EOL under us within months, recreating the frozen-EOL-kernel
 # failure mode the nixos-26.05 re-pin fixed.
-pkgs.linuxPackages_6_18.kernel.override {
+let
+  base = pkgs.linuxPackages_6_18.kernel;
+in
+
+# Fail evaluation, not review, if a future channel or package change lowers
+# the kernel below the security floor above. 6.18.0 already carries the full
+# set, so the floor is simply the pinned LTS line itself.
+assert lib.assertMsg (lib.versionAtLeast base.version "6.18")
+  ''
+    SNP guest kernel ${base.version} is below the security floor (6.18):
+    it may lack the HECKLER/WeSee #VC-handler hardening (CVE-2024-25742/
+    -25743/-25744, Linux >= 6.9) or the pvalidate cache-line-eviction fix
+    (CVE-2025-38560). Do not ship it to confidential guests.
+  '';
+
+base.override {
   structuredExtraConfig = with lib.kernel; {
     # SEV-SNP guest support (mkForce to override base config "m" → "y")
     AMD_MEM_ENCRYPT = lib.mkForce yes;
