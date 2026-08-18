@@ -279,7 +279,15 @@
 
       # Per-deployment measurement helper for the instance image: the owner
       # address is a measured cmdline slot, so there is no fixed baked
-      # measurement (unlike the v-program image). Internal, like measurementFor.
+      # measurement (unlike the v-program image). Unlike `measurementFor`
+      # (which callers only ever reach by importing this flake file
+      # directly), Tasks 8/11/13 call this one from ordinary flake
+      # consumers (the daemon's launch path, tests), so it is also exposed
+      # below as `lib.${system}.instanceMeasurementFor`. Its mandatory
+      # `owner` argument still keeps it out of `packages` (a function is not
+      # a valid flake package); `instanceMeasurementSmoke` below gives it
+      # build coverage so evaluation and the sev-snp-measure invocation are
+      # never dead code.
       instanceMeasurementFor = { vcpus ? 2, vcpuType ? "EPYC-v4", owner }: let
         kernelCmdline = "console=ttyS0 luks=1 owner=${owner}";
       in pkgs.runCommand "snp-instance-measurement-${toString vcpus}vcpus-${vcpuType}" {
@@ -301,6 +309,15 @@
         ln -s ${instanceInitrd}/initrd $out/initrd
         cp ${ovmfFd} $out/OVMF.fd
       '';
+
+      # Build-covers instanceMeasurementFor with a fixed placeholder owner
+      # address: a plain `inherit` cannot expose a function through
+      # `packages` (see above), so nothing would otherwise evaluate its body
+      # or invoke sev-snp-measure. `nix build ./nix#instanceMeasurementSmoke`
+      # exercises exactly that.
+      instanceMeasurementSmoke = instanceMeasurementFor {
+        owner = "0x0000000000000000000000000000000000000000";
+      };
     in {
       # Only concrete derivations are exposed as packages (a function like
       # measurementFor is not a valid flake package and would fail flake check);
@@ -322,8 +339,18 @@
           measurement
           workloadMeasurement
           image
-          instanceImage;
+          instanceImage
+          instanceMeasurementSmoke;
         default = image;
+      };
+
+      # instanceMeasurementFor takes a mandatory `owner` argument, so unlike
+      # the packages above it cannot be a flake package; expose it here so
+      # Tasks 8/11/13 (and any other flake consumer, not just direct
+      # importers of this file) can call
+      # `(builtins.getFlake ...).lib.${system}.instanceMeasurementFor { ... }`.
+      lib.${system} = {
+        inherit instanceMeasurementFor;
       };
     };
 }
