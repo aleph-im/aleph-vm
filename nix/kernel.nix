@@ -54,6 +54,15 @@ pkgs.linuxPackages_6_12.kernel.override {
     FORTIFY_SOURCE = lib.mkForce yes;
     HARDENED_USERCOPY = lib.mkForce yes;
 
+    # Compile out the 32-bit syscall entry paths entirely. Since 6.9 the
+    # kernel disables them at runtime on SEV/TDX guests (the CVE-2024-25744
+    # mitigation for HECKLER-style int 0x80 injection); removing the code
+    # from the build makes that stance unbypassable and shrinks the #VC
+    # attack surface. The guest userland is 64-bit-only static musl, so
+    # nothing needs compat.
+    IA32_EMULATION = lib.mkForce no;
+    X86_X32_ABI = lib.mkForce no;
+
     # Note: MODULES left as default (yes) to avoid interactive config questions.
     # For a minimal production kernel, use a fully custom .config instead.
   };
