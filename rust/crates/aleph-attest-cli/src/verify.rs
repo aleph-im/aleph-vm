@@ -116,7 +116,15 @@ impl SnpCertVerifier {
     ///
     /// This is the exact `public_key_raw` the agent bound its key-binding report
     /// to. The fresh-attestation flow needs it to reconstruct and check the
-    /// channel-bound `fresh_report_data(server_public_key, nonce)`.
+    /// channel-bound `fresh_report_data(server_public_key, nonce)`, and
+    /// owner-authenticated secret injection signs over it (see
+    /// `client::build_owner_envelope`).
+    ///
+    /// `Some` implies a COMPLETE verification succeeded for that key: the slot is
+    /// written only on the `Ok` path of `verify_server_cert`, after the
+    /// blob-derived key binding, the measurement pin and the full AMD chain have
+    /// all passed. Callers may therefore treat the value as a verified key; an
+    /// empty slot must be treated as a hard failure, never as "sign it anyway".
     pub fn get_server_public_key(&self) -> Option<Vec<u8>> {
         self.server_public_key.lock().unwrap().clone()
     }
@@ -133,7 +141,7 @@ impl SnpCertVerifier {
 ///
 /// This is the identical byte string the agent obtains from
 /// `rcgen::KeyPair::public_key_raw()` and binds its attestation report to.
-fn server_public_key_from_cert(cert_der: &[u8]) -> Result<Vec<u8>, Error> {
+pub(crate) fn server_public_key_from_cert(cert_der: &[u8]) -> Result<Vec<u8>, Error> {
     let (_, cert) = x509_parser::parse_x509_certificate(cert_der)
         .map_err(|e| Error::General(format!("failed to parse certificate for key binding: {e}")))?;
     Ok(cert
@@ -218,6 +226,10 @@ impl ServerCertVerifier for SnpCertVerifier {
             )));
         }
 
+        // Capture the served key ONLY here, on the success path: every failure
+        // above returns early and leaves the slot empty. Owner-authenticated
+        // injection signs over this value, and a signature over an unverified
+        // key would be a signature an attacker could harvest.
         *self.server_public_key.lock().unwrap() = Some(public_key_bytes);
         *self.verification_result.lock().unwrap() = Some(result);
         Ok(ServerCertVerified::assertion())
@@ -448,6 +460,42 @@ mod tests {
         assert!(run_verify(&verifier, &cert_der).is_ok());
         assert_eq!(verifier.get_server_public_key().unwrap(), public_key_raw);
         assert!(verifier.get_result().unwrap().valid);
+    }
+
+    /// The captured server key is what `inject-secret --owner-key` signs over, so
+    /// it must be UNSET unless a full verification succeeded: a fresh verifier
+    /// (handshake never ran), a rejected key binding, a chain that reports the
+    /// report invalid, and a chain that errors must all leave the slot empty.
+    /// Anything else would let the client sign over an unverified server key.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn server_key_slot_stays_empty_unless_fully_verified() {
+        // Never ran.
+        let verifier = SnpCertVerifier::with_chain_check(None, "Milan", valid_chain_check());
+        assert!(
+            verifier.get_server_public_key().is_none(),
+            "a verifier that never ran must expose no server key"
+        );
+
+        // Key binding fails (blob binds another key), chain would have passed.
+        let (bad_binding, _pk) =
+            cert_with_blob(key_bound_report_data(b"some-other-key"), [0xAB; 48]);
+        let verifier = SnpCertVerifier::with_chain_check(None, "Milan", valid_chain_check());
+        assert!(run_verify(&verifier, &bad_binding).is_err());
+        assert!(
+            verifier.get_server_public_key().is_none(),
+            "a key whose binding check failed must never be exposed for signing"
+        );
+
+        // Binding is fine but the chain rejects / errors.
+        let (good_binding, _pk) = cert_bound_to_own_key([0xAB; 48]);
+        for chain in [invalid_chain_check(), failing_chain_check()] {
+            let verifier = SnpCertVerifier::with_chain_check(None, "Milan", chain);
+            assert!(run_verify(&verifier, &good_binding).is_err());
+            assert!(
+                verifier.get_server_public_key().is_none(),
+                "a key from an unverified chain must never be exposed for signing"
+            );
+        }
     }
 
     /// BLOCKER #1 (key binding is blob-derived): the blob binds a DIFFERENT key
