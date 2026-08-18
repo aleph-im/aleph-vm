@@ -68,6 +68,25 @@ pub fn build_owner_envelope(
 }
 
 /// Build a reqwest client with our custom TLS verifier.
+///
+/// # Redirects are disabled, deliberately
+///
+/// reqwest follows up to 10 redirects by default. That is unsafe here because a
+/// single `SnpCertVerifier` is shared across every request the client makes and
+/// its capture slot is last-write-wins: a redirect silently swaps the peer the
+/// slot describes.
+///
+/// Concretely, with redirects enabled a verified-but-hostile instance A can
+/// answer the pre-flight attestation GET with a 3xx pointing at a DIFFERENT
+/// genuinely-attested instance B. The client would follow it, B's handshake
+/// would overwrite the slot with B's key, and the owner envelope would be signed
+/// over B's key while the POST still goes to A. A then holds a valid,
+/// owner-signed envelope for B and can replay it there. A 307/308 on the POST is
+/// worse still: reqwest would resend the secret body itself to another peer.
+///
+/// `Policy::none()` collapses the attack: every response is returned by exactly
+/// the peer whose handshake filled the slot, so the key signed over and the peer
+/// the secret is sent to are always the same instance.
 fn build_attested_client(verifier: &Arc<SnpCertVerifier>) -> Result<reqwest::Client> {
     let tls_config = rustls::ClientConfig::builder()
         .dangerous()
@@ -76,6 +95,7 @@ fn build_attested_client(verifier: &Arc<SnpCertVerifier>) -> Result<reqwest::Cli
 
     reqwest::Client::builder()
         .use_preconfigured_tls(tls_config)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .context("failed to build HTTP client with custom TLS config")
 }
@@ -441,6 +461,24 @@ mod tests {
         acc.len() >= header_end + 4 + content_length
     }
 
+    /// The canonical 200 answer: an `InjectSecretResponse` naming MY_SECRET.
+    fn ok_injected_response() -> String {
+        let body = r#"{"injected":["MY_SECRET"]}"#;
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+    }
+
+    /// A 3xx answer pointing at `location`, as a hostile peer would use to make
+    /// the client talk to a different instance mid-flow.
+    fn redirect_response(location: &str) -> String {
+        format!(
+            "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+    }
+
     /// Spawn a local TLS server presenting `cert_der`/`key_der` that records
     /// whether it ever received the secret marker in a request body, and always
     /// answers 200 with an InjectSecretResponse. Returns
@@ -450,6 +488,16 @@ mod tests {
     async fn spawn_recording_tls_server(
         cert_der: Vec<u8>,
         key_der: Vec<u8>,
+    ) -> (String, Arc<AtomicBool>, Arc<std::sync::Mutex<Vec<Vec<u8>>>>) {
+        spawn_tls_server(cert_der, key_der, ok_injected_response()).await
+    }
+
+    /// As [`spawn_recording_tls_server`], but answering every request with the
+    /// caller-supplied raw HTTP `response`.
+    async fn spawn_tls_server(
+        cert_der: Vec<u8>,
+        key_der: Vec<u8>,
+        response: String,
     ) -> (String, Arc<AtomicBool>, Arc<std::sync::Mutex<Vec<Vec<u8>>>>) {
         use rustls::ServerConfig;
         use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -475,6 +523,7 @@ mod tests {
 
         let flag = received.clone();
         let recorder = requests.clone();
+        let response = Arc::new(response);
         tokio::spawn(async move {
             loop {
                 let (stream, _) = match listener.accept().await {
@@ -484,6 +533,7 @@ mod tests {
                 let acceptor = acceptor.clone();
                 let flag = flag.clone();
                 let recorder = recorder.clone();
+                let response = response.clone();
                 tokio::spawn(async move {
                     // If the client's attestation gate rejected our cert, the TLS
                     // handshake fails here and we never read a request body.
@@ -515,13 +565,7 @@ mod tests {
                         }
                     }
                     recorder.lock().unwrap().push(acc);
-                    let body = r#"{"injected":["MY_SECRET"]}"#;
-                    let resp = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        body.len(),
-                        body
-                    );
-                    let _ = tls.write_all(resp.as_bytes()).await;
+                    let _ = tls.write_all(response.as_bytes()).await;
                     let _ = tls.flush().await;
                 });
             }
@@ -669,6 +713,90 @@ mod tests {
             "the agent must accept the envelope: signature must be over the served TLS key"
         );
         assert_eq!(envelope["secrets"]["MY_SECRET"], "SUPER_SECRET_VALUE");
+    }
+
+    /// REDIRECT ATTACK: a verified-but-hostile instance A answers the pre-flight
+    /// attestation GET with a 302 pointing at a DIFFERENT, also genuinely
+    /// attested instance B. If redirects were followed, B's handshake would
+    /// overwrite the shared verifier's capture slot with B's key, so the envelope
+    /// would be signed over B's key while the POST still went to A, handing A a
+    /// valid owner-signed envelope to replay against B.
+    ///
+    /// With `Policy::none()` the 3xx is surfaced, not followed: B is never
+    /// contacted, the slot still holds A's key, and the call fails cleanly.
+    /// Removing the `.redirect(..)` line flips every assertion below.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inject_secret_does_not_follow_redirects_to_another_instance() {
+        // B: a second, independently attested instance (its own TLS key).
+        let (cert_b, key_b) = test_attested_identity([0xAB; 48]);
+        let key_b_public = crate::verify::server_public_key_from_cert(&cert_b).unwrap();
+        let (url_b, received_b, requests_b) = spawn_recording_tls_server(cert_b, key_b).await;
+
+        // A: attested too, but hostile: it redirects everything to B.
+        let (cert_a, key_a) = test_attested_identity([0xAB; 48]);
+        let key_a_public = crate::verify::server_public_key_from_cert(&cert_a).unwrap();
+        let (url_a, _received_a, requests_a) =
+            spawn_tls_server(cert_a, key_a, redirect_response(&url_b)).await;
+        assert_ne!(key_a_public, key_b_public, "the two peers must differ");
+
+        let owner_key = k256::ecdsa::SigningKey::from_slice(&[0x42u8; 32]).unwrap();
+        let verifier = SnpCertVerifier::with_chain_check(None, "Milan", valid_chain_check());
+        let secrets = vec![("MY_SECRET".to_string(), "SUPER_SECRET_VALUE".to_string())];
+        let result =
+            inject_secret_with_verifier(&url_a, &verifier, &secrets, Some(&owner_key)).await;
+
+        // The 302 is surfaced as a plain non-200 failure, not chased.
+        assert!(
+            result.is_err(),
+            "a 3xx from the peer must fail cleanly, not be followed"
+        );
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            requests_b.lock().unwrap().is_empty(),
+            "the redirect target must never be contacted"
+        );
+        assert!(
+            !received_b.load(Ordering::SeqCst),
+            "the secret must never reach the redirect target"
+        );
+
+        // The capture slot still describes A, the peer we actually spoke to, so
+        // anything signed is bound to A and is worthless to A elsewhere.
+        assert_eq!(
+            verifier.get_server_public_key().unwrap(),
+            key_a_public,
+            "the capture slot must still hold the key of the peer we handshook with"
+        );
+
+        // If a POST body did go out, its signature must bind A's key, never B's.
+        let sent = requests_a.lock().unwrap().clone();
+        for raw in sent {
+            let text = String::from_utf8_lossy(&raw).to_string();
+            let Some((_, body)) = text.split_once("\r\n\r\n") else {
+                continue;
+            };
+            let Ok(envelope) = serde_json::from_str::<serde_json::Value>(body) else {
+                continue;
+            };
+            let Some(signature) = envelope["signature"].as_str() else {
+                continue;
+            };
+            let map: std::collections::BTreeMap<String, String> = secrets.iter().cloned().collect();
+            let canonical = aleph_tee::owner_auth::canonical_secrets_json(&map);
+            let owner =
+                aleph_tee::owner_auth::address_from_verifying_key(owner_key.verifying_key());
+            let payload_b = aleph_tee::owner_auth::inject_secret_payload(&key_b_public, &canonical);
+            assert!(
+                !aleph_tee::owner_auth::verify_owner(&payload_b, signature, &owner),
+                "the envelope must NOT be signed over the redirect target's key"
+            );
+            let payload_a = aleph_tee::owner_auth::inject_secret_payload(&key_a_public, &canonical);
+            assert!(
+                aleph_tee::owner_auth::verify_owner(&payload_a, signature, &owner),
+                "the envelope must be bound to the peer we actually spoke to"
+            );
+        }
     }
 
     /// Owner mode must not weaken the ordering guarantee: when the AMD chain
