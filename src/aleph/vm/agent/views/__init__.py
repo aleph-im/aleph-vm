@@ -572,26 +572,6 @@ async def update_allocations(request: web.Request):
 
     async with allocation_lock:
         logger.debug("Got allocation_lock, updating allocations")
-
-        # Snapshot systemd's ActiveState for every persistent controller
-        # in one batched D-Bus ListUnits() call off the event loop. The
-        # per-VM path (execution.is_running -> is_service_active) would
-        # otherwise issue O(N) synchronous D-Bus round-trips inside this
-        # loop; on CRNs with dozens of persistent VMs that stalls the
-        # loop long enough for the aleph-admin HTTP client to time out.
-        persistent_services = [
-            execution.controller_service for execution in pool.executions.values() if execution.persistent
-        ]
-        # None (not {}) when no batch was performed, so get_persistent_executions
-        # falls back to its per-VM is_running path instead of treating every
-        # service as not-running.
-        running_states: dict[str, bool] | None = None
-        if persistent_services and pool.systemd_manager:
-            running_states = await asyncio.to_thread(
-                pool.systemd_manager.get_services_active_states,
-                persistent_services,
-            )
-
         # First, free resources from persistent programs and instances that are not scheduled anymore.
         allocations = allocation.persistent_vms | allocation.instances | allocation.v_programs
         stopped_vms = []
