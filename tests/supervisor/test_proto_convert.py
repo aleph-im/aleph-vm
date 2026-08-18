@@ -34,6 +34,7 @@ from aleph.vm.supervisor_interface.types import (
     PortForwardSpec,
     Protocol,
     SevInfo,
+    SpecVmType,
     TeeBackend,
     TeeConfig,
     VmId,
@@ -58,6 +59,7 @@ FULL_SPEC = CreateVmSpec(
         policy="0x07",
         session_dir=DirectoryPath(Path("/var/lib/sessions")),
         firmware_path=Path("/var/cache/ovmf.fd"),
+        kernel_cmdline="console=ttyS0 luks=1 owner=0xabc",
     ),
     network=NetworkConfig(internet_access=True, requested_ipv6="fd00::42", ipv6_prefix_len=124),
     gpus=[
@@ -69,6 +71,7 @@ FULL_SPEC = CreateVmSpec(
     numa_node=1,
     persistent=True,
     ssh_authorized_keys=["ssh-ed25519 AAAA test@host"],
+    vm_type=SpecVmType.INSTANCE,
 )
 
 MINIMAL_SPEC = CreateVmSpec(
@@ -283,6 +286,41 @@ def test_create_vm_spec_carries_tee_firmware_path():
     assert out.tee.firmware_path == Path("/ovmf.fd")
 
 
+def test_create_vm_spec_carries_kernel_cmdline_and_vm_type():
+    spec = _minimal_spec(
+        tee=TeeConfig(
+            backend=TeeBackend.SEV_SNP,
+            policy="0x07",
+            session_dir=DirectoryPath(Path("/s")),
+            kernel_cmdline="console=ttyS0 luks=1 owner=0xabc",
+        ),
+        vm_type=SpecVmType.INSTANCE,
+    )
+    out = conv.create_vm_spec_from_pb(conv.create_vm_spec_to_pb(spec))
+    assert out.tee.kernel_cmdline == "console=ttyS0 luks=1 owner=0xabc"
+    assert out.vm_type is SpecVmType.INSTANCE
+    assert out == spec
+
+
+def test_create_vm_spec_defaults_are_absent_on_wire():
+    spec = _minimal_spec(
+        tee=TeeConfig(
+            backend=TeeBackend.SEV,
+            policy="",
+            session_dir=DirectoryPath(Path("/s")),
+        ),
+    )
+    assert spec.tee.kernel_cmdline == ""
+    assert spec.vm_type is SpecVmType.UNSPECIFIED
+    msg = conv.create_vm_spec_to_pb(spec)
+    assert msg.tee.kernel_cmdline == ""
+    assert msg.vm_type == 0
+    out = conv.create_vm_spec_from_pb(msg)
+    assert out.tee.kernel_cmdline == ""
+    assert out.vm_type is SpecVmType.UNSPECIFIED
+    assert out == spec
+
+
 def test_create_vm_spec_carries_resolved_gpu():
     spec = _minimal_spec(
         gpus=[GpuSpec(pci_host=PciAddress("0000:01:00.0"), supports_x_vga=True)],
@@ -299,6 +337,7 @@ def test_enum_tables_are_total():
     assert set(conv.DISK_ROLE_TO_PB) == set(DiskRole)
     assert set(conv.LOG_SOURCE_TO_PB) == set(LogSource)
     assert set(conv.BACKUP_STATUS_TO_PB) == set(BackupStatus)
+    assert set(conv.SPEC_VM_TYPE_TO_PB) == set(SpecVmType)
 
 
 def test_measurement_carries_sev_info_and_launch_measure():

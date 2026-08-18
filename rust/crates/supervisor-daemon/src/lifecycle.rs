@@ -3855,6 +3855,7 @@ mod tests {
             ssh_authorized_keys: vec!["ssh-ed25519 AAAA test@host".to_string()],
             hostname: "itest".to_string(),
             guest_channel: None,
+            vm_type: pb::VmType::Unspecified as i32,
         }
     }
 
@@ -3945,6 +3946,7 @@ mod tests {
             policy: "0x5".to_string(),
             session_dir: String::new(),
             firmware_path: firmware.to_string(),
+            kernel_cmdline: String::new(),
         });
         request
     }
@@ -4030,6 +4032,7 @@ mod tests {
             policy: String::new(),
             session_dir: String::new(),
             firmware_path: firmware.to_string(),
+            kernel_cmdline: String::new(),
         });
         request
     }
@@ -5798,6 +5801,7 @@ mod tests {
                 ready_port: 52,
                 ready_timeout_secs: 7,
             }),
+            vm_type: pb::VmType::Unspecified as i32,
         }
     }
 

@@ -103,6 +103,26 @@ TEE_BACKEND_TDX: TeeBackend.ValueType  # 3
 TEE_BACKEND_NVIDIA_CC: TeeBackend.ValueType  # 4
 global___TeeBackend = TeeBackend
 
+class _VmType:
+    ValueType = typing.NewType("ValueType", builtins.int)
+    V: typing_extensions.TypeAlias = ValueType
+
+class _VmTypeEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._EnumTypeWrapper[_VmType.ValueType], builtins.type):
+    DESCRIPTOR: google.protobuf.descriptor.EnumDescriptor
+    VM_TYPE_UNSPECIFIED: _VmType.ValueType  # 0
+    VM_TYPE_INSTANCE: _VmType.ValueType  # 1
+    VM_TYPE_V_PROGRAM: _VmType.ValueType  # 2
+
+class VmType(_VmType, metaclass=_VmTypeEnumTypeWrapper):
+    """Mechanism-only VM type: selects the IPv6 vm-type hextet and display labels.
+    The agent knows what it is creating; the daemon must not guess.
+    """
+
+VM_TYPE_UNSPECIFIED: VmType.ValueType  # 0
+VM_TYPE_INSTANCE: VmType.ValueType  # 1
+VM_TYPE_V_PROGRAM: VmType.ValueType  # 2
+global___VmType = VmType
+
 class _VmStatus:
     ValueType = typing.NewType("ValueType", builtins.int)
     V: typing_extensions.TypeAlias = ValueType
@@ -459,6 +479,7 @@ class VmSpec(google.protobuf.message.Message):
     SSH_AUTHORIZED_KEYS_FIELD_NUMBER: builtins.int
     HOSTNAME_FIELD_NUMBER: builtins.int
     GUEST_CHANNEL_FIELD_NUMBER: builtins.int
+    VM_TYPE_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
     """agent-issued id, opaque to supervisor"""
     backend: global___Backend.ValueType
@@ -476,6 +497,7 @@ class VmSpec(google.protobuf.message.Message):
     """Guest hostname for provisioning (cloud-init). Naming is the client's
     business; empty falls back to a mechanical derivation from vm_id.
     """
+    vm_type: global___VmType.ValueType
     @property
     def disks(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___DiskConfig]: ...
     @property
@@ -518,9 +540,10 @@ class VmSpec(google.protobuf.message.Message):
         ssh_authorized_keys: collections.abc.Iterable[builtins.str] | None = ...,
         hostname: builtins.str = ...,
         guest_channel: global___GuestChannel | None = ...,
+        vm_type: global___VmType.ValueType = ...,
     ) -> None: ...
     def HasField(self, field_name: typing.Literal["_guest_channel", b"_guest_channel", "_numa_node", b"_numa_node", "guest_channel", b"guest_channel", "network", b"network", "numa_node", b"numa_node", "tee", b"tee"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing.Literal["_guest_channel", b"_guest_channel", "_numa_node", b"_numa_node", "backend", b"backend", "disks", b"disks", "gpus", b"gpus", "guest_channel", b"guest_channel", "hostname", b"hostname", "initrd_path", b"initrd_path", "kernel_path", b"kernel_path", "memory_mib", b"memory_mib", "network", b"network", "numa_node", b"numa_node", "persistent", b"persistent", "ssh_authorized_keys", b"ssh_authorized_keys", "tee", b"tee", "vcpus", b"vcpus", "vm_id", b"vm_id"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["_guest_channel", b"_guest_channel", "_numa_node", b"_numa_node", "backend", b"backend", "disks", b"disks", "gpus", b"gpus", "guest_channel", b"guest_channel", "hostname", b"hostname", "initrd_path", b"initrd_path", "kernel_path", b"kernel_path", "memory_mib", b"memory_mib", "network", b"network", "numa_node", b"numa_node", "persistent", b"persistent", "ssh_authorized_keys", b"ssh_authorized_keys", "tee", b"tee", "vcpus", b"vcpus", "vm_id", b"vm_id", "vm_type", b"vm_type"]) -> None: ...
     @typing.overload
     def WhichOneof(self, oneof_group: typing.Literal["_guest_channel", b"_guest_channel"]) -> typing.Literal["guest_channel"] | None: ...
     @typing.overload
@@ -622,6 +645,7 @@ class TeeConfig(google.protobuf.message.Message):
     POLICY_FIELD_NUMBER: builtins.int
     SESSION_DIR_FIELD_NUMBER: builtins.int
     FIRMWARE_PATH_FIELD_NUMBER: builtins.int
+    KERNEL_CMDLINE_FIELD_NUMBER: builtins.int
     backend: global___TeeBackend.ValueType
     """attestation backend (orthogonal to the top-level Backend enum, which selects the VMM)"""
     policy: builtins.str
@@ -630,6 +654,12 @@ class TeeConfig(google.protobuf.message.Message):
     """confidential session files"""
     firmware_path: builtins.str
     """resolved OVMF blob path (empty = none)"""
+    kernel_cmdline: builtins.str
+    """Opaque measured guest kernel cmdline, rendered by the agent from the
+    runtime manifest's template. When set (SEV-SNP only), the daemon passes
+    it to QEMU verbatim and never parses it; it is mutually exclusive with
+    the sidecar-derived verity cmdline. Empty = unset.
+    """
     def __init__(
         self,
         *,
@@ -637,8 +667,9 @@ class TeeConfig(google.protobuf.message.Message):
         policy: builtins.str = ...,
         session_dir: builtins.str = ...,
         firmware_path: builtins.str = ...,
+        kernel_cmdline: builtins.str = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["backend", b"backend", "firmware_path", b"firmware_path", "policy", b"policy", "session_dir", b"session_dir"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["backend", b"backend", "firmware_path", b"firmware_path", "kernel_cmdline", b"kernel_cmdline", "policy", b"policy", "session_dir", b"session_dir"]) -> None: ...
 
 global___TeeConfig = TeeConfig
 

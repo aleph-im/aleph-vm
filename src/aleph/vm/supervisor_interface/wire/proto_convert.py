@@ -46,6 +46,7 @@ from aleph.vm.supervisor_interface.types import (
     PortForwardSpec,
     Protocol,
     SevInfo,
+    SpecVmType,
     TeeBackend,
     TeeConfig,
     VmEvent,
@@ -71,6 +72,13 @@ TEE_BACKEND_TO_PB = {
     TeeBackend.NVIDIA_CC: pb.TEE_BACKEND_NVIDIA_CC,
 }
 TEE_BACKEND_FROM_PB = {v: k for k, v in TEE_BACKEND_TO_PB.items()}
+
+SPEC_VM_TYPE_TO_PB = {
+    SpecVmType.UNSPECIFIED: pb.VM_TYPE_UNSPECIFIED,
+    SpecVmType.INSTANCE: pb.VM_TYPE_INSTANCE,
+    SpecVmType.V_PROGRAM: pb.VM_TYPE_V_PROGRAM,
+}
+SPEC_VM_TYPE_FROM_PB = {v: k for k, v in SPEC_VM_TYPE_TO_PB.items()}
 
 HEALTH_STATUS_TO_PB = {
     HealthStatus.OK: pb.HEALTH_STATUS_OK,
@@ -206,6 +214,7 @@ def create_vm_spec_to_pb(spec: CreateVmSpec) -> pb.VmSpec:
         persistent=spec.persistent,
         ssh_authorized_keys=list(spec.ssh_authorized_keys),
         hostname=spec.hostname,
+        vm_type=SPEC_VM_TYPE_TO_PB[spec.vm_type],
     )
     if spec.guest_channel is not None:
         request.guest_channel.CopyFrom(
@@ -221,6 +230,7 @@ def create_vm_spec_to_pb(spec: CreateVmSpec) -> pb.VmSpec:
                 policy=spec.tee.policy,
                 session_dir=path_to_wire(Path(spec.tee.session_dir)),
                 firmware_path=path_to_wire(spec.tee.firmware_path) if spec.tee.firmware_path is not None else "",
+                kernel_cmdline=spec.tee.kernel_cmdline,
             )
         )
     if spec.numa_node is not None:
@@ -236,6 +246,7 @@ def create_vm_spec_from_pb(msg: pb.VmSpec) -> CreateVmSpec:
             policy=msg.tee.policy,
             session_dir=DirectoryPath(path_from_wire(msg.tee.session_dir)),
             firmware_path=path_from_wire(msg.tee.firmware_path) if msg.tee.firmware_path else None,
+            kernel_cmdline=msg.tee.kernel_cmdline,
         )
     return CreateVmSpec(
         vm_id=VmId(msg.vm_id),
@@ -270,6 +281,7 @@ def create_vm_spec_from_pb(msg: pb.VmSpec) -> CreateVmSpec:
             if msg.HasField("guest_channel")
             else None
         ),
+        vm_type=SPEC_VM_TYPE_FROM_PB[msg.vm_type],
     )
 
 

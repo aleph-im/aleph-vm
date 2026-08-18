@@ -110,6 +110,18 @@ class HealthStatus(Enum):
     DEGRADED = "degraded"
 
 
+class SpecVmType(Enum):
+    """Mechanism-only VM type on the wire: selects the IPv6 vm-type hextet
+    and display labels. Deliberately independent of aleph.vm.vm_type.VmType,
+    which also has microvm/persistent_program values that never cross this
+    boundary; the agent knows what it is creating, the daemon must not
+    guess."""
+
+    UNSPECIFIED = "unspecified"
+    INSTANCE = "instance"
+    V_PROGRAM = "v_program"
+
+
 @dataclass(frozen=True)
 class DiskSpec:
     """A disk by host path. Where the guest mounts it is the client's
@@ -130,6 +142,11 @@ class TeeConfig:
     # trusted_execution.firmware ref, downloaded to disk by the agent before
     # create). The engine feeds it to QemuConfidentialVMConfiguration.ovmf_path.
     firmware_path: Path | None = None
+    # Opaque measured guest kernel cmdline, rendered by the agent from the
+    # runtime manifest's template. When set (SEV-SNP only), the daemon passes
+    # it to QEMU verbatim and never parses it; mutually exclusive with the
+    # sidecar-derived verity cmdline. Empty = unset.
+    kernel_cmdline: str = ""
 
 
 @dataclass(frozen=True)
@@ -200,6 +217,9 @@ class CreateVmSpec:
     # Optional host⇄guest control channel; None = no channel. See
     # GuestChannelSpec and VmInfo.guest_channel_path.
     guest_channel: GuestChannelSpec | None = None
+    # Mechanism-only VM type: selects the IPv6 vm-type hextet and display
+    # labels. See SpecVmType.
+    vm_type: SpecVmType = SpecVmType.UNSPECIFIED
 
     @property
     def rootfs(self) -> DiskSpec | None:

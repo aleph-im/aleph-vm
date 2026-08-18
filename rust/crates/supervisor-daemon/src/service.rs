@@ -529,6 +529,7 @@ pub fn vm_spec_message(entry: &VmEntry) -> pb::VmSpec {
             .map(|parent| parent.to_string_lossy().into_owned())
             .unwrap_or_default(),
         firmware_path: confidential.ovmf_path.clone(),
+        kernel_cmdline: String::new(),
     });
     pb::VmSpec {
         vm_id: entry.vm_hash.clone(),
@@ -561,6 +562,7 @@ pub fn vm_spec_message(entry: &VmEntry) -> pb::VmSpec {
         ssh_authorized_keys: Vec::new(),
         hostname: String::new(),
         guest_channel: None,
+        vm_type: pb::VmType::Unspecified as i32,
     }
 }
 

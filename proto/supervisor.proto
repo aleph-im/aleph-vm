@@ -170,6 +170,14 @@ enum TeeBackend {
   TEE_BACKEND_NVIDIA_CC = 4;
 }
 
+// Mechanism-only VM type: selects the IPv6 vm-type hextet and display labels.
+// The agent knows what it is creating; the daemon must not guess.
+enum VmType {
+  VM_TYPE_UNSPECIFIED = 0;
+  VM_TYPE_INSTANCE = 1;
+  VM_TYPE_V_PROGRAM = 2;
+}
+
 enum VmStatus {
   VM_STATUS_UNSPECIFIED = 0;
   VM_STATUS_DEFINED = 1;
@@ -208,6 +216,7 @@ message VmSpec {
   // signal. What is spoken over the channel is the client's business, opaque
   // to the supervisor.
   optional GuestChannel guest_channel = 14;
+  VmType vm_type = 16;
 }
 
 message GuestChannel {
@@ -247,6 +256,11 @@ message TeeConfig {
   string policy = 2;                 // empty = default
   string session_dir = 3;            // confidential session files
   string firmware_path = 4;          // resolved OVMF blob path (empty = none)
+  // Opaque measured guest kernel cmdline, rendered by the agent from the
+  // runtime manifest's template. When set (SEV-SNP only), the daemon passes
+  // it to QEMU verbatim and never parses it; it is mutually exclusive with
+  // the sidecar-derived verity cmdline. Empty = unset.
+  string kernel_cmdline = 5;
 }
 
 message NetworkConfig {
