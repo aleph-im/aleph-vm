@@ -11,12 +11,19 @@ from aleph.vm.vprogram.bundle import (
     BUNDLE_INFO_NAME,
     BUNDLE_NAME,
     CMDLINE_TEMPLATE_EXEC_V1,
+    CMDLINE_TEMPLATE_LUKS_V1,
     BundleInfo,
+    InstanceBundleInfo,
     build_bundle,
+    make_instance_manifest,
     make_manifest,
     verify_bundle_info,
 )
-from aleph.vm.vprogram.manifest import RuntimeManifest, SourceInfo
+from aleph.vm.vprogram.manifest import (
+    InstanceRuntimeManifest,
+    RuntimeManifest,
+    SourceInfo,
+)
 
 ROOTHASH = "cb121a317be7dc7969dd633ca9b6c3718ffe9ea6715b64e0e35a871d484b56b8"
 MEASUREMENT = "de" * 48
@@ -180,3 +187,79 @@ def test_verify_bundle_info_rejects_tampered(image_dir: Path, tmp_path: Path) ->
     tar_path.write_bytes(tar_path.read_bytes() + b"x")
     with pytest.raises(ValueError, match="does not match"):
         verify_bundle_info(info, tar_path)
+
+
+@pytest.fixture()
+def instance_image_dir(tmp_path: Path) -> Path:
+    """The nix instanceImage output: OVMF/kernel/initrd only, no verity sidecars."""
+    d = tmp_path / "instance-image"
+    d.mkdir()
+    (d / "OVMF.fd").write_bytes(b"ovmf firmware")
+    (d / "bzImage").write_bytes(b"kernel")
+    (d / "initrd").write_bytes(b"initrd contents")
+    return d
+
+
+def test_build_bundle_instance_flavor(instance_image_dir: Path, tmp_path: Path) -> None:
+    out = _out(tmp_path, "out")
+    info = build_bundle(image_dir=instance_image_dir, out_dir=out, source_epoch=EPOCH, source=SOURCE, flavor="instance")
+    data = (out / BUNDLE_NAME).read_bytes()
+    assert isinstance(info, InstanceBundleInfo)
+    assert info.sha256 == hashlib.sha256(data).hexdigest()
+    assert info.size == len(data)
+    assert info.members.ovmf == "image/OVMF.fd"
+    assert info.members.kernel == "image/bzImage"
+    assert info.members.initrd == "image/initrd"
+    assert not hasattr(info, "platform_roothash")
+    assert not hasattr(info, "measurement")
+    with tarfile.open(out / BUNDLE_NAME, "r:gz") as tar:
+        assert tar.getnames() == ["image", "image/OVMF.fd", "image/bzImage", "image/initrd"]
+    on_disk = InstanceBundleInfo.model_validate_json((out / BUNDLE_INFO_NAME).read_text())
+    assert on_disk == info
+
+
+def test_build_bundle_instance_flavor_ignores_verity_sidecars(instance_image_dir: Path, tmp_path: Path) -> None:
+    """The instance image dir never has roothash/measurement sidecars; a
+    vprogram-flavor build against the same dir would fail, proving the
+    instance flavor does not read them."""
+    with pytest.raises(FileNotFoundError):
+        build_bundle(image_dir=instance_image_dir, out_dir=_out(tmp_path, "out"), source_epoch=EPOCH, source=SOURCE)
+    # But the instance flavor succeeds against the very same directory.
+    build_bundle(
+        image_dir=instance_image_dir,
+        out_dir=_out(tmp_path, "out2"),
+        source_epoch=EPOCH,
+        source=SOURCE,
+        flavor="instance",
+    )
+
+
+def test_build_bundle_instance_flavor_missing_file_is_an_error(instance_image_dir: Path, tmp_path: Path) -> None:
+    (instance_image_dir / "bzImage").unlink()
+    with pytest.raises(FileNotFoundError):
+        build_bundle(
+            image_dir=instance_image_dir,
+            out_dir=_out(tmp_path, "out"),
+            source_epoch=EPOCH,
+            source=SOURCE,
+            flavor="instance",
+        )
+
+
+INSTANCE_BUNDLE_REF = "87287e4a5c8d7554a50f982cd681b64b2600c0bbb1c0b1e618465e022e01b977"
+
+
+def test_make_instance_manifest_from_bundle_info(instance_image_dir: Path, tmp_path: Path) -> None:
+    out = _out(tmp_path, "out")
+    info = build_bundle(image_dir=instance_image_dir, out_dir=out, source_epoch=EPOCH, source=SOURCE, flavor="instance")
+    manifest = make_instance_manifest(info, bundle_ref=INSTANCE_BUNDLE_REF, name="aleph-snp-luks", version="2026.08.18")
+    reparsed = InstanceRuntimeManifest.model_validate_json(manifest.to_canonical_json())
+    assert reparsed == manifest
+    assert manifest.format == "aleph-instance-runtime"
+    assert manifest.bundle.ref == INSTANCE_BUNDLE_REF
+    assert manifest.bundle.sha256 == info.sha256
+    assert manifest.bundle.size == info.size
+    assert manifest.bundle.members == info.members
+    assert manifest.boot.cmdline_template == CMDLINE_TEMPLATE_LUKS_V1
+    assert "{owner}" in manifest.boot.cmdline_template
+    assert manifest.source == SOURCE

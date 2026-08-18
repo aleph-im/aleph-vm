@@ -26,6 +26,10 @@ from aleph.vm.vprogram.manifest import (
     AttestationTransport,
     BootSpec,
     BundleMembers,
+    InstanceBootSpec,
+    InstanceBundleMembers,
+    InstanceRuntimeBundle,
+    InstanceRuntimeManifest,
     RuntimeBundle,
     RuntimeManifest,
     SourceInfo,
@@ -49,6 +53,16 @@ MEMBER_FILES = {
 ROOTHASH_FILE = "rootfs.ext4.roothash"
 MEASUREMENT_FILE = "measurement.hex"
 
+# Role -> file name inside the nix `instanceImage` output directory: OVMF,
+# kernel, initrd only. No rootfs, no hash tree, no verity sidecars: the
+# instance init has no verity branch (the guest supplies its own LUKS rootfs
+# at runtime).
+INSTANCE_MEMBER_FILES = {
+    "ovmf": "OVMF.fd",
+    "kernel": "bzImage",
+    "initrd": "initrd",
+}
+
 
 class BundleInfo(StrictModel):
     """Sidecar record of a `build` run: everything `manifest` needs except
@@ -63,6 +77,16 @@ class BundleInfo(StrictModel):
     source: SourceInfo
 
 
+class InstanceBundleInfo(StrictModel):
+    """Sidecar record of an instance-flavor `build` run: no platform_roothash,
+    no measurement (the instance image has no verity branch to measure)."""
+
+    sha256: str = Field(pattern=SHA256_HEX_PATTERN)
+    size: int = Field(gt=0)
+    members: InstanceBundleMembers
+    source: SourceInfo
+
+
 def _read_sidecar(image_dir: Path, name: str, pattern: str | None) -> str:
     value = (image_dir / name).read_text().strip()
     if pattern is not None and not re.fullmatch(pattern, value):
@@ -71,19 +95,7 @@ def _read_sidecar(image_dir: Path, name: str, pattern: str | None) -> str:
     return value
 
 
-def build_bundle(image_dir: Path, out_dir: Path, source_epoch: int, source: SourceInfo) -> BundleInfo:
-    """Package a nix image output directory as a deterministic tar.gz and
-    write the bundle-info sidecar. Returns the recorded facts."""
-    file_names = sorted({*MEMBER_FILES.values(), ROOTHASH_FILE, MEASUREMENT_FILE})
-    for name in file_names:
-        if not (image_dir / name).is_file():
-            msg = f"expected image file missing: {image_dir / name}"
-            raise FileNotFoundError(msg)
-
-    platform_roothash = _read_sidecar(image_dir, ROOTHASH_FILE, SHA256_HEX_PATTERN)
-    measurement = _read_sidecar(image_dir, MEASUREMENT_FILE, None)
-
-    tar_path = out_dir / BUNDLE_NAME
+def _write_tar(image_dir: Path, tar_path: Path, source_epoch: int, file_names: list[str]) -> None:
     with tar_path.open("wb") as raw:
         # filename="" keeps the output path out of the gzip header (FNAME);
         # mtime=0 pins the gzip timestamp. Both are required for determinism.
@@ -102,6 +114,61 @@ def build_bundle(image_dir: Path, out_dir: Path, source_epoch: int, source: Sour
                     member.mtime = source_epoch
                     with path.open("rb") as fileobj:
                         tar.addfile(member, fileobj)
+
+
+def build_bundle(
+    image_dir: Path,
+    out_dir: Path,
+    source_epoch: int,
+    source: SourceInfo,
+    flavor: str = "vprogram",
+) -> BundleInfo | InstanceBundleInfo:
+    """Package a nix image output directory as a deterministic tar.gz and
+    write the bundle-info sidecar. Returns the recorded facts.
+
+    `flavor="vprogram"` (default) expects the platform rootfs, its dm-verity
+    hash tree, and the roothash/measurement sidecars, matching today's byte
+    layout exactly. `flavor="instance"` expects only OVMF/kernel/initrd (the
+    nix `instanceImage` output) and never reads a verity sidecar.
+    """
+    if flavor not in ("vprogram", "instance"):
+        msg = f"unknown bundle flavor: {flavor!r}"
+        raise ValueError(msg)
+
+    if flavor == "instance":
+        file_names = sorted(INSTANCE_MEMBER_FILES.values())
+        for name in file_names:
+            if not (image_dir / name).is_file():
+                msg = f"expected image file missing: {image_dir / name}"
+                raise FileNotFoundError(msg)
+
+        tar_path = out_dir / BUNDLE_NAME
+        _write_tar(image_dir, tar_path, source_epoch, file_names)
+
+        data = tar_path.read_bytes()
+        instance_info = InstanceBundleInfo(
+            sha256=hashlib.sha256(data).hexdigest(),
+            size=len(data),
+            members=InstanceBundleMembers(
+                **{role: f"{TAR_PREFIX}/{name}" for role, name in INSTANCE_MEMBER_FILES.items()}
+            ),
+            source=source,
+        )
+        info_path = out_dir / BUNDLE_INFO_NAME
+        info_path.write_text(json.dumps(instance_info.model_dump(mode="json"), indent=2, sort_keys=True) + "\n")
+        return instance_info
+
+    file_names = sorted({*MEMBER_FILES.values(), ROOTHASH_FILE, MEASUREMENT_FILE})
+    for name in file_names:
+        if not (image_dir / name).is_file():
+            msg = f"expected image file missing: {image_dir / name}"
+            raise FileNotFoundError(msg)
+
+    platform_roothash = _read_sidecar(image_dir, ROOTHASH_FILE, SHA256_HEX_PATTERN)
+    measurement = _read_sidecar(image_dir, MEASUREMENT_FILE, None)
+
+    tar_path = out_dir / BUNDLE_NAME
+    _write_tar(image_dir, tar_path, source_epoch, file_names)
 
     data = tar_path.read_bytes()
     info = BundleInfo(
@@ -139,6 +206,10 @@ DEFAULT_WORKLOAD = WorkloadSpec(contract="aleph.builtin/1", upstream_port=8080)
 # Exec-runtime workload contract: a plain executable/command workload rather
 # than the builtin no-workload runtime.
 EXEC_WORKLOAD = WorkloadSpec(contract="aleph.exec/1", upstream_port=8080)
+# Instance-runtime luks-mode cmdline template (format version 1): the
+# instance init parses `luks=` and `owner=` off /proc/cmdline (design section
+# 4.1). No platform_roothash slot: the instance image has no verity rootfs.
+CMDLINE_TEMPLATE_LUKS_V1 = "console=ttyS0 luks=1 owner={owner}"
 
 
 def make_manifest(
@@ -175,7 +246,36 @@ def make_manifest(
     )
 
 
-def verify_bundle_info(info: BundleInfo, tar_path: Path) -> None:
+def make_instance_manifest(
+    info: InstanceBundleInfo, bundle_ref: str, name: str, version: str
+) -> InstanceRuntimeManifest:
+    """Build the aleph-instance-runtime manifest for an uploaded instance
+    bundle. Validation is the constructor: any inconsistency raises pydantic
+    ValidationError.
+
+    Fixed to the luks-mode boot recipe (`{owner}`-only cmdline template); no
+    workload contract, no platform_roothash (the instance image has no
+    verity rootfs to measure).
+    """
+    return InstanceRuntimeManifest(
+        format="aleph-instance-runtime",
+        format_version=1,
+        name=name,
+        version=version,
+        platform="sev_snp",
+        bundle=InstanceRuntimeBundle(ref=bundle_ref, sha256=info.sha256, size=info.size, members=info.members),
+        boot=InstanceBootSpec(
+            method="qemu-direct-kernel",
+            kernel_hashes=True,
+            cpu_models=list(DEFAULT_CPU_MODELS),
+            cmdline_template=CMDLINE_TEMPLATE_LUKS_V1,
+        ),
+        attestation=[protocol.model_copy(deep=True) for protocol in DEFAULT_ATTESTATION],
+        source=info.source,
+    )
+
+
+def verify_bundle_info(info: BundleInfo | InstanceBundleInfo, tar_path: Path) -> None:
     """Cross-check a bundle-info sidecar against the tarball on disk."""
     data = tar_path.read_bytes()
     digest = hashlib.sha256(data).hexdigest()
