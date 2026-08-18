@@ -211,6 +211,23 @@ pub struct QemuVmConfig {
     pub numa_node: Option<u32>,
     #[serde(default)]
     pub hugepage_size: Option<String>,
+
+    // The opaque-cmdline SEV-SNP arm (confidential instances), Rust-only. Set
+    // together and only when the agent rendered the measured cmdline itself:
+    // that VM boots a WRITABLE rootfs (no dm-verity), so the controller needs
+    // the image's format and read-only flag instead of deriving them. Absent
+    // (and so omitted by the writer) on every other config, whose bytes stay
+    // unchanged.
+    #[serde(default)]
+    pub image_format: Option<String>,
+    #[serde(default)]
+    pub image_readonly: Option<bool>,
+    /// What the agent said it was creating (`"instance"` / `"v_program"`),
+    /// persisted by the create path so adoption classifies the VM the same way
+    /// instead of guessing from the backend. Absent on configs written by
+    /// daemons that predate the key: see [`crate::world::VmType::of_qemu`].
+    #[serde(default)]
+    pub vm_type: Option<String>,
 }
 
 impl QemuVmConfig {
@@ -242,6 +259,9 @@ impl QemuVmConfig {
             kernel_cmdline: None,
             numa_node: None,
             hugepage_size: None,
+            image_format: None,
+            image_readonly: None,
+            vm_type: None,
         }
     }
 
@@ -481,6 +501,22 @@ pub struct WrittenQemuVmConfiguration {
     pub numa_node: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hugepage_size: Option<String>,
+    // Opaque-cmdline SEV-SNP slice (confidential instances), Rust-only. Written
+    // only for an SNP VM whose measured cmdline came from the agent: that VM's
+    // rootfs is writable and not a raw verity image, so the controller needs its
+    // format and read-only flag. Both None (and so omitted) everywhere else,
+    // keeping plain / SEV / verity-SNP configs byte-identical to pre-Task-8.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_readonly: Option<bool>,
+    // What the agent said it was creating, persisted so the adoption path
+    // classifies the VM exactly as the create path did (see
+    // `crate::world::VmType::of_qemu`). Newly created configs always carry it;
+    // it stays None on the hand-built writer fixtures below, whose bytes pin
+    // the pydantic parity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vm_type: Option<String>,
 }
 
 /// The top-level `Configuration` as written (QEMU instances only in this
@@ -865,6 +901,13 @@ mod tests {
                 kernel_cmdline: None,
                 numa_node: None,
                 hugepage_size: None,
+                // The opaque-SNP and vm_type keys are absent here on purpose:
+                // this fixture pins the PYDANTIC bytes, and the writer must
+                // keep emitting exactly them for every config that does not set
+                // the Rust-only keys.
+                image_format: None,
+                image_readonly: None,
+                vm_type: None,
             },
             hypervisor: "qemu",
         };
@@ -919,6 +962,9 @@ mod tests {
                 kernel_cmdline: None,
                 numa_node: None,
                 hugepage_size: None,
+                image_format: None,
+                image_readonly: None,
+                vm_type: None,
             },
             hypervisor: "qemu",
         };

@@ -1957,6 +1957,7 @@ fn build_written_config(
     spec: &pb::VmSpec,
     vm_index: i64,
     interface_name: Option<String>,
+    vm_type: VmType,
 ) -> Result<WrittenControllerConfig, RpcError> {
     let settings = &state.host.settings;
     let root = &settings.execution_root;
@@ -1964,6 +1965,19 @@ fn build_written_config(
     let qemu_bin_path = checks::which("qemu-system-x86_64")
         .ok_or_else(|| RpcError::Internal("qemu-system-x86_64 not found on PATH".to_string()))?;
     let image_path = require_rootfs(spec)?.path.clone();
+    // `tee.kernel_cmdline` is an SEV-SNP-only field: only the SNP launch path
+    // takes a cmdline (SEV/SEV-ES boot the disk through OVMF). Silently
+    // dropping it would boot a VM the agent believes it configured, so a
+    // cmdline on any other backend fails closed BEFORE any slice is resolved.
+    if let Some(tee) = &spec.tee
+        && !tee.kernel_cmdline.is_empty()
+        && tee.backend != pb::TeeBackend::SevSnp as i32
+    {
+        return Err(RpcError::InvalidBackend(format!(
+            "kernel_cmdline is only valid for SEV-SNP (VM {vm_hash} requests TEE backend {})",
+            tee.backend
+        )));
+    }
     // SEV-SNP (increment B1) is resolved first: it is a distinct measured-boot
     // path (no session/godh), so the SEV confidential slice is suppressed when
     // an SNP slice is present and the two never overlap.
@@ -1974,13 +1988,15 @@ fn build_written_config(
         confidential_config_slice(state, spec)?
     };
     // dm-verity hash tree device (/dev/vdb) is inserted as the FIRST host
-    // volume for an SNP VM, before any agent-supplied extra disks, mirroring
-    // the aleph-cvm donor (vm/manager.rs inserts the hash tree at index 1).
+    // volume for a VERITY SNP VM, before any agent-supplied extra disks,
+    // mirroring the aleph-cvm donor (vm/manager.rs inserts the hash tree at
+    // index 1). The opaque-cmdline arm has no hash tree (hashtree_path None),
+    // so nothing is inserted and its extra disks keep their spec order.
     let mut host_volumes: Vec<WrittenHostVolume> = Vec::new();
-    if let Some(snp) = &snp_slice {
+    if let Some(hashtree_path) = snp_slice.as_ref().and_then(|snp| snp.hashtree_path.clone()) {
         host_volumes.push(WrittenHostVolume {
             mount: String::new(),
-            path_on_host: snp.hashtree_path.clone(),
+            path_on_host: hashtree_path,
             read_only: true,
         });
     }
@@ -2113,6 +2129,14 @@ fn build_written_config(
             // leaves them None (byte-identical to pre-C2).
             numa_node: None,
             hugepage_size: None,
+            // The opaque-cmdline SNP arm carries the rootfs image's own
+            // format/read-only flags (it boots a writable image, not a
+            // read-only verity one); every other config leaves them absent.
+            image_format: snp_slice.as_ref().and_then(|snp| snp.rootfs_format.clone()),
+            image_readonly: snp_slice.as_ref().and_then(|snp| snp.rootfs_readonly),
+            // Persisted so adoption classifies this VM exactly as the create
+            // path did, instead of re-inferring it from the backend.
+            vm_type: Some(vm_type.config_value().to_string()),
         },
         hypervisor: "qemu",
     })
@@ -2183,6 +2207,15 @@ const MAX_ROOTHASH_SIDECAR_BYTES: u64 = 4096;
 /// kernel + initrd + cmdline the B2a Nix image's `sev-snp-measure` covered, or
 /// attestation will not match, so all inputs are required and a missing one is
 /// InvalidBackend (fail closed, never boot a mismeasured SNP VM).
+///
+/// Two arms, selected by whether the AGENT supplied the cmdline
+/// (`tee.kernel_cmdline`) and mutually exclusive by construction:
+/// - empty: the V-PROGRAM verity arm. The cmdline is DERIVED from the
+///   `{rootfs}.roothash` sidecar and the `{rootfs}.verity` hash tree is
+///   attached; the rootfs is a read-only raw image.
+/// - set: the opaque arm. The agent rendered a measured cmdline (whatever it
+///   means: the daemon must NOT parse it) and there is no verity sidecar, so
+///   the rootfs is carried with its own format/read-only flags instead.
 #[derive(Debug)]
 struct SnpSlice {
     ovmf_path: String,
@@ -2190,7 +2223,29 @@ struct SnpSlice {
     initrd_path: String,
     kernel_cmdline: String,
     sev_policy: u32,
-    hashtree_path: String,
+    /// The dm-verity hash tree image (verity arm only); `None` on the opaque
+    /// arm, which has no hash tree to attach.
+    hashtree_path: Option<String>,
+    /// The rootfs `format` / `readonly` from the spec's ROOTFS DiskConfig
+    /// (opaque arm only). `None` on the verity arm, whose rootfs is always a
+    /// read-only raw image behind the verity mapper.
+    rootfs_format: Option<String>,
+    rootfs_readonly: Option<bool>,
+}
+
+/// The spec's rootfs `DiskConfig.format` as the controller's `image_format`
+/// string. Only the two formats a QEMU root disk can actually take are
+/// accepted: an UNSPECIFIED (or squashfs, or unknown) format would leave the
+/// controller guessing how to attach the root disk of a confidential VM, so it
+/// fails closed here instead.
+fn snp_image_format(format: i32) -> Result<String, RpcError> {
+    match pb::disk_config::Format::try_from(format) {
+        Ok(pb::disk_config::Format::Raw) => Ok("raw".to_string()),
+        Ok(pb::disk_config::Format::Qcow2) => Ok("qcow2".to_string()),
+        _ => Err(RpcError::InvalidBackend(format!(
+            "SEV-SNP rootfs format {format} is not supported; expected RAW or QCOW2"
+        ))),
+    }
 }
 
 fn snp_config_slice(_state: &DaemonState, spec: &pb::VmSpec) -> Result<Option<SnpSlice>, RpcError> {
@@ -2222,14 +2277,53 @@ fn snp_config_slice(_state: &DaemonState, spec: &pb::VmSpec) -> Result<Option<Sn
             "GPU passthrough is not supported on SEV-SNP VMs yet".to_string(),
         ));
     }
-    // The dm-verity roothash and hash tree are sidecars of the rootfs image, the
-    // convention the B2a Nix image emits (`rootfs.ext4.roothash` /
-    // `rootfs.ext4.verity`) and the aleph-cvm donor's `ensure_verity` uses. The
-    // proto has no cmdline field (frozen), so the measured cmdline is DERIVED
-    // here from the roothash, exactly as the donor's `build_kernel_cmdline`
-    // does. See divergence 68.
-    let rootfs_path = require_rootfs(spec)?.path.clone();
+    let rootfs = require_rootfs(spec)?;
+    let rootfs_path = rootfs.path.clone();
     let roothash_path = format!("{rootfs_path}.roothash");
+    let sev_policy = if tee.policy.is_empty() {
+        DEFAULT_SNP_POLICY
+    } else {
+        parse_sev_policy(&tee.policy)?
+    };
+    // The opaque arm: the agent rendered the measured cmdline itself. The
+    // supervisor is a dumb launcher here, it passes the string through verbatim
+    // and stays agnostic of what it selects in the guest. The image then has NO
+    // dm-verity sidecars, so a staged roothash means the two cmdline sources
+    // are BOTH present: the daemon cannot tell which one the image was measured
+    // with, and picking either could boot a mismeasured VM. Fail closed.
+    if !tee.kernel_cmdline.is_empty() {
+        let sidecar_present =
+            std::path::Path::new(&roothash_path)
+                .try_exists()
+                .map_err(|error| {
+                    RpcError::InvalidBackend(format!(
+                        "cannot check for the dm-verity roothash sidecar {roothash_path}: {error}"
+                    ))
+                })?;
+        if sidecar_present {
+            return Err(RpcError::InvalidBackend(format!(
+                "both cmdline sources present for SEV-SNP VM {vm_id}: the spec carries \
+                 tee.kernel_cmdline AND a dm-verity roothash sidecar {roothash_path}",
+                vm_id = spec.vm_id
+            )));
+        }
+        return Ok(Some(SnpSlice {
+            ovmf_path: tee.firmware_path.clone(),
+            kernel_path: spec.kernel_path.clone(),
+            initrd_path: spec.initrd_path.clone(),
+            kernel_cmdline: tee.kernel_cmdline.clone(),
+            sev_policy,
+            hashtree_path: None,
+            rootfs_format: Some(snp_image_format(rootfs.format)?),
+            rootfs_readonly: Some(rootfs.readonly),
+        }));
+    }
+    // The verity arm. The dm-verity roothash and hash tree are sidecars of the
+    // rootfs image, the convention the B2a Nix image emits
+    // (`rootfs.ext4.roothash` / `rootfs.ext4.verity`) and the aleph-cvm donor's
+    // `ensure_verity` uses. With no agent cmdline, the measured cmdline is
+    // DERIVED here from the roothash, exactly as the donor's
+    // `build_kernel_cmdline` does. See divergence 68.
     // Bound the sidecar read: a real dm-verity roothash is ~64 hex chars, so a
     // 4 KiB cap is generous. A pathological sidecar (the node builds its own
     // image, but defense in depth) cannot then load unbounded into RAM; an
@@ -2311,18 +2405,18 @@ fn snp_config_slice(_state: &DaemonState, spec: &pb::VmSpec) -> Result<Option<Sn
             )));
         }
     };
-    let sev_policy = if tee.policy.is_empty() {
-        DEFAULT_SNP_POLICY
-    } else {
-        parse_sev_policy(&tee.policy)?
-    };
     Ok(Some(SnpSlice {
         ovmf_path: tee.firmware_path.clone(),
         kernel_path: spec.kernel_path.clone(),
         initrd_path: spec.initrd_path.clone(),
         kernel_cmdline,
         sev_policy,
-        hashtree_path: format!("{rootfs_path}.verity"),
+        hashtree_path: Some(format!("{rootfs_path}.verity")),
+        // The verity rootfs is a read-only raw image behind the verity mapper;
+        // the controller has always attached it that way, so the keys stay
+        // absent and the written bytes stay identical.
+        rootfs_format: None,
+        rootfs_readonly: None,
     }))
 }
 
@@ -2678,6 +2772,19 @@ fn create_vm_inner(
     let confidential = request.tee.is_some();
     // SEV/SEV-ES only: the create-then-await path. SNP does not await.
     let await_session = confidential && !snp;
+    // The agent declares what it is creating (`VmSpec.vm_type`), which drives
+    // the IPv6 vm-type hextet and is persisted into the controller config so
+    // adoption reads back the same answer. An UNSPECIFIED type comes from an
+    // agent that predates the field: fall back to the historical inference,
+    // where SEV-SNP measured boot was the V-PROGRAM's exclusive launch path
+    // (confidential INSTANCES are SNP too, so the inference only holds for
+    // those older agents). An unknown value is treated the same way.
+    let create_vm_type = match pb::VmType::try_from(request.vm_type) {
+        Ok(pb::VmType::Instance) => VmType::Instance,
+        Ok(pb::VmType::VProgram) => VmType::VProgram,
+        _ if snp => VmType::VProgram,
+        _ => VmType::Instance,
+    };
     if !request.persistent {
         // Python boots this path and fails inside AlephQemuInstance.start()
         // (NotImplementedError -> INTERNAL); refuse up front with the same
@@ -2765,15 +2872,6 @@ fn create_vm_inner(
         });
         let vm_index = world.unique_vm_index(state.host.settings.start_id_index)?;
         let assignment = if state.host.settings.allow_vm_networking {
-            // `snp` (computed above from `request.tee`) is the V-PROGRAM
-            // signal: SEV-SNP measured boot is its exclusive launch path, so
-            // it is the only QEMU-create shape that gets the VProgram
-            // hextet; a plain or SEV/SEV-ES confidential create is Instance.
-            let create_vm_type = if snp {
-                VmType::VProgram
-            } else {
-                VmType::Instance
-            };
             let mut ordinal = world.ipv6_dynamic_ordinal;
             let pair = world::derive_tap_assignment(
                 &state.host.settings,
@@ -2789,7 +2887,8 @@ fn create_vm_inner(
         };
 
         let interface_name = assignment.as_ref().map(|_| format!("vmtap{vm_index}"));
-        let written = build_written_config(state, &request, vm_index, interface_name)?;
+        let written =
+            build_written_config(state, &request, vm_index, interface_name, create_vm_type)?;
         let parsed = parse_controller_config(&written.to_json())?;
         let VmConfiguration::Qemu(qemu) = parsed.vm else {
             return Err(RpcError::Internal(
@@ -2831,6 +2930,15 @@ fn create_vm_inner(
             entry.config.snp().is_some(),
             snp,
             "create's SNP predicate must match the written config's snp()"
+        );
+        // Same no-drift guard for the vm type: the tap assignment above used
+        // `create_vm_type`, and every later reader (status, adoption after a
+        // restart) re-derives it from the written config. They must agree, or a
+        // restarted daemon would rebuild the VM's tap with a different IPv6.
+        debug_assert_eq!(
+            entry.vm_type(),
+            create_vm_type,
+            "the written config must classify as the vm type create allocated for"
         );
         match stale_ordinal {
             Some(ordinal) => {
@@ -4035,6 +4143,287 @@ mod tests {
             kernel_cmdline: String::new(),
         });
         request
+    }
+
+    /// An SEV-SNP spec whose measured cmdline comes from the AGENT
+    /// (`tee.kernel_cmdline`), not from a dm-verity roothash sidecar: the
+    /// confidential-instance arm. The rootfs is a WRITABLE qcow2 and carries no
+    /// sidecars at all (what the LUKS instance image looks like on disk).
+    fn snp_opaque_spec(vm_id: &str, root: &Path, firmware: &str) -> pb::VmSpec {
+        let rootfs = root.join(format!("{vm_id}-rootfs.qcow2"));
+        std::fs::write(&rootfs, b"rootfs").unwrap();
+        let mut request = spec(vm_id, root);
+        request.kernel_path = root.join("bzImage").to_string_lossy().into_owned();
+        request.initrd_path = root.join("initrd").to_string_lossy().into_owned();
+        request.disks = vec![pb::DiskConfig {
+            path: rootfs.to_string_lossy().into_owned(),
+            readonly: false,
+            format: pb::disk_config::Format::Qcow2 as i32,
+            role: pb::disk_config::DiskRole::Rootfs as i32,
+        }];
+        request.tee = Some(pb::TeeConfig {
+            backend: pb::TeeBackend::SevSnp as i32,
+            policy: String::new(),
+            session_dir: String::new(),
+            firmware_path: firmware.to_string(),
+            kernel_cmdline: OPAQUE_CMDLINE.to_string(),
+        });
+        request.vm_type = pb::VmType::Instance as i32;
+        request
+    }
+
+    /// A cmdline only the agent can render (LUKS mode + an owner parameter):
+    /// the daemon must pass it through verbatim, never parse it.
+    const OPAQUE_CMDLINE: &str = "console=ttyS0 luks=1 owner=0xabc";
+
+    #[test]
+    fn snp_opaque_cmdline_slice() {
+        // The agent rendered the measured cmdline itself. The daemon is a dumb
+        // launcher: it uses the string verbatim, derives NOTHING from the
+        // rootfs sidecars, inserts no dm-verity hash tree, and carries the
+        // rootfs format/readonly flags through so the controller can attach a
+        // WRITABLE qcow2 root disk.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('1');
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let request = snp_opaque_spec(&vm_id, &root, &firmware.to_string_lossy());
+
+        let slice = snp_config_slice(state, &request)
+            .expect("the opaque arm builds a slice")
+            .expect("an SEV-SNP spec yields a slice");
+        assert_eq!(
+            slice.kernel_cmdline, OPAQUE_CMDLINE,
+            "the agent's cmdline is used verbatim"
+        );
+        assert!(
+            slice.hashtree_path.is_none(),
+            "the opaque arm has no dm-verity hash tree"
+        );
+        assert_eq!(slice.rootfs_format.as_deref(), Some("qcow2"));
+        assert_eq!(slice.rootfs_readonly, Some(false));
+
+        let written = build_written_config(
+            state,
+            &request,
+            7,
+            Some("vmtap7".to_string()),
+            world::VmType::Instance,
+        )
+        .expect("the opaque arm builds a config");
+        let vm = &written.vm_configuration;
+        assert_eq!(vm.kernel_cmdline.as_deref(), Some(OPAQUE_CMDLINE));
+        assert_eq!(vm.image_format.as_deref(), Some("qcow2"));
+        assert_eq!(vm.image_readonly, Some(false));
+        assert_eq!(vm.vm_type, Some("instance".to_string()));
+        assert!(
+            vm.host_volumes.is_empty(),
+            "no hash tree volume is inserted, got {:?}",
+            vm.host_volumes
+        );
+        assert_eq!(vm.sev_snp, Some(true));
+        assert_eq!(vm.sev_policy, Some(DEFAULT_SNP_POLICY));
+        assert!(
+            vm.cloud_init_drive_path.is_none(),
+            "SNP carries no cloud-init drive on either arm"
+        );
+    }
+
+    #[test]
+    fn snp_opaque_cmdline_rejects_roothash_sidecar() {
+        // The two cmdline sources are mutually exclusive. A staged roothash
+        // sidecar next to the rootfs means the launcher ALSO believes this is a
+        // verity image; the daemon cannot know which cmdline was measured, so
+        // it fails closed rather than picking one.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('2');
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let request = snp_opaque_spec(&vm_id, &root, &firmware.to_string_lossy());
+        let rootfs = root.join(format!("{vm_id}-rootfs.qcow2"));
+        std::fs::write(format!("{}.roothash", rootfs.display()), b"deadbeef00\n").unwrap();
+
+        match snp_config_slice(state, &request) {
+            Err(RpcError::InvalidBackend(message)) => assert!(
+                message.contains("both") && message.contains("roothash"),
+                "the error must name both cmdline sources, got {message:?}"
+            ),
+            other => panic!("a roothash sidecar plus a cmdline must fail closed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn snp_opaque_cmdline_rejects_an_unattachable_rootfs_format() {
+        // The opaque arm hands the rootfs format to the controller as the root
+        // disk's `format=`. A format QEMU cannot take as a root disk (squashfs,
+        // or an UNSPECIFIED one from a sloppy agent) would leave the controller
+        // guessing, so it is rejected here rather than written into the config.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+
+        for format in [
+            pb::disk_config::Format::Unspecified as i32,
+            pb::disk_config::Format::Squashfs as i32,
+        ] {
+            let vm_id = hash('6');
+            let mut request = snp_opaque_spec(&vm_id, &root, &firmware.to_string_lossy());
+            request.disks[0].format = format;
+            match snp_config_slice(state, &request) {
+                Err(RpcError::InvalidBackend(_)) => {}
+                other => panic!("rootfs format {format} must be InvalidBackend, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn snp_verity_path_unchanged() {
+        // The verity (V-PROGRAM) arm must be byte-for-byte what it was before
+        // the opaque arm existed, except for the `vm_type` key every newly
+        // created config now carries (see the key set below): no image_format,
+        // no image_readonly, the derived roothash cmdline, and the hash tree as
+        // the first host volume.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('e');
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let request = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+
+        create_vm(state, request).unwrap();
+        let written =
+            std::fs::read_to_string(root.join(format!("{vm_id}-controller.json"))).unwrap();
+        let value: Value = serde_json::from_str(&written).unwrap();
+        let vm = value["vm_configuration"].as_object().unwrap();
+        let mut keys: Vec<&str> = vm.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "gpus",
+                "host_volumes",
+                "image_path",
+                "initrd_path",
+                "interface_name",
+                "kernel_cmdline",
+                "kernel_path",
+                "mem_size_mb",
+                "monitor_socket_path",
+                "ovmf_path",
+                "qemu_bin_path",
+                "qga_socket_path",
+                "qmp_socket_path",
+                "sev_policy",
+                "sev_snp",
+                "vcpu_count",
+                "vm_type",
+            ],
+            "the verity arm gains only the vm_type key (controller ruling): no \
+             image_format / image_readonly"
+        );
+        assert_eq!(
+            vm["kernel_cmdline"],
+            Value::from("console=ttyS0 root=/dev/mapper/verity-root ro roothash=deadbeef00"),
+        );
+        assert_eq!(vm["vm_type"], Value::from("v_program"));
+        let volumes = vm["host_volumes"].as_array().unwrap();
+        assert_eq!(volumes.len(), 1, "the hash tree is still inserted");
+        assert!(
+            volumes[0]["path_on_host"]
+                .as_str()
+                .unwrap()
+                .ends_with("-rootfs.ext4.verity")
+        );
+    }
+
+    #[test]
+    fn kernel_cmdline_rejected_for_non_snp() {
+        // `kernel_cmdline` is an SEV-SNP-only field: nothing outside the SNP
+        // launch path reads it, so a SEV/SEV-ES (or plain) spec that carries
+        // one would have it silently dropped. Fail closed instead.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('3');
+        let firmware = root.join("OVMF_CSV.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let mut request = confidential_spec(&vm_id, &root, &firmware.to_string_lossy());
+        request.tee.as_mut().unwrap().kernel_cmdline = OPAQUE_CMDLINE.to_string();
+
+        match build_written_config(
+            state,
+            &request,
+            7,
+            Some("vmtap7".to_string()),
+            world::VmType::Instance,
+        ) {
+            Err(RpcError::InvalidBackend(message)) => assert!(
+                message.contains("kernel_cmdline is only valid for SEV-SNP"),
+                "unexpected message {message:?}"
+            ),
+            other => panic!("a non-SNP kernel_cmdline must be InvalidBackend, got {other:?}"),
+        }
+        let created = create_vm(state, request);
+        assert!(
+            matches!(created, Err(RpcError::InvalidBackend(_))),
+            "the whole create must fail closed too, got {created:?}"
+        );
+    }
+
+    #[test]
+    fn snp_instance_missing_cmdline_fails_on_sidecar() {
+        // The interlock in the other direction: an INSTANCE the agent forgot to
+        // render a cmdline for falls into the verity arm, which needs the
+        // roothash sidecar. No sidecar, no boot (never a mismeasured VM).
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('4');
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let mut request = snp_opaque_spec(&vm_id, &root, &firmware.to_string_lossy());
+        request.tee.as_mut().unwrap().kernel_cmdline = String::new();
+
+        match snp_config_slice(state, &request) {
+            Err(RpcError::InvalidBackend(message)) => assert!(
+                message.contains("roothash"),
+                "the missing-roothash error must name the sidecar, got {message:?}"
+            ),
+            other => panic!("an SNP spec with neither cmdline source must fail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_vm_type_honors_spec() {
+        // The agent says what it is creating; SNP no longer implies V-PROGRAM.
+        // An SNP create with vm_type=INSTANCE gets the instance (0x3) hextet
+        // and classifies as Instance through the written-then-parsed config
+        // (the adoption path reads the same key).
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('5');
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let request = snp_opaque_spec(&vm_id, &root, &firmware.to_string_lossy());
+
+        let (entry, _running) = create_vm(state, request).unwrap();
+        assert_eq!(entry.vm_type(), world::VmType::Instance);
+        let ipv6 = entry
+            .ipv6
+            .expect("networking is enabled in the harness; SNP create allocates an IPv6 pair");
+        assert!(
+            ipv6.address.starts_with("fc00:1:2:3:3:"),
+            "an SNP create with vm_type=INSTANCE must get the 0x3 hextet, got {}",
+            ipv6.address
+        );
     }
 
     #[test]

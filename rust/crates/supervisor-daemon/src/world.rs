@@ -201,8 +201,9 @@ pub enum VmType {
     /// A V-PROGRAM (`aleph_message.models.VerifiableProgramContent`): the
     /// QEMU SEV-SNP measured-boot launch path is its exclusive hypervisor
     /// (design doc docs/plans/2026-07-11-vprogram-scheduler-support-design.md
-    /// section 2), so `QemuVmConfig::snp().is_some()` identifies one on this
-    /// side (see [`VmEntry::vm_type`]).
+    /// section 2). The reverse does NOT hold since confidential instances
+    /// exist: the agent declares the type (`VmSpec.vm_type`) and the create
+    /// path persists it (see [`VmType::of_qemu`], [`VmEntry::vm_type`]).
     VProgram,
 }
 
@@ -218,12 +219,46 @@ impl VmType {
         }
     }
 
-    /// The vm type of a QEMU controller config: SEV-SNP measured boot is the
-    /// exclusive V-PROGRAM launch path (see [`VmType::VProgram`]), everything
-    /// else is a plain instance. Shared by [`VmEntry::vm_type`] and the
-    /// adoption path in [`build_world_view`], which classifies persisted
-    /// configs before any `VmEntry` exists, so the two can never diverge.
+    /// The persisted `vm_type` config value (`QemuVmConfig::vm_type`). The
+    /// create path stamps this so adoption reads back exactly what the agent
+    /// asked for; [`VmType::from_config_value`] is its inverse.
+    pub fn config_value(self) -> &'static str {
+        match self {
+            VmType::Microvm => "microvm",
+            VmType::Instance => "instance",
+            VmType::VProgram => "v_program",
+        }
+    }
+
+    /// Inverse of [`VmType::config_value`]. An unknown value (a config written
+    /// by a NEWER daemon that knows a type this one does not) yields `None`, so
+    /// the caller falls back to the inference rather than failing adoption.
+    fn from_config_value(value: &str) -> Option<VmType> {
+        match value {
+            "microvm" => Some(VmType::Microvm),
+            "instance" => Some(VmType::Instance),
+            "v_program" => Some(VmType::VProgram),
+            _ => None,
+        }
+    }
+
+    /// The vm type of a QEMU controller config: the `vm_type` the create path
+    /// persisted (the agent said what it was creating), falling back to the
+    /// historical inference for configs written before the key existed, where
+    /// SEV-SNP measured boot was the V-PROGRAM's exclusive launch path (see
+    /// [`VmType::VProgram`]). Confidential INSTANCES are SNP too, so the
+    /// inference is only correct for those older configs. Shared by
+    /// [`VmEntry::vm_type`] and the adoption path in [`build_world_view`],
+    /// which classifies persisted configs before any `VmEntry` exists, so the
+    /// two can never diverge.
     pub fn of_qemu(config: &QemuVmConfig) -> VmType {
+        if let Some(persisted) = config
+            .vm_type
+            .as_deref()
+            .and_then(VmType::from_config_value)
+        {
+            return persisted;
+        }
         if config.snp().is_some() {
             VmType::VProgram
         } else {
@@ -339,9 +374,9 @@ impl VmEntry {
     /// The vm-type hextet input to the static IPv6 scheme (mirrors the
     /// Python `VmType.from_message_content` split, ported as the equivalent
     /// config shape check: there is no message content on this side). An
-    /// ephemeral Firecracker program is `Microvm`; a QEMU SEV-SNP
-    /// measured-boot config is `VProgram` (its exclusive launch path, see
-    /// [`VmType::VProgram`]); everything else is `Instance`.
+    /// ephemeral Firecracker program is `Microvm`; a QEMU config is classified
+    /// by [`VmType::of_qemu`] (the persisted `vm_type`, or the legacy
+    /// snp-implies-VProgram inference for older configs).
     pub fn vm_type(&self) -> VmType {
         if self.is_program {
             VmType::Microvm
@@ -1208,6 +1243,50 @@ mod tests {
             address.split(':').nth(4) == Some("4"),
             "ipv6 address {address} must carry the 0x4 vm-type hextet"
         );
+    }
+
+    #[test]
+    fn of_qemu_prefers_persisted_vm_type() {
+        // The daemon now PERSISTS what the agent said it was creating, so an
+        // SEV-SNP config is no longer proof of a V-PROGRAM (a confidential
+        // instance is SNP too). A config written by an older daemon carries no
+        // `vm_type` key and keeps the historical inference, so adopting it
+        // cannot shift its IPv6 assignment.
+        let fixture = std::fs::read_to_string(
+            test_fixtures::fixtures_dir()
+                .join(format!("{}-controller.json", test_fixtures::QEMU_HASH)),
+        )
+        .unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&fixture).unwrap();
+        let config = value["vm_configuration"].as_object_mut().unwrap();
+        config.insert("sev_snp".to_string(), true.into());
+        config.insert("kernel_path".to_string(), "/boot/bzImage".into());
+        config.insert("initrd_path".to_string(), "/boot/initrd".into());
+        config.insert("kernel_cmdline".to_string(), "console=ttyS0 luks=1".into());
+        config.insert("ovmf_path".to_string(), "/opt/OVMF.fd".into());
+        config.insert("sev_policy".to_string(), 196608.into());
+
+        let parse = |value: &serde_json::Value| {
+            let parsed = crate::controller_config::parse_controller_config(&value.to_string())
+                .expect("the fixture parses");
+            let crate::controller_config::VmConfiguration::Qemu(qemu) = parsed.vm else {
+                panic!("the fixture is a QEMU config");
+            };
+            *qemu
+        };
+
+        // No persisted key (an older daemon wrote it): snp implies VProgram.
+        assert_eq!(VmType::of_qemu(&parse(&value)), VmType::VProgram);
+
+        // The persisted key wins over the inference, in both directions.
+        value["vm_configuration"]["vm_type"] = "instance".into();
+        assert_eq!(VmType::of_qemu(&parse(&value)), VmType::Instance);
+        value["vm_configuration"]["vm_type"] = "v_program".into();
+        assert_eq!(VmType::of_qemu(&parse(&value)), VmType::VProgram);
+
+        // A non-SNP config with no key stays Instance.
+        let plain: serde_json::Value = serde_json::from_str(&fixture).unwrap();
+        assert_eq!(VmType::of_qemu(&parse(&plain)), VmType::Instance);
     }
 
     #[test]
