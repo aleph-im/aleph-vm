@@ -7,9 +7,13 @@
   #   aleph-attest-agent static-musl binary and init.sh) + a minimal
   #   dm-verity-protected rootfs + a precomputed, reproducible sev-snp-measure
   #   launch measurement.
-  # Excluded from the donor: compose-rootfs / compose-demo and the
-  # encrypted-rootfs (LUKS) mode. The fib-service demo app is NOT excluded
-  # here: it now exists as the V-PROGRAM workload (see workload.nix), baked
+  # Excluded from the donor: compose-rootfs / compose-demo. The
+  # encrypted-rootfs (LUKS) mode returns as a second, separate image flavor
+  # for confidential instances (instanceInitrd / instanceImage below), built
+  # from the same initrd.nix with withVerity=false withNft=false withLuks=true;
+  # it does not touch the v-program image's measured initrd contents. The
+  # fib-service demo app is NOT excluded here: it now exists as the V-PROGRAM
+  # workload (see workload.nix), baked
   # into its own measured dm-verity volume that the guest init mounts and
   # execs when a workload_roothash is present on the cmdline. The trivial
   # busybox httpd remains the platform rootfs's baked /sbin/init, used as the
@@ -129,6 +133,21 @@
         udhcpc-script = ./udhcpc.script;
         udhcpc6-script = ./udhcpc6.script;
       };
+
+      # Confidential-instance initrd: LUKS encrypted rootfs, no dm-verity, no
+      # in-guest firewall (firewall policy belongs to the user rootfs on
+      # instances, design section 3 decision 6).
+      instanceInitrd = pkgs.callPackage ./initrd.nix {
+        inherit attest-agent kernel;
+        init-script = ./init-instance.sh;
+        init-common-script = ./init-common.sh;
+        udhcpc-script = ./udhcpc.script;
+        udhcpc6-script = ./udhcpc6.script;
+        withVerity = false;
+        withNft = false;
+        withLuks = true;
+      };
+
       rootfs = pkgs.callPackage ./rootfs.nix {};
 
       # fib-service V-PROGRAM workload volume: a content-only ext4 carrying the
@@ -257,6 +276,31 @@
         cp ${verity}/hashtree $out/rootfs.ext4.verity
         cp ${verity}/roothash $out/rootfs.ext4.roothash
       '';
+
+      # Per-deployment measurement helper for the instance image: the owner
+      # address is a measured cmdline slot, so there is no fixed baked
+      # measurement (unlike the v-program image). Internal, like measurementFor.
+      instanceMeasurementFor = { vcpus ? 2, vcpuType ? "EPYC-v4", owner }: let
+        kernelCmdline = "console=ttyS0 luks=1 owner=${owner}";
+      in pkgs.runCommand "snp-instance-measurement-${toString vcpus}vcpus-${vcpuType}" {
+        nativeBuildInputs = [ sev-snp-measure ];
+      } ''
+        sev-snp-measure --mode snp --vcpus ${toString vcpus} --vcpu-type ${vcpuType} \
+          --ovmf ${ovmfFd} --kernel ${kernel}/bzImage --initrd ${instanceInitrd}/initrd \
+          --append "${kernelCmdline}" | tr -d '\n' > $out
+      '';
+
+      # Confidential-instance image artifacts: OVMF firmware, kernel and
+      # initrd only. Unlike `image`, there is no rootfs and no baked
+      # measurement.hex: the LUKS-encrypted rootfs is provided by the caller
+      # at launch time (whole-device LUKS2 on /dev/vda) and the measurement
+      # depends on the per-deployment owner address (instanceMeasurementFor).
+      instanceImage = pkgs.runCommand "aleph-snp-instance-image" {} ''
+        mkdir -p $out
+        ln -s ${kernel}/bzImage $out/bzImage
+        ln -s ${instanceInitrd}/initrd $out/initrd
+        cp ${ovmfFd} $out/OVMF.fd
+      '';
     in {
       # Only concrete derivations are exposed as packages (a function like
       # measurementFor is not a valid flake package and would fail flake check);
@@ -269,6 +313,7 @@
           ovmf
           kernel
           initrd
+          instanceInitrd
           rootfs
           verity
           workloadImage
@@ -276,7 +321,8 @@
           workload
           measurement
           workloadMeasurement
-          image;
+          image
+          instanceImage;
         default = image;
       };
     };
