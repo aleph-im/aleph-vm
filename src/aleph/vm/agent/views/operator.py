@@ -22,6 +22,7 @@ from aleph.vm.agent import metrics
 from aleph.vm.agent.custom_logs import set_vm_for_logging
 from aleph.vm.agent.expiry import ExpiryManager
 from aleph.vm.agent.run import create_vm_execution_or_raise_http_error
+from aleph.vm.agent.snp_instance_launch import remove_snp_instance_staging
 from aleph.vm.agent.views.authentication import (
     authenticate_websocket_message,
     require_jwk_authentication,
@@ -667,6 +668,7 @@ async def operate_erase(request: web.Request, authenticated_sender: str) -> web.
         # wipe=True clears the daemon-side disks; the agent-side staging dir
         # (extracted runtime bundle) is ours to remove.
         remove_vprogram_staging(vm_hash)
+        remove_snp_instance_staging(vm_hash)
         return web.Response(status=200, body=f"Erased VM with ref {vm_hash}")
 
 

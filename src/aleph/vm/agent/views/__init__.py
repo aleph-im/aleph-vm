@@ -42,6 +42,7 @@ from aleph.vm.agent.run import (
     run_code_on_request,
     start_persistent_vm,
 )
+from aleph.vm.agent.snp_instance_launch import remove_snp_instance_staging
 from aleph.vm.agent.tasks import COMMUNITY_STREAM_RATIO
 from aleph.vm.agent.utils import (
     format_cost,
@@ -610,6 +611,7 @@ async def update_allocations(request: web.Request):
                 registry.forget(vm_hash)
                 await delete_records_for_vm(str(vm_hash))
                 remove_vprogram_staging(vm_hash)
+                remove_snp_instance_staging(vm_hash)
                 stopped_vms.append(vm_hash)
 
         # Second start persistent VMs and instances sequentially to limit resource usage.

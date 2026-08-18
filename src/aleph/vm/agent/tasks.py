@@ -29,6 +29,7 @@ from yarl import URL
 from aleph.vm.agent.haproxy_sync import sync_domain_mappings
 from aleph.vm.agent.metrics import delete_records_for_vm
 from aleph.vm.agent.run import reconcile_port_forwards
+from aleph.vm.agent.snp_instance_launch import remove_snp_instance_staging
 from aleph.vm.agent.utils import (
     format_cost,
     get_community_wallet_address,
@@ -404,6 +405,7 @@ async def check_payment(supervisor: Supervisor, registry: AgentVmRegistry):
             registry.forget(vm_hash)
             await delete_records_for_vm(str(vm_hash))
             remove_vprogram_staging(vm_hash)
+            remove_snp_instance_staging(vm_hash)
         else:
             # Status is healthy — reset any previous strikes
             _terminal_strike_count.pop(str(vm_hash), None)

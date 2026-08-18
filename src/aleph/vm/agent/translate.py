@@ -86,6 +86,13 @@ async def build_create_vm_spec(
     tee: TeeConfig | None = None
     trusted_execution = getattr(message.environment, "trusted_execution", None)
     if trusted_execution is not None:
+        if getattr(trusted_execution, "is_snp", False):
+            # SNP instances are built by build_snp_instance_spec
+            # (snp_instance_launch.py), which supplies the measured runtime
+            # bundle (OVMF/kernel/initrd/cmdline). This path has none of
+            # that: a routing mistake that reached here would silently build
+            # a SEV spec with no firmware. Fail loudly instead.
+            raise InvalidBackendError("SNP instances are built by build_snp_instance_spec, not this path")
         firmware_path = await get_existing_file(trusted_execution.firmware)
         tee = TeeConfig(
             backend=TeeBackend.SEV,
