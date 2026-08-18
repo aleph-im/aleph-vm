@@ -61,7 +61,7 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _verify_bundle(tar_path: Path, *, ref: str, sha256: str, size: int) -> None:
+def verify_bundle(tar_path: Path, *, ref: str, sha256: str, size: int) -> None:
     """The integrity gate: the downloaded tarball must be byte-identical to
     the one pinned by ref/sha256/size (sha256 + size), or nothing gets extracted."""
     actual_size = tar_path.stat().st_size
@@ -76,7 +76,7 @@ def _verify_bundle(tar_path: Path, *, ref: str, sha256: str, size: int) -> None:
         raise VmSetupError(msg)
 
 
-def _extract_bundle(tar_path: Path, dest: Path) -> None:
+def extract_bundle(tar_path: Path, dest: Path) -> None:
     """Extract the verified tarball into a clean staging directory.
 
     ``filter="data"`` is the tarfile safety filter: it rejects absolute
@@ -109,9 +109,9 @@ async def fetch_and_stage_bundle(vm_hash: ItemHash, *, kind: str, ref: str, sha2
     create_vm.
     """
     tar_path = await get_existing_file(ref)
-    _verify_bundle(tar_path, ref=ref, sha256=sha256, size=size)
+    verify_bundle(tar_path, ref=ref, sha256=sha256, size=size)
     dest = staging_dir(kind, vm_hash)
-    _extract_bundle(tar_path, dest)
+    extract_bundle(tar_path, dest)
     return dest
 
 
