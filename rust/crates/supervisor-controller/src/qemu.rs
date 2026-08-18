@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use tokio::process::{Child, Command};
 
-use crate::config::{Gpu, HostVolume, QemuConfig};
+use crate::config::{Gpu, HostVolume, QemuConfig, RootfsOverride};
 use crate::cpuid::SevHostInfo;
 use crate::journal;
 use crate::qmp;
@@ -545,6 +545,37 @@ pub fn build_snp_argv(config: &QemuConfig, sev: SevHostInfo) -> Vec<String> {
         .expect("SNP config carries kernel_cmdline");
     let policy = config.sev_policy.expect("SNP config carries sev_policy");
 
+    // rootfs drive. Default: dm-verity DATA device (/dev/vda), read-only raw
+    // (byte-identical to pre-Task-9). The opaque-cmdline luks arm (Task 8's
+    // image_format/image_readonly pair) instead boots a WRITABLE image in the
+    // given format, so no `readonly=on` attribute is emitted at all. A
+    // half-populated pair cannot reach here in production: `select_run_target`
+    // (main.rs) refuses to dispatch it into this function; the debug_assert
+    // documents that invariant a second time for direct callers (tests, the
+    // rare panic-in-debug case) and this match's fallback keeps a stray
+    // Malformed value from producing anything other than the safe read-only
+    // default.
+    debug_assert!(
+        !matches!(config.rootfs_override(), RootfsOverride::Malformed),
+        "build_snp_argv requires image_format/image_readonly to be both present or both absent"
+    );
+    let rootfs_drive = match config.rootfs_override() {
+        RootfsOverride::Writable(format, false) => {
+            format!(
+                "file={},format={format},if=virtio,media=disk",
+                config.image_path
+            )
+        }
+        RootfsOverride::Writable(format, true) => format!(
+            "file={},format={format},if=virtio,readonly=on,media=disk",
+            config.image_path
+        ),
+        RootfsOverride::Default | RootfsOverride::Malformed => format!(
+            "file={},format=raw,if=virtio,readonly=on,media=disk",
+            config.image_path
+        ),
+    };
+
     let mut args: Vec<String> = vec![
         config.qemu_bin_path.clone(),
         "-enable-kvm".into(),
@@ -554,20 +585,17 @@ pub fn build_snp_argv(config: &QemuConfig, sev: SevHostInfo) -> Vec<String> {
         config.vcpu_count.to_string(),
         // Measured direct-kernel boot. OVMF (via -bios in the TEE fragment)
         // loads and hash-verifies these exact blobs; the cmdline carries the
-        // dm-verity roothash. This trio plus the vcpu count and EPYC-v4 CPU
-        // type is precisely what sev-snp-measure covered in B2a.
+        // dm-verity roothash (or, for the luks arm, the opaque agent-rendered
+        // cmdline). This trio plus the vcpu count and EPYC-v4 CPU type is
+        // precisely what sev-snp-measure covered in B2a.
         "-kernel".into(),
         kernel.to_string(),
         "-initrd".into(),
         initrd.to_string(),
         "-append".into(),
         cmdline.to_string(),
-        // rootfs = dm-verity DATA device (/dev/vda), read-only raw.
         "-drive".into(),
-        format!(
-            "file={},format=raw,if=virtio,readonly=on,media=disk",
-            config.image_path
-        ),
+        rootfs_drive,
     ];
 
     // dm-verity hash tree (/dev/vdb) then any further host volumes, in order.
@@ -1073,6 +1101,28 @@ mod tests {
         config
     }
 
+    /// A complete SNP config carrying the Task 9 rootfs override
+    /// (`image_format`/`image_readonly`), or neither key when `rootfs` is
+    /// `None`.
+    fn snp_config_with_rootfs_override(rootfs: Option<(&str, bool)>) -> QemuConfig {
+        let override_json = rootfs
+            .map(|(format, readonly)| {
+                format!(r#","image_format":"{format}","image_readonly":{readonly}"#)
+            })
+            .unwrap_or_default();
+        let json = format!(
+            r#"{{"qemu_bin_path":"/usr/bin/qemu-system-x86_64","image_path":"/img.qcow2",
+                "monitor_socket_path":"/m.sock","qmp_socket_path":"/q.sock",
+                "qga_socket_path":"/g.sock","vcpu_count":2,"mem_size_mb":2048,
+                "host_volumes":[],"gpus":[],"sev_snp":true,"ovmf_path":"/OVMF.fd",
+                "sev_policy":196608,"kernel_path":"/bzImage","initrd_path":"/initrd",
+                "kernel_cmdline":"console=ttyS0 root=/dev/vda rw"{override_json}}}"#
+        );
+        let config = QemuConfig::from_json(&json).expect("snp config parses");
+        assert!(config.is_snp());
+        config
+    }
+
     /// The EPYC target's host CPUID values, injected into the SNP builder in
     /// tests (the real launch path reads these from `SevHostInfo::read()`).
     fn epyc_sev_host_info() -> SevHostInfo {
@@ -1120,6 +1170,40 @@ mod tests {
         assert!(
             !argv.iter().any(|a| a.contains("cbitpos=51")),
             "cbitpos=51 must not be hardcoded: {argv:?}"
+        );
+    }
+
+    /// The rootfs `-drive` token has no `aleph-tee` oracle (see
+    /// docs/architecture/divergences.md entry 82: the generator never emits a
+    /// disk line, `encrypted` or not), so these two shapes are asserted as
+    /// this repo's own documented contract instead of a cross-crate parity
+    /// check. Default (both keys absent) stays byte-identical to pre-Task-9.
+    #[test]
+    fn snp_rootfs_drive_defaults_to_the_readonly_raw_verity_token_when_the_override_is_absent() {
+        let argv = build_snp_argv(&snp_config_with_rootfs_override(None), epyc_sev_host_info());
+        assert!(
+            argv.contains(
+                &"file=/img.qcow2,format=raw,if=virtio,readonly=on,media=disk".to_string()
+            ),
+            "{argv:?}"
+        );
+    }
+
+    /// The luks arm: `image_format`/`image_readonly=false` swap the token to
+    /// the writable shape with no `readonly` attribute at all.
+    #[test]
+    fn snp_rootfs_drive_is_writable_qcow2_when_the_luks_override_is_present() {
+        let argv = build_snp_argv(
+            &snp_config_with_rootfs_override(Some(("qcow2", false))),
+            epyc_sev_host_info(),
+        );
+        assert!(
+            argv.contains(&"file=/img.qcow2,format=qcow2,if=virtio,media=disk".to_string()),
+            "{argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|a| a.contains("readonly")),
+            "the writable rootfs arm must carry no readonly attribute anywhere: {argv:?}"
         );
     }
 }

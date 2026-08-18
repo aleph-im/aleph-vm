@@ -72,11 +72,21 @@ parity_case!(minimal, "minimal");
 parity_case!(with_nic, "with_nic");
 parity_case!(host_volume, "host_volume");
 parity_case!(custom_policy, "custom_policy");
+// The luks arm (Task 9): image_format="qcow2"/image_readonly=false, opaque
+// (non-verity) cmdline, no host volumes (the daemon inserts no hash-tree
+// volume for a writable rootfs, so no /dev/vdb drive appears).
+parity_case!(luks, "luks");
 
 /// Every fixture in the directory is covered by a named case above.
 #[test]
 fn every_snp_fixture_has_a_case() {
-    let declared = ["minimal", "with_nic", "host_volume", "custom_policy"];
+    let declared = [
+        "minimal",
+        "with_nic",
+        "host_volume",
+        "custom_policy",
+        "luks",
+    ];
     let mut on_disk: Vec<String> = std::fs::read_dir(fixture_dir())
         .unwrap()
         .filter_map(|entry| {

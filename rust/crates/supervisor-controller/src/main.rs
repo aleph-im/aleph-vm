@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use supervisor_controller::config::{
-    ConfigError, Configuration, HypervisorType, QemuConfig, VmConfiguration,
+    ConfigError, Configuration, HypervisorType, QemuConfig, RootfsOverride, VmConfiguration,
 };
 use supervisor_controller::qemu;
 use supervisor_controller::qemu::QemuError;
@@ -70,6 +70,13 @@ enum ControllerError {
          refusing to launch a partial SNP config"
     )]
     PartialSnpConfig,
+
+    #[error(
+        "SNP config carries a half-populated rootfs override (image_format present without \
+         image_readonly, or vice versa); the writer always sets both together, refusing to \
+         guess which is intended"
+    )]
+    MalformedRootfsOverride,
 
     #[error("this controller only runs QEMU VMs, not Firecracker")]
     OnlyQemu,
@@ -234,6 +241,19 @@ fn select_run_target(config: &Configuration) -> Result<RunTarget, ControllerErro
         // explicitly keeps the intent clear. `is_snp()` requires ALL of the
         // fields `build_snp_argv` `.expect()`s, so this only routes a complete
         // config into the SNP builder (its debug_assert can never trip).
+        // A complete SNP config with a half-populated rootfs override
+        // (image_format present without image_readonly, or vice versa) is
+        // refused here too, BEFORE the Snp/PartialSnpConfig split below: the
+        // writer always sets the pair together, so this can only be a
+        // corrupt or hand-edited config, and build_snp_argv must never be
+        // asked to guess which half is right (its own debug_assert only
+        // documents the invariant, it does not enforce it in release builds).
+        VmConfiguration::Qemu(qemu_config)
+            if qemu_config.is_snp()
+                && matches!(qemu_config.rootfs_override(), RootfsOverride::Malformed) =>
+        {
+            Err(ControllerError::MalformedRootfsOverride)
+        }
         VmConfiguration::Qemu(qemu_config) if qemu_config.is_snp() => {
             Ok(RunTarget::Snp((**qemu_config).clone()))
         }
@@ -405,6 +425,56 @@ mod tests {
                     RunTarget::Snp(_) => "snp",
                 }
             ),
+        }
+    }
+
+    #[test]
+    fn a_luks_snp_config_dispatches_to_the_snp_runner() {
+        // The opaque-cmdline SEV-SNP arm (Task 8/9): both rootfs-override
+        // keys present together must still route to the SNP runner, exactly
+        // like a verity SNP config.
+        let luks = format!(
+            r#"{QEMU_VM_CONFIG},"sev_snp":true,"ovmf_path":"/OVMF.fd",
+               "sev_policy":196608,"kernel_path":"/bzImage","initrd_path":"/initrd",
+               "kernel_cmdline":"console=ttyS0 root=/dev/vda rw",
+               "image_format":"qcow2","image_readonly":false"#
+        );
+        let config = parse("qemu", &luks);
+        assert!(matches!(select_run_target(&config), Ok(RunTarget::Snp(_))));
+    }
+
+    #[test]
+    fn a_half_populated_rootfs_override_is_refused_cleanly_not_dispatched_to_the_snp_builder() {
+        // image_format present without image_readonly (or vice versa) on an
+        // otherwise-complete SNP config is a corrupt/hand-edited config: the
+        // writer always sets both together. select_run_target must refuse
+        // rather than guess, and never fall through to the SNP builder
+        // (whose own debug_assert only fires in debug builds).
+        for extra in [r#""image_format":"qcow2""#, r#""image_readonly":false"#] {
+            let half = format!(
+                r#"{QEMU_VM_CONFIG},"sev_snp":true,"ovmf_path":"/OVMF.fd",
+                   "sev_policy":196608,"kernel_path":"/bzImage","initrd_path":"/initrd",
+                   "kernel_cmdline":"console=ttyS0 root=/dev/vda rw",
+                   {extra}"#
+            );
+            let config = parse("qemu", &half);
+            match select_run_target(&config) {
+                Err(error) => {
+                    let message = error.to_string();
+                    assert!(
+                        message.contains("half-populated") && message.contains("rootfs"),
+                        "unexpected refusal message: {message}"
+                    );
+                }
+                Ok(target) => panic!(
+                    "a half-populated rootfs override must be refused, not dispatched to {}",
+                    match target {
+                        RunTarget::Plain(_) => "plain",
+                        RunTarget::Confidential(_) => "confidential",
+                        RunTarget::Snp(_) => "snp",
+                    }
+                ),
+            }
         }
     }
 
