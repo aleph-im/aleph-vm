@@ -34,7 +34,15 @@ mask2prefix() {
 # shellcheck disable=SC2154
 case "$1" in
     deconfig)
-        /bin/busybox ip addr flush dev "$interface" 2>/dev/null
+        # v4 only: udhcpc runs deconfig at STARTUP, and an unscoped flush
+        # also deletes the interface's IPv6 link-local, which the kernel
+        # only regenerates on a link bounce, never after a flush. udhcpc6
+        # (which runs right after the v4 lease, init.sh) needs that
+        # link-local as its solicit source address and bails with "can't
+        # get link-local IPv6 address" without it. Root cause of the
+        # guest-side IPv6 failure in aleph-testnets runs 32147657203 /
+        # 32164852981; reproduced and verified in a local qemu boot.
+        /bin/busybox ip -4 addr flush dev "$interface" 2>/dev/null
         /bin/busybox ip link set "$interface" up
         ;;
     bound | renew)
