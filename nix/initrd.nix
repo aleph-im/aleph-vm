@@ -47,16 +47,16 @@ let
 
   # nftables kernel modules for the guest firewall. NF_TABLES is =m in the
   # kernel config (NETFILTER and NF_TABLES_INET are built in), so the guest
-  # firewall needs nf_tables.ko plus its two dependencies (from modules.dep:
-  # nf_tables.ko -> nfnetlink.ko, libcrc32c.ko). A stateless input filter
-  # (iif lo / tcp dport accept, drop policy) needs no conntrack module.
-  # Load order: nfnetlink -> libcrc32c -> nf_tables.
+  # firewall needs nf_tables.ko plus its dependency (from modules.dep:
+  # nf_tables.ko -> nfnetlink.ko). libcrc32c.ko is gone: kernels >= 6.15
+  # removed it and provide crc32c as a built-in library (NET_CRC32C=y here).
+  # A stateless input filter (iif lo / tcp dport accept, drop policy) needs
+  # no conntrack module. Load order: nfnetlink -> nf_tables.
   nftModules = pkgs.runCommand "nft-modules" {
     nativeBuildInputs = [ pkgs.xz ];
   } ''
     mkdir -p $out
     xz -d -k -c ${modDir}/net/netfilter/nfnetlink.ko.xz > $out/nfnetlink.ko
-    xz -d -k -c ${modDir}/lib/libcrc32c.ko.xz > $out/libcrc32c.ko
     xz -d -k -c ${modDir}/net/netfilter/nf_tables.ko.xz > $out/nf_tables.ko
   '';
 in
@@ -75,7 +75,6 @@ pkgs.makeInitrd {
     { object = "${dmModules}/dm-verity.ko"; symlink = "/lib/modules/dm-verity.ko"; }
     # netfilter modules for the guest firewall (loaded by init.sh).
     { object = "${nftModules}/nfnetlink.ko"; symlink = "/lib/modules/nfnetlink.ko"; }
-    { object = "${nftModules}/libcrc32c.ko"; symlink = "/lib/modules/libcrc32c.ko"; }
     { object = "${nftModules}/nf_tables.ko"; symlink = "/lib/modules/nf_tables.ko"; }
   ];
 }
