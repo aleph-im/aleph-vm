@@ -139,12 +139,12 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
     # launch-path tests patch aleph.vm.agent.vprogram_launch.get_existing_file
     # and expect every ref (manifest, bundle, workload) to resolve through it.
     tar_path = await get_existing_file(manifest.bundle.ref)
-    snp_staging._verify_bundle(
+    snp_staging.verify_bundle(
         tar_path, ref=manifest.bundle.ref, sha256=manifest.bundle.sha256, size=manifest.bundle.size
     )
 
     bundle_dir = vprogram_staging_dir(vm_hash)
-    snp_staging._extract_bundle(tar_path, bundle_dir)
+    snp_staging.extract_bundle(tar_path, bundle_dir)
     logger.debug("Staged V-PROGRAM %s runtime bundle at %s", vm_hash, bundle_dir)
 
     members = manifest.bundle.members
