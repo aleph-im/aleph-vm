@@ -31,7 +31,9 @@ from aleph.vm.vprogram.bundle import (  # noqa: E402
     BUNDLE_NAME,
     MANIFEST_NAME,
     BundleInfo,
+    InstanceBundleInfo,
     build_bundle,
+    make_instance_manifest,
     make_manifest,
     verify_bundle_info,
 )
@@ -57,6 +59,10 @@ def _source_epoch(repo: Path) -> int:
     return int(_git(repo, "log", "-1", "--format=%ct"))
 
 
+def _nix_target(flavor: str) -> str:
+    return "instanceImage" if flavor == "instance" else "image"
+
+
 def cmd_build(args: argparse.Namespace) -> int:
     repo = args.repo.resolve()
     out: Path = args.out
@@ -68,7 +74,7 @@ def cmd_build(args: argparse.Namespace) -> int:
             [  # noqa: S603, S607
                 "nix",
                 "build",
-                f"git+file://{repo}?dir=nix#image",
+                f"git+file://{repo}?dir=nix#{_nix_target(args.flavor)}",
                 "--extra-experimental-features",
                 "nix-command flakes",
                 "-o",
@@ -82,11 +88,14 @@ def cmd_build(args: argparse.Namespace) -> int:
         rev=_git(repo, "rev-parse", "--short", "HEAD"),
         build=BUILD_COMMAND,
     )
-    info = build_bundle(image_dir=image_dir, out_dir=out, source_epoch=_source_epoch(repo), source=source)
+    info = build_bundle(
+        image_dir=image_dir, out_dir=out, source_epoch=_source_epoch(repo), source=source, flavor=args.flavor
+    )
     print(f"bundle:   {out / BUNDLE_NAME}")  # noqa: T201
     print(f"sha256:   {info.sha256}")  # noqa: T201
     print(f"size:     {info.size}")  # noqa: T201
-    print(f"roothash: {info.platform_roothash}")  # noqa: T201
+    if isinstance(info, BundleInfo):
+        print(f"roothash: {info.platform_roothash}")  # noqa: T201
     print()  # noqa: T201
     print("Next: upload the bundle and note the STORE item hash it prints:")  # noqa: T201
     print(f"  aleph file upload {out / BUNDLE_NAME}")  # noqa: T201
@@ -94,19 +103,30 @@ def cmd_build(args: argparse.Namespace) -> int:
 
 
 def cmd_manifest(args: argparse.Namespace) -> int:
-    info = BundleInfo.model_validate_json(args.bundle_info.read_text())
+    if args.flavor == "instance":
+        info: BundleInfo | InstanceBundleInfo = InstanceBundleInfo.model_validate_json(args.bundle_info.read_text())
+    else:
+        info = BundleInfo.model_validate_json(args.bundle_info.read_text())
     tar_path = args.bundle_info.parent / BUNDLE_NAME
     if tar_path.is_file():
         verify_bundle_info(info, tar_path)
     else:
         print(f"note: {tar_path} not found, skipping bundle cross-check")  # noqa: T201
-    manifest = make_manifest(
-        info=info,
-        bundle_ref=args.bundle_ref,
-        name=args.name,
-        runtime_version=args.runtime_version,
-        exec_runtime=args.exec_runtime,
-    )
+    if args.flavor == "instance":
+        manifest = make_instance_manifest(
+            info,
+            bundle_ref=args.bundle_ref,
+            name=args.name,
+            version=args.runtime_version,
+        )
+    else:
+        manifest = make_manifest(
+            info=info,
+            bundle_ref=args.bundle_ref,
+            name=args.name,
+            runtime_version=args.runtime_version,
+            exec_runtime=args.exec_runtime,
+        )
     out: Path = args.out if args.out is not None else args.bundle_info.parent / MANIFEST_NAME
     out.write_text(manifest.to_canonical_json())
     print(f"manifest: {out}")  # noqa: T201
@@ -129,6 +149,12 @@ def main(argv: list[str] | None = None) -> int:
         help="package an existing nix image output instead of building",
     )
     p_build.add_argument("--out", type=Path, required=True, help="output directory")
+    p_build.add_argument(
+        "--flavor",
+        choices=("vprogram", "instance"),
+        default="vprogram",
+        help="bundle flavor: vprogram (default, nix#image) or instance (nix#instanceImage, no verity sidecars)",
+    )
     p_build.set_defaults(func=cmd_build)
 
     p_manifest = subparsers.add_parser("manifest", help="generate the runtime manifest for an uploaded bundle")
@@ -138,11 +164,18 @@ def main(argv: list[str] | None = None) -> int:
     p_manifest.add_argument("--runtime-version", required=True, help="runtime version string, e.g. 2026.07.08")
     p_manifest.add_argument("--out", type=Path, default=None, help="manifest path (default: next to bundle-info)")
     p_manifest.add_argument(
+        "--flavor",
+        choices=("vprogram", "instance"),
+        default="vprogram",
+        help="manifest flavor: vprogram (default, aleph-vprogram-runtime) or "
+        "instance (aleph-instance-runtime, luks cmdline template)",
+    )
+    p_manifest.add_argument(
         "--exec",
         dest="exec_runtime",
         action="store_true",
         help="build the aleph.exec/1 workload-runtime manifest (workload_roothash in the "
-        "cmdline template) instead of the builtin no-workload form",
+        "cmdline template) instead of the builtin no-workload form; ignored with --flavor instance",
     )
     p_manifest.set_defaults(func=cmd_manifest)
 

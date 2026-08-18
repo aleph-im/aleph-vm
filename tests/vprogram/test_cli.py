@@ -8,12 +8,22 @@ from pathlib import Path
 
 import pytest
 
-from aleph.vm.vprogram.manifest import RuntimeManifest
+from aleph.vm.vprogram.manifest import InstanceRuntimeManifest, RuntimeManifest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "vprogram_bundle.py"
 ROOTHASH = "cb121a317be7dc7969dd633ca9b6c3718ffe9ea6715b64e0e35a871d484b56b8"
 BUNDLE_REF = "87287e4a5c8d7554a50f982cd681b64b2600c0bbb1c0b1e618465e022e01b977"
+
+
+@pytest.fixture()
+def instance_image_dir(tmp_path: Path) -> Path:
+    d = tmp_path / "instance-image"
+    d.mkdir()
+    (d / "OVMF.fd").write_bytes(b"ovmf firmware")
+    (d / "bzImage").write_bytes(b"kernel")
+    (d / "initrd").write_bytes(b"initrd contents")
+    return d
 
 
 @pytest.fixture()
@@ -116,3 +126,32 @@ def test_build_missing_image_file_fails(image_dir: Path, tmp_path: Path) -> None
     (image_dir / "bzImage").unlink()
     result = _run("build", "--image-dir", str(image_dir), "--out", str(tmp_path / "out"))
     assert result.returncode != 0
+
+
+def test_build_then_manifest_instance_flavor(instance_image_dir: Path, tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    result = _run("build", "--image-dir", str(instance_image_dir), "--out", str(out), "--flavor", "instance")
+    assert result.returncode == 0, result.stderr
+    assert (out / "snp-image.tar.gz").is_file()
+    info = json.loads((out / "bundle-info.json").read_text())
+    assert "platform_roothash" not in info
+    assert info["members"] == {"ovmf": "image/OVMF.fd", "kernel": "image/bzImage", "initrd": "image/initrd"}
+
+    result = _run(
+        "manifest",
+        "--bundle-info",
+        str(out / "bundle-info.json"),
+        "--bundle-ref",
+        BUNDLE_REF,
+        "--name",
+        "aleph-snp-luks",
+        "--runtime-version",
+        "2026.08.18",
+        "--flavor",
+        "instance",
+    )
+    assert result.returncode == 0, result.stderr
+    manifest = InstanceRuntimeManifest.model_validate_json((out / "manifest.json").read_text())
+    assert manifest.format == "aleph-instance-runtime"
+    assert manifest.bundle.ref == BUNDLE_REF
+    assert manifest.boot.cmdline_template == "console=ttyS0 luks=1 owner={owner}"
