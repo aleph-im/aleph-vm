@@ -114,17 +114,12 @@
       ovmf = import ./ovmf.nix { inherit pkgs; };
       ovmfFd = "${ovmf}/OVMF.fd";
 
-      # nixpkgs 24.11 ships sev-snp-measure 0.0.11 which has a measurement
-      # calculation bug. Override to 0.0.12 which produces correct results.
-      sev-snp-measure = pkgs.python3Packages.sev-snp-measure.overridePythonAttrs (old: rec {
-        version = "0.0.12";
-        src = pkgs.fetchFromGitHub {
-          owner = "virtee";
-          repo = "sev-snp-measure";
-          rev = "v${version}";
-          hash = "sha256-UcXU6rNjcRN1T+iWUNrqeJCkSa02WU1/pBwLqHVPRyw=";
-        };
-      });
+      # sev-snp-measure 0.0.11 had a measurement calculation bug; nixos-26.05
+      # ships 0.0.12 (the fixed release the flake previously pinned by hand),
+      # so the nixpkgs package is used as-is. Keep any future channel bump
+      # honest: measurements must stay reproducible across sev-snp-measure
+      # updates or every pinned launch measurement silently changes.
+      sev-snp-measure = pkgs.python3Packages.sev-snp-measure;
 
       kernel = pkgs.callPackage ./kernel.nix {};
       initrd = pkgs.callPackage ./initrd.nix {
