@@ -242,6 +242,7 @@ dependencies = [
  "anyhow",
  "clap",
  "hex",
+ "k256",
  "libc",
  "rcgen",
  "reqwest",
