@@ -251,8 +251,8 @@ message TeeConfig {
 
 message NetworkConfig {
   bool internet_access = 1;
-  string requested_ipv6 = 2;         // empty = pool-assigned
-  uint32 ipv6_prefix_len = 3;        // 0 = /128
+  string requested_ipv6 = 2;         // agent-computed static /124 CIDR (network/prefix); empty = daemon-assigned
+  uint32 ipv6_prefix_len = 3;        // the requested prefix (124 for the static scheme); 0 = /128
 }
 
 message GpuConfig {
