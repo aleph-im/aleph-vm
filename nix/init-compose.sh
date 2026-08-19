@@ -24,6 +24,13 @@
 #   5. Fail-closed supervision: waits on the guest PID specifically and
 #      powers off when it exits, instead of dev's bare `wait` (a dead
 #      compose stack takes the VM down).
+#   6. Agent-start ordering: the attest-agent is started BEFORE the chroot
+#      (dev starts it AFTER, once past the whole platform-init if/elif/else
+#      block), so `$!` right after the `chroot ... &` reliably captures the
+#      guest's own pid instead of the attest-agent's. The "starting
+#      /sbin/init from rootfs" echo stays where it was, directly above the
+#      chroot line, so the attest-agent start now falls between that echo
+#      and the chroot it used to sit right next to in dev.
 # Everything else (prologue: mounts, lo up, interface wait, ip=/udhcpc/
 # udhcpc6, cmdline roothash parsing with the \b guard, dm module insmods,
 # wait_for_dev, prepare_chroot, setup_firewall) is byte-identical to init.sh.
