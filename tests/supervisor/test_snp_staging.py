@@ -8,7 +8,6 @@ tests/supervisor/test_vprogram_launch.py.
 import gzip
 import hashlib
 import io
-import shutil
 import tarfile
 from pathlib import Path
 from typing import IO, cast
@@ -16,6 +15,7 @@ from typing import IO, cast
 import pytest
 
 from aleph.vm.agent.snp_staging import fetch_and_stage_bundle, staging_dir
+from aleph.vm.conf import settings
 from aleph.vm.supervisor_interface.errors import VmSetupError
 
 VM_HASH = "cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafec"
@@ -43,7 +43,7 @@ def make_bundle(out_dir: Path, files: dict[str, bytes] | None = None) -> Path:
 
 
 @pytest.fixture
-def storage_files(monkeypatch) -> dict[str, Path]:
+def storage_files(tmp_path, monkeypatch) -> dict[str, Path]:
     """Serve get_existing_file from a local ref -> path map: no network."""
     files: dict[str, Path] = {}
 
@@ -51,6 +51,7 @@ def storage_files(monkeypatch) -> dict[str, Path]:
         return files[str(ref)]
 
     monkeypatch.setattr("aleph.vm.agent.snp_staging.get_existing_file", fake_get_existing_file)
+    monkeypatch.setattr(settings, "EXECUTION_ROOT", str(tmp_path))
     return files
 
 
@@ -84,8 +85,6 @@ async def test_fetch_and_stage_bundle_sha256_mismatch_fails_closed(tmp_path, sto
     storage_files[BUNDLE_REF] = tar_path
 
     dest = staging_dir("snp-instance", VM_HASH)
-    if dest.exists():  # leftover from a previous pytest run: EXECUTION_ROOT persists
-        shutil.rmtree(dest)
 
     with pytest.raises(VmSetupError, match="sha256 mismatch"):
         await fetch_and_stage_bundle(
