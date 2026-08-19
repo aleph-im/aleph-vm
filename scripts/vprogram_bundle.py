@@ -39,7 +39,12 @@ from aleph.vm.vprogram.bundle import (  # noqa: E402
 )
 from aleph.vm.vprogram.manifest import SourceInfo  # noqa: E402
 
-BUILD_COMMAND = 'nix build "git+file://$REPO?dir=nix#image"'
+
+def _build_command(flavor: str) -> str:
+    """The `source.build` provenance recorded in the manifest: the exact nix
+    target for this flavor, so an auditor rebuilds the same bundle (the
+    instance flavor builds `nix#instanceImage`, not `nix#image`)."""
+    return f'nix build "git+file://$REPO?dir=nix#{_nix_target(flavor)}"'
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -86,7 +91,7 @@ def cmd_build(args: argparse.Namespace) -> int:
     source = SourceInfo(
         repo="https://github.com/aleph-im/aleph-vm",
         rev=_git(repo, "rev-parse", "--short", "HEAD"),
-        build=BUILD_COMMAND,
+        build=_build_command(args.flavor),
     )
     info = build_bundle(
         image_dir=image_dir, out_dir=out, source_epoch=_source_epoch(repo), source=source, flavor=args.flavor
