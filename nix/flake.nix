@@ -150,6 +150,12 @@
 
       rootfs = pkgs.callPackage ./rootfs.nix {};
 
+      # Compose-runner platform rootfs (aleph.compose/1): podman + podman-compose
+      # userland that boots a docker-compose workload from a separate measured
+      # volume. See compose-rootfs.nix for the donor deltas (determinism,
+      # ownership, fail-closed init).
+      composeRootfs = pkgs.callPackage ./compose-rootfs.nix { inherit kernel; };
+
       # fib-service V-PROGRAM workload volume: a content-only ext4 carrying the
       # fib-service binary as /sbin/init, delivered to the measured guest as an
       # extra disk (see workload.nix). Distinct from `rootfs`, which is the
@@ -345,6 +351,7 @@
           initrd
           instanceInitrd
           rootfs
+          composeRootfs
           verity
           workloadImage
           workloadVerity
