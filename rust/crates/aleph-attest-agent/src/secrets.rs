@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use actix_web::{HttpResponse, web};
+use aleph_tee::owner_auth;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 use zeroize::Zeroizing;
@@ -26,9 +27,29 @@ pub struct InjectSecretRequest {
     pub secrets: HashMap<String, String>,
 }
 
+/// Owner-authenticated inject envelope: the only body accepted on
+/// `POST /confidential/inject-secret` when the agent was started with
+/// `--owner`. `signature` is the EIP-191 personal-sign signature (from
+/// `aleph_tee::owner_auth::sign_payload`) over
+/// `owner_auth::inject_secret_payload(server_public_key_raw, canonical_secrets_json(secrets))`.
+#[derive(Deserialize)]
+pub struct InjectSecretEnvelope {
+    pub secrets: HashMap<String, String>,
+    pub signature: String,
+}
+
 #[derive(Serialize)]
 pub struct InjectSecretResponse {
     pub injected: Vec<String>,
+}
+
+/// Owner authorized to inject secrets, and the TLS identity the signature is
+/// bound to. Registered as `web::Data<Option<OwnerAuth>>`: `None` on
+/// v-program images (unauthenticated one-shot injection, unchanged), `Some`
+/// on confidential-instance images (owner-signature-gated, overwriting).
+pub struct OwnerAuth {
+    pub owner: String,
+    pub server_public_key_raw: Vec<u8>,
 }
 
 /// One-shot secret store: holds the injection guard and the target directory.
@@ -132,43 +153,45 @@ impl SecretStore {
             return InjectOutcome::Conflict;
         }
 
-        if secrets.is_empty() {
-            return InjectOutcome::BadRequest("no secrets provided".to_string());
+        if let Some(outcome) = validate_secrets(secrets) {
+            return outcome;
         }
 
-        if secrets.len() > MAX_SECRETS {
-            return InjectOutcome::BadRequest(format!(
-                "too many secrets: max {MAX_SECRETS}, got {}",
-                secrets.len()
-            ));
+        Self::write_secrets(&self.dir, &mut guard, secrets, WriteMode::CreateNew)
+    }
+
+    /// Validate and write the secrets, authenticated by a verified owner
+    /// signature (see `inject_secret_handler`). Unlike `inject`, this is not
+    /// one-shot: it may be called repeatedly and overwrites previously
+    /// injected keys, so a wrong LUKS passphrase can be retried. It shares
+    /// the same validation limits and write hardening as `inject` via
+    /// `validate_secrets` / `write_secrets`, so the two entry points cannot
+    /// drift apart.
+    fn inject_authenticated(&self, secrets: &HashMap<String, String>) -> InjectOutcome {
+        let mut guard = match self.injected.lock() {
+            Ok(g) => g,
+            Err(_) => return InjectOutcome::Internal("internal lock error".to_string()),
+        };
+
+        if let Some(outcome) = validate_secrets(secrets) {
+            return outcome;
         }
 
-        // Validate all keys and values before writing anything (all-or-nothing).
-        for (key, value) in secrets {
-            if key.is_empty() || key.len() > MAX_KEY_LEN {
-                return InjectOutcome::BadRequest(format!(
-                    "secret key length must be 1-{MAX_KEY_LEN}, got {}",
-                    key.len()
-                ));
-            }
-            if !key
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-            {
-                return InjectOutcome::BadRequest(format!(
-                    "invalid secret key: must be alphanumeric/underscore/hyphen, got: {key}"
-                ));
-            }
-            if value.len() > MAX_VALUE_SIZE {
-                return InjectOutcome::BadRequest(format!(
-                    "secret value too large for key '{key}': max {MAX_VALUE_SIZE} bytes, got {}",
-                    value.len()
-                ));
-            }
-        }
+        Self::write_secrets(&self.dir, &mut guard, secrets, WriteMode::Overwrite)
+    }
 
+    /// Shared write loop for `inject` and `inject_authenticated`: prepares the
+    /// secrets directory and writes each secret as an owner-only file, then
+    /// marks the one-shot guard as consumed. Called with the injection lock
+    /// already held.
+    fn write_secrets(
+        dir: &Path,
+        guard: &mut std::sync::MutexGuard<'_, bool>,
+        secrets: &HashMap<String, String>,
+        mode: WriteMode,
+    ) -> InjectOutcome {
         // Create (or validate) the secrets directory: real dir, agent-owned, 0700.
-        if let Err(e) = ensure_secret_dir(&self.dir) {
+        if let Err(e) = ensure_secret_dir(dir) {
             tracing::error!("secret directory rejected: {e}");
             return InjectOutcome::Internal("failed to prepare secrets directory".to_string());
         }
@@ -179,30 +202,11 @@ impl SecretStore {
             // Wrap value in Zeroizing so it's wiped from memory when dropped.
             let secret_value = Zeroizing::new(value.as_bytes().to_vec());
 
-            let path = self.dir.join(key);
-            // Create fresh, owner-only files and never follow a symlink:
-            //   - create_new(true) sets O_CREAT|O_EXCL, so a pre-existing file
-            //     (e.g. a planted symlink or a world-readable decoy) is refused
-            //     rather than opened, and cannot defeat the 0600 mode;
-            //   - O_NOFOLLOW additionally refuses a symlink at the final path
-            //     component. Together these stop a /tmp squatter from redirecting
-            //     the write or downgrading permissions.
-            let result = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW)
-                .open(&path)
-                .and_then(|mut f| {
-                    use std::io::Write;
-                    f.write_all(&secret_value)
-                });
-
-            if let Err(e) = result {
+            if let Err(e) = write_secret_atomic(dir, key, &secret_value, mode) {
                 tracing::error!("failed to write secret {key}: {e}");
                 // Partial write: some secrets may already be on disk.
                 // Still mark as injected to prevent retry with inconsistent state.
-                *guard = true;
+                **guard = true;
                 return InjectOutcome::Internal(format!("failed to write secret: {key}"));
             }
             info!(key = %key, "injected secret");
@@ -210,31 +214,137 @@ impl SecretStore {
         }
 
         // Mark as injected only after all secrets are successfully written.
-        *guard = true;
+        **guard = true;
 
         InjectOutcome::Ok(injected)
     }
 }
 
-/// POST /confidential/inject-secret
+/// Write one secret's content to `dir/<key>` atomically: the content is first
+/// written to a same-directory temp file (`dir/.<key>.tmp`, O_NOFOLLOW +
+/// 0600, same hardening as the final file always had), then moved into place
+/// with `rename()`. `rename()` within the same filesystem/directory is an
+/// atomic directory-entry swap, so a concurrent reader polling the final path
+/// (e.g. the confidential-instance init script waiting on
+/// `/tmp/secrets/luks_passphrase`) can only ever observe "file absent" or
+/// "file present with its full, final content", never a create-then-truncate
+/// window with a partially written value. That in turn matters for
+/// `WriteMode::Overwrite` (authenticated re-injection): a create+truncate
+/// followed by `write_all` used to leave a poller a window where a stat-then-
+/// open would see 0 (or partial) bytes and fail a passphrase unlock even
+/// though the agent itself reports success once `write_all` finishes.
 ///
-/// Accepts a JSON object of key-value pairs. Each key is written as a file
-/// under the store directory (`/tmp/secrets/<key>` in production) containing the
-/// value. One-shot: returns 409 on subsequent calls. Files are created fresh
-/// (O_EXCL|O_NOFOLLOW) with mode 0600 in an agent-owned 0700 directory.
-///
-/// Zeroization is best-effort: the primary per-value copy is wrapped in
-/// `Zeroizing` and wiped after the disk write, but the deserialized request map
-/// (owned by actix) still holds plaintext copies that are not individually
-/// zeroized. Under confidential compute the VM's memory encryption is the real
-/// backstop for plaintext lingering in RAM.
-///
-/// Limits: max 16 secrets, max 64-char key names, max 64 KiB per value.
-pub async fn inject_secret_handler(
-    store: web::Data<SecretStore>,
-    body: web::Json<InjectSecretRequest>,
-) -> HttpResponse {
-    match store.inject(&body.secrets) {
+/// Applies to both `WriteMode`s, so every consumer (the one-shot v-program
+/// path and the owner-authenticated confidential-instance path) gets the
+/// same atomicity guarantee.
+fn write_secret_atomic(
+    dir: &Path,
+    key: &str,
+    secret_value: &[u8],
+    mode: WriteMode,
+) -> std::io::Result<()> {
+    let final_path = dir.join(key);
+
+    // CreateNew preserves the former O_CREAT|O_EXCL semantics: refuse a
+    // pre-existing entry at the final path (regular file, planted symlink,
+    // or otherwise) rather than silently replacing it via rename. This keeps
+    // `test_symlink_at_key_path_is_refused_not_followed` refused-not-followed
+    // (symlink_metadata does not dereference the final component, so a
+    // planted symlink is detected here without ever being followed).
+    if matches!(mode, WriteMode::CreateNew) && std::fs::symlink_metadata(&final_path).is_ok() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "target already exists",
+        ));
+    }
+
+    let tmp_path = dir.join(format!(".{key}.tmp"));
+    // Clear a stale temp file left over from a previous crash before the
+    // fresh O_CREAT|O_EXCL create below. The secrets directory is agent-
+    // owned and 0700 (ensure_secret_dir) and the injection Mutex serializes
+    // every write, so nothing else can race us on this path.
+    let _ = std::fs::remove_file(&tmp_path);
+
+    let write_result = (|| -> std::io::Result<()> {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&tmp_path)?;
+        use std::io::Write;
+        f.write_all(secret_value)?;
+        f.sync_all()
+    })();
+
+    if let Err(e) = write_result {
+        // Never leave a half-written temp file behind on failure.
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+
+    if let Err(e) = std::fs::rename(&tmp_path, &final_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+
+    Ok(())
+}
+
+/// How `write_secrets` should open each per-key file.
+#[derive(Clone, Copy)]
+enum WriteMode {
+    /// One-shot `inject`: refuse if the file already exists.
+    CreateNew,
+    /// Authenticated `inject_authenticated`: create or truncate-overwrite.
+    Overwrite,
+}
+
+/// Shared validation for both `inject` and `inject_authenticated`: checks
+/// the secrets map is non-empty, within `MAX_SECRETS`, and that every key and
+/// value is within limits and well-formed. Returns `None` when valid.
+fn validate_secrets(secrets: &HashMap<String, String>) -> Option<InjectOutcome> {
+    if secrets.is_empty() {
+        return Some(InjectOutcome::BadRequest("no secrets provided".to_string()));
+    }
+
+    if secrets.len() > MAX_SECRETS {
+        return Some(InjectOutcome::BadRequest(format!(
+            "too many secrets: max {MAX_SECRETS}, got {}",
+            secrets.len()
+        )));
+    }
+
+    for (key, value) in secrets {
+        if key.is_empty() || key.len() > MAX_KEY_LEN {
+            return Some(InjectOutcome::BadRequest(format!(
+                "secret key length must be 1-{MAX_KEY_LEN}, got {}",
+                key.len()
+            )));
+        }
+        if !key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Some(InjectOutcome::BadRequest(format!(
+                "invalid secret key: must be alphanumeric/underscore/hyphen, got: {key}"
+            )));
+        }
+        if value.len() > MAX_VALUE_SIZE {
+            return Some(InjectOutcome::BadRequest(format!(
+                "secret value too large for key '{key}': max {MAX_VALUE_SIZE} bytes, got {}",
+                value.len()
+            )));
+        }
+    }
+
+    None
+}
+
+/// Maps an `InjectOutcome` to the HTTP response, shared by both the
+/// unauthenticated and owner-authenticated paths so they cannot diverge.
+fn outcome_to_response(outcome: InjectOutcome) -> HttpResponse {
+    match outcome {
         InjectOutcome::Ok(injected) => HttpResponse::Ok().json(InjectSecretResponse { injected }),
         InjectOutcome::Conflict => {
             HttpResponse::Conflict().json(serde_json::json!({"error": "secrets already injected"}))
@@ -244,6 +354,87 @@ pub async fn inject_secret_handler(
         }
         InjectOutcome::Internal(msg) => {
             HttpResponse::InternalServerError().json(serde_json::json!({"error": msg}))
+        }
+    }
+}
+
+/// POST /confidential/inject-secret
+///
+/// Two mutually exclusive modes, selected by whether the agent was started
+/// with `--owner`:
+///
+/// - Unauthenticated (v-program images, `owner` data is `None`): body is the
+///   flat `{"<key>": "<value>", ...}` object of today. One-shot: returns 409
+///   on a second attempt.
+/// - Owner-authenticated (confidential-instance images, `owner` data is
+///   `Some`): body must be the envelope
+///   `{"secrets": {...}, "signature": "0x..."}`. The signature is an EIP-191
+///   personal-sign signature over
+///   `owner_auth::inject_secret_payload(server_public_key_raw, canonical_secrets_json(secrets))`,
+///   binding the request to this agent's per-boot TLS key. A failed check
+///   returns 403; a legacy flat body (missing `secrets`/`signature`) returns
+///   400. Authenticated injects are not one-shot: a repeat overwrites
+///   previously injected keys, so a wrong LUKS passphrase is retryable.
+///
+/// Both modes share the same validation limits and write hardening
+/// (`SecretStore::write_secrets`): max 16 secrets, max 64-char key names, max
+/// 64 KiB per value, files created fresh or overwritten with O_NOFOLLOW and
+/// mode 0600 in an agent-owned 0700 directory.
+///
+/// Zeroization is best-effort: the primary per-value copy is wrapped in
+/// `Zeroizing` and wiped after the disk write, but the deserialized request
+/// map still holds plaintext copies that are not individually zeroized. Under
+/// confidential compute the VM's memory encryption is the real backstop for
+/// plaintext lingering in RAM.
+///
+/// Secret material (keys, values, the raw body) is never logged; an auth
+/// failure is logged at info level with only the expected owner address.
+pub async fn inject_secret_handler(
+    store: web::Data<SecretStore>,
+    owner: web::Data<Option<OwnerAuth>>,
+    body: web::Bytes,
+) -> HttpResponse {
+    match owner.as_ref() {
+        Some(auth) => {
+            let envelope: InjectSecretEnvelope = match serde_json::from_slice(&body) {
+                Ok(envelope) => envelope,
+                Err(_) => {
+                    return HttpResponse::BadRequest().json(serde_json::json!({
+                        "error": "expected envelope body: {\"secrets\": {...}, \"signature\": \"0x...\"}"
+                    }));
+                }
+            };
+
+            let canonical: BTreeMap<String, String> = envelope
+                .secrets
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let canonical_json = owner_auth::canonical_secrets_json(&canonical);
+            let payload =
+                owner_auth::inject_secret_payload(&auth.server_public_key_raw, &canonical_json);
+
+            if !owner_auth::verify_owner(&payload, &envelope.signature, &auth.owner) {
+                info!(
+                    expected_owner = %auth.owner,
+                    "owner signature verification failed for inject-secret request"
+                );
+                return HttpResponse::Forbidden()
+                    .json(serde_json::json!({"error": "owner signature verification failed"}));
+            }
+
+            outcome_to_response(store.inject_authenticated(&envelope.secrets))
+        }
+        None => {
+            let request: InjectSecretRequest = match serde_json::from_slice(&body) {
+                Ok(request) => request,
+                Err(_) => {
+                    return HttpResponse::BadRequest()
+                        .json(serde_json::json!({"error": "invalid request body"}));
+                }
+            };
+
+            outcome_to_response(store.inject(&request.secrets))
         }
     }
 }
@@ -476,12 +667,392 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// A concurrent reader polling the final path must never observe a
+    /// partial write: with the create-then-truncate-then-write_all sequence
+    /// this test would have replaced, a poller landing between the create
+    /// and the completed `write_all` could read 0 or partial bytes under the
+    /// final name. The atomic write-temp-then-rename in `write_secret_atomic`
+    /// makes that window unobservable: the final name only ever shows up
+    /// fully written. This mirrors the real regression (Finding 1): the
+    /// confidential-instance init script polls `[ -s
+    /// /tmp/secrets/luks_passphrase ]` while the agent writes it.
+    #[test]
+    fn test_inject_write_is_never_observed_partial() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let dir = tmpdir();
+        let store = Arc::new(SecretStore::new(&dir));
+        let key = "luks_passphrase";
+        // Maximum allowed value size, to maximize the on-disk write duration
+        // and give a non-atomic implementation the best chance of being
+        // caught mid-write by the poller below.
+        let value = "x".repeat(MAX_VALUE_SIZE);
+        let expected_len = value.len();
+
+        let done = Arc::new(AtomicBool::new(false));
+        let poll_path = dir.join(key);
+        let poll_done = Arc::clone(&done);
+        let poller = std::thread::spawn(move || {
+            let mut observed = 0usize;
+            while !poll_done.load(Ordering::SeqCst) {
+                if let Ok(content) = std::fs::read(&poll_path) {
+                    observed += 1;
+                    assert_eq!(
+                        content.len(),
+                        expected_len,
+                        "the final-name file must never be observed with partial content"
+                    );
+                }
+            }
+            observed
+        });
+
+        let secrets = secrets_of(&[(key, value.as_str())]);
+        assert!(is_ok(&store.inject_authenticated(&secrets)));
+        done.store(true, Ordering::SeqCst);
+        // Not asserting `observed > 0`: a poller racing a single fast write
+        // may never catch the file at all. The guarantee under test is
+        // conditional (asserted inside the loop above): IF the poller ever
+        // observed the file, its content was always complete.
+        let _ = poller.join().unwrap();
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The temp file used for the atomic write must not linger when the
+    /// final `rename()` fails: plant a non-empty directory at the target
+    /// name (rename of a regular-file source onto an existing directory
+    /// fails, exercising the error-cleanup branch in `write_secret_atomic`).
+    #[test]
+    fn test_inject_authenticated_cleans_up_temp_file_on_rename_failure() {
+        let dir = tmpdir();
+        let store = SecretStore::new(&dir);
+
+        // An unrelated first inject creates the secrets directory.
+        assert!(is_ok(
+            &store.inject_authenticated(&secrets_of(&[("seed", "v")]))
+        ));
+
+        let target = dir.join("luks_passphrase");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("occupant"), b"x").unwrap();
+
+        let out = store.inject_authenticated(&secrets_of(&[("luks_passphrase", "hunter2")]));
+        assert!(
+            matches!(out, InjectOutcome::Internal(_)),
+            "rename onto an existing directory must fail cleanly"
+        );
+        assert!(
+            !dir.join(".luks_passphrase.tmp").exists(),
+            "temp file must be cleaned up after a failed rename"
+        );
+        assert!(target.is_dir(), "the planted directory is untouched");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// No temp file should be created at all when `CreateNew` refuses a
+    /// pre-existing (symlinked) target: the existence check runs before the
+    /// temp file is opened.
+    #[test]
+    fn test_inject_leaves_no_temp_file_when_createnew_refused() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tmpdir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let decoy = tmpdir();
+        symlink(&decoy, dir.join("api_key")).unwrap();
+
+        let out = store_inject(&dir, &[("api_key", "s3cr3t")]);
+        assert!(matches!(out, InjectOutcome::Internal(_)));
+        assert!(!dir.join(".api_key.tmp").exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     fn outcome_name(o: &InjectOutcome) -> &'static str {
         match o {
             InjectOutcome::Ok(_) => "Ok",
             InjectOutcome::Conflict => "Conflict",
             InjectOutcome::BadRequest(_) => "BadRequest",
             InjectOutcome::Internal(_) => "Internal",
+        }
+    }
+
+    /// Owner-authenticated inject-secret handler tests, exercising the actix
+    /// route end to end (envelope parsing, signature verification, and the
+    /// store's overwrite semantics).
+    mod owner_authenticated {
+        use super::*;
+        use actix_web::{App, http::StatusCode, test};
+        use k256::ecdsa::SigningKey;
+
+        /// The server key bytes bound into the payload, matching the brief.
+        const TEST_SERVER_KEY: &[u8] = b"test-server-key";
+
+        fn signing_key(seed: u8) -> SigningKey {
+            SigningKey::from_slice(&[seed; 32]).expect("valid scalar")
+        }
+
+        /// Sign the payload for `secrets` bound to `server_key`, as an owner
+        /// holding `signer` would.
+        fn sign_for(
+            server_key: &[u8],
+            secrets: &HashMap<String, String>,
+            signer: &SigningKey,
+        ) -> String {
+            let canonical: BTreeMap<String, String> = secrets
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let payload = owner_auth::inject_secret_payload(
+                server_key,
+                &owner_auth::canonical_secrets_json(&canonical),
+            );
+            owner_auth::sign_payload(signer, &payload)
+        }
+
+        fn envelope_body(secrets: &HashMap<String, String>, signature: &str) -> Vec<u8> {
+            serde_json::to_vec(&serde_json::json!({
+                "secrets": secrets,
+                "signature": signature,
+            }))
+            .unwrap()
+        }
+
+        fn owner_data(owner: String) -> web::Data<Option<OwnerAuth>> {
+            web::Data::new(Some(OwnerAuth {
+                owner,
+                server_public_key_raw: TEST_SERVER_KEY.to_vec(),
+            }))
+        }
+
+        /// Drive the real `inject_secret_handler` through an actix service,
+        /// exactly as the production router would.
+        async fn post_inject(
+            store: web::Data<SecretStore>,
+            owner: web::Data<Option<OwnerAuth>>,
+            body: Vec<u8>,
+        ) -> actix_web::dev::ServiceResponse {
+            let app = test::init_service(App::new().app_data(store).app_data(owner).route(
+                "/confidential/inject-secret",
+                web::post().to(inject_secret_handler),
+            ))
+            .await;
+            let req = test::TestRequest::post()
+                .uri("/confidential/inject-secret")
+                .set_payload(body)
+                .to_request();
+            test::call_service(&app, req).await
+        }
+
+        #[actix_web::test]
+        async fn authenticated_inject_accepts_owner_signature() {
+            let dir = tmpdir();
+            let store = web::Data::new(SecretStore::new(&dir));
+            let signer = signing_key(0x11);
+            let owner = owner_data(owner_auth::address_from_verifying_key(
+                signer.verifying_key(),
+            ));
+
+            let secrets = secrets_of(&[("luks_passphrase", "hunter2")]);
+            let sig = sign_for(TEST_SERVER_KEY, &secrets, &signer);
+            let resp = post_inject(store, owner, envelope_body(&secrets, &sig)).await;
+
+            assert_eq!(resp.status(), StatusCode::OK);
+            let content = std::fs::read_to_string(dir.join("luks_passphrase")).unwrap();
+            assert_eq!(content, "hunter2");
+
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        /// Regression test for the whole-branch review's payload-limit
+        /// finding: switching the handler's body extractor from `web::Json`
+        /// to `web::Bytes` swapped in actix-web's `PayloadConfig` (256 KiB
+        /// default) for `JsonConfig` (2 MiB default), silently shrinking the
+        /// accepted body size. Wires the route exactly as `main.rs` does
+        /// (`PayloadConfig` scoped to this resource, raised to 2 MiB) and
+        /// sends a body that exceeds the 256 KiB default but stays within
+        /// the raised cap, proving the configured limit is what is actually
+        /// exercised rather than the default.
+        #[actix_web::test]
+        async fn authenticated_inject_accepts_body_over_default_payload_limit() {
+            // Mirrors `INJECT_SECRET_BODY_LIMIT` in main.rs: MAX_SECRETS (16)
+            // * MAX_VALUE_SIZE (64 KiB) is ~1 MiB of secret values alone, so
+            // 2 MiB leaves headroom for JSON structure, key names, and the
+            // signature field, matching the prior `web::Json` default.
+            const INJECT_SECRET_BODY_LIMIT: usize = 2 * 1024 * 1024;
+
+            let dir = tmpdir();
+            let store = web::Data::new(SecretStore::new(&dir));
+            let signer = signing_key(0x11);
+            let owner = owner_data(owner_auth::address_from_verifying_key(
+                signer.verifying_key(),
+            ));
+
+            // Five secrets of 60,000 bytes each (300,000 bytes of value data
+            // alone, before JSON overhead and the signature field) push the
+            // body past actix-web's 256 KiB (262,144-byte) default
+            // `web::Bytes` limit, while each value stays within
+            // MAX_VALUE_SIZE and the count stays within MAX_SECRETS.
+            let secrets: HashMap<String, String> = (0..5)
+                .map(|i| (format!("secret{i}"), "x".repeat(60_000)))
+                .collect();
+            let sig = sign_for(TEST_SERVER_KEY, &secrets, &signer);
+            let body = envelope_body(&secrets, &sig);
+            assert!(
+                body.len() > 262_144,
+                "test body must exceed actix-web's default payload limit to exercise the fix"
+            );
+
+            let app = test::init_service(
+                App::new().app_data(store).app_data(owner).service(
+                    web::resource("/confidential/inject-secret")
+                        .app_data(web::PayloadConfig::new(INJECT_SECRET_BODY_LIMIT))
+                        .route(web::post().to(inject_secret_handler)),
+                ),
+            )
+            .await;
+            let req = test::TestRequest::post()
+                .uri("/confidential/inject-secret")
+                .set_payload(body)
+                .to_request();
+            let resp = test::call_service(&app, req).await;
+
+            assert_eq!(resp.status(), StatusCode::OK);
+            for i in 0..5 {
+                assert!(dir.join(format!("secret{i}")).exists());
+            }
+
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        #[actix_web::test]
+        async fn authenticated_inject_rejects_wrong_signer() {
+            let dir = tmpdir();
+            let store = web::Data::new(SecretStore::new(&dir));
+            let signer = signing_key(0x11);
+            let wrong_signer = signing_key(0x22);
+            let owner = owner_data(owner_auth::address_from_verifying_key(
+                signer.verifying_key(),
+            ));
+
+            let secrets = secrets_of(&[("luks_passphrase", "hunter2")]);
+            // Signed by a key that does not recover to the registered owner.
+            let sig = sign_for(TEST_SERVER_KEY, &secrets, &wrong_signer);
+            let resp = post_inject(store, owner, envelope_body(&secrets, &sig)).await;
+
+            assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+            assert!(!dir.join("luks_passphrase").exists());
+
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        #[actix_web::test]
+        async fn authenticated_inject_rejects_wrong_server_key() {
+            let dir = tmpdir();
+            let store = web::Data::new(SecretStore::new(&dir));
+            let signer = signing_key(0x11);
+            let owner = owner_data(owner_auth::address_from_verifying_key(
+                signer.verifying_key(),
+            ));
+
+            let secrets = secrets_of(&[("luks_passphrase", "hunter2")]);
+            // Signed over a payload bound to a DIFFERENT server key than the
+            // one registered in `OwnerAuth`, so verification recomputes a
+            // different payload and the signature no longer matches.
+            let sig = sign_for(b"OTHER-server-key", &secrets, &signer);
+            let resp = post_inject(store, owner, envelope_body(&secrets, &sig)).await;
+
+            assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        #[actix_web::test]
+        async fn authenticated_inject_rejects_tampered_body() {
+            let dir = tmpdir();
+            let store = web::Data::new(SecretStore::new(&dir));
+            let signer = signing_key(0x11);
+            let owner = owner_data(owner_auth::address_from_verifying_key(
+                signer.verifying_key(),
+            ));
+
+            let signed_secrets = secrets_of(&[("luks_passphrase", "hunter2")]);
+            let sig = sign_for(TEST_SERVER_KEY, &signed_secrets, &signer);
+            // Send a different secrets map than the one that was signed.
+            let sent_secrets = secrets_of(&[("luks_passphrase", "tampered")]);
+            let resp = post_inject(store, owner, envelope_body(&sent_secrets, &sig)).await;
+
+            assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+            assert!(!dir.join("luks_passphrase").exists());
+
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        #[actix_web::test]
+        async fn authenticated_reinject_overwrites() {
+            let dir = tmpdir();
+            let store = web::Data::new(SecretStore::new(&dir));
+            let signer = signing_key(0x11);
+            let owner = owner_data(owner_auth::address_from_verifying_key(
+                signer.verifying_key(),
+            ));
+
+            let first = secrets_of(&[("luks_passphrase", "first-value")]);
+            let sig1 = sign_for(TEST_SERVER_KEY, &first, &signer);
+            let resp1 =
+                post_inject(store.clone(), owner.clone(), envelope_body(&first, &sig1)).await;
+            assert_eq!(resp1.status(), StatusCode::OK);
+
+            let second = secrets_of(&[("luks_passphrase", "second-value")]);
+            let sig2 = sign_for(TEST_SERVER_KEY, &second, &signer);
+            let resp2 =
+                post_inject(store.clone(), owner.clone(), envelope_body(&second, &sig2)).await;
+            assert_eq!(resp2.status(), StatusCode::OK, "reinject must not conflict");
+
+            let content = std::fs::read_to_string(dir.join("luks_passphrase")).unwrap();
+            assert_eq!(content, "second-value", "reinject must overwrite");
+
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        #[actix_web::test]
+        async fn unauthenticated_mode_unchanged() {
+            let dir = tmpdir();
+            let store = web::Data::new(SecretStore::new(&dir));
+            let owner: web::Data<Option<OwnerAuth>> = web::Data::new(None);
+
+            let body = serde_json::to_vec(&serde_json::json!({"k": "v"})).unwrap();
+            let resp1 = post_inject(store.clone(), owner.clone(), body.clone()).await;
+            assert_eq!(resp1.status(), StatusCode::OK);
+
+            // A second flat-body attempt is still one-shot: 409, unchanged.
+            let resp2 = post_inject(store.clone(), owner.clone(), body).await;
+            assert_eq!(resp2.status(), StatusCode::CONFLICT);
+
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        #[actix_web::test]
+        async fn authenticated_mode_rejects_flat_body() {
+            let dir = tmpdir();
+            let store = web::Data::new(SecretStore::new(&dir));
+            let signer = signing_key(0x11);
+            let owner = owner_data(owner_auth::address_from_verifying_key(
+                signer.verifying_key(),
+            ));
+
+            // Legacy flat body: no "secrets"/"signature" envelope fields.
+            let body =
+                serde_json::to_vec(&serde_json::json!({"luks_passphrase": "hunter2"})).unwrap();
+            let resp = post_inject(store, owner, body).await;
+
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            assert!(!dir.join("luks_passphrase").exists());
+
+            std::fs::remove_dir_all(&dir).ok();
         }
     }
 }

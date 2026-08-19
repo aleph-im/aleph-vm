@@ -68,6 +68,11 @@ der = { version = "0.7", features = ["alloc"] }
 openssl = "0.10"
 hex = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "charset", "http2"] }
+# owner_auth: EIP-191 personal-sign over the owner-auth payload (secp256k1
+# recoverable ECDSA signatures, Keccak256 for the Ethereum message digest and
+# address derivation).
+k256 = { version = "0.13", features = ["ecdsa"] }
+sha3 = "0.10"
 
 # aleph-attest-agent (B2a): in-guest attested-TLS HTTPS sidecar ported from
 # aleph-cvm. actix-web serves the reverse proxy + attestation/inject-secret
