@@ -7,9 +7,13 @@
   #   aleph-attest-agent static-musl binary and init.sh) + a minimal
   #   dm-verity-protected rootfs + a precomputed, reproducible sev-snp-measure
   #   launch measurement.
-  # Excluded from the donor: compose-rootfs / compose-demo and the
-  # encrypted-rootfs (LUKS) mode. The fib-service demo app is NOT excluded
-  # here: it now exists as the V-PROGRAM workload (see workload.nix), baked
+  # Excluded from the donor: compose-rootfs / compose-demo. The
+  # encrypted-rootfs (LUKS) mode returns as a second, separate image flavor
+  # for confidential instances (instanceInitrd / instanceImage below), built
+  # from the same initrd.nix with withVerity=false withNft=false withLuks=true;
+  # it does not touch the v-program image's measured initrd contents. The
+  # fib-service demo app is NOT excluded here: it now exists as the V-PROGRAM
+  # workload (see workload.nix), baked
   # into its own measured dm-verity volume that the guest init mounts and
   # execs when a workload_roothash is present on the cmdline. The trivial
   # busybox httpd remains the platform rootfs's baked /sbin/init, used as the
@@ -125,9 +129,25 @@
       initrd = pkgs.callPackage ./initrd.nix {
         inherit attest-agent kernel;
         init-script = ./init.sh;
+        init-common-script = ./init-common.sh;
         udhcpc-script = ./udhcpc.script;
         udhcpc6-script = ./udhcpc6.script;
       };
+
+      # Confidential-instance initrd: LUKS encrypted rootfs, no dm-verity, no
+      # in-guest firewall (firewall policy belongs to the user rootfs on
+      # instances, design section 3 decision 6).
+      instanceInitrd = pkgs.callPackage ./initrd.nix {
+        inherit attest-agent kernel;
+        init-script = ./init-instance.sh;
+        init-common-script = ./init-common.sh;
+        udhcpc-script = ./udhcpc.script;
+        udhcpc6-script = ./udhcpc6.script;
+        withVerity = false;
+        withNft = false;
+        withLuks = true;
+      };
+
       rootfs = pkgs.callPackage ./rootfs.nix {};
 
       # fib-service V-PROGRAM workload volume: a content-only ext4 carrying the
@@ -256,6 +276,61 @@
         cp ${verity}/hashtree $out/rootfs.ext4.verity
         cp ${verity}/roothash $out/rootfs.ext4.roothash
       '';
+
+      # Per-deployment measurement helper for the instance image: the owner
+      # address is a measured cmdline slot, so there is no fixed baked
+      # measurement (unlike the v-program image). Unlike `measurementFor`
+      # (which callers only ever reach by importing this flake file
+      # directly), Tasks 8/11/13 call this one from ordinary flake
+      # consumers (the daemon's launch path, tests), so it is also exposed
+      # below as `lib.${system}.instanceMeasurementFor`. Its mandatory
+      # `owner` argument still keeps it out of `packages` (a function is not
+      # a valid flake package); `instanceMeasurementSmoke` below gives it
+      # build coverage so evaluation and the sev-snp-measure invocation are
+      # never dead code.
+      instanceMeasurementFor = { vcpus ? 2, vcpuType ? "EPYC-v4", owner }:
+        # `owner` is interpolated into the measured kernel cmdline (and thus a
+        # shell argument to sev-snp-measure); only trusted nix callers reach
+        # here, but assert the EVM-address shape so a stray value fails the
+        # build rather than producing a bogus measurement or injecting tokens.
+        assert (builtins.match "0x[0-9a-fA-F]{40}" owner) != null;
+        let
+        kernelCmdline = "console=ttyS0 luks=1 owner=${owner}";
+      in pkgs.runCommand "snp-instance-measurement-${toString vcpus}vcpus-${vcpuType}" {
+        nativeBuildInputs = [ sev-snp-measure ];
+      } ''
+        sev-snp-measure --mode snp --vcpus ${toString vcpus} --vcpu-type ${vcpuType} \
+          --ovmf ${ovmfFd} --kernel ${kernel}/bzImage --initrd ${instanceInitrd}/initrd \
+          --append "${kernelCmdline}" | tr -d '\n' > $out
+      '';
+
+      # Confidential-instance image artifacts: OVMF firmware, kernel and
+      # initrd only. Unlike `image`, there is no rootfs and no baked
+      # measurement.hex: the LUKS-encrypted rootfs is provided by the caller
+      # at launch time (whole-device LUKS2 on /dev/vda) and the measurement
+      # depends on the per-deployment owner address (instanceMeasurementFor).
+      instanceImage = pkgs.runCommand "aleph-snp-instance-image" {} ''
+        mkdir -p $out
+        ln -s ${kernel}/bzImage $out/bzImage
+        ln -s ${instanceInitrd}/initrd $out/initrd
+        cp ${ovmfFd} $out/OVMF.fd
+      '';
+
+      # Build-covers instanceMeasurementFor with a fixed placeholder owner
+      # address: a plain `inherit` cannot expose a function through
+      # `packages` (see above), so nothing would otherwise evaluate its body
+      # or invoke sev-snp-measure. `nix build ./nix#instanceMeasurementSmoke`
+      # exercises exactly that.
+      instanceMeasurementSmoke = instanceMeasurementFor {
+        owner = "0x0000000000000000000000000000000000000000";
+      };
+
+      # Test fixture for the confidential-instance E2E scenario (Task 14): a
+      # plain ext4 rootfs booting a statically linked dropbear SSH server.
+      # NOT part of the measured chain (no dm-verity, not referenced by any
+      # cmdline roothash) and NOT bit-reproducible (build-time host key). See
+      # test-rootfs.nix for the full rationale.
+      instanceTestRootfs = pkgs.callPackage ./test-rootfs.nix {};
     in {
       # Only concrete derivations are exposed as packages (a function like
       # measurementFor is not a valid flake package and would fail flake check);
@@ -268,6 +343,7 @@
           ovmf
           kernel
           initrd
+          instanceInitrd
           rootfs
           verity
           workloadImage
@@ -275,8 +351,20 @@
           workload
           measurement
           workloadMeasurement
-          image;
+          image
+          instanceImage
+          instanceMeasurementSmoke
+          instanceTestRootfs;
         default = image;
+      };
+
+      # instanceMeasurementFor takes a mandatory `owner` argument, so unlike
+      # the packages above it cannot be a flake package; expose it here so
+      # Tasks 8/11/13 (and any other flake consumer, not just direct
+      # importers of this file) can call
+      # `(builtins.getFlake ...).lib.${system}.instanceMeasurementFor { ... }`.
+      lib.${system} = {
+        inherit instanceMeasurementFor;
       };
     };
 }
