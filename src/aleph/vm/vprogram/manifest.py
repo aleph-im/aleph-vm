@@ -76,7 +76,7 @@ def _validate_cmdline_template(value: str, allowed: frozenset[str], required: st
         placeholders.add(field_name)
     unknown = placeholders - allowed
     if unknown:
-        msg = f"unknown cmdline placeholders for format version 1: {sorted(unknown)}"
+        msg = f"unknown cmdline placeholders {sorted(unknown)}; allowed: {sorted(allowed)}"
         raise ValueError(msg)
     if required not in placeholders:
         msg = f"cmdline template must contain {{{required}}}"
