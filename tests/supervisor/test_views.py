@@ -1221,6 +1221,7 @@ async def test_sign_allocation_request_helper_authenticates(aiohttp_client, monk
 
     script = Path(__file__).parent.parent.parent / "scripts" / "sign_allocation_request.py"
     spec = importlib.util.spec_from_file_location("sign_allocation_request", script)
+    assert spec is not None and spec.loader is not None
     signer = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(signer)
 
