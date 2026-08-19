@@ -271,15 +271,22 @@
       #   existing callers are unaffected; the compose flavor below passes
       #   composeInitrd/composeVerity to reuse this same cmdline template
       #   instead of duplicating it.
+      # name: the derivation name. Defaults to the exact string this function
+      #   has always used, so the base flavor's `#measurement` store path is
+      #   unchanged; the compose flavor below passes a compose-tagged name so
+      #   `#composeMeasurement` gets its own store path instead of colliding
+      #   with (and being deduplicated to) `#measurement`'s, which it would
+      #   otherwise do purely by having the same derivation name even though
+      #   its inputs (initrd/verity vs composeInitrd/composeVerity) differ.
       # The measurement is a function of (OVMF + kernel + initrd + cmdline +
       # vCPU count + CPU type), so each configuration needs its own value.
-      measurementFor = { vcpus ? 2, vcpuType ? "EPYC-v4", workloadRoothash ? null, initrdDrv ? initrd, verityDrv ? verity }: let
+      measurementFor = { vcpus ? 2, vcpuType ? "EPYC-v4", workloadRoothash ? null, initrdDrv ? initrd, verityDrv ? verity, name ? "sev-snp-measurement-${toString vcpus}vcpus-${vcpuType}" }: let
         platformRoothash = builtins.readFile "${verityDrv}/roothash";
         kernelCmdline =
           if workloadRoothash == null
           then "console=ttyS0 root=/dev/mapper/verity-root ro roothash=${platformRoothash}"
           else "console=ttyS0 root=/dev/mapper/verity-root ro roothash=${platformRoothash} workload_roothash=${workloadRoothash}";
-      in pkgs.runCommand "sev-snp-measurement-${toString vcpus}vcpus-${vcpuType}" {
+      in pkgs.runCommand name {
         nativeBuildInputs = [ sev-snp-measure ];
       } ''
         sev-snp-measure \
@@ -306,6 +313,7 @@
           inherit vcpus vcpuType workloadRoothash;
           initrdDrv = composeInitrd;
           verityDrv = composeVerity;
+          name = "sev-snp-measurement-compose-${toString vcpus}vcpus-${vcpuType}";
         };
 
       # Default compose measurement: 2 vCPUs, EPYC-v4 (Genoa), platform-only
