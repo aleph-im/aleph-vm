@@ -52,7 +52,13 @@ zeroize_passphrase() {
 echo "init: waiting for LUKS passphrase at /tmp/secrets/luks_passphrase (no timeout)"
 waited=0
 while true; do
-    if [ -f /tmp/secrets/luks_passphrase ]; then
+    # The agent writes the passphrase atomically (temp file + rename() into
+    # place), so this poll never has to worry about landing mid-write; [ -s ]
+    # (non-empty, not just present) is defense in depth against a legacy or
+    # third-party agent build that writes create+truncate-then-write_all,
+    # where a poll landing right after the truncate would otherwise see an
+    # empty file and feed cryptsetup zero bytes.
+    if [ -s /tmp/secrets/luks_passphrase ]; then
         echo "init: unlocking LUKS volume on ${blkdev}"
         if /bin/cryptsetup luksOpen "$blkdev" cryptroot < /tmp/secrets/luks_passphrase 2>&1; then
             zeroize_passphrase
