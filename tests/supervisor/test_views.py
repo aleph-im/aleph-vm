@@ -32,6 +32,40 @@ from aleph.vm.supervisor_interface.types import (
 )
 
 
+def _make_aleph_eip191_v1_header(account, *, method="POST", path="/control/allocations", body=b"", iat=None) -> str:
+    payload = {
+        "method": method,
+        "path": path,
+        "body_sha256": sha256(body).hexdigest(),
+        "iat": iat if iat is not None else int(time_module.time()),
+    }
+    payload_bytes = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    signed = account.sign_message(encode_defunct(payload_bytes))
+    return f"Aleph-EIP191-V1 sig={signed.signature.hex()},payload={payload_bytes.hex()}"
+
+
+@pytest.fixture()
+def scheduler_auth(monkeypatch):
+    """Authorize a throwaway scheduler key and sign requests as it.
+
+    Returns a callable that serializes the body and produces the matching
+    `Aleph-EIP191-V1` headers. The signature binds method, path and body hash,
+    so the caller must send the returned bytes verbatim (`data=`, not `json=`).
+    """
+    account = Account.create()
+    monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [account.address])
+
+    def _sign(body_dict=None, *, path="/control/allocations", method="POST"):
+        body = b"" if body_dict is None else json.dumps(body_dict).encode()
+        header = _make_aleph_eip191_v1_header(account, method=method, path=path, body=body)
+        headers = {"Authorization": header}
+        if body_dict is not None:
+            headers["Content-Type"] = "application/json"
+        return body, headers
+
+    return _sign
+
+
 def _views_tee() -> TeeConfig:
     return TeeConfig(
         backend=TeeBackend.SEV,
@@ -69,14 +103,12 @@ def mock_instance_content():
 
 
 @pytest.mark.asyncio
-async def test_allocation_fails_on_invalid_item_hash(aiohttp_client):
+async def test_allocation_fails_on_invalid_item_hash(aiohttp_client, scheduler_auth):
     """Test that the allocation endpoint fails when an invalid item_hash is provided."""
     app = setup_webapp(supervisor=LocalSupervisor(None))
     client = await aiohttp_client(app)
-    settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
-    response: web.Response = await client.post(
-        "/control/allocations", json={"persistent_vms": ["not-an-ItemHash"]}, headers={"X-Auth-Signature": "test"}
-    )
+    body, headers = scheduler_auth({"persistent_vms": ["not-an-ItemHash"]})
+    response: web.Response = await client.post("/control/allocations", data=body, headers=headers)
     assert response.status == 400
     response = await response.json()
     for error in response:
@@ -339,15 +371,20 @@ async def test_system_capability_real(aiohttp_client, mocker):
 
 
 @pytest.mark.asyncio
-async def test_allocation_invalid_auth_token(aiohttp_client):
-    """Test that the allocation endpoint fails when an invalid auth token is provided."""
-    settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
+async def test_allocation_invalid_auth_token(aiohttp_client, monkeypatch):
+    """Test that the allocation endpoint fails when the signer is not authorized."""
+    unauthorized = Account.create()
+    monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [Account.create().address])
     app = setup_webapp(supervisor=LocalSupervisor(None))
     client = await aiohttp_client(app)
+    body = json.dumps({"persistent_vms": []}).encode()
     response = await client.post(
         "/control/allocations",
-        json={"persistent_vms": []},
-        headers={"X-Auth-Signature": "notTest"},
+        data=body,
+        headers={
+            "Authorization": _make_aleph_eip191_v1_header(unauthorized, body=body),
+            "Content-Type": "application/json",
+        },
     )
     assert response.status == 401
     assert await response.json() == {"error": "Authentication token received is invalid"}
@@ -367,21 +404,17 @@ async def test_allocation_missing_auth_token(aiohttp_client):
 
 
 @pytest.mark.asyncio
-async def test_allocation_valid_token(aiohttp_client):
-    """Test that the allocation endpoint fails when an invalid auth is provided.
+async def test_allocation_valid_token(aiohttp_client, scheduler_auth):
+    """Test that the allocation endpoint accepts a correctly signed request.
 
     This is a very simple test that don't start or stop any VM so the mock is minimal"""
 
-    settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
     app = setup_webapp(supervisor=LocalSupervisor(_FakeVmPool()))
     app["pubsub"] = None
     client = await aiohttp_client(app)
 
-    response: web.Response = await client.post(
-        "/control/allocations",
-        json={"persistent_vms": []},
-        headers={"X-Auth-Signature": "test"},
-    )
+    body, headers = scheduler_auth({"persistent_vms": []})
+    response: web.Response = await client.post("/control/allocations", data=body, headers=headers)
     assert response.status == 200
     assert await response.json() == {"success": True, "successful": [], "failing": [], "errors": {}, "stopped": []}
 
@@ -1058,33 +1091,31 @@ async def test_regenerate_proxy_missing_auth_token(aiohttp_client):
 
 
 @pytest.mark.asyncio
-async def test_regenerate_proxy_invalid_auth_token(aiohttp_client):
-    """Test that the regenerate_proxy endpoint fails when an invalid auth token is provided."""
-    settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
+async def test_regenerate_proxy_invalid_auth_token(aiohttp_client, monkeypatch):
+    """Test that the regenerate_proxy endpoint fails when the signer is not authorized."""
+    unauthorized = Account.create()
+    monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [Account.create().address])
     app = setup_webapp(supervisor=LocalSupervisor(None))
     client = await aiohttp_client(app)
     response = await client.post(
         "/control/proxy/regenerate",
-        headers={"X-Auth-Signature": "notTest"},
+        headers={"Authorization": _make_aleph_eip191_v1_header(unauthorized, path="/control/proxy/regenerate")},
     )
     assert response.status == 401
     assert await response.json() == {"error": "Authentication token received is invalid"}
 
 
 @pytest.mark.asyncio
-async def test_regenerate_proxy_valid_token(aiohttp_client, mocker, mock_app_with_pool):
-    """Test that the regenerate_proxy endpoint succeeds with a valid auth token."""
-    settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
+async def test_regenerate_proxy_valid_token(aiohttp_client, mocker, mock_app_with_pool, scheduler_auth):
+    """Test that the regenerate_proxy endpoint succeeds with a valid signature."""
     web_app = await mock_app_with_pool
 
     # Mock the agent-side HAProxy sync to avoid actual HAProxy operations.
     sync = mocker.patch("aleph.vm.agent.views.sync_domain_mappings", new=mocker.AsyncMock(return_value=True))
 
     client = await aiohttp_client(web_app)
-    response: web.Response = await client.post(
-        "/control/proxy/regenerate",
-        headers={"X-Auth-Signature": "test"},
-    )
+    _, headers = scheduler_auth(path="/control/proxy/regenerate")
+    response: web.Response = await client.post("/control/proxy/regenerate", headers=headers)
     assert response.status == 200
     resp = await response.json()
     assert resp == {"success": True, "message": "HAProxy configuration regenerated successfully"}
@@ -1092,28 +1123,24 @@ async def test_regenerate_proxy_valid_token(aiohttp_client, mocker, mock_app_wit
 
 
 @pytest.mark.asyncio
-async def test_regenerate_proxy_no_haproxy_socket(aiohttp_client, mocker, mock_app_with_pool):
+async def test_regenerate_proxy_no_haproxy_socket(aiohttp_client, mocker, mock_app_with_pool, scheduler_auth):
     """Test that regenerate_proxy handles missing HAProxy socket gracefully."""
-    settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
     web_app = await mock_app_with_pool
 
     # Sync returns False (socket not found): endpoint still reports success.
     mocker.patch("aleph.vm.agent.views.sync_domain_mappings", new=mocker.AsyncMock(return_value=False))
 
     client = await aiohttp_client(web_app)
-    response: web.Response = await client.post(
-        "/control/proxy/regenerate",
-        headers={"X-Auth-Signature": "test"},
-    )
+    _, headers = scheduler_auth(path="/control/proxy/regenerate")
+    response: web.Response = await client.post("/control/proxy/regenerate", headers=headers)
     assert response.status == 200
     resp = await response.json()
     assert resp == {"success": True, "message": "HAProxy configuration regenerated successfully"}
 
 
 @pytest.mark.asyncio
-async def test_regenerate_proxy_exception(aiohttp_client, mocker, mock_app_with_pool):
+async def test_regenerate_proxy_exception(aiohttp_client, mocker, mock_app_with_pool, scheduler_auth):
     """Test that regenerate_proxy handles exceptions gracefully."""
-    settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
     web_app = await mock_app_with_pool
 
     mocker.patch(
@@ -1122,10 +1149,8 @@ async def test_regenerate_proxy_exception(aiohttp_client, mocker, mock_app_with_
     )
 
     client = await aiohttp_client(web_app)
-    response: web.Response = await client.post(
-        "/control/proxy/regenerate",
-        headers={"X-Auth-Signature": "test"},
-    )
+    _, headers = scheduler_auth(path="/control/proxy/regenerate")
+    response: web.Response = await client.post("/control/proxy/regenerate", headers=headers)
     assert response.status == 500
     resp = await response.json()
     assert resp == {"success": False, "error": "Failed to regenerate HAProxy configuration: HAProxy connection failed"}
@@ -1137,18 +1162,6 @@ class _FakeVmPool:
 
     def get_persistent_executions(self):
         return []
-
-
-def _make_aleph_eip191_v1_header(account, *, method="POST", path="/control/allocations", body=b"", iat=None) -> str:
-    payload = {
-        "method": method,
-        "path": path,
-        "body_sha256": sha256(body).hexdigest(),
-        "iat": iat if iat is not None else int(time_module.time()),
-    }
-    payload_bytes = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    signed = account.sign_message(encode_defunct(payload_bytes))
-    return f"Aleph-EIP191-V1 sig={signed.signature.hex()},payload={payload_bytes.hex()}"
 
 
 @pytest.fixture(autouse=True)
@@ -1183,53 +1196,76 @@ async def test_allocation_aleph_eip191_v1_valid(aiohttp_client, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_allocation_aleph_eip191_v1_invalid_no_fallback(aiohttp_client, monkeypatch):
-    """Garbage Aleph-EIP191-V1 + valid legacy token → 401 (no fallback)."""
-    monkeypatch.setattr(
-        settings,
-        "ALLOCATION_TOKEN_HASH",
-        sha256(b"test").hexdigest(),
-    )
-
+async def test_allocation_aleph_eip191_v1_invalid_is_rejected(aiohttp_client):
+    """Garbage Aleph-EIP191-V1 → 401."""
     app = setup_webapp(supervisor=LocalSupervisor(_FakeVmPool()))
     app["pubsub"] = None
     client = await aiohttp_client(app)
     response = await client.post(
         "/control/allocations",
         json={"persistent_vms": []},
-        headers={
-            "Authorization": "Aleph-EIP191-V1 sig=0xdead,payload=0xbeef",
-            "X-Auth-Signature": "test",  # would be valid via legacy
-        },
+        headers={"Authorization": "Aleph-EIP191-V1 sig=0xdead,payload=0xbeef"},
     )
     assert response.status == 401
 
 
 @pytest.mark.asyncio
-async def test_allocation_legacy_token_no_per_request_log(aiohttp_client, monkeypatch, caplog):
-    """No Aleph-EIP191-V1 + valid legacy token → 200, no per-request log.
+async def test_sign_allocation_request_helper_authenticates(aiohttp_client, monkeypatch):
+    """`scripts/sign_allocation_request.py` produces a header the verifier accepts.
 
-    Deprecation surfaces once at boot via `log_allocation_auth_config`,
-    not on every request — busy schedulers would otherwise flood logs.
+    CI and operators reach the scheduler-only endpoints through that helper, so
+    its payload encoding has to stay byte-compatible with the verifier's. A
+    drift on either side would only show up as a red integration job otherwise.
     """
-    monkeypatch.setattr(
-        settings,
-        "ALLOCATION_TOKEN_HASH",
-        sha256(b"test").hexdigest(),
-    )
+    import importlib.util
+
+    script = Path(__file__).parent.parent.parent / "scripts" / "sign_allocation_request.py"
+    spec = importlib.util.spec_from_file_location("sign_allocation_request", script)
+    signer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(signer)
+
+    account = Account.create()
+    monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [account.address])
+    body = json.dumps({"persistent_vms": []}).encode()
+    header = signer.build_header(account.key.hex(), "POST", "/control/allocations", body)
 
     app = setup_webapp(supervisor=LocalSupervisor(_FakeVmPool()))
     app["pubsub"] = None
     client = await aiohttp_client(app)
 
-    with caplog.at_level("WARNING"):
-        response = await client.post(
-            "/control/allocations",
-            json={"persistent_vms": []},
-            headers={"X-Auth-Signature": "test"},
-        )
+    response = await client.post(
+        "/control/allocations",
+        data=body,
+        headers={"Authorization": header, "Content-Type": "application/json"},
+    )
     assert response.status == 200
-    assert not any("legacy" in r.message.lower() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_legacy_allocation_token_env_var_grants_no_access(aiohttp_client, monkeypatch):
+    """A CRN still setting ALEPH_VM_ALLOCATION_TOKEN_HASH gets no access from it.
+
+    The shared-bearer-token path (`X-Auth-Signature`) was replaced by
+    Aleph-EIP191-V1 and removed. Operators whose `supervisor.env` still carries
+    the old variable must not silently keep a working authentication bypass, so
+    this drives the setting the way an operator does, through the environment,
+    rather than through a Python attribute that no longer exists.
+    """
+    from aleph.vm.conf import Settings
+
+    monkeypatch.setenv("ALEPH_VM_ALLOCATION_TOKEN_HASH", sha256(b"test").hexdigest())
+    monkeypatch.setattr("aleph.vm.agent.views.allocation_auth.settings", Settings())
+
+    app = setup_webapp(supervisor=LocalSupervisor(_FakeVmPool()))
+    app["pubsub"] = None
+    client = await aiohttp_client(app)
+
+    response = await client.post(
+        "/control/allocations",
+        json={"persistent_vms": []},
+        headers={"X-Auth-Signature": "test"},
+    )
+    assert response.status == 401
 
 
 @pytest.mark.asyncio
@@ -1277,7 +1313,7 @@ async def test_restore_rejects_invalid_image_format(aiohttp_client, mocker, tmp_
 
 
 @pytest.mark.asyncio
-async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client, mocker):
+async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client, mocker, scheduler_auth):
     """update_allocations stop loop must call supervisor.delete_vm + registry.forget
     (permanent dealloc) for executions no longer in the allocation. Port-mapping
     cleanup is owned by supervisor.delete_vm (hypervisor-side).
@@ -1341,15 +1377,11 @@ async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client, mock
     app["supervisor"] = fake_supervisor
 
     mock_delete_records = mocker.patch("aleph.vm.agent.views.delete_records_for_vm", new_callable=AsyncMock)
-    settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
     client = await aiohttp_client(app)
 
     # Empty allocation — vm_hash is not in persistent_vms or instances, so it must be stopped.
-    response = await client.post(
-        "/control/allocations",
-        json={"persistent_vms": []},
-        headers={"X-Auth-Signature": "test"},
-    )
+    body, headers = scheduler_auth({"persistent_vms": []})
+    response = await client.post("/control/allocations", data=body, headers=headers)
     assert response.status == 200
     resp_json = await response.json()
     assert vm_hash in resp_json["stopped"]
@@ -1465,7 +1497,7 @@ async def test_v2_executions_list_omits_ghost_mapped_ports(aiohttp_client, mocke
 
 
 @pytest.mark.asyncio
-async def test_update_allocations_spares_payg_via_registry(aiohttp_client):
+async def test_update_allocations_spares_payg_via_registry(aiohttp_client, scheduler_auth):
     """A stream-paid registry record must be spared by the stop loop even when absent
     from the allocation (the restored-PAYG case).
     Status is read from supervisor.list_vms(); payment tier from the registry."""
@@ -1522,14 +1554,10 @@ async def test_update_allocations_spares_payg_via_registry(aiohttp_client):
     fake_supervisor = MagicMock(delete_vm=AsyncMock(), list_vms=AsyncMock(return_value=[vm_info]))
     app["supervisor"] = fake_supervisor
 
-    settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
     client = await aiohttp_client(app)
 
-    response = await client.post(
-        "/control/allocations",
-        json={"persistent_vms": []},
-        headers={"X-Auth-Signature": "test"},
-    )
+    body, headers = scheduler_auth({"persistent_vms": []})
+    response = await client.post("/control/allocations", data=body, headers=headers)
     assert response.status == 200
     resp_json = await response.json()
     assert vm_hash not in resp_json["stopped"]
@@ -1538,7 +1566,7 @@ async def test_update_allocations_spares_payg_via_registry(aiohttp_client):
 
 
 @pytest.mark.asyncio
-async def test_update_allocations_spares_unrecorded_execution(aiohttp_client):
+async def test_update_allocations_spares_unrecorded_execution(aiohttp_client, scheduler_auth):
     """A VM with no registry record is not scheduler-managed and must NOT be stopped
     by the stop-loop; it is left to the idle-expiry path instead.
     Status is read from supervisor.list_vms(); a missing record means skip entirely."""
@@ -1572,14 +1600,10 @@ async def test_update_allocations_spares_unrecorded_execution(aiohttp_client):
     fake_supervisor = MagicMock(delete_vm=AsyncMock(), list_vms=AsyncMock(return_value=[vm_info]))
     app["supervisor"] = fake_supervisor
 
-    settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
     client = await aiohttp_client(app)
 
-    response = await client.post(
-        "/control/allocations",
-        json={"persistent_vms": []},
-        headers={"X-Auth-Signature": "test"},
-    )
+    body, headers = scheduler_auth({"persistent_vms": []})
+    response = await client.post("/control/allocations", data=body, headers=headers)
     assert response.status == 200
     resp_json = await response.json()
     # No registry record → not scheduler-managed → not stopped by this loop.
@@ -1628,7 +1652,6 @@ _CREDIT_INSTANCE_CONTENT = {
 
 def _make_app_with_supervisor(supervisor):
     """Create a minimal webapp whose supervisor is replaced with the given double."""
-    settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
     app = setup_webapp(supervisor=LocalSupervisor(_FakeVmPool()))
     app["pubsub"] = None
     app["supervisor"] = supervisor
@@ -1667,7 +1690,7 @@ def _running_vm_info(
 
 
 @pytest.mark.asyncio
-async def test_stop_loop_stops_eligible_vm(aiohttp_client, mocker):
+async def test_stop_loop_stops_eligible_vm(aiohttp_client, mocker, scheduler_auth):
     """A running, persistent, hold-tier VM not in the allocation must be stopped.
 
     Behavior 1: registry has record, persistent=True, status=RUNNING, no GPUs,
@@ -1685,11 +1708,8 @@ async def test_stop_loop_stops_eligible_vm(aiohttp_client, mocker):
     mock_delete_records = mocker.patch("aleph.vm.agent.views.delete_records_for_vm", new_callable=AsyncMock)
 
     client = await aiohttp_client(app)
-    response = await client.post(
-        "/control/allocations",
-        json={"persistent_vms": []},
-        headers={"X-Auth-Signature": "test"},
-    )
+    body, headers = scheduler_auth({"persistent_vms": []})
+    response = await client.post("/control/allocations", data=body, headers=headers)
     assert response.status == 200
     resp_json = await response.json()
 
@@ -1735,7 +1755,9 @@ async def test_stop_loop_stops_eligible_vm(aiohttp_client, mocker):
     ],
 )
 @pytest.mark.asyncio
-async def test_stop_loop_spares_ineligible_vms(aiohttp_client, description, vm_info_kwargs, registry_kwargs):
+async def test_stop_loop_spares_ineligible_vms(
+    aiohttp_client, description, vm_info_kwargs, registry_kwargs, scheduler_auth
+):
     """Behavior 2: GPU-bearing, confidential, stream/credit-paid, or unrecorded VMs
     must NOT be stopped by the stop-loop.
     """
@@ -1775,11 +1797,8 @@ async def test_stop_loop_spares_ineligible_vms(aiohttp_client, description, vm_i
         app["vm_registry"].record(VM_HASH, message=message, original=message, persistent=True)
 
     client = await aiohttp_client(app)
-    response = await client.post(
-        "/control/allocations",
-        json={"persistent_vms": []},
-        headers={"X-Auth-Signature": "test"},
-    )
+    body, headers = scheduler_auth({"persistent_vms": []})
+    response = await client.post("/control/allocations", data=body, headers=headers)
     assert response.status == 200, description
     resp_json = await response.json()
 

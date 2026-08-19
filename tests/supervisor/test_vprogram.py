@@ -5,6 +5,8 @@ docs/plans/2026-07-11-vprogram-scheduler-support-design.md.
 """
 
 import json
+import time
+from hashlib import sha256
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -18,6 +20,8 @@ from aleph_message.models import (
     VerifiableProgramMessage,
     parse_message,
 )
+from eth_account import Account
+from eth_account.messages import encode_defunct
 
 from aleph.vm.agent.messages import update_message
 from aleph.vm.agent.resources import Allocation
@@ -40,8 +44,29 @@ from aleph.vm.supervisor_interface.types import (
 from aleph.vm.vm_type import VmType
 
 FIXTURE = Path(__file__).parent / "fixtures" / "vprogram_message.json"
-# SHA-256 of "test", used by the existing views tests as the allocation token
-TEST_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+
+
+def _signed_allocation(account, body_dict):
+    """Body bytes plus the Aleph-EIP191-V1 headers binding them, for /control/allocations."""
+    body = json.dumps(body_dict).encode()
+    payload = {
+        "method": "POST",
+        "path": "/control/allocations",
+        "body_sha256": sha256(body).hexdigest(),
+        "iat": int(time.time()),
+    }
+    payload_bytes = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    signed = account.sign_message(encode_defunct(payload_bytes))
+    header = f"Aleph-EIP191-V1 sig={signed.signature.hex()},payload={payload_bytes.hex()}"
+    return body, {"Authorization": header, "Content-Type": "application/json"}
+
+
+@pytest.fixture()
+def scheduler_auth(monkeypatch):
+    """Authorize a throwaway scheduler key and sign requests as it."""
+    account = Account.create()
+    monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [account.address])
+    return lambda body_dict: _signed_allocation(account, body_dict)
 
 
 def load_vprogram_message() -> VerifiableProgramMessage:
@@ -107,7 +132,7 @@ def test_allocation_model_v_programs():
 
 
 @pytest.mark.asyncio
-async def test_update_allocations_starts_v_programs(aiohttp_client, mocker):
+async def test_update_allocations_starts_v_programs(aiohttp_client, mocker, scheduler_auth):
     """v_programs hashes go through the same start path as instances."""
     message = load_vprogram_message()
     vm_hash = str(message.item_hash)
@@ -117,14 +142,10 @@ async def test_update_allocations_starts_v_programs(aiohttp_client, mocker):
     app["supervisor"] = MagicMock(delete_vm=AsyncMock(), list_vms=AsyncMock(return_value=[]))
 
     mock_start = mocker.patch("aleph.vm.agent.views.start_persistent_vm", new_callable=AsyncMock)
-    settings.ALLOCATION_TOKEN_HASH = TEST_TOKEN_HASH
     client = await aiohttp_client(app)
 
-    response = await client.post(
-        "/control/allocations",
-        json={"v_programs": [vm_hash]},
-        headers={"X-Auth-Signature": "test"},
-    )
+    body, headers = scheduler_auth({"v_programs": [vm_hash]})
+    response = await client.post("/control/allocations", data=body, headers=headers)
     assert response.status == 200
     resp_json = await response.json()
     assert vm_hash in resp_json["successful"]
@@ -133,7 +154,7 @@ async def test_update_allocations_starts_v_programs(aiohttp_client, mocker):
 
 
 @pytest.mark.asyncio
-async def test_update_allocations_stops_descheduled_vprogram(aiohttp_client, mocker):
+async def test_update_allocations_stops_descheduled_vprogram(aiohttp_client, mocker, scheduler_auth):
     """The scheduler is the single source of truth for v-programs: absence from
     the allocation stops them, despite being credit-paid and confidential
     (both of which spare other VM types)."""
@@ -148,14 +169,10 @@ async def test_update_allocations_stops_descheduled_vprogram(aiohttp_client, moc
     app["supervisor"] = fake_supervisor
 
     mock_delete_records = mocker.patch("aleph.vm.agent.views.delete_records_for_vm", new_callable=AsyncMock)
-    settings.ALLOCATION_TOKEN_HASH = TEST_TOKEN_HASH
     client = await aiohttp_client(app)
 
-    response = await client.post(
-        "/control/allocations",
-        json={"persistent_vms": []},
-        headers={"X-Auth-Signature": "test"},
-    )
+    body, headers = scheduler_auth({"persistent_vms": []})
+    response = await client.post("/control/allocations", data=body, headers=headers)
     assert response.status == 200
     resp_json = await response.json()
     assert vm_hash in resp_json["stopped"]
@@ -165,7 +182,7 @@ async def test_update_allocations_stops_descheduled_vprogram(aiohttp_client, moc
 
 
 @pytest.mark.asyncio
-async def test_update_allocations_spares_scheduled_vprogram(aiohttp_client, mocker):
+async def test_update_allocations_spares_scheduled_vprogram(aiohttp_client, mocker, scheduler_auth):
     """A running v-program still listed in v_programs must not be stopped."""
     message = load_vprogram_message()
     vm_hash = str(message.item_hash)
@@ -178,14 +195,10 @@ async def test_update_allocations_spares_scheduled_vprogram(aiohttp_client, mock
     fake_supervisor = MagicMock(delete_vm=AsyncMock(), list_vms=AsyncMock(return_value=[_running_vm_info(vm_hash)]))
     app["supervisor"] = fake_supervisor
 
-    settings.ALLOCATION_TOKEN_HASH = TEST_TOKEN_HASH
     client = await aiohttp_client(app)
 
-    response = await client.post(
-        "/control/allocations",
-        json={"v_programs": [vm_hash]},
-        headers={"X-Auth-Signature": "test"},
-    )
+    body, headers = scheduler_auth({"v_programs": [vm_hash]})
+    response = await client.post("/control/allocations", data=body, headers=headers)
     assert response.status == 200
     resp_json = await response.json()
     assert vm_hash not in resp_json["stopped"]

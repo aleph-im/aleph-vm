@@ -362,7 +362,7 @@ def setup_webapp(supervisor: Supervisor):
         web.post("/control/allocations", update_allocations),
         web.post("/control/network/recreate", recreate_network),
         web.post("/control/proxy/regenerate", regenerate_proxy),
-        # Migration endpoints (scheduler-only, uses ALLOCATION_TOKEN_HASH auth)
+        # Migration endpoints (scheduler-only, uses Aleph-EIP191-V1 auth)
         web.post("/control/machine/{ref}/migration/export", migration_export),
         web.get("/control/machine/{ref}/migration/export/status", migration_export_status),
         web.get("/control/machine/{ref}/migration/disk/{filename}", migration_disk_download),

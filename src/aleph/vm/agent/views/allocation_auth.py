@@ -1,10 +1,11 @@
 """Authentication for scheduler-only control endpoints.
 
-Currently the scheduler authenticates with a shared bearer token whose
-SHA-256 hash is configured on the supervisor as
-:data:`aleph.vm.conf.settings.ALLOCATION_TOKEN_HASH`. This module hosts
-the verifier and the decorator so they can be evolved (signature-based
-auth, key rotation, etc.) without touching the views package's `__init__`.
+The scheduler authenticates with an EIP-191 signature over the request
+(`Authorization: Aleph-EIP191-V1 sig=...,payload=...`), checked against the
+authorized signer addresses resolved by
+:func:`aleph.vm.agent.utils.get_authorized_allocation_signers`. This module
+hosts the verifier and the decorator so they can be evolved (key rotation,
+new schemes) without touching the views package's `__init__`.
 """
 
 import asyncio
@@ -210,49 +211,29 @@ async def _verify_aleph_signature(request: web.Request, auth_header: str) -> boo
         return False
 
 
-def _verify_legacy_token(request: web.Request) -> bool:
-    """Authenticate via SHA-256(X-Auth-Signature) == ALLOCATION_TOKEN_HASH.
-
-    DEPRECATED: scheduled for removal once all schedulers have migrated to
-    Aleph-EIP191-V1. See AUTHORIZED_ALLOCATION_SIGNERS.
-    """
-    signature: bytes = request.headers.get("X-Auth-Signature", "").encode()
-    if not signature:
-        return False
-    return sha256(signature).hexdigest() == settings.ALLOCATION_TOKEN_HASH
-
-
 async def authenticate_api_request(request: web.Request) -> bool:
-    """Dispatch between Aleph-EIP191-V1 (new) and legacy X-Auth-Signature.
+    """Authenticate a scheduler-only request via Aleph-EIP191-V1.
 
-    The presence of an `Authorization` header (any value) is authoritative —
-    a malformed/invalid signature is rejected, with no fallback to the
-    legacy `X-Auth-Signature` path. The scheme name is matched
-    case-insensitively (RFC 7235 §2.1). Deprecation of the legacy path is
-    surfaced once at supervisor boot via `log_allocation_auth_config`, not
-    per-request, to keep production logs readable.
+    An `Authorization` header carrying any other scheme, or no `Authorization`
+    header at all, is rejected: Aleph-EIP191-V1 is the only accepted scheme.
+    The scheme name is matched case-insensitively (RFC 7235 §2.1).
     """
     auth = request.headers.get("Authorization", "")
-    if auth:
-        scheme, sep, _ = auth.partition(" ")
-        if not sep or scheme.casefold() != ALEPH_EIP191_V1_SCHEME.casefold():
-            return False
-        return await _verify_aleph_signature(request, auth)
-    if "X-Auth-Signature" in request.headers:
-        return _verify_legacy_token(request)
-    return False
+    if not auth:
+        return False
+    scheme, sep, _ = auth.partition(" ")
+    if not sep or scheme.casefold() != ALEPH_EIP191_V1_SCHEME.casefold():
+        return False
+    return await _verify_aleph_signature(request, auth)
 
 
 def log_allocation_auth_config() -> None:
-    """Summarize the allocation-auth configuration once at supervisor boot, so
-    operators see the deprecation notice exactly once per process lifetime —
-    not flooded per-request.
+    """Summarize the allocation-auth configuration once at supervisor boot.
 
     Note this can only report the *local* configuration: the aggregate-sourced
     signer list (used when no local override is set) is fetched lazily at
     request time, so its contents aren't known here."""
     has_signers = bool(settings.AUTHORIZED_ALLOCATION_SIGNERS)
-    has_legacy = bool(settings.ALLOCATION_TOKEN_HASH)
     if has_signers:
         logger.info(
             "Allocation auth: Aleph-EIP191-V1 enabled with %d locally-configured "
@@ -266,20 +247,13 @@ def log_allocation_auth_config() -> None:
             "falling back to %d built-in default signer(s).",
             len(settings.DEFAULT_ALLOCATION_SIGNERS),
         )
-    if has_legacy:
-        logger.warning(
-            "Allocation auth: legacy X-Auth-Signature path is still enabled "
-            "(ALLOCATION_TOKEN_HASH is set). Remove it once all schedulers "
-            "have migrated to Aleph-EIP191-V1.",
-        )
 
 
 def requires_allocation_auth(handler):
     """Decorator: reject the request with 401 unless the auth check passes.
 
-    Accepts either `Authorization: Aleph-EIP191-V1 ...` or the legacy
-    `X-Auth-Signature` token. Apply BELOW any CORS decorator so OPTIONS
-    preflights pass through unauthenticated.
+    Requires `Authorization: Aleph-EIP191-V1 sig=...,payload=...`. Apply BELOW
+    any CORS decorator so OPTIONS preflights pass through unauthenticated.
     """
 
     @functools.wraps(handler)

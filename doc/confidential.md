@@ -197,21 +197,18 @@ For example using :
 Ensure the VM controller is stopped before!
 `sudo systemctl stop aleph-vm-controller@decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca.service`
 
- Between your test you can also stop the execution using
- ```http
- ### Stop all VMs
-POST http://localhost:4020/control/allocations
-Content-Type: application/json
-X-Auth-Signature: test
-Accept: application/json
+ Between your test you can also stop the execution by sending an empty allocation.
+ `/control/allocations` requires an EIP-191 signature from a signer listed in
+ `ALEPH_VM_AUTHORIZED_ALLOCATION_SIGNERS`; `scripts/sign_allocation_request.py`
+ builds the header:
 
-
-{
-  "persistent_vms": [],
-  "instances": [
-  ]
-}
-
+```shell
+### Stop all VMs
+BODY='{"persistent_vms": [], "instances": []}'
+AUTH=$(printf '%s' "$BODY" | python3 scripts/sign_allocation_request.py \
+    --key 0xYourSignerPrivateKey --path /control/allocations)
+curl -X POST -H "Content-Type: application/json" -H "Authorization: $AUTH" \
+    -d "$BODY" http://localhost:4020/control/allocations
 ```
 
 ## Sevctl
