@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 from aiohttp import web
-from aleph_message.models import InstanceContent, ItemHash
+from aleph_message.models import InstanceContent, ItemHash, MessageType
 from conftest import make_spec
 from eth_account import Account
 from eth_account.messages import encode_defunct
@@ -1706,40 +1706,20 @@ async def test_stop_loop_stops_eligible_vm(aiohttp_client, mocker):
     "description,vm_info_kwargs,registry_kwargs",
     [
         (
-            "GPU-bearing VM is not stopped",
-            {
-                "gpus": [
-                    # GpuDevice from aleph.vm.supervisor_interface.types
-                    None  # placeholder — real object built in test body
-                ]
-            },
-            {},
-        ),
-        (
-            "confidential VM (SEV) is not stopped",
-            {"confidential_mode": None},  # placeholder — real enum built in test body
-            {},
-        ),
-        (
             "VM with no registry record is not stopped",
             {},
             {"no_record": True},
-        ),
-        (
-            "credit-tier VM is not stopped",
-            {},
-            {"credit": True},
         ),
     ],
 )
 @pytest.mark.asyncio
 async def test_stop_loop_spares_ineligible_vms(aiohttp_client, description, vm_info_kwargs, registry_kwargs):
-    """Behavior 2: GPU-bearing, confidential, credit-paid, or unrecorded VMs
-    must NOT be stopped by the stop-loop.
+    """Only a VM the agent has no record of is spared by the stop-loop.
 
-    Stream-paid VMs are deliberately absent from this list: PAYG is
-    scheduler-owned, so absence from the allocation stops it. See
-    test_stop_loop_stops_payg_regardless_of_gpu_or_confidential.
+    A record-less VM is not scheduler-managed, so the allocation says nothing
+    about it and the idle-expiry path owns it instead. Every other running,
+    persistent VM is the scheduler's to keep or stop — see
+    test_stop_loop_stops_every_scheduler_managed_class.
     """
     from aleph.vm.supervisor_interface.types import (
         ConfidentialMode,
@@ -1790,27 +1770,29 @@ async def test_stop_loop_spares_ineligible_vms(aiohttp_client, description, vm_i
 
 
 @pytest.mark.parametrize(
-    "description,vm_info_kwargs",
+    "description,content,vm_info_kwargs",
     [
-        ("plain PAYG instance", {}),
-        ("PAYG instance with a GPU", {"gpus": [None]}),  # placeholder — real object built in test body
-        ("confidential PAYG instance", {"confidential_mode": None}),  # placeholder — real enum built in test body
+        ("plain PAYG instance", "stream", {}),
+        ("PAYG instance with a GPU", "stream", {"gpus": [None]}),  # placeholder — built in test body
+        ("confidential PAYG instance", "stream", {"confidential_mode": None}),  # placeholder — built in test body
+        ("plain hold-tier instance", "hold", {}),
+        ("confidential hold-tier instance", "hold", {"confidential_mode": None}),
+        ("plain credit instance", "credit", {}),
+        ("credit instance with a GPU", "credit", {"gpus": [None]}),
+        ("confidential credit instance", "credit", {"confidential_mode": None}),
     ],
 )
 @pytest.mark.asyncio
-async def test_stop_loop_stops_payg_regardless_of_gpu_or_confidential(
-    aiohttp_client, description, vm_info_kwargs, mocker
+async def test_stop_loop_stops_every_scheduler_managed_class(
+    aiohttp_client, description, content, vm_info_kwargs, mocker
 ):
-    """PAYG is scheduler-owned: absence from the allocation stops it.
+    """Absence from the allocation stops any scheduler-managed VM, whatever its
+    payment tier, GPU or confidential mode.
 
-    The scheduler's PaymentGate validates the stream and drops unpaid PAYG VMs
-    from the plan, so the CRN has to honour that absence for the decision to
-    have any effect.
-
-    GPU-bearing and confidential PAYG instances are covered too. The generic
-    stop-loop conditions exclude those independently of payment tier, and most
-    of the live PAYG fleet carries a GPU, so leaving them out would put the
-    majority of PAYG beyond scheduler control.
+    The scheduler is the sole authority on which VMs belong on this node: it
+    watches message deletions and validates PAYG streams, and drops anything
+    that fails from the plan. The node's job is to match the allocation, not to
+    form its own opinion about whether a VM deserves to run.
     """
     from aleph.vm.supervisor_interface.types import (
         ConfidentialMode,
@@ -1826,8 +1808,13 @@ async def test_stop_loop_stops_payg_regardless_of_gpu_or_confidential(
     if "confidential_mode" in resolved_kwargs and resolved_kwargs["confidential_mode"] is None:
         resolved_kwargs["confidential_mode"] = ConfidentialMode.SEV
 
+    contents = {
+        "stream": _STREAM_INSTANCE_CONTENT,
+        "hold": _HOLD_INSTANCE_CONTENT,
+        "credit": _CREDIT_INSTANCE_CONTENT,
+    }
     info = _running_vm_info(**resolved_kwargs)
-    message = InstanceContent.model_validate(_STREAM_INSTANCE_CONTENT)
+    message = InstanceContent.model_validate(contents[content])
 
     fake_supervisor = MagicMock(delete_vm=AsyncMock(), list_vms=AsyncMock(return_value=[info]))
     app = _make_app_with_supervisor(fake_supervisor)
@@ -1845,6 +1832,42 @@ async def test_stop_loop_stops_payg_regardless_of_gpu_or_confidential(
 
     assert str(VM_HASH) in resp_json["stopped"], description
     fake_supervisor.delete_vm.assert_awaited_once_with(VmId(str(VM_HASH)))
+
+
+@pytest.mark.asyncio
+async def test_notify_allocation_does_not_check_payment(aiohttp_client, mocker):
+    """A PAYG instance whose stream is directed at a different CRN is still admitted.
+
+    The node no longer forms any opinion on payment: the scheduler validates
+    Superfluid streams and the CCN removes messages whose balance ran out. A
+    receiver mismatch used to be a 400 here, which makes it a precise probe that
+    the payment branch is gone — it needs no mocking of payment internals, which
+    no longer exist.
+    """
+    content = {**_STREAM_INSTANCE_CONTENT}
+    content["payment"] = {
+        "type": "superfluid",
+        "chain": "BASE",
+        "receiver": "0x0000000000000000000000000000000000000bad",
+    }
+    message = mocker.Mock()
+    message.type = MessageType.instance
+    message.content = InstanceContent.model_validate(content)
+    message.sender = content["address"]
+
+    mocker.patch("aleph.vm.agent.views.try_get_message", return_value=message)
+    mocker.patch("aleph.vm.agent.views.update_aggregate_settings")
+    start = mocker.patch("aleph.vm.agent.views.start_persistent_vm", new_callable=AsyncMock)
+
+    app = _make_app_with_supervisor(MagicMock(delete_vm=AsyncMock(), list_vms=AsyncMock(return_value=[])))
+    client = await aiohttp_client(app)
+
+    response = await client.post(
+        "/control/allocation/notify",
+        json={"instance": str(VM_HASH), "persistent": True},
+    )
+    assert response.status == 200
+    start.assert_awaited()
 
 
 @pytest.mark.asyncio

@@ -409,8 +409,9 @@ async def test_notify_over_capacity_returns_503(aiohttp_client, mocker):
     app["update_watcher"] = mocker.Mock()
     client = await aiohttp_client(app)
 
-    # A hold-payment confidential instance (so the payment branch is taken and
-    # passes); untargeted, no GPU. The create call is mocked to raise.
+    # A hold-payment confidential instance, untargeted, no GPU. The create call
+    # is mocked to raise. No payment mocks: notify_allocation no longer checks
+    # payment, so nothing stands between the message and the create call.
     mock_message = mocker.Mock()
     mock_message.type = MessageType.instance
     mock_message.content.requirements.node = None
@@ -419,8 +420,6 @@ async def test_notify_over_capacity_returns_503(aiohttp_client, mocker):
     mock_message.content.payment.type = PaymentType.hold
     mocker.patch("aleph.vm.agent.views.try_get_message", return_value=mock_message)
     mocker.patch("aleph.vm.agent.views.update_aggregate_settings")
-    mocker.patch("aleph.vm.agent.views.payment.fetch_balance_of_address", return_value=10_000)
-    mocker.patch("aleph.vm.agent.views.payment.fetch_execution_price", return_value=1)
     mocker.patch(
         "aleph.vm.agent.views.start_persistent_vm",
         side_effect=InsufficientResourcesError("over capacity"),
