@@ -19,6 +19,7 @@ from typing import IO, Any, cast
 import pytest
 from aleph_message.models import VerifiableProgramMessage, parse_message
 
+from aleph.vm.agent.guest_ipv6 import compute_requested_ipv6
 from aleph.vm.agent.vprogram_launch import (
     build_vprogram_spec,
     fetch_runtime_manifest,
@@ -26,7 +27,6 @@ from aleph.vm.agent.vprogram_launch import (
     vprogram_staging_dir,
 )
 from aleph.vm.conf import settings
-from aleph.vm.network.hostnetwork import compute_requested_ipv6
 from aleph.vm.supervisor_interface.errors import VmSetupError
 from aleph.vm.supervisor_interface.types import (
     Backend,

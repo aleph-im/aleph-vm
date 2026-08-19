@@ -34,8 +34,8 @@ from typing import TYPE_CHECKING
 from aleph_message.models.execution.vprogram import VERITY_ROOTHASH_PATTERN
 from pydantic import ValidationError
 
+from aleph.vm.agent.guest_ipv6 import compute_requested_ipv6
 from aleph.vm.conf import settings
-from aleph.vm.network.hostnetwork import compute_requested_ipv6
 from aleph.vm.storage import get_existing_file
 from aleph.vm.supervisor_interface.errors import VmSetupError
 from aleph.vm.supervisor_interface.types import (

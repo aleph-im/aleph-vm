@@ -15,9 +15,9 @@ from aleph_message.models.execution.base import Encoding
 from aleph_message.models.execution.environment import HypervisorType
 from aleph_message.models.execution.instance import InstanceContent
 
+from aleph.vm.agent.guest_ipv6 import compute_requested_ipv6
 from aleph.vm.agent.vm.downloader import ProgramDownloader, QemuDownloader
 from aleph.vm.conf import settings
-from aleph.vm.network.hostnetwork import compute_requested_ipv6
 from aleph.vm.storage import get_existing_file
 from aleph.vm.supervisor_interface.errors import InvalidBackendError
 from aleph.vm.supervisor_interface.types import (
