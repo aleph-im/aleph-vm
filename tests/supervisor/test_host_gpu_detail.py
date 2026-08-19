@@ -1,6 +1,6 @@
 """HostGPU retains device_id + model so the supervisor can report full GpuDevices."""
 
-from aleph.vm.resources import GpuDevice, GpuDeviceClass, HostGPU
+from aleph.vm.resources import HostGPU
 
 
 def test_hostgpu_fields_default_for_spec_path():

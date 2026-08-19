@@ -1,3 +1,3 @@
 from .instance import AlephQemuInstance
 
-__all__ = "AlephQemuInstance"
+__all__ = ["AlephQemuInstance"]

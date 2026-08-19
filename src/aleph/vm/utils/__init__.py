@@ -11,7 +11,7 @@ from dataclasses import asdict as dataclass_as_dict
 from dataclasses import is_dataclass
 from pathlib import Path
 from shutil import disk_usage
-from typing import Any, Optional
+from typing import Any
 
 import aiodns
 import msgpack

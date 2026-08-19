@@ -1743,6 +1743,8 @@ async def test_setup_nftables_for_vm_ipv6_disabled(mocker):
     setup_nftables_for_vm(1, mock_interface)
 
     # Only IPv4 calls - no ip6
+    mock_build_post.assert_called_once()
     mock_build_fwd.assert_called_once()
+    mock_build_masq.assert_called_once()
     mock_build_fwd_rule.assert_called_once()
     mock_exec.assert_called_once()

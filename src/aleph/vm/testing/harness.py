@@ -72,7 +72,6 @@ async def benchmark(runs: int):
 
     bench: list[float] = []
 
-    loop = asyncio.get_event_loop()
     pool = VmPool()
     await pool.setup()
     bench_supervisor = LocalSupervisor(pool)
@@ -169,7 +168,6 @@ async def start_instance(item_hash: ItemHash, pubsub: PubSub | None, pool) -> No
 async def run_instances(instances: list[ItemHash]) -> None:
     """Run instances from a list of message identifiers."""
     logger.info(f"Instances to run: {instances}")
-    loop = asyncio.get_event_loop()
     pool = VmPool()
     # Bind the supervisor DB engine (port mappings) and set up the network;
     # the create path hits that DB on its first port-mapping lookup.
