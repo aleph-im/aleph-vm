@@ -148,6 +148,21 @@
         withLuks = true;
       };
 
+      # Compose flavor of the initrd (aleph.compose/1): identical to `initrd`
+      # except for /init (init-compose.sh instead of init.sh), which inverts
+      # the launch topology to bind-mount the workload data volume into the
+      # platform chroot instead of chrooting the workload directly. Same
+      # dm-verity + nft firewall contents as the v-program initrd (the
+      # withVerity/withNft defaults). See init-compose.sh for the exact
+      # deltas from init.sh.
+      composeInitrd = pkgs.callPackage ./initrd.nix {
+        inherit attest-agent kernel;
+        init-script = ./init-compose.sh;
+        init-common-script = ./init-common.sh;
+        udhcpc-script = ./udhcpc.script;
+        udhcpc6-script = ./udhcpc6.script;
+      };
+
       rootfs = pkgs.callPackage ./rootfs.nix {};
 
       # Compose-runner platform rootfs (aleph.compose/1): podman + podman-compose
@@ -349,7 +364,11 @@
           ovmf
           kernel
           initrd
+<<<<<<< HEAD
           instanceInitrd
+=======
+          composeInitrd
+>>>>>>> 4e9884b9 (feat(nix): compose initrd flavor with data-workload launch topology)
           rootfs
           composeRootfs
           verity
