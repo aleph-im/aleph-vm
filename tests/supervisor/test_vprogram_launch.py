@@ -26,6 +26,7 @@ from aleph.vm.agent.vprogram_launch import (
     vprogram_staging_dir,
 )
 from aleph.vm.conf import settings
+from aleph.vm.network.hostnetwork import compute_requested_ipv6
 from aleph.vm.supervisor_interface.errors import VmSetupError
 from aleph.vm.supervisor_interface.types import (
     Backend,
@@ -33,6 +34,7 @@ from aleph.vm.supervisor_interface.types import (
     DiskRole,
     TeeBackend,
 )
+from aleph.vm.vm_type import VmType
 from aleph.vm.vprogram.manifest import RuntimeManifest
 
 FIXTURE = Path(__file__).parent / "fixtures" / "vprogram_message.json"
@@ -271,8 +273,12 @@ async def test_build_vprogram_spec(staged_bundle):
     assert spec.tee.firmware_path == staging / "image/OVMF.fd"
 
     assert spec.network.internet_access is True
-    assert spec.network.requested_ipv6 == ""
-    assert spec.network.ipv6_prefix_len == 0
+    # The agent computes the static IPv6 upfront (V-PROGRAMs use the 0x4 hextet)
+    # so the supervisor is told the address rather than deriving the scheme.
+    expected_ipv6, expected_prefix = compute_requested_ipv6(message.item_hash, VmType.v_program)
+    assert expected_ipv6.split(":")[4] == "4"
+    assert spec.network.requested_ipv6 == expected_ipv6
+    assert spec.network.ipv6_prefix_len == expected_prefix == 124
     assert spec.persistent is True
     assert spec.gpus == []
     assert spec.ssh_authorized_keys == []

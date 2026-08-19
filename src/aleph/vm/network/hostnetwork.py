@@ -6,7 +6,7 @@ from typing import Protocol
 import pyroute2
 from aleph_message.models import ItemHash
 
-from aleph.vm.conf import IPv6AllocationPolicy
+from aleph.vm.conf import IPv6AllocationPolicy, settings
 from aleph.vm.vm_type import VmType
 
 from .firewall import initialize_nftables, setup_nftables_for_vm, teardown_nftables
@@ -105,6 +105,32 @@ def make_ipv6_allocator(
         return StaticIPv6Allocator(ipv6_range=IPv6Network(address_pool), subnet_prefix=subnet_prefix)
 
     return DynamicIPv6Allocator(ipv6_range=IPv6Network(address_pool), subnet_prefix=subnet_prefix)
+
+
+def compute_requested_ipv6(vm_hash: ItemHash, vm_type: VmType) -> tuple[str, int]:
+    """The static IPv6 /124 the agent hands to the supervisor for a guest.
+
+    Under the static policy the address is a pure function of the machine type
+    and item hash (the vm_index is not part of the scheme), so the agent can
+    compute it upfront and the supervisor is told the address rather than
+    deriving the Aleph-specific scheme itself. Returns the ``str`` of the /124
+    IPv6Network and its prefix length (124).
+
+    Under the dynamic policy the address depends on a supervisor-side ordinal
+    the agent cannot know, so it returns ``("", 0)`` and the supervisor assigns
+    the address itself.
+    """
+    if settings.IPV6_ALLOCATION_POLICY != IPv6AllocationPolicy.static:
+        return "", 0
+
+    allocator = make_ipv6_allocator(
+        allocation_policy=IPv6AllocationPolicy.static,
+        address_pool=settings.IPV6_ADDRESS_POOL,
+        subnet_prefix=settings.IPV6_SUBNET_PREFIX,
+    )
+    # vm_index is ignored by the static allocator; pass 0 to satisfy the API.
+    subnet = allocator.allocate_vm_ipv6_subnet(vm_index=0, vm_hash=vm_hash, vm_type=vm_type)
+    return str(subnet), subnet.prefixlen
 
 
 class Network:

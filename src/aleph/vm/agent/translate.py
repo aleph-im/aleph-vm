@@ -17,6 +17,7 @@ from aleph_message.models.execution.instance import InstanceContent
 
 from aleph.vm.agent.vm.downloader import ProgramDownloader, QemuDownloader
 from aleph.vm.conf import settings
+from aleph.vm.network.hostnetwork import compute_requested_ipv6
 from aleph.vm.storage import get_existing_file
 from aleph.vm.supervisor_interface.errors import InvalidBackendError
 from aleph.vm.supervisor_interface.types import (
@@ -34,6 +35,7 @@ from aleph.vm.supervisor_interface.types import (
 )
 from aleph.vm.utils import get_hostname_from_hash
 from aleph.vm.utils.runtime_channel import RUNTIME_CONTROL_PORT
+from aleph.vm.vm_type import VmType
 
 
 async def build_create_vm_spec(
@@ -113,6 +115,11 @@ async def build_create_vm_spec(
         for v in resources.volumes
     ]
 
+    # The agent computes the static IPv6 (the address does not depend on the
+    # vm_index) so the supervisor is told the address rather than deriving the
+    # Aleph scheme; empty under the dynamic policy, where the supervisor assigns.
+    requested_ipv6, ipv6_prefix_len = compute_requested_ipv6(vm_hash, VmType.from_message_content(message))
+
     return CreateVmSpec(
         vm_id=VmId(str(vm_hash)),
         backend=Backend.QEMU,
@@ -124,8 +131,8 @@ async def build_create_vm_spec(
         tee=tee,
         network=NetworkConfig(
             internet_access=message.environment.internet,
-            requested_ipv6="",
-            ipv6_prefix_len=0,
+            requested_ipv6=requested_ipv6,
+            ipv6_prefix_len=ipv6_prefix_len,
         ),
         gpus=[],
         numa_node=None,
@@ -189,6 +196,10 @@ async def build_program_create_vm_spec(
         for volume in resources.volumes
     ]
 
+    # A program's static IPv6 also depends only on the type and item hash, so
+    # the agent computes it upfront (empty under the dynamic policy).
+    requested_ipv6, ipv6_prefix_len = compute_requested_ipv6(vm_hash, VmType.from_message_content(message))
+
     spec = CreateVmSpec(
         vm_id=VmId(str(vm_hash)),
         backend=Backend.FIRECRACKER,
@@ -200,8 +211,8 @@ async def build_program_create_vm_spec(
         tee=None,
         network=NetworkConfig(
             internet_access=bool(message.environment.internet),
-            requested_ipv6="",
-            ipv6_prefix_len=0,
+            requested_ipv6=requested_ipv6,
+            ipv6_prefix_len=ipv6_prefix_len,
         ),
         gpus=[],
         numa_node=None,
