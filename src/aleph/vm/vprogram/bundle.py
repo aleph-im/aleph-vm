@@ -128,10 +128,13 @@ def build_bundle(
 
     `flavor="vprogram"` (default) expects the platform rootfs, its dm-verity
     hash tree, and the roothash/measurement sidecars, matching today's byte
-    layout exactly. `flavor="instance"` expects only OVMF/kernel/initrd (the
+    layout exactly. `flavor="compose"` packages the nix `composeImage`
+    output, which has the exact same byte layout (the flavors differ only in
+    which derivations fill the member slots), so it shares the vprogram
+    path below. `flavor="instance"` expects only OVMF/kernel/initrd (the
     nix `instanceImage` output) and never reads a verity sidecar.
     """
-    if flavor not in ("vprogram", "instance"):
+    if flavor not in ("vprogram", "instance", "compose"):
         msg = f"unknown bundle flavor: {flavor!r}"
         raise ValueError(msg)
 
