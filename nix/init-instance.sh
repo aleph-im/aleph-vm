@@ -86,7 +86,14 @@ if [ -x /mnt/root/sbin/init ]; then
     echo "init: starting /sbin/init from rootfs"
     /bin/busybox chroot /mnt/root /sbin/init &
 else
-    echo "init: WARNING: no /sbin/init found in rootfs"
+    # A missing /sbin/init means the owner's decrypted rootfs is malformed
+    # (the same failure class as a v-program workload with no /sbin/init, which
+    # also powers off). Fail closed rather than leaving a RUNNING-but-useless VM
+    # that looks healthy: the FATAL line is captured on the guest serial (owner-
+    # readable via the logs endpoint), and a STOPPED VM is an unambiguous signal
+    # to redeploy a fixed rootfs.
+    echo "init: FATAL: no /sbin/init in the unlocked rootfs (malformed user image)"
+    exec /bin/busybox poweroff -f
 fi
 
 # Wait for children (the attest-agent keeps serving re-attestation for the
