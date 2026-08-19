@@ -227,7 +227,7 @@ impl SecretStore {
 /// atomic directory-entry swap, so a concurrent reader polling the final path
 /// (e.g. the confidential-instance init script waiting on
 /// `/tmp/secrets/luks_passphrase`) can only ever observe "file absent" or
-/// "file present with its full, final content" — never a create-then-truncate
+/// "file present with its full, final content", never a create-then-truncate
 /// window with a partially written value. That in turn matters for
 /// `WriteMode::Overwrite` (authenticated re-injection): a create+truncate
 /// followed by `write_all` used to leave a poller a window where a stat-then-
@@ -863,6 +863,67 @@ mod tests {
             assert_eq!(resp.status(), StatusCode::OK);
             let content = std::fs::read_to_string(dir.join("luks_passphrase")).unwrap();
             assert_eq!(content, "hunter2");
+
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        /// Regression test for the whole-branch review's payload-limit
+        /// finding: switching the handler's body extractor from `web::Json`
+        /// to `web::Bytes` swapped in actix-web's `PayloadConfig` (256 KiB
+        /// default) for `JsonConfig` (2 MiB default), silently shrinking the
+        /// accepted body size. Wires the route exactly as `main.rs` does
+        /// (`PayloadConfig` scoped to this resource, raised to 2 MiB) and
+        /// sends a body that exceeds the 256 KiB default but stays within
+        /// the raised cap, proving the configured limit is what is actually
+        /// exercised rather than the default.
+        #[actix_web::test]
+        async fn authenticated_inject_accepts_body_over_default_payload_limit() {
+            // Mirrors `INJECT_SECRET_BODY_LIMIT` in main.rs: MAX_SECRETS (16)
+            // * MAX_VALUE_SIZE (64 KiB) is ~1 MiB of secret values alone, so
+            // 2 MiB leaves headroom for JSON structure, key names, and the
+            // signature field, matching the prior `web::Json` default.
+            const INJECT_SECRET_BODY_LIMIT: usize = 2 * 1024 * 1024;
+
+            let dir = tmpdir();
+            let store = web::Data::new(SecretStore::new(&dir));
+            let signer = signing_key(0x11);
+            let owner = owner_data(owner_auth::address_from_verifying_key(
+                signer.verifying_key(),
+            ));
+
+            // Five secrets of 60,000 bytes each (300,000 bytes of value data
+            // alone, before JSON overhead and the signature field) push the
+            // body past actix-web's 256 KiB (262,144-byte) default
+            // `web::Bytes` limit, while each value stays within
+            // MAX_VALUE_SIZE and the count stays within MAX_SECRETS.
+            let secrets: HashMap<String, String> = (0..5)
+                .map(|i| (format!("secret{i}"), "x".repeat(60_000)))
+                .collect();
+            let sig = sign_for(TEST_SERVER_KEY, &secrets, &signer);
+            let body = envelope_body(&secrets, &sig);
+            assert!(
+                body.len() > 262_144,
+                "test body must exceed actix-web's default payload limit to exercise the fix"
+            );
+
+            let app = test::init_service(
+                App::new().app_data(store).app_data(owner).service(
+                    web::resource("/confidential/inject-secret")
+                        .app_data(web::PayloadConfig::new(INJECT_SECRET_BODY_LIMIT))
+                        .route(web::post().to(inject_secret_handler)),
+                ),
+            )
+            .await;
+            let req = test::TestRequest::post()
+                .uri("/confidential/inject-secret")
+                .set_payload(body)
+                .to_request();
+            let resp = test::call_service(&app, req).await;
+
+            assert_eq!(resp.status(), StatusCode::OK);
+            for i in 0..5 {
+                assert!(dir.join(format!("secret{i}")).exists());
+            }
 
             std::fs::remove_dir_all(&dir).ok();
         }
