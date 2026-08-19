@@ -16,7 +16,6 @@ mock with ``fake.<method>.return_value = ...`` before calling the client, then
 assert on ``fake.<method>`` (e.g. ``assert_awaited_once_with(...)``).
 """
 
-from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -29,9 +28,7 @@ from aleph.vm.supervisor_interface.client import GrpcSupervisor
 from aleph.vm.supervisor_interface.types import (
     Backend,
     DirectoryPath,
-    GpuSpec,
     IpAssignment,
-    PciAddress,
     VmId,
     VmInfo,
     VmStatus,

@@ -316,7 +316,7 @@ def test_log_source_has_stderr():
 
     assert supervisor_pb2.LogChunk.LOG_SOURCE_STDERR == 4
 
-    from aleph.vm.supervisor_interface.types import IpAssignment, LogSource
+    from aleph.vm.supervisor_interface.types import LogSource
 
     assert LogSource.STDERR.value == "stderr"
 
