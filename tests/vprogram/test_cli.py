@@ -155,3 +155,24 @@ def test_build_then_manifest_instance_flavor(instance_image_dir: Path, tmp_path:
     assert manifest.format == "aleph-instance-runtime"
     assert manifest.bundle.ref == BUNDLE_REF
     assert manifest.boot.cmdline_template == "console=ttyS0 luks=1 owner={owner}"
+
+
+def test_manifest_rejects_exec_with_instance_flavor(tmp_path: Path) -> None:
+    # The combination is rejected before the subcommand runs, so the
+    # bundle-info path is never read.
+    result = _run(
+        "manifest",
+        "--bundle-info",
+        str(tmp_path / "bundle-info.json"),
+        "--bundle-ref",
+        BUNDLE_REF,
+        "--name",
+        "aleph-snp-luks",
+        "--runtime-version",
+        "2026.08.18",
+        "--flavor",
+        "instance",
+        "--exec",
+    )
+    assert result.returncode == 2
+    assert "--exec is incompatible with --flavor instance" in result.stderr

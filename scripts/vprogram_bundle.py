@@ -185,6 +185,11 @@ def main(argv: list[str] | None = None) -> int:
     p_manifest.set_defaults(func=cmd_manifest)
 
     args = parser.parse_args(argv)
+    # --exec builds the aleph.exec/1 workload-runtime manifest, which has no
+    # meaning for an instance (LUKS) manifest; reject the combination rather
+    # than silently ignoring the flag.
+    if getattr(args, "exec_runtime", False) and args.flavor == "instance":
+        parser.error("--exec is incompatible with --flavor instance")
     return int(args.func(args))
 
 
