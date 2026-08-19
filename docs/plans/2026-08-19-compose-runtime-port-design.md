@@ -273,6 +273,44 @@ properties that are both part of the sealed contract, not incidental:
 "verified upstream, by a stronger mechanism than container image signing,
 so the redundant check is skipped."
 
+## Sizing: everything a compose stack touches lives in guest RAM
+
+Unlike the platform rootfs, which is a verity-backed disk the guest reads
+from without ever loading it wholesale into memory, container storage for a
+compose stack is entirely RAM-backed. The compose-flavor platform init mounts
+`/var` (and `/tmp`, `/dev/shm`) as tmpfs before starting podman
+(`nix/compose-rootfs.nix`'s embedded init), and `storage.conf`'s `graphroot`
+(`/var/lib/containers/storage`, where `podman load` extracts every image
+layer and where each container's writable layer lives) sits under that
+tmpfs. So does `runroot`. None of it is disk-backed; all of it is guest
+memory, competing with whatever the running containers themselves allocate.
+
+For scale, the platform rootfs itself (the podman/podman-compose userland,
+not the workload) is approximately 702 MiB uncompressed; that part is NOT
+RAM-resident, it is the verity-backed disk the kernel reads pages from
+on demand. The bundle actually staged per VM under `EXECUTION_ROOT` on the
+host, by contrast, is approximately 311 MB. Neither figure bounds guest RAM
+usage; both are host-side disk footprints. What bounds guest RAM usage is
+the workload volume's `images/*.tar` archives once `podman load` extracts
+them into the tmpfs `graphroot`, plus whatever each container's writable
+layer grows to, plus the working set of every process the stack runs.
+
+The practical rule: `resources.memory` on the V-PROGRAM manifest must exceed
+the sum of the workload's image archive sizes by a comfortable multiple, not
+just enough to hold them once. `podman load` decompresses and extracts each
+archive's layers into RAM-backed storage, so the peak during image loading
+can exceed the archives' own combined size, and that peak is additive with
+whatever the compose stack itself consumes once running. A stack that
+exhausts guest RAM fails closed by the same mechanism as every other setup
+failure in this flavor: `podman load` or the running stack gets OOM-killed
+or otherwise dies, `podman-compose up`'s exit status is caught as fatal
+(see Fail-closed semantics above), and the VM powers off. There is no
+degraded or partial-capacity mode, and no in-band signal beyond whatever
+`podman`/the kernel OOM killer prints to the serial console before the
+`poweroff -f` fires: diagnosing an undersized `resources.memory` value means
+reading that console log, not any structured error surfaced through the
+attested endpoint.
+
 ## Publish flow
 
 Publishing a compose runtime bundle follows the same two-step
@@ -288,7 +326,21 @@ compose bundle's image must be built explicitly first and handed in via
 nix build "git+file://$PWD?dir=nix#composeImage" \
     --extra-experimental-features "nix-command flakes" \
     -o .local/compose-publish/image-result
+```
 
+`composeImage`'s own `measurement.hex` member is the platform-only cmdline
+measurement (`composeMeasurement`, no `workload_roothash`), the same
+convention `image`'s `measurement.hex` follows for the base flavor. It is
+informational only, not a launchable configuration: the compose flavor has
+no workload-less mode (`init-compose.sh`'s compose delta 2), so booting a
+VM with that cmdline powers off immediately for a missing
+`workload_roothash` rather than starting anything. Real, launchable
+measurements come from `composeMeasurementFor` given the actual workload's
+root hash (`nix/flake.nix`), or equivalently from the aleph-rs CLI at
+`vprogram create` time once the workload volume is staged and its root
+hash is known.
+
+```bash
 # 2. Package it into a bundle tarball + bundle-info.json.
 python scripts/vprogram_bundle.py build \
     --image-dir "$(readlink -f .local/compose-publish/image-result)" \
@@ -364,3 +416,25 @@ actually publishes.
   individual service's restart policy says.
 - **LUKS / encrypted rootfs.** Unrelated to the compose port; remains
   excluded on this branch (`docs/architecture/divergences.md` entry 64).
+- **Attested secret injection (`/confidential/inject-secret`).** The agent
+  endpoint still accepts the request and writes the secret to
+  `/tmp/secrets` in the outer chroot, but the path from there to a compose
+  container is inert, twice over. First, `prepare_chroot`'s bind mount of
+  `/tmp/secrets` into `/mnt/root/tmp/secrets` happens before the platform
+  init runs, and the compose-flavor platform init (`rootfs/sbin/init`
+  embedded in `nix/compose-rootfs.nix`) then mounts a fresh tmpfs over
+  `/tmp` (`mount -t tmpfs tmpfs /tmp`), which shadows that bind mount:
+  whatever was injected becomes unreachable at `/tmp/secrets` the moment
+  the platform init starts. Second, even if that shadowing were avoided,
+  the compose subset rejects `volumes:` entirely (see Compose subset
+  above), so there is no mechanism by which a container in the stack could
+  be given a mount path into the guest's `/tmp/secrets` in the first
+  place, injected-secret delivery to a container has no expression in the
+  `aleph.compose/1` schema at all. This is a deliberate v1 scope decision,
+  not an oversight: a future revision that wants to support secrets in
+  compose workloads must both preserve the secrets bind mount across
+  compose-init's tmpfs setup (for example by mounting the fresh `/tmp`
+  tmpfs and then re-creating and re-bind-mounting `/tmp/secrets` inside
+  it, rather than mounting over the top of it) and define an actual
+  container delivery path (a `secrets:`-shaped compose primitive, or an
+  implicit bind mount into every service). Neither exists on this branch.
