@@ -7,7 +7,10 @@
   #   aleph-attest-agent static-musl binary and init.sh) + a minimal
   #   dm-verity-protected rootfs + a precomputed, reproducible sev-snp-measure
   #   launch measurement.
-  # Excluded from the donor: compose-rootfs / compose-demo. The
+  # Excluded from the donor: compose-demo (compose-rootfs, initially excluded
+  # too, returned as the aleph.compose/1 flavor: composeRootfs /
+  # composeInitrd / composeImage below, sharing initrd.nix with init-compose.sh
+  # as /init; see docs/plans/2026-08-19-compose-runtime-port-design.md). The
   # encrypted-rootfs (LUKS) mode returns as a second, separate image flavor
   # for confidential instances (instanceInitrd / instanceImage below), built
   # from the same initrd.nix with withVerity=false withNft=false withLuks=true;

@@ -1,118 +1,39 @@
 #!/bin/busybox sh
-# /init - runs inside the VM as PID 1
+# /init for the COMPOSE flavor of the V-PROGRAM image (aleph.compose/1).
 #
-# Minimal measured-boot init for the aleph-vm SEV-SNP backport. Adapted from the
-# aleph-cvm donor: the LUKS encrypted-rootfs branch and the compose workload
-# volume branch are stripped (design section 6 non-goals). What remains is the
-# core measured-boot chain: bring up networking, verify + mount the
-# dm-verity-protected rootfs (or plain-mount if no roothash), chroot into it,
-# and start the attestation agent. See rust-port-divergences.
+# Same measured-boot chain as nix/init.sh (the aleph.exec/1 / builtin
+# flavor): networking, dm-verity-verified platform rootfs and workload
+# volume, guest firewall, attestation agent. The mounts/networking prologue
+# and the wait_for_rootfs_blkdev/wait_for_dev/prepare_chroot helpers live in
+# init-common.sh, shared with init.sh and init-instance.sh.
 #
-# This is the COMPOSE flavor of nix/init.sh (aleph.compose/1). A future
-# init-common refactor should diff against init.sh to find these deltas:
-#   1. roothash is REQUIRED: the no-verity fallback (plain mount + "NOT
-#      integrity-protected" warning) becomes a fatal poweroff (a compose
-#      runtime is always measured).
+# Deltas from init.sh (diff against it to verify; everything not listed is
+# byte-identical):
+#   1. roothash is REQUIRED: init.sh's no-verity fallback (plain mount +
+#      "NOT integrity-protected" warning) becomes a fatal poweroff (a
+#      compose runtime is always measured).
 #   2. workload_roothash is REQUIRED: missing -> fatal poweroff (the compose
 #      contract has no workload-less mode).
 #   3. Launch topology inversion: /mnt/workload is bind-mounted at
 #      /mnt/root/mnt/workload instead of being chrooted directly, so the
-#      platform's /sbin/init (not the workload) is the chroot entrypoint.
+#      platform's /sbin/init (the podman/podman-compose runner, see
+#      compose-rootfs.nix) is the chroot entrypoint, never the workload.
 #   4. The chroot target is always /mnt/root, with a fatal check on
 #      /mnt/root/sbin/init (missing or non-executable -> poweroff; never
 #      warn-and-continue).
 #   5. Fail-closed supervision: waits on the guest PID specifically and
-#      powers off when it exits, instead of dev's bare `wait` (a dead
+#      powers off when it exits, instead of init.sh's bare `wait` (a dead
 #      compose stack takes the VM down).
 #   6. Agent-start ordering: the attest-agent is started BEFORE the chroot
-#      (dev starts it AFTER, once past the whole platform-init if/elif/else
-#      block), so `$!` right after the `chroot ... &` reliably captures the
-#      guest's own pid instead of the attest-agent's. The "starting
-#      /sbin/init from rootfs" echo stays where it was, directly above the
-#      chroot line, so the attest-agent start now falls between that echo
-#      and the chroot it used to sit right next to in dev.
-# Everything else (prologue: mounts, lo up, interface wait, ip=/udhcpc/
-# udhcpc6, cmdline roothash parsing with the \b guard, dm module insmods,
-# wait_for_dev, prepare_chroot, setup_firewall) is byte-identical to init.sh.
+#      (init.sh starts it AFTER, once past the whole platform-init
+#      if/elif/else block), so `$!` right after the `chroot ... &` reliably
+#      captures the guest's own pid instead of the attest-agent's. The
+#      "starting /sbin/init from rootfs" echo stays where it was, directly
+#      above the chroot line, so the attest-agent start now falls between
+#      that echo and the chroot it used to sit right next to in init.sh.
 
-# Mount essential filesystems.
-/bin/busybox mount -t proc proc /proc
-/bin/busybox mount -t sysfs sysfs /sys
-/bin/busybox mount -t devtmpfs devtmpfs /dev
-/bin/busybox mkdir -p /etc /tmp
-
-# Bring up loopback.
-/bin/busybox ip link set lo up
-
-# Wait for a network interface to appear (virtio-net may take a moment).
-n=0
-while [ "$n" -lt 30 ]; do
-    iface=$(/bin/busybox ls /sys/class/net/ | /bin/busybox grep -v lo | /bin/busybox head -1)
-    if [ -n "$iface" ]; then
-        break
-    fi
-    /bin/busybox sleep 0.1
-    n=$((n + 1))
-done
-
-if [ -z "$iface" ]; then
-    echo "init: no network interface found"
-else
-    # Parse ip= from kernel command line: ip=<client>:::<gateway>:<mask>::<iface>:off
-    kernel_ip=$(/bin/busybox sed -n 's/.*ip=\([^ ]*\).*/\1/p' /proc/cmdline)
-    if [ -n "$kernel_ip" ]; then
-        client_ip=$(echo "$kernel_ip" | /bin/busybox cut -d: -f1)
-        gateway=$(echo "$kernel_ip" | /bin/busybox cut -d: -f4)
-        mask=$(echo "$kernel_ip" | /bin/busybox cut -d: -f5)
-        echo "init: static IP ${client_ip}/${mask} gw ${gateway} on ${iface}"
-        /bin/busybox ip link set "$iface" up
-        /bin/busybox ip addr add "${client_ip}/${mask}" dev "$iface"
-        /bin/busybox ip route add default via "$gateway"
-    else
-        echo "init: bringing up ${iface} via DHCP"
-        /bin/busybox ip link set "$iface" up
-        # -s: busybox udhcpc leases an address but only APPLIES it (ip addr/route)
-        # by running this script; without it the guest would lease from the host's
-        # per-tap dnsmasq but never configure its IP. See udhcpc.script.
-        /bin/busybox udhcpc -i "$iface" -q -n -t 5 -A 2 -s /bin/udhcpc.script 2>&1 || echo "init: DHCP failed on ${iface}"
-
-        # IPv6: stateful DHCPv6 from the same per-tap dnsmasq that served the
-        # IPv4 lease above, handing this guest EXACTLY its allocated
-        # /124-scheme address; the default route comes from the kernel
-        # processing that dnsmasq's Router Advertisements (DHCPv6 cannot
-        # convey routes). Never a kernel-cmdline address: baking the per-VM
-        # address into the measured cmdline would break the publisher's
-        # precomputed SNP measurement, the exact reason the IPv4 path above
-        # uses DHCP. accept_ra=2 keeps RA processing on regardless of
-        # forwarding settings; both sysctls are best-effort (a v6-less
-        # kernel stays IPv4-only). The client is bounded and non-fatal like
-        # udhcpc above: `-n` makes it exit 1 (instead of retrying forever)
-        # once its solicit retries are exhausted, so `||` below always runs
-        # and the guest simply stays IPv4-only when no DHCPv6 server answers.
-        # -q exits after the lease (the script applies the address
-        # permanently), so no client survives into the firewalled steady
-        # state and no DHCP firewall rule is needed.
-        echo 0 > "/proc/sys/net/ipv6/conf/${iface}/disable_ipv6" 2>/dev/null || true
-        echo 2 > "/proc/sys/net/ipv6/conf/${iface}/accept_ra" 2>/dev/null || true
-        # udhcpc6 needs a usable link-local source address and bails out with
-        # "can't get link-local IPv6 address" while the freshly created
-        # link-local is still tentative: the sysctl above (re-)enables IPv6
-        # moments before, so DAD (~1s) is still running when udhcpc6 starts
-        # (seen on the SNP testnet, run 32147657203). Wait for DAD to finish,
-        # bounded: v6 stays best-effort and a v6-less environment must not
-        # stall boot.
-        dad_tries=5
-        while [ "$dad_tries" -gt 0 ]; do
-            ll=$(/bin/busybox ip addr show dev "$iface" 2>/dev/null | /bin/busybox grep 'inet6 fe80' || true)
-            if [ -n "$ll" ] && ! echo "$ll" | /bin/busybox grep -q tentative; then
-                break
-            fi
-            dad_tries=$((dad_tries - 1))
-            /bin/busybox sleep 1
-        done
-        /bin/busybox udhcpc6 -i "$iface" -q -n -t 5 -A 2 -s /bin/udhcpc6.script 2>&1 || echo "init: DHCPv6 failed on ${iface}; continuing IPv4-only"
-    fi
-fi
+# shellcheck disable=SC1091  # /bin/init-common.sh only exists inside the initrd
+. /bin/init-common.sh
 
 # Parse boot mode from kernel command line.
 roothash=$(/bin/busybox sed -n 's/.*\broothash=\([0-9a-fA-F]*\).*/\1/p' /proc/cmdline)
@@ -125,95 +46,13 @@ roothash=$(/bin/busybox sed -n 's/.*\broothash=\([0-9a-fA-F]*\).*/\1/p' /proc/cm
 workload_roothash=$(/bin/busybox sed -n 's/.*\bworkload_roothash=\([0-9a-fA-F]*\).*/\1/p' /proc/cmdline)
 
 # Wait for the rootfs block device to appear.
-blkdev=""
-n=0
-while [ "$n" -lt 30 ]; do
-    for dev in /dev/vda /dev/sda; do
-        if [ -b "$dev" ]; then
-            blkdev="$dev"
-            break 2
-        fi
-    done
-    /bin/busybox sleep 0.1
-    n=$((n + 1))
-done
-
+wait_for_rootfs_blkdev
 if [ -z "$blkdev" ]; then
     echo "init: FATAL: no block device found"
     exec /bin/busybox poweroff -f
 fi
 
-# Wait (up to 3s) for a block device to appear, e.g. a dm-verity hash tree
-# disk attached by QEMU as an extra virtio-blk device. Used for both the
-# platform hash tree (/dev/vdb) and the workload data + hash tree devices
-# (/dev/vdc, /dev/vdd) below, so each disk is waited for explicitly instead
-# of assuming a single fixed device name.
-wait_for_dev() {
-    local dev n
-    dev="$1"
-    n=0
-    while [ "$n" -lt 30 ]; do
-        if [ -b "$dev" ]; then
-            return 0
-        fi
-        /bin/busybox sleep 0.1
-        n=$((n + 1))
-    done
-    return 1
-}
-
 /bin/busybox mkdir -p /mnt/root
-
-# Prepare a chroot environment: bind-mount /proc, /sys, /dev, the secret dir,
-# and set up DNS in the given target. Called with the chroot that will
-# actually run its /sbin/init (/mnt/workload when a V-PROGRAM workload volume
-# is mounted, /mnt/root otherwise), after mounting it.
-#
-# The target is mounted read-only under dm-verity, so the mkdirs below cannot
-# create anything there: the mount-point directories (and the resolv.conf
-# placeholder file) are shipped in the image (rootfs.nix / workload.nix) and
-# the mkdirs no-op. They only do real work on the legacy writable-mount path.
-prepare_chroot() {
-    local target
-    target="$1"
-    /bin/busybox mkdir -p "$target/proc" "$target/sys" "$target/dev" "$target/etc"
-    /bin/busybox mount --bind /proc "$target/proc"
-    /bin/busybox mount --bind /sys "$target/sys"
-    /bin/busybox mount --bind /dev "$target/dev"
-    # Secret delivery: the attest-agent writes injected secrets under /tmp/secrets
-    # in THIS (initramfs) mount namespace, but the workload runs chrooted into
-    # the target, where /tmp/secrets is a different filesystem. Bind-mount the
-    # agent's secret dir into the chroot so the app reads exactly what the agent
-    # writes. The source path matches the agent's DEFAULT_SECRETS_DIR
-    # (/tmp/secrets in secrets.rs); pre-create it 0700 so the agent's hardened
-    # directory check accepts it (real dir, agent-owned, owner-only).
-    /bin/busybox mkdir -m 0700 -p /tmp/secrets
-    /bin/busybox mkdir -m 0700 -p "$target/tmp/secrets"
-    /bin/busybox mount --bind /tmp/secrets "$target/tmp/secrets"
-    # DNS for the chrooted workload. The target is mounted read-only under
-    # dm-verity, so writing its /etc/resolv.conf directly cannot work
-    # there (the old `echo >` only ever worked on legacy writable mounts).
-    # Instead, expose the initramfs /etc/resolv.conf (written by udhcpc.script
-    # from the DHCP option-6 nameservers) via a file bind-mount over the
-    # image's placeholder. On the static ip= path there is no DHCP lease, so
-    # seed the initramfs copy from the gateway first (common for VM bridges).
-    if [ ! -f /etc/resolv.conf ] && [ -n "$gateway" ]; then
-        /bin/busybox mkdir -p /etc
-        echo "nameserver ${gateway}" > /etc/resolv.conf
-    fi
-    if [ -f /etc/resolv.conf ]; then
-        if [ -f "$target/etc/resolv.conf" ]; then
-            /bin/busybox mount --bind /etc/resolv.conf "$target/etc/resolv.conf" \
-                || echo "init: WARNING: resolv.conf bind-mount failed; workload DNS unavailable"
-        else
-            # Legacy image without the placeholder: best-effort copy (works
-            # only if the target is mounted writable).
-            /bin/busybox cp /etc/resolv.conf "$target/etc/resolv.conf" 2>/dev/null \
-                || echo "init: WARNING: ${target} has no /etc/resolv.conf placeholder; workload DNS unavailable"
-        fi
-    fi
-    echo "init: chroot environment prepared at ${target} (proc, sys, dev, secrets, DNS)"
-}
 
 # Install a minimal guest firewall so only the attested TLS port is reachable
 # from outside the VM. Everything the workload binds (e.g. the upstream on
@@ -291,7 +130,7 @@ if [ -n "$roothash" ]; then
     fi
 else
     # Compose delta 1: roothash is REQUIRED (a compose runtime is always
-    # measured); dev's no-verity fallback (plain mount + "NOT
+    # measured); init.sh's no-verity fallback (plain mount + "NOT
     # integrity-protected" warning) becomes a fatal poweroff here.
     echo "init: FATAL: roothash not set; the compose runtime requires a measured rootfs"
     exec /bin/busybox poweroff -f
@@ -301,7 +140,7 @@ fi
 # (/dev/vdc) against its hash tree (/dev/vdd), distinct devices from the
 # platform rootfs (/dev/vda) and its hash tree (/dev/vdb) above. Compose
 # delta 2: workload_roothash is REQUIRED here (see the fatal else below), so
-# unlike dev this block always runs.
+# unlike init.sh this block always runs.
 if [ -n "$workload_roothash" ]; then
     if ! wait_for_dev /dev/vdc; then
         echo "init: FATAL: workload_roothash set but /dev/vdc (workload data) not found"
@@ -339,7 +178,10 @@ fi
 # the platform init can read it from inside the chroot.
 prepare_chroot /mnt/root
 /bin/busybox mkdir -p /mnt/root/mnt/workload
-/bin/busybox mount --bind /mnt/workload /mnt/root/mnt/workload || { echo "init: FATAL: workload bind mount failed"; /bin/busybox poweroff -f; }
+if ! /bin/busybox mount --bind /mnt/workload /mnt/root/mnt/workload; then
+    echo "init: FATAL: workload bind mount failed"
+    exec /bin/busybox poweroff -f
+fi
 
 # Install the guest firewall BEFORE starting the workload, so the app can never
 # be reached directly even during the window before the agent is up.
@@ -347,7 +189,7 @@ setup_firewall
 
 # Compose delta 4: the chroot target is always /mnt/root, with a fatal check
 # on /mnt/root/sbin/init (missing or non-executable -> poweroff; never
-# warn-and-continue, unlike dev's rootfs-only WARNING path).
+# warn-and-continue, unlike init.sh's rootfs-only WARNING path).
 if [ ! -x /mnt/root/sbin/init ]; then
     echo "init: FATAL: no /sbin/init found in rootfs"
     exec /bin/busybox poweroff -f
@@ -357,10 +199,10 @@ echo "init: starting /sbin/init from rootfs"
 # Start the attestation agent (after rootfs mount).
 /bin/aleph-attest-agent --port 8443 --upstream http://127.0.0.1:8080 &
 
-# Compose delta 5: fail-closed supervision. Unlike dev's bare `wait` (which
-# would keep an attested VM alive after the runtime died), wait specifically
-# on the guest's PID and power off as soon as it exits: a dead compose stack
-# takes the VM down.
+# Compose delta 5: fail-closed supervision. Unlike init.sh's bare `wait`
+# (which would keep an attested VM alive after the runtime died), wait
+# specifically on the guest's PID and power off as soon as it exits: a dead
+# compose stack takes the VM down.
 /bin/busybox chroot /mnt/root /sbin/init &
 guest_pid=$!
 wait "$guest_pid"
