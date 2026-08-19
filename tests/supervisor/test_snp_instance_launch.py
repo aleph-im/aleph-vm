@@ -13,7 +13,6 @@ import gzip
 import hashlib
 import io
 import json
-import shutil
 import tarfile
 from pathlib import Path
 from typing import IO, Any, cast
@@ -203,7 +202,7 @@ def snp_instance_content(
 
 
 @pytest.fixture
-def storage_files(monkeypatch) -> dict[str, Path]:
+def storage_files(tmp_path, monkeypatch) -> dict[str, Path]:
     """Serve get_existing_file from a local ref -> path map: no network.
 
     Patches BOTH namespaces the launch path resolves refs through: this
@@ -217,6 +216,7 @@ def storage_files(monkeypatch) -> dict[str, Path]:
 
     monkeypatch.setattr("aleph.vm.agent.snp_instance_launch.get_existing_file", fake_get_existing_file)
     monkeypatch.setattr("aleph.vm.agent.snp_staging.get_existing_file", fake_get_existing_file)
+    monkeypatch.setattr(settings, "EXECUTION_ROOT", str(tmp_path))
     return files
 
 
@@ -238,10 +238,6 @@ def staged_instance_bundle(tmp_path, storage_files, snp_supported, monkeypatch) 
         self.volumes = []
 
     monkeypatch.setattr(QemuDownloader, "download_all", fake_download_all)
-
-    staging = snp_instance_staging_dir(VM_HASH)
-    if staging.exists():  # leftover from a previous pytest run: EXECUTION_ROOT persists
-        shutil.rmtree(staging)
 
     return {"tar": tar_path, "manifest": manifest_path}
 
