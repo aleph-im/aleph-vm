@@ -116,6 +116,18 @@ async fn main() -> Result<()> {
     let bind_addr = format!("[::]:{}", cli.port);
     info!(addr = %bind_addr, "binding HTTPS server");
 
+    // inject-secret's `web::Bytes` extractor is governed by actix-web's
+    // `PayloadConfig`, whose default is 256 KiB, unlike the `web::Json`
+    // extractor's 2 MiB default. The store allows up to
+    // `MAX_SECRETS` (16) * `MAX_VALUE_SIZE` (64 KiB) =~ 1 MiB of secret
+    // values alone, plus JSON structure, key names, and (in owner mode) the
+    // signature field. Raise the cap to 2 MiB, matching the prior
+    // `web::Json` default, to restore headroom for both the unauthenticated
+    // v-program path and the new owner-authenticated path. Scoped to this
+    // route only: the attestation GET and the proxy default-service never
+    // read `web::Bytes`/`web::String` bodies, so they are unaffected either way.
+    const INJECT_SECRET_BODY_LIMIT: usize = 2 * 1024 * 1024;
+
     HttpServer::new(move || {
         App::new()
             .app_data(app_state.clone())
@@ -125,9 +137,10 @@ async fn main() -> Result<()> {
                 "/.well-known/attestation",
                 web::get().to(attestation_endpoint),
             )
-            .route(
-                "/confidential/inject-secret",
-                web::post().to(inject_secret_handler),
+            .service(
+                web::resource("/confidential/inject-secret")
+                    .app_data(web::PayloadConfig::new(INJECT_SECRET_BODY_LIMIT))
+                    .route(web::post().to(inject_secret_handler)),
             )
             .default_service(web::to(proxy_handler))
     })
