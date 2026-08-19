@@ -30,8 +30,9 @@ content convention:
   archives and powers off if the count is zero.
 - Any other file in the volume is ignored. The guest init does not enumerate
   or validate anything beyond `docker-compose.yml` and the `images/*.tar`
-  glob (`nix/init-compose.sh` lines 165-176), so the archive filenames
-  themselves carry no meaning; the aleph-rs CLI's own staging convention
+  glob (the compose-flavor `/sbin/init` embedded in `nix/compose-rootfs.nix`
+  lines 165-176, not the outer `nix/init-compose.sh`), so the archive
+  filenames themselves carry no meaning; the aleph-rs CLI's own staging convention
   (`images/NNN-<sanitized-name>.tar`) is filesystem bookkeeping only, not
   part of the in-guest contract.
 
@@ -102,9 +103,15 @@ schema allows a service to be reached through at all.
 
 ### Fail-closed semantics
 
-The compose-flavor init (`rootfs/sbin/init` embedded in
-`nix/compose-rootfs.nix` lines 138-182) treats every setup step as fatal:
-each `tmpfs`/`cgroup2` mount, the `fuse.ko` module load, the
+Fail-closed applies at two layers, the outer initramfs init and the
+platform init it eventually chroots into, and every `poweroff -f` in both
+was walked line by line (`grep -c "poweroff -f"` cross-checked against the
+enumeration below: 14 in `nix/init-compose.sh`, 1 `fatal()` helper site in
+`nix/compose-rootfs.nix`'s embedded init reused across 11 call sites there).
+
+**Layer 1, the compose-flavor platform init** (`rootfs/sbin/init` embedded
+in `nix/compose-rootfs.nix` lines 138-182) treats every setup step as
+fatal: each `tmpfs`/`cgroup2` mount, the `fuse.ko` module load, the
 `docker-compose.yml` presence check, every `podman load`, and the
 "at least one image loaded" count all call a shared `fatal()` helper on
 failure, which prints the reason and `exec`s `/bin/busybox poweroff -f`.
@@ -112,12 +119,53 @@ failure, which prints the reason and `exec`s `/bin/busybox poweroff -f`.
 its exit status is captured and treated as fatal too (`fatal "compose stack
 exited with status $?"`), so a stack that exits, whether it crashes or exits
 zero, powers the VM off rather than leaving the attest-agent proxying to a
-dead upstream. This mirrors the outer initramfs init's own fail-closed
-supervision one layer up: `nix/init-compose.sh` waits specifically on the
-chrooted platform init's PID and powers off when it exits (compose delta 5
-in that file's header comment), so a fatal compose-init failure and a
-normal (or abnormal) compose-stack exit both terminate the VM through the
-same "attested-but-empty endpoint is never acceptable" policy.
+dead upstream.
+
+**Layer 2, the outer initramfs init** (`nix/init-compose.sh`) has 14
+`poweroff -f` sites. Nine are byte-identical to `nix/init.sh` (the
+`aleph.exec/1` / no-workload flavor's outer init), inherited from the
+shared measured-boot prologue: no block device found for the platform
+rootfs (line 136, `init.sh` line 116); the nftables firewall failing to
+install inside `setup_firewall` (line 248, `init.sh` line 228); the
+platform dm-verity hash-tree device (`/dev/vdb`) not appearing (line 270,
+`init.sh` line 250); the platform verity mount failing (line 279, `init.sh`
+line 259); `veritysetup open` failing on the platform rootfs (line 283,
+`init.sh` line 263); and, once a workload volume is actually being
+attached, the same four-way pattern repeated for it: the workload data
+device (`/dev/vdc`) not appearing (line 301, `init.sh` line 284), the
+workload hash-tree device (`/dev/vdd`) not appearing (line 305, `init.sh`
+line 288), the workload verity mount failing (line 315, `init.sh` line
+298), and `veritysetup open` failing on the workload volume (line 319,
+`init.sh` line 302).
+
+The remaining five are compose-specific, the same five the file's own
+header comment calls out as "compose delta 1" through "5":
+
+1. **No `roothash`** (line 290): where `init.sh`'s else-branch instead logs
+   a WARNING and falls back to an unverified plain mount (`init.sh` lines
+   265-273), the compose flavor treats a missing platform roothash as fatal
+   outright, because a compose runtime is always measured.
+2. **No `workload_roothash`** (line 325): where `init.sh` simply skips the
+   whole workload block and continues platform-only when no workload is
+   attached (`init.sh` line 281's `if` has no `else`), the compose flavor
+   has no workload-less mode, so an absent workload volume is fatal.
+3. **Workload bind-mount failure** (line 335): `mount --bind /mnt/workload
+   /mnt/root/mnt/workload` has no equivalent in `init.sh` at all, since the
+   exec flavor never bind-mounts the workload into the platform chroot (see
+   the topology inversion below); a failure here is unique to the compose
+   flavor's data-volume-as-bind-mount design.
+4. **Missing or non-executable `/mnt/root/sbin/init`** (line 346): where
+   `init.sh`'s equivalent platform-rootfs check is a non-fatal WARNING when
+   no workload is present (`init.sh` lines 335-340, `elif`/`else`), the
+   compose flavor always needs the platform `/sbin/init` (it is always the
+   chroot entrypoint) and fails closed rather than warning and continuing
+   into a mounted-but-inert rootfs.
+5. **Guest exit** (line 361): where `init.sh` ends in a bare `wait` with no
+   poweroff (`init.sh` line 346), the compose flavor waits specifically on
+   the chrooted platform init's PID and powers off as soon as it exits, so
+   a fatal compose-init failure (layer 1, above) and a normal or abnormal
+   compose-stack exit both terminate the VM through the same
+   "attested-but-empty endpoint is never acceptable" policy.
 
 ## Launch-topology inversion vs `aleph.exec/1`, and why the CRN needs no changes
 
@@ -161,10 +209,12 @@ would need to know which flavor it is looking at is generic across both:
   `content.workload.roothash` (a bare hex string, format-checked but not
   flavor-checked) and the two file refs. A grep of
   `aleph.exec`/`aleph.compose`/`aleph.builtin` across `src/` and `rust/` in
-  this repo turns up exactly three lines, all in
-  `src/aleph/vm/vprogram/bundle.py` where the manifest-building constants
-  are defined; nothing in the launch or lifecycle path inspects the
-  contract string at all.
+  this repo turns up seven lines total: five in
+  `src/aleph/vm/vprogram/bundle.py` (the three `WorkloadSpec` constants plus
+  two docstring mentions) and two in `src/aleph/vm/vprogram/manifest.py`
+  (a comment and a field description, both just example contract strings,
+  not code that branches on one). None of the seven is in the launch or
+  lifecycle path; nothing there inspects the contract string at all.
 - **Sidecars**: `_ensure_verity_sidecars` writes the `<rootfs>.roothash` and
   `<rootfs>.verity` sidecars from `manifest.boot.platform_roothash` and the
   bundle's own hash-tree member, and `content.workload.roothash` is written
