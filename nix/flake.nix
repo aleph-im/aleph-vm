@@ -288,7 +288,13 @@
       # a valid flake package); `instanceMeasurementSmoke` below gives it
       # build coverage so evaluation and the sev-snp-measure invocation are
       # never dead code.
-      instanceMeasurementFor = { vcpus ? 2, vcpuType ? "EPYC-v4", owner }: let
+      instanceMeasurementFor = { vcpus ? 2, vcpuType ? "EPYC-v4", owner }:
+        # `owner` is interpolated into the measured kernel cmdline (and thus a
+        # shell argument to sev-snp-measure); only trusted nix callers reach
+        # here, but assert the EVM-address shape so a stray value fails the
+        # build rather than producing a bogus measurement or injecting tokens.
+        assert (builtins.match "0x[0-9a-fA-F]{40}" owner) != null;
+        let
         kernelCmdline = "console=ttyS0 luks=1 owner=${owner}";
       in pkgs.runCommand "snp-instance-measurement-${toString vcpus}vcpus-${vcpuType}" {
         nativeBuildInputs = [ sev-snp-measure ];
