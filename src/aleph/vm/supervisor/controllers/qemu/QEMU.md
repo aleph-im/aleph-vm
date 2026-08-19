@@ -19,8 +19,10 @@ Launch the agent (`python3 -m aleph.vm.agent`) with the following environment va
 ALEPH_VM_FAKE_INSTANCE_BASE=/home/olivier/Projects/qemu-quickstart/jammy-server-cloudimg-amd64.img
 ALEPH_VM_FAKE_INSTANCE_MESSAGE=/home/olivier/Projects/aleph/aleph-vm/examples/qemu_message_from_aleph.json
 ALEPH_VM_USE_FAKE_INSTANCE_BASE=1
-# set test as the allocation password
-ALEPH_VM_ALLOCATION_TOKEN_HASH=9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+# Authorize a local signer for the scheduler-only endpoints. Generate a keypair
+# with `python3 -c 'from eth_account import Account; a = Account.create(); print(a.key.hex(), a.address)'`
+# and put the address here, keeping the private key to sign requests with.
+ALEPH_VM_AUTHORIZED_ALLOCATION_SIGNERS=["0xYourSignerAddress"]
 
 ```
 
@@ -35,16 +37,17 @@ To only launch the VM instance, use the parameter:
 
 You can then try to connect via ssh to it's ip. Wait a minute or so for it to set up properly with the network
 
-Or launching the whole supervisor server (no params), then launch the VM via http
+Or launching the whole supervisor server (no params), then launch the VM via http.
+`/control/allocations` requires an EIP-191 signature from an authorized signer,
+which `scripts/sign_allocation_request.py` produces:
 
-```http request
+```shell
 ### Start fake VM
-POST http://localhost:4020/control/allocations
-Content-Type: application/json
-X-Auth-Signature: test
-Accept: application/json
-
-{"persistent_vms": [], "instances": ["decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"]}
+BODY='{"persistent_vms": [], "instances": ["decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"]}'
+AUTH=$(printf '%s' "$BODY" | python3 scripts/sign_allocation_request.py \
+    --key 0xYourSignerPrivateKey --path /control/allocations)
+curl -X POST -H "Content-Type: application/json" -H "Authorization: $AUTH" \
+    -d "$BODY" http://localhost:4020/control/allocations
 ```
 
 After a minutes or two you should be able to SSH into the VM. Check in the log for the VM ip. 

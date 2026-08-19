@@ -58,9 +58,33 @@ if ! curl --retry 5 --retry-delay 10 --retry-connrefused --max-time 120 --fail "
 fi
 
 echo "==> Scheduling an instance via /control/allocations"
-curl --retry 5 --retry-delay 10 --retry-connrefused --max-time 120 --fail -X POST -H "Content-Type: application/json" \
-    -H "X-Auth-Signature: test" \
-    -d "{\"persistent_vms\": [], \"instances\": [\"${ITEM_HASH}\"]}" \
-    "http://${DROPLET_IPV4}:4020/control/allocations"
+# Throwaway CI signer, authorized via ALEPH_VM_AUTHORIZED_ALLOCATION_SIGNERS in
+# the install step. It only ever reaches a short-lived test droplet, so it is
+# checked in rather than kept as a secret. Signing happens per request: the
+# payload embeds `iat`, which the supervisor rejects once stale.
+ALLOCATION_SIGNER_KEY="0x4c0883a69102937d6231471b5dbb6204fe512961708279aeb8f1a4b0b8b0e5c1"
+ALLOCATION_BODY="{\"persistent_vms\": [], \"instances\": [\"${ITEM_HASH}\"]}"
+
+# Retry in the shell rather than with curl's --retry: the supervisor rejects a
+# replayed signed payload, so every attempt must carry a freshly signed header.
+allocation_attempt=0
+until [ $allocation_attempt -ge 5 ]; do
+    allocation_auth="$(printf '%s' "${ALLOCATION_BODY}" | \
+        python3 "$(dirname "$0")/../../scripts/sign_allocation_request.py" \
+            --key "${ALLOCATION_SIGNER_KEY}" --path /control/allocations)"
+    if curl --max-time 120 --fail -X POST -H "Content-Type: application/json" \
+        -H "Authorization: ${allocation_auth}" \
+        -d "${ALLOCATION_BODY}" \
+        "http://${DROPLET_IPV4}:4020/control/allocations"; then
+        break
+    fi
+    allocation_attempt=$((allocation_attempt + 1))
+    if [ $allocation_attempt -ge 5 ]; then
+        echo "==> ERROR: /control/allocations failed after ${allocation_attempt} attempts"
+        exit 1
+    fi
+    echo "==> /control/allocations attempt ${allocation_attempt} failed, retrying in 10s"
+    sleep 10
+done
 
 echo "==> Runtime ${ITEM_HASH} OK"

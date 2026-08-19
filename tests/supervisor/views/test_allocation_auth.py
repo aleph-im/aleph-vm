@@ -373,38 +373,24 @@ async def test_dispatcher_routes_to_signature_path(mock_request, authorize_signe
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_invalid_signature_does_not_fall_back(mock_request, mocker):
-    """Garbage Aleph-EIP191-V1 + valid X-Auth-Signature → reject. The signature
-    path is authoritative once chosen."""
+async def test_dispatcher_invalid_signature_rejected(mock_request):
+    """Garbage Aleph-EIP191-V1 → reject."""
     request = mock_request(
-        headers={
-            "Authorization": "Aleph-EIP191-V1 sig=0xdead,payload=0xbeef",
-            "X-Auth-Signature": "test",  # would be valid via the legacy path
-        },
+        headers={"Authorization": "Aleph-EIP191-V1 sig=0xdead,payload=0xbeef"},
         body=b"{}",
     )
-    spy_legacy = mocker.spy(allocation_auth, "_verify_legacy_token")
     assert await allocation_auth.authenticate_api_request(request) is False
-    spy_legacy.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_falls_back_to_legacy_silently(mock_request, caplog, monkeypatch):
-    """No Aleph-EIP191-V1, valid legacy token → accept WITHOUT per-request log.
+async def test_dispatcher_legacy_x_auth_signature_header_rejected(mock_request):
+    """`X-Auth-Signature` alone → reject, whatever its value.
 
-    The deprecation notice is emitted once at boot via
-    `log_allocation_auth_config`; logging on every request would flood logs.
+    The shared-bearer-token scheme it belonged to was removed; a request
+    carrying only that header must not authenticate under any configuration.
     """
-    monkeypatch.setattr(
-        settings,
-        "ALLOCATION_TOKEN_HASH",
-        sha256(b"test").hexdigest(),
-    )
     request = mock_request(headers={"X-Auth-Signature": "test"}, body=b"{}")
-
-    with caplog.at_level("WARNING"):
-        assert await allocation_auth.authenticate_api_request(request) is True
-    assert not any("legacy" in r.message.lower() for r in caplog.records)
+    assert await allocation_auth.authenticate_api_request(request) is False
 
 
 @pytest.mark.asyncio
@@ -414,62 +400,17 @@ async def test_dispatcher_no_auth_headers(mock_request):
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_empty_legacy_token_returns_false(mock_request, monkeypatch):
-    """X-Auth-Signature: '' (header present but empty) → False, not a raise.
-
-    Otherwise the response message would differ from other rejections,
-    leaking dispatch-path info.
-    """
-    monkeypatch.setattr(
-        settings,
-        "ALLOCATION_TOKEN_HASH",
-        sha256(b"test").hexdigest(),
-    )
-    request = mock_request(headers={"X-Auth-Signature": ""}, body=b"{}")
+async def test_dispatcher_unknown_scheme_rejected(mock_request):
+    """Authorization with an unknown scheme → reject."""
+    request = mock_request(headers={"Authorization": "Bearer abc"}, body=b"{}")
     assert await allocation_auth.authenticate_api_request(request) is False
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_unknown_scheme_does_not_fall_back(mock_request, mocker, monkeypatch):
-    """Authorization with an unknown scheme + valid legacy → reject. The
-    Authorization header's mere presence is authoritative."""
-    monkeypatch.setattr(
-        settings,
-        "ALLOCATION_TOKEN_HASH",
-        sha256(b"test").hexdigest(),
-    )
-    request = mock_request(
-        headers={
-            "Authorization": "Bearer abc",
-            "X-Auth-Signature": "test",  # would be valid via legacy
-        },
-        body=b"{}",
-    )
-    spy_legacy = mocker.spy(allocation_auth, "_verify_legacy_token")
+async def test_dispatcher_eip191_scheme_without_params_rejected(mock_request):
+    """Authorization: 'Aleph-EIP191-V1' (no trailing space, no params) → reject."""
+    request = mock_request(headers={"Authorization": "Aleph-EIP191-V1"}, body=b"{}")
     assert await allocation_auth.authenticate_api_request(request) is False
-    spy_legacy.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_dispatcher_eip191_scheme_without_params_does_not_fall_back(mock_request, mocker, monkeypatch):
-    """Authorization: 'Aleph-EIP191-V1' (no trailing space, no params)
-    + valid legacy → reject. Misconfigured client must not be rescued
-    by legacy fallback."""
-    monkeypatch.setattr(
-        settings,
-        "ALLOCATION_TOKEN_HASH",
-        sha256(b"test").hexdigest(),
-    )
-    request = mock_request(
-        headers={
-            "Authorization": "Aleph-EIP191-V1",  # missing the params
-            "X-Auth-Signature": "test",
-        },
-        body=b"{}",
-    )
-    spy_legacy = mocker.spy(allocation_auth, "_verify_legacy_token")
-    assert await allocation_auth.authenticate_api_request(request) is False
-    spy_legacy.assert_not_called()
 
 
 # --- C1: concurrent iat check+update must not race ---
@@ -648,48 +589,19 @@ async def test_verify_failure_logs_at_warning(mock_request, caplog):
 
 
 def test_log_allocation_auth_config_signature_path_only(caplog, monkeypatch):
-    """Signers configured, legacy hash cleared → INFO summary, no warning."""
+    """Signers configured → INFO summary, no warning."""
     monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", ["0xdAC17F958D2ee523a2206206994597C13D831ec7"])
-    monkeypatch.setattr(settings, "ALLOCATION_TOKEN_HASH", "")
 
     with caplog.at_level("INFO", logger="aleph.vm.agent.views.allocation_auth"):
         log_allocation_auth_config()
     assert any("Aleph-EIP191-V1 enabled" in r.message for r in caplog.records)
-    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
-    assert not any("legacy" in r.message.lower() for r in warnings)
-
-
-def test_log_allocation_auth_config_both_enabled_warns(caplog, monkeypatch):
-    """Signers + legacy hash → both messages, including a warning to remove legacy."""
-    monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", ["0xdAC17F958D2ee523a2206206994597C13D831ec7"])
-    monkeypatch.setattr(settings, "ALLOCATION_TOKEN_HASH", sha256(b"test").hexdigest())
-
-    with caplog.at_level("INFO", logger="aleph.vm.agent.views.allocation_auth"):
-        log_allocation_auth_config()
-    warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
-    assert any("legacy X-Auth-Signature path is still enabled" in m for m in warnings)
-
-
-def test_log_allocation_auth_config_legacy_still_enabled_warns(caplog, monkeypatch):
-    """No local override + legacy hash → warning to remove the legacy path.
-
-    The signature path is not "disabled" here: with no local override signers
-    are sourced from the settings aggregate, so the only thing worth warning
-    about is the still-enabled legacy token."""
-    monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [])
-    monkeypatch.setattr(settings, "ALLOCATION_TOKEN_HASH", sha256(b"test").hexdigest())
-
-    with caplog.at_level("INFO", logger="aleph.vm.agent.views.allocation_auth"):
-        log_allocation_auth_config()
-    assert any("legacy X-Auth-Signature path is still enabled" in r.message for r in caplog.records)
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
 
 
 def test_log_allocation_auth_config_aggregate_sourced_when_local_empty(caplog, monkeypatch):
-    """No local override and no legacy hash → signers come from the settings
-    aggregate (the default for a stock CRN); this is not a misconfiguration, so
-    no warning is emitted."""
+    """No local override → signers come from the settings aggregate (the default
+    for a stock CRN); this is not a misconfiguration, so no warning is emitted."""
     monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [])
-    monkeypatch.setattr(settings, "ALLOCATION_TOKEN_HASH", "")
 
     with caplog.at_level("INFO", logger="aleph.vm.agent.views.allocation_auth"):
         log_allocation_auth_config()

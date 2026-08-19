@@ -365,11 +365,6 @@ class Settings(BaseSettings):
         description="TTL in seconds for cached message statuses",
     )
 
-    ALLOCATION_TOKEN_HASH: str = "151ba92f2eb90bce67e912af2f7a5c17d8654b3d29895b042107ea312a7eebda"
-    """DEPRECATED: SHA-256 of the shared bearer token used by the legacy
-    `X-Auth-Signature` allocation auth path. Slated for removal once all
-    schedulers migrate to AUTHORIZED_ALLOCATION_SIGNERS / Aleph-EIP191-V1."""
-
     AUTHORIZED_ALLOCATION_SIGNERS: list[str] = []
     """Local override of the ETH addresses authorized to sign requests to
     scheduler-only endpoints (Aleph-EIP191-V1 scheme).

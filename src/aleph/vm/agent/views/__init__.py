@@ -543,11 +543,9 @@ async def update_allocations(request: web.Request):
     """Main entry for the start of persistence VM and instance, called by the Scheduler,
     POST /control/allocations
 
-    Auth via either:
-    - `Authorization: Aleph-EIP191-V1 sig=...,payload=...` (recommended)
-    - `X-Auth-Signature` matching `settings.ALLOCATION_TOKEN_HASH` (DEPRECATED)
+    Auth via `Authorization: Aleph-EIP191-V1 sig=...,payload=...`.
 
-    See :mod:`aleph.vm.agent.views.allocation_auth` for the dispatcher.
+    See :mod:`aleph.vm.agent.views.allocation_auth` for the verifier.
     Receive a list of vm and instance that should be present and then match
     that state by stopping and launching VMs.
     """

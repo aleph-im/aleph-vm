@@ -212,7 +212,10 @@ jobs:
 
           ## Build configuration file and copy it on Droplet
           echo ALEPH_VM_SUPERVISOR_HOST=0.0.0.0 >> supervisor.env
-          echo ALEPH_VM_ALLOCATION_TOKEN_HASH=9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 >> supervisor.env
+          # Authorize the throwaway CI signer for the scheduler-only endpoints.
+          # Its private key is in .github/scripts/test_runtime_on_droplet.sh; it
+          # guards a short-lived test droplet and is deliberately not a secret.
+          echo 'ALEPH_VM_AUTHORIZED_ALLOCATION_SIGNERS=["0x16Ed780b77450eb216F768E5676e874389f0511f"]' >> supervisor.env
           echo ALEPH_VM_SENTRY_DSN=${{ secrets.SENTRY_DSN }} >> supervisor.env
           # Pin public resolvers for guest VMs: DNS auto-detection on the droplet
           # picks up DigitalOcean's VPC-internal resolver (e.g. 10.110.15.254),
@@ -263,6 +266,9 @@ jobs:
           # the agent, so capture its status and journal too.
           ssh root@${DROPLET_IPV4} "systemctl status aleph-vm-agent --no-pager" || true
           ssh root@${DROPLET_IPV4} "journalctl -u aleph-vm-agent -n 200 --no-pager" || true
+
+      - name: Install eth-account, used to sign requests to /control/allocations
+        run: python3 -m pip install --upgrade --ignore-installed eth-account
 
       - name: "Test runtime: Debian 12, SDK 0.9.0"
         run: ./.github/scripts/test_runtime_on_droplet.sh "${DROPLET_IPV4}" "63faf8b5db1cf8d965e6a464a0cb8062af8e7df131729e48738342d956f29ace"
