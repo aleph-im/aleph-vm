@@ -11,7 +11,11 @@ import pytest
 from pydantic import ValidationError
 
 from aleph.vm.vprogram.bundle import COMPOSE_WORKLOAD
-from aleph.vm.vprogram.manifest import CONTRACT_PATTERN, InstanceRuntimeManifest, RuntimeManifest
+from aleph.vm.vprogram.manifest import (
+    CONTRACT_PATTERN,
+    InstanceRuntimeManifest,
+    RuntimeManifest,
+)
 
 # The reference manifest from the design doc, with the real mainnet bundle values.
 REFERENCE_MANIFEST: dict[str, Any] = {
