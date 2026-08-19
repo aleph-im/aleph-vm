@@ -1,42 +1,9 @@
-from datetime import datetime, timezone
-from decimal import ROUND_FLOOR, Decimal
 from logging import getLogger
 
 from aleph.vm.agent.aggregate import get_aggregate_settings
 from aleph.vm.conf import settings
 
 logger = getLogger(__name__)
-
-PRICE_PRECISION = 18
-
-
-async def get_community_wallet_address() -> str | None:
-    setting_aggr = await get_aggregate_settings()
-    return setting_aggr and setting_aggr.get("community_wallet_address")
-
-
-async def get_community_wallet_start() -> datetime:
-    """Community wallet start time.
-
-    After this timestamp. New PAYG must include a payment to the community wallet"""
-    setting_aggr = await get_aggregate_settings()
-    if setting_aggr is None or "community_wallet_timestamp" not in setting_aggr:
-        return datetime.now(tz=timezone.utc)
-    timestamp = setting_aggr["community_wallet_timestamp"]
-    start_datetime = datetime.fromtimestamp(timestamp, tz=timezone.utc)
-    return start_datetime
-
-
-async def is_after_community_wallet_start(dt: datetime | None = None) -> bool:
-    """Community wallet start time"""
-    if not dt:
-        dt = datetime.now(tz=timezone.utc)
-    start_dt = await get_community_wallet_start()
-    return dt > start_dt
-
-
-def format_cost(v: Decimal | str, p: int = PRICE_PRECISION) -> Decimal:
-    return Decimal(v).quantize(Decimal(1) / Decimal(10**p), ROUND_FLOOR)
 
 
 async def get_authorized_allocation_signers() -> set[str]:
