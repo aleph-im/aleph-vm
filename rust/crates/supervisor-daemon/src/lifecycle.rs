@@ -2811,14 +2811,21 @@ fn create_vm_inner(
 
         let interface_name = assignment.as_ref().map(|_| format!("vmtap{vm_index}"));
         let mut written = build_written_config(state, &request, vm_index, interface_name)?;
-        // Persist the assigned guest /124 under the static policy so a daemon
-        // restart adopts the address rather than re-deriving the Aleph scheme.
-        // The dynamic policy is left unpersisted (adoption recomputes it from a
-        // supervisor-side ordinal), keeping its config bytes as before.
-        if matches!(
-            state.host.settings.ipv6_allocation_policy,
-            crate::config::Ipv6AllocationPolicy::Static
-        ) {
+        // Persist the assigned guest /124 whenever adoption can reproduce it
+        // deterministically: the agent supplied it (honored verbatim) or the
+        // daemon computes the static scheme itself. Persisting on the honored
+        // address, not the daemon's own policy, closes a silent shift: an agent
+        // whose policy is static while the daemon's is dynamic would otherwise
+        // serve the static address, skip the persist, and skip the ordinal, so a
+        // restart would recompute a different one. A dynamic address with no
+        // agent-supplied value stays unpersisted, so adoption recomputes it from
+        // the supervisor-side ordinal, keeping its config bytes as before.
+        let reproducible_on_adoption = requested_ipv6.is_some()
+            || matches!(
+                state.host.settings.ipv6_allocation_policy,
+                crate::config::Ipv6AllocationPolicy::Static
+            );
+        if reproducible_on_adoption {
             written.vm_configuration.guest_ipv6_cidr = assignment
                 .as_ref()
                 .map(|(_, ipv6)| ipv6.network_cidr.clone());
@@ -3824,6 +3831,13 @@ mod tests {
     }
 
     fn harness_with_ruleset(ruleset: Vec<Value>) -> Harness {
+        harness_with_ruleset_and_policy(ruleset, crate::config::Ipv6AllocationPolicy::Static)
+    }
+
+    fn harness_with_ruleset_and_policy(
+        ruleset: Vec<Value>,
+        ipv6_allocation_policy: crate::config::Ipv6AllocationPolicy,
+    ) -> Harness {
         let tmp = tempfile::tempdir().unwrap();
         let mut settings = Settings::from_vars(
             [(
@@ -3834,6 +3848,7 @@ mod tests {
         )
         .unwrap();
         settings.allow_vm_networking = true;
+        settings.ipv6_allocation_policy = ipv6_allocation_policy;
         crate::server::prepare_directories(&settings).unwrap();
         ports::ensure_schema(&settings.supervisor_database).unwrap();
 
@@ -6994,6 +7009,52 @@ mod tests {
             value["vm_configuration"]["guest_ipv6_cidr"],
             serde_json::json!(ipv6.network_cidr),
             "the daemon-computed guest IPv6 must be persisted: {json}"
+        );
+    }
+
+    #[test]
+    fn create_persists_an_agent_ipv6_even_under_a_dynamic_daemon_policy() {
+        // Silent-shift guard: if the agent computes a static address while the
+        // daemon's own policy is dynamic (the process-coupling this refactor
+        // removes), the daemon serves the agent address and does not advance
+        // the dynamic ordinal, so it MUST persist the address. Otherwise a
+        // restart would adopt via the dynamic recompute and serve a different
+        // one. Persist it, and adoption must read it back verbatim.
+        let harness = harness_with_ruleset_and_policy(
+            bare_host_ruleset(),
+            crate::config::Ipv6AllocationPolicy::Dynamic,
+        );
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+        let requested = "fc00:1:2:3:3:dead:beef:0aa0/124";
+        let mut request = spec(&vm_id, &root);
+        request.network.as_mut().unwrap().requested_ipv6 = requested.to_string();
+        request.network.as_mut().unwrap().ipv6_prefix_len = 124;
+
+        let (entry, _) = create_vm(state, request).unwrap();
+        let expected = world::ipv6_from_cidr(requested).unwrap();
+        assert_eq!(
+            entry.ipv6,
+            Some(expected.clone()),
+            "the daemon must honor the agent IPv6 regardless of its own policy"
+        );
+
+        let json = written_config_json(state, &vm_id);
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            value["vm_configuration"]["guest_ipv6_cidr"],
+            serde_json::json!(expected.network_cidr),
+            "an agent-supplied IPv6 must be persisted even under a dynamic policy: {json}"
+        );
+
+        // A restart adopts the persisted address, not a recomputed dynamic one.
+        let units = crate::units::StaticUnitStates::with_active_vms(&[vm_id.as_str()]);
+        let world = world::build_world_view(&state.host.settings, &units, &[]);
+        assert_eq!(
+            world.entries[vm_id.as_str()].ipv6,
+            Some(expected),
+            "adoption must read back the persisted agent IPv6, with no shift"
         );
     }
 
