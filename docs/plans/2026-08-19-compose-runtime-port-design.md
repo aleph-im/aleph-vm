@@ -88,7 +88,7 @@ outright regardless of the value assigned to them.
 
 Exactly one port is ever reachable from outside the VM: `tcp/8443`, served
 by `aleph-attest-agent`, which reverse-proxies to `127.0.0.1:8080`
-(`nix/init-compose.sh` line 351, matching the base flavor's agent
+(`nix/init-compose.sh` line 200, matching the base flavor's agent
 invocation byte-for-byte per the file's header comment). The guest firewall
 (`setup_firewall` in `nix/init-compose.sh`, shared verbatim with
 `nix/init.sh`) is a stateless nftables `input` chain with `policy drop`:
@@ -122,46 +122,50 @@ zero, powers the VM off rather than leaving the attest-agent proxying to a
 dead upstream.
 
 **Layer 2, the outer initramfs init** (`nix/init-compose.sh`) has 14
-`poweroff -f` sites. Nine are byte-identical to `nix/init.sh` (the
-`aleph.exec/1` / no-workload flavor's outer init), inherited from the
-shared measured-boot prologue: no block device found for the platform
-rootfs (line 136, `init.sh` line 116); the nftables firewall failing to
-install inside `setup_firewall` (line 248, `init.sh` line 228); the
-platform dm-verity hash-tree device (`/dev/vdb`) not appearing (line 270,
-`init.sh` line 250); the platform verity mount failing (line 279, `init.sh`
-line 259); `veritysetup open` failing on the platform rootfs (line 283,
-`init.sh` line 263); and, once a workload volume is actually being
-attached, the same four-way pattern repeated for it: the workload data
-device (`/dev/vdc`) not appearing (line 301, `init.sh` line 284), the
-workload hash-tree device (`/dev/vdd`) not appearing (line 305, `init.sh`
-line 288), the workload verity mount failing (line 315, `init.sh` line
-298), and `veritysetup open` failing on the workload volume (line 319,
-`init.sh` line 302).
+`poweroff -f` sites. Like `nix/init.sh` (the `aleph.exec/1` / no-workload
+flavor's outer init) and `nix/init-instance.sh`, it sources
+`/bin/init-common.sh` for the mounts/networking prologue and the
+`wait_for_rootfs_blkdev`/`wait_for_dev`/`prepare_chroot` helpers;
+`init-common.sh` itself contains NO `poweroff` (its helpers only report,
+the sourcing init decides fatality), so every fatal site lives in this
+file. Nine are byte-identical to `nix/init.sh`: no block device found for
+the platform rootfs (line 52, `init.sh` line 31); the nftables firewall
+failing to install inside `setup_firewall` (line 94, `init.sh` line 73);
+the platform dm-verity hash-tree device (`/dev/vdb`) not appearing (line
+116, `init.sh` line 95); the platform verity mount failing (line 125,
+`init.sh` line 104); `veritysetup open` failing on the platform rootfs
+(line 129, `init.sh` line 108); and, once a workload volume is actually
+being attached, the same four-way pattern repeated for it: the workload
+data device (`/dev/vdc`) not appearing (line 147, `init.sh` line 129), the
+workload hash-tree device (`/dev/vdd`) not appearing (line 151, `init.sh`
+line 133), the workload verity mount failing (line 161, `init.sh` line
+143), and `veritysetup open` failing on the workload volume (line 165,
+`init.sh` line 147).
 
 The remaining five are compose-specific, the same five the file's own
 header comment calls out as "compose delta 1" through "5":
 
-1. **No `roothash`** (line 290): where `init.sh`'s else-branch instead logs
+1. **No `roothash`** (line 136): where `init.sh`'s else-branch instead logs
    a WARNING and falls back to an unverified plain mount (`init.sh` lines
-   265-273), the compose flavor treats a missing platform roothash as fatal
+   110-117), the compose flavor treats a missing platform roothash as fatal
    outright, because a compose runtime is always measured.
-2. **No `workload_roothash`** (line 325): where `init.sh` simply skips the
+2. **No `workload_roothash`** (line 171): where `init.sh` simply skips the
    whole workload block and continues platform-only when no workload is
-   attached (`init.sh` line 281's `if` has no `else`), the compose flavor
+   attached (`init.sh` line 126's `if` has no `else`), the compose flavor
    has no workload-less mode, so an absent workload volume is fatal.
-3. **Workload bind-mount failure** (line 335): `mount --bind /mnt/workload
+3. **Workload bind-mount failure** (line 183): `mount --bind /mnt/workload
    /mnt/root/mnt/workload` has no equivalent in `init.sh` at all, since the
    exec flavor never bind-mounts the workload into the platform chroot (see
    the topology inversion below); a failure here is unique to the compose
    flavor's data-volume-as-bind-mount design.
-4. **Missing or non-executable `/mnt/root/sbin/init`** (line 346): where
+4. **Missing or non-executable `/mnt/root/sbin/init`** (line 195): where
    `init.sh`'s equivalent platform-rootfs check is a non-fatal WARNING when
-   no workload is present (`init.sh` lines 335-340, `elif`/`else`), the
+   no workload is present (`init.sh` lines 180-185, `elif`/`else`), the
    compose flavor always needs the platform `/sbin/init` (it is always the
    chroot entrypoint) and fails closed rather than warning and continuing
    into a mounted-but-inert rootfs.
-5. **Guest exit** (line 361): where `init.sh` ends in a bare `wait` with no
-   poweroff (`init.sh` line 346), the compose flavor waits specifically on
+5. **Guest exit** (line 210): where `init.sh` ends in a bare `wait` with no
+   poweroff (`init.sh` line 191), the compose flavor waits specifically on
    the chrooted platform init's PID and powers off as soon as it exits, so
    a fatal compose-init failure (layer 1, above) and a normal or abnormal
    compose-stack exit both terminate the VM through the same
@@ -182,7 +186,7 @@ podman/podman-compose runner in `nix/compose-rootfs.nix`) is **always** the
 chroot entrypoint; the workload volume is data, never entered directly. The
 outer init prepares `/mnt/root` as usual, then bind-mounts the
 already-verity-verified `/mnt/workload` at `/mnt/root/mnt/workload`
-(`nix/init-compose.sh` lines 328-335, "compose delta 3" in that file's
+(`nix/init-compose.sh` lines 174-185, "compose delta 3" in that file's
 header) so the platform init can read the compose file and image archives
 from inside its own chroot. Concretely: `aleph.exec/1` needs no
 `/sbin/init` at all inside the platform rootfs of an exec-flavor image (it
@@ -237,7 +241,7 @@ into the bundle (`composeRootfs`/`composeInitrd` vs `rootfs`/`initrd` in
 (`COMPOSE_WORKLOAD` vs `EXEC_WORKLOAD`, `src/aleph/vm/vprogram/bundle.py`).
 Both draw the cmdline template from the exact same `measurementFor`
 function parameterized over `initrdDrv`/`verityDrv` (`nix/flake.nix` lines
-253-291), so the compose flavor's launch measurement is computed by the
+262-301), so the compose flavor's launch measurement is computed by the
 same code path as the exec flavor's, just pointed at different Nix outputs.
 
 ## Image trust: why `insecureAcceptAnything` is sound here
@@ -262,7 +266,7 @@ properties that are both part of the sealed contract, not incidental:
 2. **Archives ride the measured verity volume.** Every byte a `podman load`
    reads comes from `/mnt/workload`, a dm-verity volume whose root hash is
    validated against `workload_roothash` on the measured kernel cmdline
-   before it is ever mounted (`nix/init-compose.sh` lines 298-326). An
+   before it is ever mounted (`nix/init-compose.sh` lines 143-172). An
    attacker who could substitute a malicious image archive would first have
    to defeat dm-verity, at which point `policy.json`'s signature check
    would have been redundant anyway: the archive's own integrity is already
@@ -314,19 +318,11 @@ attested endpoint.
 ## Publish flow
 
 Publishing a compose runtime bundle follows the same two-step
-`scripts/vprogram_bundle.py` flow as the base flavor, with one manual
-detour: `cmd_build`'s automatic path is hardcoded to
-`nix build ...#image` (`scripts/vprogram_bundle.py`, `BUILD_COMMAND`), so a
-compose bundle's image must be built explicitly first and handed in via
-`--image-dir`.
-
-```bash
-# 1. Build the compose-flavor measured image explicitly (the script's
-#    automatic build path only knows about #image).
-nix build "git+file://$PWD?dir=nix#composeImage" \
-    --extra-experimental-features "nix-command flakes" \
-    -o .local/compose-publish/image-result
-```
+`scripts/vprogram_bundle.py` flow as the base flavor, selecting the
+compose flavor with `--flavor compose` on both subcommands: `build` then
+targets `nix#composeImage` (and records exactly that in the
+`source.build` provenance), and `manifest` selects the `aleph.compose/1`
+workload contract with the `workload_roothash` cmdline template.
 
 `composeImage`'s own `measurement.hex` member is the platform-only cmdline
 measurement (`composeMeasurement`, no `workload_roothash`), the same
@@ -341,38 +337,36 @@ root hash (`nix/flake.nix`), or equivalently from the aleph-rs CLI at
 hash is known.
 
 ```bash
-# 2. Package it into a bundle tarball + bundle-info.json.
+# 1. Build the compose-flavor measured image (nix#composeImage) and package
+#    it into a bundle tarball + bundle-info.json.
 python scripts/vprogram_bundle.py build \
-    --image-dir "$(readlink -f .local/compose-publish/image-result)" \
+    --flavor compose \
     --out .local/compose-publish
 
-# 3. Upload the bundle tarball; note the printed STORE item hash.
+# 2. Upload the bundle tarball; note the printed STORE item hash.
 aleph file upload .local/compose-publish/snp-image.tar.gz
 
-# 4. Build the manifest with the compose workload contract, using the item
-#    hash from step 3 as --bundle-ref.
+# 3. Build the manifest with the compose workload contract, using the item
+#    hash from step 2 as --bundle-ref.
 python scripts/vprogram_bundle.py manifest \
     --bundle-info .local/compose-publish/bundle-info.json \
     --bundle-ref <BUNDLE_ITEM_HASH> \
     --name aleph-compose-runtime \
     --runtime-version <VERSION> \
-    --compose
+    --flavor compose
 
-# 5. Upload the manifest; its STORE item hash is what V-PROGRAM messages
+# 4. Upload the manifest; its STORE item hash is what V-PROGRAM messages
 #    pin as runtime.ref.
 aleph file upload .local/compose-publish/manifest.json
 ```
 
-One operational nuance for whoever runs this: `cmd_build` always records
-`source.build` as the literal constant `nix build
-"git+file://$REPO?dir=nix#image"` regardless of which image directory was
-actually packaged (`scripts/vprogram_bundle.py`, `BUILD_COMMAND`); it is not
-parameterized by flavor. A published compose manifest's `source.build`
-field will therefore read `#image` even though the bundle was built from
-`#composeImage`. `source.repo` and `source.rev` are correct either way (the
-script always resolves them from the actual git checkout). This is a
-cosmetic gap in the tooling, not a trust problem: `source` is informational
-only, never a validated or measured field.
+`--flavor compose` on `build` changes only which nix target is built and
+recorded as `source.build` provenance (`nix build
+"git+file://$REPO?dir=nix#composeImage"`): the bundle byte layout is
+identical to the base vprogram flavor, since `composeImage` mirrors
+`image`'s output directory member for member. An auditor rebuilding from
+`source.build` therefore gets the same bundle bytes back, flavor
+included.
 
 After publishing, refresh the aleph-rs fixture
 (`fixtures/vprogram/compose-runtime-manifest.json`, aleph-rs PR #344) with
