@@ -1465,10 +1465,12 @@ async def test_v2_executions_list_omits_ghost_mapped_ports(aiohttp_client, mocke
 
 
 @pytest.mark.asyncio
-async def test_update_allocations_spares_payg_via_registry(aiohttp_client):
-    """A stream-paid registry record must be spared by the stop loop even when absent
-    from the allocation (the restored-PAYG case).
-    Status is read from supervisor.list_vms(); payment tier from the registry."""
+async def test_update_allocations_stops_payg_via_registry(aiohttp_client, mocker):
+    """A stream-paid registry record absent from the allocation must be stopped.
+
+    Payment tier is knowable only through the registry here: spec-built and
+    restart-restored VMs carry no hypervisor-side message, so the stop loop
+    reads status from supervisor.list_vms() and the tier from the record."""
     from aleph.vm.supervisor_interface.types import (
         Backend,
         ConfidentialMode,
@@ -1521,6 +1523,7 @@ async def test_update_allocations_spares_payg_via_registry(aiohttp_client):
 
     fake_supervisor = MagicMock(delete_vm=AsyncMock(), list_vms=AsyncMock(return_value=[vm_info]))
     app["supervisor"] = fake_supervisor
+    mocker.patch("aleph.vm.agent.views.delete_records_for_vm", new_callable=AsyncMock)
 
     settings.ALLOCATION_TOKEN_HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # = "test"
     client = await aiohttp_client(app)
@@ -1532,9 +1535,9 @@ async def test_update_allocations_spares_payg_via_registry(aiohttp_client):
     )
     assert response.status == 200
     resp_json = await response.json()
-    assert vm_hash not in resp_json["stopped"]
-    fake_supervisor.delete_vm.assert_not_awaited()
-    assert ItemHash(vm_hash) in app["vm_registry"]
+    assert vm_hash in resp_json["stopped"]
+    fake_supervisor.delete_vm.assert_awaited_once_with(VmId(vm_hash))
+    assert ItemHash(vm_hash) not in app["vm_registry"]
 
 
 @pytest.mark.asyncio
@@ -1718,11 +1721,6 @@ async def test_stop_loop_stops_eligible_vm(aiohttp_client, mocker):
             {},
         ),
         (
-            "stream-paid VM is not stopped",
-            {},
-            {"stream": True},
-        ),
-        (
             "VM with no registry record is not stopped",
             {},
             {"no_record": True},
@@ -1736,8 +1734,12 @@ async def test_stop_loop_stops_eligible_vm(aiohttp_client, mocker):
 )
 @pytest.mark.asyncio
 async def test_stop_loop_spares_ineligible_vms(aiohttp_client, description, vm_info_kwargs, registry_kwargs):
-    """Behavior 2: GPU-bearing, confidential, stream/credit-paid, or unrecorded VMs
+    """Behavior 2: GPU-bearing, confidential, credit-paid, or unrecorded VMs
     must NOT be stopped by the stop-loop.
+
+    Stream-paid VMs are deliberately absent from this list: PAYG is
+    scheduler-owned, so absence from the allocation stops it. See
+    test_stop_loop_stops_payg_regardless_of_gpu_or_confidential.
     """
     from aleph.vm.supervisor_interface.types import (
         ConfidentialMode,
@@ -1785,6 +1787,92 @@ async def test_stop_loop_spares_ineligible_vms(aiohttp_client, description, vm_i
 
     assert str(VM_HASH) not in resp_json["stopped"], description
     fake_supervisor.delete_vm.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "description,vm_info_kwargs",
+    [
+        ("plain PAYG instance", {}),
+        ("PAYG instance with a GPU", {"gpus": [None]}),  # placeholder — real object built in test body
+        ("confidential PAYG instance", {"confidential_mode": None}),  # placeholder — real enum built in test body
+    ],
+)
+@pytest.mark.asyncio
+async def test_stop_loop_stops_payg_regardless_of_gpu_or_confidential(
+    aiohttp_client, description, vm_info_kwargs, mocker
+):
+    """PAYG is scheduler-owned: absence from the allocation stops it.
+
+    The scheduler's PaymentGate validates the stream and drops unpaid PAYG VMs
+    from the plan, so the CRN has to honour that absence for the decision to
+    have any effect.
+
+    GPU-bearing and confidential PAYG instances are covered too. The generic
+    stop-loop conditions exclude those independently of payment tier, and most
+    of the live PAYG fleet carries a GPU, so leaving them out would put the
+    majority of PAYG beyond scheduler control.
+    """
+    from aleph.vm.supervisor_interface.types import (
+        ConfidentialMode,
+        GpuDevice,
+        PciAddress,
+    )
+
+    resolved_kwargs = dict(vm_info_kwargs)
+    if resolved_kwargs.get("gpus") == [None]:
+        resolved_kwargs["gpus"] = [
+            GpuDevice(pci_host=PciAddress("01:00.0"), device_id="10de:27b0", model="RTX 4000", supports_x_vga=True)
+        ]
+    if "confidential_mode" in resolved_kwargs and resolved_kwargs["confidential_mode"] is None:
+        resolved_kwargs["confidential_mode"] = ConfidentialMode.SEV
+
+    info = _running_vm_info(**resolved_kwargs)
+    message = InstanceContent.model_validate(_STREAM_INSTANCE_CONTENT)
+
+    fake_supervisor = MagicMock(delete_vm=AsyncMock(), list_vms=AsyncMock(return_value=[info]))
+    app = _make_app_with_supervisor(fake_supervisor)
+    app["vm_registry"].record(VM_HASH, message=message, original=message, persistent=True)
+    mocker.patch("aleph.vm.agent.views.delete_records_for_vm", new_callable=AsyncMock)
+
+    client = await aiohttp_client(app)
+    response = await client.post(
+        "/control/allocations",
+        json={"persistent_vms": []},
+        headers={"X-Auth-Signature": "test"},
+    )
+    assert response.status == 200, description
+    resp_json = await response.json()
+
+    assert str(VM_HASH) in resp_json["stopped"], description
+    fake_supervisor.delete_vm.assert_awaited_once_with(VmId(str(VM_HASH)))
+
+
+@pytest.mark.asyncio
+async def test_update_allocations_starts_payg_instance(aiohttp_client, mocker):
+    """A PAYG instance listed in the allocation is started like any other.
+
+    The scheduler dispatches validated PAYG through /control/allocations, so the
+    start path must not gate on payment tier — the payment checks live in
+    notify_allocation, not here. Pins that the allocating half works.
+    """
+    message = InstanceContent.model_validate(_STREAM_INSTANCE_CONTENT)
+
+    fake_supervisor = MagicMock(delete_vm=AsyncMock(), list_vms=AsyncMock(return_value=[]))
+    app = _make_app_with_supervisor(fake_supervisor)
+    app["vm_registry"].record(VM_HASH, message=message, original=message, persistent=True)
+    mock_start = mocker.patch("aleph.vm.agent.views.start_persistent_vm", new_callable=AsyncMock)
+
+    client = await aiohttp_client(app)
+    response = await client.post(
+        "/control/allocations",
+        json={"instances": [str(VM_HASH)]},
+        headers={"X-Auth-Signature": "test"},
+    )
+    assert response.status == 200
+    resp_json = await response.json()
+
+    assert str(VM_HASH) in resp_json["successful"]
+    assert mock_start.await_args.args[0] == VM_HASH
 
 
 @pytest.mark.asyncio

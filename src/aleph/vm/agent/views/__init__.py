@@ -593,9 +593,17 @@ async def update_allocations(request: web.Request):
                     # v-programs: absence from the allocation stops them,
                     # even though they are credit-paid and confidential.
                     record.is_vprogram
+                    # ...and for PAYG. The scheduler's payment gate validates the
+                    # Superfluid stream and drops unpaid instances from the plan;
+                    # honouring that absence here is what makes the decision
+                    # effective. GPU-bearing and confidential PAYG instances are
+                    # included deliberately: those exclusions below exist for
+                    # hold-tier VMs the scheduler does not place, and most of the
+                    # live PAYG fleet carries a GPU, so applying them to PAYG
+                    # would leave the bulk of it outside scheduler control.
+                    or record.uses_payment_stream
                     or (
-                        not record.uses_payment_stream
-                        and not record.uses_payment_credit
+                        not record.uses_payment_credit
                         and not info.gpus
                         and info.confidential_mode is ConfidentialMode.NONE
                     )
