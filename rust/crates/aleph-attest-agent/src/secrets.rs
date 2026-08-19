@@ -202,35 +202,7 @@ impl SecretStore {
             // Wrap value in Zeroizing so it's wiped from memory when dropped.
             let secret_value = Zeroizing::new(value.as_bytes().to_vec());
 
-            let path = dir.join(key);
-            // Never follow a symlink at the final path component: O_NOFOLLOW
-            // stops a /tmp squatter from redirecting the write regardless of
-            // write mode. On top of that:
-            //   - CreateNew sets O_CREAT|O_EXCL, so a pre-existing file (e.g.
-            //     a planted symlink or a world-readable decoy) is refused
-            //     rather than opened, and cannot defeat the 0600 mode;
-            //   - Overwrite truncates an existing regular file in place (an
-            //     authenticated reinject may legitimately replace a
-            //     previously injected key), still refusing a symlink.
-            let mut options = std::fs::OpenOptions::new();
-            options
-                .write(true)
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW);
-            match mode {
-                WriteMode::CreateNew => {
-                    options.create_new(true);
-                }
-                WriteMode::Overwrite => {
-                    options.create(true).truncate(true);
-                }
-            }
-            let result = options.open(&path).and_then(|mut f| {
-                use std::io::Write;
-                f.write_all(&secret_value)
-            });
-
-            if let Err(e) = result {
+            if let Err(e) = write_secret_atomic(dir, key, &secret_value, mode) {
                 tracing::error!("failed to write secret {key}: {e}");
                 // Partial write: some secrets may already be on disk.
                 // Still mark as injected to prevent retry with inconsistent state.
@@ -246,6 +218,77 @@ impl SecretStore {
 
         InjectOutcome::Ok(injected)
     }
+}
+
+/// Write one secret's content to `dir/<key>` atomically: the content is first
+/// written to a same-directory temp file (`dir/.<key>.tmp`, O_NOFOLLOW +
+/// 0600, same hardening as the final file always had), then moved into place
+/// with `rename()`. `rename()` within the same filesystem/directory is an
+/// atomic directory-entry swap, so a concurrent reader polling the final path
+/// (e.g. the confidential-instance init script waiting on
+/// `/tmp/secrets/luks_passphrase`) can only ever observe "file absent" or
+/// "file present with its full, final content" — never a create-then-truncate
+/// window with a partially written value. That in turn matters for
+/// `WriteMode::Overwrite` (authenticated re-injection): a create+truncate
+/// followed by `write_all` used to leave a poller a window where a stat-then-
+/// open would see 0 (or partial) bytes and fail a passphrase unlock even
+/// though the agent itself reports success once `write_all` finishes.
+///
+/// Applies to both `WriteMode`s, so every consumer (the one-shot v-program
+/// path and the owner-authenticated confidential-instance path) gets the
+/// same atomicity guarantee.
+fn write_secret_atomic(
+    dir: &Path,
+    key: &str,
+    secret_value: &[u8],
+    mode: WriteMode,
+) -> std::io::Result<()> {
+    let final_path = dir.join(key);
+
+    // CreateNew preserves the former O_CREAT|O_EXCL semantics: refuse a
+    // pre-existing entry at the final path (regular file, planted symlink,
+    // or otherwise) rather than silently replacing it via rename. This keeps
+    // `test_symlink_at_key_path_is_refused_not_followed` refused-not-followed
+    // (symlink_metadata does not dereference the final component, so a
+    // planted symlink is detected here without ever being followed).
+    if matches!(mode, WriteMode::CreateNew) && std::fs::symlink_metadata(&final_path).is_ok() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "target already exists",
+        ));
+    }
+
+    let tmp_path = dir.join(format!(".{key}.tmp"));
+    // Clear a stale temp file left over from a previous crash before the
+    // fresh O_CREAT|O_EXCL create below. The secrets directory is agent-
+    // owned and 0700 (ensure_secret_dir) and the injection Mutex serializes
+    // every write, so nothing else can race us on this path.
+    let _ = std::fs::remove_file(&tmp_path);
+
+    let write_result = (|| -> std::io::Result<()> {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&tmp_path)?;
+        use std::io::Write;
+        f.write_all(secret_value)?;
+        f.sync_all()
+    })();
+
+    if let Err(e) = write_result {
+        // Never leave a half-written temp file behind on failure.
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+
+    if let Err(e) = std::fs::rename(&tmp_path, &final_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+
+    Ok(())
 }
 
 /// How `write_secrets` should open each per-key file.
@@ -620,6 +663,110 @@ mod tests {
             1,
             "the loser must get a conflict"
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A concurrent reader polling the final path must never observe a
+    /// partial write: with the create-then-truncate-then-write_all sequence
+    /// this test would have replaced, a poller landing between the create
+    /// and the completed `write_all` could read 0 or partial bytes under the
+    /// final name. The atomic write-temp-then-rename in `write_secret_atomic`
+    /// makes that window unobservable: the final name only ever shows up
+    /// fully written. This mirrors the real regression (Finding 1): the
+    /// confidential-instance init script polls `[ -s
+    /// /tmp/secrets/luks_passphrase ]` while the agent writes it.
+    #[test]
+    fn test_inject_write_is_never_observed_partial() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let dir = tmpdir();
+        let store = Arc::new(SecretStore::new(&dir));
+        let key = "luks_passphrase";
+        // Maximum allowed value size, to maximize the on-disk write duration
+        // and give a non-atomic implementation the best chance of being
+        // caught mid-write by the poller below.
+        let value = "x".repeat(MAX_VALUE_SIZE);
+        let expected_len = value.len();
+
+        let done = Arc::new(AtomicBool::new(false));
+        let poll_path = dir.join(key);
+        let poll_done = Arc::clone(&done);
+        let poller = std::thread::spawn(move || {
+            let mut observed = 0usize;
+            while !poll_done.load(Ordering::SeqCst) {
+                if let Ok(content) = std::fs::read(&poll_path) {
+                    observed += 1;
+                    assert_eq!(
+                        content.len(),
+                        expected_len,
+                        "the final-name file must never be observed with partial content"
+                    );
+                }
+            }
+            observed
+        });
+
+        let secrets = secrets_of(&[(key, value.as_str())]);
+        assert!(is_ok(&store.inject_authenticated(&secrets)));
+        done.store(true, Ordering::SeqCst);
+        // Not asserting `observed > 0`: a poller racing a single fast write
+        // may never catch the file at all. The guarantee under test is
+        // conditional (asserted inside the loop above): IF the poller ever
+        // observed the file, its content was always complete.
+        let _ = poller.join().unwrap();
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The temp file used for the atomic write must not linger when the
+    /// final `rename()` fails: plant a non-empty directory at the target
+    /// name (rename of a regular-file source onto an existing directory
+    /// fails, exercising the error-cleanup branch in `write_secret_atomic`).
+    #[test]
+    fn test_inject_authenticated_cleans_up_temp_file_on_rename_failure() {
+        let dir = tmpdir();
+        let store = SecretStore::new(&dir);
+
+        // An unrelated first inject creates the secrets directory.
+        assert!(is_ok(
+            &store.inject_authenticated(&secrets_of(&[("seed", "v")]))
+        ));
+
+        let target = dir.join("luks_passphrase");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("occupant"), b"x").unwrap();
+
+        let out = store.inject_authenticated(&secrets_of(&[("luks_passphrase", "hunter2")]));
+        assert!(
+            matches!(out, InjectOutcome::Internal(_)),
+            "rename onto an existing directory must fail cleanly"
+        );
+        assert!(
+            !dir.join(".luks_passphrase.tmp").exists(),
+            "temp file must be cleaned up after a failed rename"
+        );
+        assert!(target.is_dir(), "the planted directory is untouched");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// No temp file should be created at all when `CreateNew` refuses a
+    /// pre-existing (symlinked) target: the existence check runs before the
+    /// temp file is opened.
+    #[test]
+    fn test_inject_leaves_no_temp_file_when_createnew_refused() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tmpdir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let decoy = tmpdir();
+        symlink(&decoy, dir.join("api_key")).unwrap();
+
+        let out = store_inject(&dir, &[("api_key", "s3cr3t")]);
+        assert!(matches!(out, InjectOutcome::Internal(_)));
+        assert!(!dir.join(".api_key.tmp").exists());
 
         std::fs::remove_dir_all(&dir).ok();
     }
