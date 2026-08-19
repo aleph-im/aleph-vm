@@ -102,6 +102,49 @@ def test_manifest_exec_runtime(image_dir: Path, tmp_path: Path) -> None:
     assert "{workload_roothash}" in manifest.boot.cmdline_template
 
 
+def test_manifest_compose_runtime(image_dir: Path, tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    assert _run("build", "--image-dir", str(image_dir), "--out", str(out)).returncode == 0
+    result = _run(
+        "manifest",
+        "--bundle-info",
+        str(out / "bundle-info.json"),
+        "--bundle-ref",
+        BUNDLE_REF,
+        "--name",
+        "aleph-snp-attest",
+        "--runtime-version",
+        "2026.08.19",
+        "--flavor",
+        "compose",
+    )
+    assert result.returncode == 0, result.stderr
+    manifest = RuntimeManifest.model_validate_json((out / "manifest.json").read_text())
+    assert manifest.workload.contract == "aleph.compose/1"
+    assert "{workload_roothash}" in manifest.boot.cmdline_template
+
+
+def test_manifest_exec_and_compose_are_mutually_exclusive(image_dir: Path, tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    assert _run("build", "--image-dir", str(image_dir), "--out", str(out)).returncode == 0
+    result = _run(
+        "manifest",
+        "--bundle-info",
+        str(out / "bundle-info.json"),
+        "--bundle-ref",
+        BUNDLE_REF,
+        "--name",
+        "aleph-snp-attest",
+        "--runtime-version",
+        "2026.08.19",
+        "--exec",
+        "--flavor",
+        "compose",
+    )
+    assert result.returncode != 0
+    assert "--exec is incompatible with --flavor compose" in result.stderr
+
+
 def test_manifest_rejects_tampered_bundle(image_dir: Path, tmp_path: Path) -> None:
     out = tmp_path / "out"
     assert _run("build", "--image-dir", str(image_dir), "--out", str(out)).returncode == 0

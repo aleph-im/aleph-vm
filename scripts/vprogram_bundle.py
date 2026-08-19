@@ -9,7 +9,7 @@ item hash, which only exists after uploading):
      -> DIR/snp-image.tar.gz + DIR/bundle-info.json; upload the tarball with
         the printed `aleph file upload` command and note the item hash.
   2. python scripts/vprogram_bundle.py manifest --bundle-info DIR/bundle-info.json \
-         --bundle-ref ITEM_HASH --name NAME --runtime-version VERSION [--exec]
+         --bundle-ref ITEM_HASH --name NAME --runtime-version VERSION [--flavor FLAVOR] [--exec]
      -> DIR/manifest.json; upload it. Its STORE item hash is what V-PROGRAM
         messages pin as runtime.ref.
 
@@ -131,6 +131,7 @@ def cmd_manifest(args: argparse.Namespace) -> int:
             name=args.name,
             runtime_version=args.runtime_version,
             exec_runtime=args.exec_runtime,
+            compose_runtime=args.flavor == "compose",
         )
     out: Path = args.out if args.out is not None else args.bundle_info.parent / MANIFEST_NAME
     out.write_text(manifest.to_canonical_json())
@@ -170,26 +171,37 @@ def main(argv: list[str] | None = None) -> int:
     p_manifest.add_argument("--out", type=Path, default=None, help="manifest path (default: next to bundle-info)")
     p_manifest.add_argument(
         "--flavor",
-        choices=("vprogram", "instance"),
+        choices=("vprogram", "instance", "compose"),
         default="vprogram",
-        help="manifest flavor: vprogram (default, aleph-vprogram-runtime) or "
-        "instance (aleph-instance-runtime, luks cmdline template)",
+        help="manifest flavor: vprogram (default, aleph-vprogram-runtime), "
+        "instance (aleph-instance-runtime, luks cmdline template), or "
+        "compose (aleph-vprogram-runtime with the aleph.compose/1 workload contract "
+        "and the workload_roothash cmdline template)",
     )
     p_manifest.add_argument(
         "--exec",
         dest="exec_runtime",
         action="store_true",
         help="build the aleph.exec/1 workload-runtime manifest (workload_roothash in the "
-        "cmdline template) instead of the builtin no-workload form; ignored with --flavor instance",
+        "cmdline template) instead of the builtin no-workload form; "
+        "incompatible with --flavor instance/compose",
+    )
+    p_manifest_contract.add_argument(
+        "--compose",
+        dest="compose_runtime",
+        action="store_true",
+        help="build the aleph.compose/1 workload-runtime manifest (workload_roothash in the "
+        "cmdline template, same as --exec) instead of the builtin no-workload form",
     )
     p_manifest.set_defaults(func=cmd_manifest)
 
     args = parser.parse_args(argv)
     # --exec builds the aleph.exec/1 workload-runtime manifest, which has no
-    # meaning for an instance (LUKS) manifest; reject the combination rather
-    # than silently ignoring the flag.
-    if getattr(args, "exec_runtime", False) and args.flavor == "instance":
-        parser.error("--exec is incompatible with --flavor instance")
+    # meaning for an instance (LUKS) manifest and contradicts the compose
+    # flavor's own contract; reject the combinations rather than silently
+    # ignoring the flag.
+    if getattr(args, "exec_runtime", False) and args.flavor != "vprogram":
+        parser.error(f"--exec is incompatible with --flavor {args.flavor}")
     return int(args.func(args))
 
 
