@@ -40,9 +40,10 @@ from aleph.vm.agent.snp_instance_launch import (
     remove_snp_instance_staging,
     snp_instance_staging_dir,
 )
+from aleph.vm.agent.translate import build_create_vm_spec
 from aleph.vm.agent.vm.downloader import QemuDownloader
 from aleph.vm.conf import settings
-from aleph.vm.supervisor_interface.errors import VmSetupError
+from aleph.vm.supervisor_interface.errors import InvalidBackendError, VmSetupError
 from aleph.vm.supervisor_interface.types import DiskFormat, TeeBackend
 from aleph.vm.vprogram.manifest import InstanceRuntimeManifest
 
@@ -319,6 +320,36 @@ async def test_warns_and_ignores_authorized_keys(caplog, staged_instance_bundle)
 
     assert spec.ssh_authorized_keys == []
     assert any("authorized_keys" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_warns_and_ignores_variables(caplog, staged_instance_bundle):
+    """The other side of the `authorized_keys or variables` warning: variables
+    are unmeasured host inputs too, so they are ignored with a warning."""
+    content = snp_instance_content(variables={"SECRET": "value"})
+    with caplog.at_level("WARNING"):
+        await build_snp_instance_spec(VM_HASH, content)
+
+    assert any("authorized_keys" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_build_create_vm_spec_rejects_snp_instance(monkeypatch):
+    """translate.build_create_vm_spec is the legacy SEV/plain path; an SNP
+    instance that reaches it (a routing regression) must fail loud with
+    InvalidBackendError rather than silently build a firmware-less SEV spec."""
+
+    class _NoopDownloader:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def download_all(self):
+            return None
+
+    monkeypatch.setattr("aleph.vm.agent.translate.QemuDownloader", _NoopDownloader)
+    content = snp_instance_content()
+    with pytest.raises(InvalidBackendError, match="build_snp_instance_spec"):
+        await build_create_vm_spec(VM_HASH, content)
 
 
 def test_is_snp_instance_true_for_sev_snp_mode():

@@ -287,3 +287,36 @@ async def test_snp_instance_failure_cleans_staging(monkeypatch):
 
     remove_staging.assert_called_once_with(VM_HASH)
     assert registry.get(VM_HASH) is None
+
+
+@pytest.mark.asyncio
+async def test_snp_instance_port_forward_failure_cleans_staging(monkeypatch):
+    """The second teardown path: create_vm succeeds but a later port-forward
+    fails. The half-started VM must be deleted and its staging removed, mirroring
+    the create-failure branch (run.py's finish_instance_create/port-forward
+    except block)."""
+    content = snp_instance_content()
+    message = MagicMock(content=content)
+    monkeypatch.setattr(
+        run_module, "load_updated_message", AsyncMock(return_value=(message, MagicMock(content=content)))
+    )
+    spec = _snp_spec()
+    monkeypatch.setattr(run_module, "build_snp_instance_spec", AsyncMock(return_value=(spec, _ATTEST_PORT)))
+    # finish_instance_create succeeds; the attestation-port forward that follows
+    # raises, so the failure lands in the second except block.
+    monkeypatch.setattr(run_module, "finish_instance_create", AsyncMock())
+    remove_staging = MagicMock()
+    monkeypatch.setattr(run_module, "remove_snp_instance_staging", remove_staging)
+
+    supervisor = _fake_supervisor()  # create_vm returns RUNNING, not awaiting init
+    supervisor.add_port_forward = AsyncMock(side_effect=RuntimeError("nftables rule failed"))
+    registry = AgentVmRegistry()
+
+    with pytest.raises(RuntimeError, match="nftables rule failed"):
+        await run_module.create_vm_execution(
+            VM_HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
+        )
+
+    remove_staging.assert_called_once_with(VM_HASH)
+    supervisor.delete_vm.assert_awaited_once()
+    assert registry.get(VM_HASH) is None

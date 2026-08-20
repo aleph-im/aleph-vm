@@ -11,6 +11,10 @@
 # passphrase; it is injected post-attestation via aleph-attest-cli
 # inject-secret --owner-key.
 set -euo pipefail
+if [ "$#" -lt 2 ]; then
+    echo "Usage: $0 <plain-rootfs.ext4> <output.img> [size-mib]" >&2
+    exit 1
+fi
 PLAIN="$1"; OUT="$2"; SIZE_MIB="${3:-$(( ($(stat -c%s "$PLAIN") / 1048576) + 64 ))}"
 PASS="${LUKS_PASSPHRASE:-}"
 if [ -z "$PASS" ]; then read -r -s -p "LUKS passphrase: " PASS; echo; fi

@@ -14,7 +14,7 @@ from typing import IO, cast
 
 import pytest
 
-from aleph.vm.agent.snp_staging import fetch_and_stage_bundle, staging_dir
+from aleph.vm.agent.snp_staging import fetch_and_stage_bundle, member_path, staging_dir
 from aleph.vm.conf import settings
 from aleph.vm.supervisor_interface.errors import VmSetupError
 
@@ -95,3 +95,37 @@ async def test_fetch_and_stage_bundle_sha256_mismatch_fails_closed(tmp_path, sto
             size=len(raw),
         )
     assert not dest.exists()
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_stage_bundle_size_mismatch_fails_closed(tmp_path, storage_files):
+    """A tarball whose size does not match the pinned size fails the integrity
+    gate before the (more expensive) sha256 read, and extracts nothing."""
+    tar_path = make_bundle(tmp_path)
+    raw = tar_path.read_bytes()
+    storage_files[BUNDLE_REF] = tar_path
+
+    dest = staging_dir("snp-instance", VM_HASH)
+
+    with pytest.raises(VmSetupError, match="size mismatch"):
+        await fetch_and_stage_bundle(
+            VM_HASH,
+            kind="snp-instance",
+            ref=BUNDLE_REF,
+            sha256=hashlib.sha256(raw).hexdigest(),
+            size=len(raw) + 1,
+        )
+    assert not dest.exists()
+
+
+def test_member_path_rejects_an_escaping_member(tmp_path):
+    """member_path is the last line of defense if a member name that escapes
+    the staging directory ever slips past the manifest model: an upward-
+    traversing relative resolves outside bundle_dir and fails closed."""
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    # A sibling file the traversal would otherwise reach.
+    (tmp_path / "secret").write_bytes(b"outside the bundle")
+
+    with pytest.raises(VmSetupError, match="escapes the staging directory"):
+        member_path(bundle_dir, "../secret", "kernel")
