@@ -26,6 +26,8 @@ from pydantic import ValidationError
 
 from aleph.vm.agent import snp_staging
 from aleph.vm.agent.guest_ipv6 import compute_requested_ipv6
+from aleph.vm.agent.vcpu_probe import get_supported_snp_vcpu_types
+from aleph.vm.agent.vcpu_select import requested_vcpu_types, select_snp_vcpu_type
 from aleph.vm.agent.vm.downloader import QemuDownloader
 from aleph.vm.conf import settings
 from aleph.vm.storage import get_existing_file
@@ -177,6 +179,15 @@ async def build_snp_instance_spec(vm_hash: ItemHash, content: InstanceContent) -
     # hash, so the agent computes it upfront (empty under the dynamic policy).
     requested_ipv6, ipv6_prefix_len = compute_requested_ipv6(vm_hash, VmType.instance)
 
+    # Same rule as a V-PROGRAM: the launched CPU model must be one the
+    # instance's launch measurements were computed for. trusted_execution
+    # .measurements is Optional on the model but required non-empty in
+    # sev_snp mode, so None fails closed here.
+    cpu_model = select_snp_vcpu_type(
+        requested_vcpu_types(trusted_execution.measurements),
+        await get_supported_snp_vcpu_types(),
+    )
+
     spec = CreateVmSpec(
         vm_id=VmId(str(vm_hash)),
         backend=Backend.QEMU,
@@ -193,6 +204,7 @@ async def build_snp_instance_spec(vm_hash: ItemHash, content: InstanceContent) -
             session_dir=DirectoryPath(Path(session_base) / str(vm_hash)),
             firmware_path=ovmf_path,
             kernel_cmdline=kernel_cmdline,
+            cpu_model=cpu_model,
         ),
         network=NetworkConfig(
             internet_access=bool(content.environment.internet),
