@@ -219,6 +219,17 @@ pub struct QemuVmConfig {
     // dynamic policy); adoption then falls back to the recompute.
     #[serde(default)]
     pub guest_ipv6_cidr: Option<String>,
+
+    // The opaque-cmdline SEV-SNP arm (confidential instances), Rust-only. Set
+    // together and only when the agent rendered the measured cmdline itself:
+    // that VM boots a WRITABLE rootfs (no dm-verity), so the controller needs
+    // the image's format and read-only flag instead of deriving them. Absent
+    // (and so omitted by the writer) on every other config, whose bytes stay
+    // unchanged.
+    #[serde(default)]
+    pub image_format: Option<String>,
+    #[serde(default)]
+    pub image_readonly: Option<bool>,
 }
 
 impl QemuVmConfig {
@@ -251,6 +262,8 @@ impl QemuVmConfig {
             numa_node: None,
             hugepage_size: None,
             guest_ipv6_cidr: None,
+            image_format: None,
+            image_readonly: None,
         }
     }
 
@@ -496,6 +509,15 @@ pub struct WrittenQemuVmConfiguration {
     // writer and to legacy configs) under the dynamic policy or with no tap.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub guest_ipv6_cidr: Option<String>,
+    // Opaque-cmdline SEV-SNP slice (confidential instances), Rust-only. Written
+    // only for an SNP VM whose measured cmdline came from the agent: that VM's
+    // rootfs is writable and not a raw verity image, so the controller needs its
+    // format and read-only flag. Both None (and so omitted) everywhere else,
+    // keeping plain / SEV / verity-SNP configs byte-identical.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_readonly: Option<bool>,
 }
 
 /// The top-level `Configuration` as written (QEMU instances only in this
@@ -881,6 +903,12 @@ mod tests {
                 numa_node: None,
                 hugepage_size: None,
                 guest_ipv6_cidr: None,
+                // The opaque-SNP keys are absent here on purpose: this fixture
+                // pins the PYDANTIC bytes, and the writer must keep emitting
+                // exactly them for every config that does not set the Rust-only
+                // keys.
+                image_format: None,
+                image_readonly: None,
             },
             hypervisor: "qemu",
         };
@@ -920,6 +948,8 @@ mod tests {
             numa_node: None,
             hugepage_size: None,
             guest_ipv6_cidr: None,
+            image_format: None,
+            image_readonly: None,
         };
 
         // Unset: the key is absent, so legacy configs and the pydantic writer
@@ -1006,6 +1036,8 @@ mod tests {
                 numa_node: None,
                 hugepage_size: None,
                 guest_ipv6_cidr: None,
+                image_format: None,
+                image_readonly: None,
             },
             hypervisor: "qemu",
         };
