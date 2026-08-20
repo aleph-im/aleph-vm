@@ -211,6 +211,14 @@ pub struct QemuVmConfig {
     pub numa_node: Option<u32>,
     #[serde(default)]
     pub hugepage_size: Option<String>,
+
+    // The guest IPv6 /124 CIDR the daemon assigned at create time, Rust-only.
+    // The agent computes the Aleph static address now, so adoption reads this
+    // back rather than re-deriving it from (pool, vm_hash, vm_type). Absent on
+    // configs written before the agent took over allocation (and under the
+    // dynamic policy); adoption then falls back to the recompute.
+    #[serde(default)]
+    pub guest_ipv6_cidr: Option<String>,
 }
 
 impl QemuVmConfig {
@@ -242,6 +250,7 @@ impl QemuVmConfig {
             kernel_cmdline: None,
             numa_node: None,
             hugepage_size: None,
+            guest_ipv6_cidr: None,
         }
     }
 
@@ -481,6 +490,12 @@ pub struct WrittenQemuVmConfiguration {
     pub numa_node: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hugepage_size: Option<String>,
+    // The guest IPv6 /124 CIDR the daemon assigned, Rust-only. Set under the
+    // static policy so a daemon restart adopts the address without re-deriving
+    // it; None (and so omitted, keeping the bytes identical to the pydantic
+    // writer and to legacy configs) under the dynamic policy or with no tap.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guest_ipv6_cidr: Option<String>,
 }
 
 /// The top-level `Configuration` as written (QEMU instances only in this
@@ -865,6 +880,7 @@ mod tests {
                 kernel_cmdline: None,
                 numa_node: None,
                 hugepage_size: None,
+                guest_ipv6_cidr: None,
             },
             hypervisor: "qemu",
         };
@@ -877,6 +893,76 @@ mod tests {
         assert_eq!(parsed.vm_hash, hash);
         assert_eq!(parsed.vm_index, 6);
         assert!(matches!(parsed.vm, VmConfiguration::Qemu(_)));
+    }
+
+    #[test]
+    fn the_persisted_guest_ipv6_round_trips_and_is_omitted_when_unset() {
+        let base = WrittenQemuVmConfiguration {
+            qemu_bin_path: "/usr/bin/qemu-system-x86_64".to_string(),
+            cloud_init_drive_path: None,
+            image_path: "/tmp/rootfs.qcow2".to_string(),
+            monitor_socket_path: "/tmp/m.socket".to_string(),
+            qmp_socket_path: "/tmp/q.socket".to_string(),
+            qga_socket_path: None,
+            vcpu_count: 1,
+            mem_size_mb: 256,
+            interface_name: Some("vmtap7".to_string()),
+            host_volumes: Vec::new(),
+            gpus: Vec::new(),
+            ovmf_path: None,
+            sev_session_file: None,
+            sev_dh_cert_file: None,
+            sev_policy: None,
+            sev_snp: None,
+            kernel_path: None,
+            initrd_path: None,
+            kernel_cmdline: None,
+            numa_node: None,
+            hugepage_size: None,
+            guest_ipv6_cidr: None,
+        };
+
+        // Unset: the key is absent, so legacy configs and the pydantic writer
+        // keep byte-identical output.
+        let unset = WrittenControllerConfig {
+            vm_id: 7,
+            vm_hash: "cd".to_string(),
+            settings: WrittenControllerSettings {
+                jailer_base_dir: None,
+                network_interface: None,
+                ipv4_address_pool: "172.16.0.0/12".to_string(),
+                ipv4_network_prefix_length: 24,
+                ipv6_address_pool: "fc00:1:2:3::/64".to_string(),
+                ipv6_allocation_policy: AllocationPolicyValue::Static,
+                ipv6_subnet_prefix: 124,
+                ipv6_forwarding_enabled: true,
+                use_ndp_proxy: true,
+            },
+            vm_configuration: base.clone(),
+            hypervisor: "qemu",
+        };
+        assert!(!unset.to_json().contains("guest_ipv6_cidr"));
+
+        // Set: the /124 CIDR is serialized and the parser reads it back.
+        let mut set = unset.clone();
+        set.vm_configuration.guest_ipv6_cidr = Some("fc00:1:2:3:3:abcd:ef01:2340/124".to_string());
+        let json = set.to_json();
+        assert!(json.contains("\"guest_ipv6_cidr\": \"fc00:1:2:3:3:abcd:ef01:2340/124\""));
+        let parsed = parse_controller_config(&json).unwrap();
+        let VmConfiguration::Qemu(vm) = parsed.vm else {
+            panic!("expected a QEMU configuration");
+        };
+        assert_eq!(
+            vm.guest_ipv6_cidr.as_deref(),
+            Some("fc00:1:2:3:3:abcd:ef01:2340/124")
+        );
+
+        // A legacy config with no such key parses to None (recompute path).
+        let legacy = parse_controller_config(&unset.to_json()).unwrap();
+        let VmConfiguration::Qemu(vm) = legacy.vm else {
+            panic!("expected a QEMU configuration");
+        };
+        assert_eq!(vm.guest_ipv6_cidr, None);
     }
 
     #[test]
@@ -919,6 +1005,7 @@ mod tests {
                 kernel_cmdline: None,
                 numa_node: None,
                 hugepage_size: None,
+                guest_ipv6_cidr: None,
             },
             hypervisor: "qemu",
         };

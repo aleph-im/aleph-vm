@@ -450,29 +450,40 @@ impl WorldView {
 /// The IPv4/IPv6 pair of a tap, the Python `prepare_tap` derivation.
 /// Advances `ipv6_dynamic_ordinal` under the dynamic policy, like the
 /// Python generator.
+///
+/// `requested_ipv6` is the agent-computed static `/124` CIDR: when non-empty
+/// it is honored verbatim (the agent owns the Aleph static scheme now), and
+/// the daemon does not recompute the address from `(pool, vm_hash, vm_type)`.
+/// The dynamic policy leaves it empty, so the daemon still assigns those from
+/// its supervisor-side ordinal, which the agent cannot know.
 pub fn derive_tap_assignment(
     settings: &Settings,
     vm_index: i64,
     vm_hash: &str,
     vm_type: VmType,
     ipv6_dynamic_ordinal: &mut usize,
+    requested_ipv6: Option<&str>,
 ) -> Result<(IpPair, IpPair), WorldError> {
     let ipv4 = ipv4_assignment(
         &settings.ipv4_address_pool,
         settings.ipv4_network_prefix_length,
         vm_index,
     )?;
-    let ipv6 = match settings.ipv6_allocation_policy {
-        Ipv6AllocationPolicy::Static => {
-            ipv6_static_assignment(&settings.ipv6_address_pool, vm_hash, vm_type)?
-        }
-        Ipv6AllocationPolicy::Dynamic => {
-            *ipv6_dynamic_ordinal += 1;
-            ipv6_dynamic_assignment(
-                &settings.ipv6_address_pool,
-                settings.ipv6_subnet_prefix,
-                *ipv6_dynamic_ordinal,
-            )?
+    let ipv6 = if let Some(cidr) = requested_ipv6.filter(|cidr| !cidr.is_empty()) {
+        ipv6_from_cidr(cidr)?
+    } else {
+        match settings.ipv6_allocation_policy {
+            Ipv6AllocationPolicy::Static => {
+                ipv6_static_assignment(&settings.ipv6_address_pool, vm_hash, vm_type)?
+            }
+            Ipv6AllocationPolicy::Dynamic => {
+                *ipv6_dynamic_ordinal += 1;
+                ipv6_dynamic_assignment(
+                    &settings.ipv6_address_pool,
+                    settings.ipv6_subnet_prefix,
+                    *ipv6_dynamic_ordinal,
+                )?
+            }
         }
     };
     Ok((ipv4, ipv6))
@@ -637,14 +648,26 @@ pub fn build_world_view(
                             continue;
                         }
                     }
-                    let adopted_vm_type = VmType::of_qemu(&qemu);
-                    let ipv6_result = match settings.ipv6_allocation_policy {
-                        Ipv6AllocationPolicy::Static => ipv6_static_assignment(
-                            &settings.ipv6_address_pool,
-                            &vm_hash,
-                            adopted_vm_type,
-                        ),
-                        Ipv6AllocationPolicy::Dynamic => {
+                    // A config written after the agent took over IPv6
+                    // allocation carries the assigned guest /124; adopt it
+                    // verbatim instead of re-deriving the Aleph static scheme.
+                    // A legacy config (no persisted address) falls back to
+                    // today's recompute, keeping already-running VMs unchanged.
+                    let persisted_ipv6 = qemu
+                        .guest_ipv6_cidr
+                        .as_deref()
+                        .filter(|cidr| !cidr.is_empty());
+                    let ipv6_result = match (persisted_ipv6, settings.ipv6_allocation_policy) {
+                        (Some(cidr), _) => ipv6_from_cidr(cidr),
+                        (None, Ipv6AllocationPolicy::Static) => {
+                            let adopted_vm_type = VmType::of_qemu(&qemu);
+                            ipv6_static_assignment(
+                                &settings.ipv6_address_pool,
+                                &vm_hash,
+                                adopted_vm_type,
+                            )
+                        }
+                        (None, Ipv6AllocationPolicy::Dynamic) => {
                             dynamic_ordinal += 1;
                             ipv6_dynamic_assignment(
                                 &settings.ipv6_address_pool,
@@ -968,6 +991,18 @@ fn ipv6_pair(network: Ipv6Addr, prefix: u8) -> IpPair {
     }
 }
 
+/// Build the guest IPv6 pair from a `network/prefix` CIDR the agent computed
+/// (the static `/124` subnet) or that the daemon persisted at create time.
+/// The CIDR's network address becomes the gateway, guest = network + 1, so the
+/// pair is byte-identical to what `ipv6_static_assignment` produces for the
+/// same `(pool, vm_hash, vm_type)`. The agent sends the Python
+/// `str(IPv6Network(...))` form; Rust re-emits `network_cidr` in its own
+/// notation, so the served string never depends on the sender's formatting.
+pub fn ipv6_from_cidr(cidr: &str) -> Result<IpPair, WorldError> {
+    let (network, prefix) = parse_ipv6_cidr(cidr)?;
+    Ok(ipv6_pair(network, prefix))
+}
+
 fn parse_ipv4_cidr(pool: &str) -> Result<(Ipv4Addr, u8), WorldError> {
     let (address, len) = pool
         .split_once('/')
@@ -1207,6 +1242,95 @@ mod tests {
         assert!(
             address.split(':').nth(4) == Some("4"),
             "ipv6 address {address} must carry the 0x4 vm-type hextet"
+        );
+    }
+
+    #[test]
+    fn adoption_prefers_a_persisted_guest_ipv6_over_the_recompute() {
+        // A config written after the agent took over IPv6 allocation carries
+        // the assigned /124. Adoption must read it back verbatim instead of
+        // re-deriving the scheme, so a deliberately off-scheme persisted value
+        // is what the adopted entry serves.
+        let tmp = tempfile::tempdir().unwrap();
+        let hash = "e".repeat(64);
+        let fixture = std::fs::read_to_string(
+            test_fixtures::fixtures_dir()
+                .join(format!("{}-controller.json", test_fixtures::QEMU_HASH)),
+        )
+        .unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&fixture).unwrap();
+        value["vm_id"] = 12.into();
+        value["vm_hash"] = hash.clone().into();
+        let persisted = "fc00:1:2:3:3:dead:beef:0aa0/124";
+        value["vm_configuration"]
+            .as_object_mut()
+            .unwrap()
+            .insert("guest_ipv6_cidr".to_string(), persisted.into());
+        std::fs::write(
+            tmp.path().join(format!("{hash}-controller.json")),
+            value.to_string(),
+        )
+        .unwrap();
+
+        let settings = test_settings(tmp.path());
+        let units = StaticUnitStates::with_active_vms(&[hash.as_str()]);
+        let world = build_world_view(&settings, &units, &[]);
+
+        let entry = &world.entries[hash.as_str()];
+        assert!(entry.adopted_running);
+        assert_eq!(
+            entry.ipv6,
+            Some(ipv6_from_cidr(persisted).unwrap()),
+            "adoption must serve the persisted guest IPv6, not the recompute"
+        );
+        // The recompute would have produced a different address (the scheme
+        // uses the hash), proving the persisted value really took precedence.
+        assert_ne!(
+            entry.ipv6.as_ref().unwrap().address,
+            ipv6_static_assignment(&settings.ipv6_address_pool, &hash, VmType::Instance)
+                .unwrap()
+                .address
+        );
+    }
+
+    #[test]
+    fn adoption_recomputes_the_ipv6_for_a_legacy_config() {
+        // A config written before the agent took over allocation has no
+        // persisted address; adoption must fall back to today's static
+        // recompute so already-running VMs are unaffected.
+        let tmp = tempfile::tempdir().unwrap();
+        let hash = "f".repeat(64);
+        let fixture = std::fs::read_to_string(
+            test_fixtures::fixtures_dir()
+                .join(format!("{}-controller.json", test_fixtures::QEMU_HASH)),
+        )
+        .unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&fixture).unwrap();
+        value["vm_id"] = 13.into();
+        value["vm_hash"] = hash.clone().into();
+        assert!(
+            value["vm_configuration"].get("guest_ipv6_cidr").is_none(),
+            "the legacy fixture must not carry a persisted address"
+        );
+        std::fs::write(
+            tmp.path().join(format!("{hash}-controller.json")),
+            value.to_string(),
+        )
+        .unwrap();
+
+        let settings = test_settings(tmp.path());
+        let units = StaticUnitStates::with_active_vms(&[hash.as_str()]);
+        let world = build_world_view(&settings, &units, &[]);
+
+        let entry = &world.entries[hash.as_str()];
+        assert!(entry.adopted_running);
+        assert_eq!(
+            entry.ipv6,
+            Some(
+                ipv6_static_assignment(&settings.ipv6_address_pool, &hash, VmType::Instance)
+                    .unwrap()
+            ),
+            "a legacy config must adopt via the static recompute"
         );
     }
 
@@ -1478,6 +1602,69 @@ mod tests {
         assert_eq!(pair.network_cidr, "2a01:240:2:c8:4:abcd:ef01:2340/124");
         assert_eq!(pair.address, "2a01:240:2:c8:4:abcd:ef01:2341");
         assert_eq!(pair.gateway, "2a01:240:2:c8:4:abcd:ef01:2340");
+    }
+
+    #[test]
+    fn a_requested_ipv6_round_trips_to_the_static_address() {
+        // The agent computes the Aleph static /124 and sends it as the Python
+        // `str(IPv6Network(...))` CIDR; parsing it back on the daemon must
+        // reproduce the exact pair `ipv6_static_assignment` computes for the
+        // same (pool, vm_hash, vm_type). This pins the cross-language format:
+        // the literal below is what the Python StaticIPv6Allocator emits for
+        // this hash/type, and the Rust static math must agree with it.
+        let pool = "2a01:240:2:c8::/64";
+        let hash = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        let computed = ipv6_static_assignment(pool, hash, VmType::Instance).unwrap();
+
+        // What the agent's `str(allocate_vm_ipv6_subnet(...))` yields.
+        let agent_cidr = "2a01:240:2:c8:3:abcd:ef01:2340/124";
+        assert_eq!(computed.network_cidr, agent_cidr);
+
+        // Honoring the agent string reproduces the daemon's own computation
+        // byte-for-byte (address, gateway, cidr all identical).
+        assert_eq!(ipv6_from_cidr(agent_cidr).unwrap(), computed);
+        // And parsing the daemon's own emitted cidr is idempotent.
+        assert_eq!(ipv6_from_cidr(&computed.network_cidr).unwrap(), computed);
+    }
+
+    #[test]
+    fn derive_tap_assignment_honors_a_requested_ipv6_over_the_static_math() {
+        // With a requested address present, the daemon must use it verbatim
+        // and not re-derive the scheme from the hash. The requested /124 here
+        // is deliberately unrelated to what the hash would compute.
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = test_settings(tmp.path());
+        let requested = "2a01:240:2:c8:3:dead:beef:caf0/124";
+        let mut ordinal = 0;
+        let (_ipv4, ipv6) = derive_tap_assignment(
+            &settings,
+            3,
+            "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+            VmType::Instance,
+            &mut ordinal,
+            Some(requested),
+        )
+        .unwrap();
+        assert_eq!(ipv6, ipv6_from_cidr(requested).unwrap());
+        // An empty requested string falls through to the static computation.
+        let (_ipv4, computed) = derive_tap_assignment(
+            &settings,
+            3,
+            "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+            VmType::Instance,
+            &mut ordinal,
+            Some(""),
+        )
+        .unwrap();
+        assert_eq!(
+            computed,
+            ipv6_static_assignment(
+                &settings.ipv6_address_pool,
+                "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+                VmType::Instance,
+            )
+            .unwrap()
+        );
     }
 
     #[test]

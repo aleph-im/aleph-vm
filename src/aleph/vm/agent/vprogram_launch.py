@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 from aleph_message.models.execution.vprogram import VERITY_ROOTHASH_PATTERN
 from pydantic import ValidationError
 
+from aleph.vm.agent.guest_ipv6 import compute_requested_ipv6
 from aleph.vm.conf import settings
 from aleph.vm.storage import get_existing_file
 from aleph.vm.supervisor_interface.errors import VmSetupError
@@ -50,6 +51,7 @@ from aleph.vm.supervisor_interface.types import (
     VmId,
 )
 from aleph.vm.utils import get_hostname_from_hash
+from aleph.vm.vm_type import VmType
 from aleph.vm.vprogram.manifest import RuntimeManifest
 
 if TYPE_CHECKING:
@@ -253,6 +255,10 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
 
     session_base = settings.CONFIDENTIAL_SESSION_DIRECTORY or (Path(settings.EXECUTION_ROOT) / "sessions")
 
+    # The V-PROGRAM static IPv6 depends only on the type and item hash, so the
+    # agent computes it upfront (empty under the dynamic policy).
+    requested_ipv6, ipv6_prefix_len = compute_requested_ipv6(vm_hash, VmType.from_message_content(content))
+
     return CreateVmSpec(
         vm_id=VmId(str(vm_hash)),
         backend=Backend.QEMU,
@@ -271,8 +277,8 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
         ),
         network=NetworkConfig(
             internet_access=bool(content.environment.internet),
-            requested_ipv6="",
-            ipv6_prefix_len=0,
+            requested_ipv6=requested_ipv6,
+            ipv6_prefix_len=ipv6_prefix_len,
         ),
         gpus=[],
         numa_node=None,
