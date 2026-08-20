@@ -144,6 +144,7 @@ fn snp_tee_fragment_matches_the_aleph_tee_generator() {
                         // controller renders it hex()-style; feed the generator
                         // the identical rendering so the two are comparable.
                         policy: Some(format!("0x{policy:x}")),
+                        cpu_model: None,
                     },
                     encrypted: false,
                     numa_node,

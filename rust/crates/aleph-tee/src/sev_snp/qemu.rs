@@ -8,6 +8,11 @@ const DEFAULT_POLICY: &str = "0x30000";
 /// Default OVMF firmware path (AMD SEV-SNP variant, built by nix/ovmf.nix).
 pub const DEFAULT_OVMF_PATH: &str = "/usr/local/share/ovmf-snp/OVMF.fd";
 
+/// Default SEV-SNP guest CPU model, used when the caller carries none.
+/// Kept in sync with the controller's `snp_tee_fragment` default; the
+/// byte-parity conformance test is the drift guard.
+pub const DEFAULT_CPU_MODEL: &str = "EPYC-v4";
+
 /// Generate QEMU command-line arguments for launching an SEV-SNP confidential VM.
 ///
 /// Produces the following arguments:
@@ -36,6 +41,7 @@ pub fn sev_snp_qemu_args(
     reduced_phys_bits: u32,
 ) -> Vec<String> {
     let policy = canonical_policy(config.tee.policy.as_deref().unwrap_or(DEFAULT_POLICY));
+    let cpu_model = config.tee.cpu_model.as_deref().unwrap_or(DEFAULT_CPU_MODEL);
 
     let hugetlb_opts = match config.hugepage_size {
         Some(crate::types::HugePageSize::Size1G) => ",hugetlb=on,hugetlbsize=1G",
@@ -56,7 +62,7 @@ pub fn sev_snp_qemu_args(
 
     vec![
         "-cpu".to_string(),
-        "EPYC-v4".to_string(),
+        cpu_model.to_string(),
         "-machine".to_string(),
         "q35,confidential-guest-support=sev0,memory-backend=ram1,vmport=off".to_string(),
         "-object".to_string(),
@@ -140,6 +146,7 @@ mod tests {
             tee: TeeConfig {
                 backend: TeeType::SevSnp,
                 policy: policy.map(|s| s.to_string()),
+                cpu_model: None,
             },
             encrypted: false,
             numa_node: None,
@@ -413,5 +420,40 @@ mod tests {
             !mem_arg.contains("hugetlb"),
             "should NOT have hugetlb when hugepage_size is None: {mem_arg}"
         );
+    }
+
+    fn test_vm_config(cpu_model: Option<String>) -> VmConfig {
+        VmConfig {
+            vm_id: "test".to_string(),
+            kernel: None,
+            initrd: None,
+            disks: vec![],
+            vcpus: 2,
+            memory_mb: 2048,
+            tee: TeeConfig {
+                backend: TeeType::SevSnp,
+                policy: None,
+                cpu_model,
+            },
+            encrypted: false,
+            numa_node: None,
+            hugepage_size: None,
+        }
+    }
+
+    #[test]
+    fn cpu_model_defaults_to_epyc_v4_when_unset() {
+        let config = test_vm_config(None);
+        let args = sev_snp_qemu_args(&config, "/OVMF.fd", 51, 1);
+        assert_eq!(args[0], "-cpu");
+        assert_eq!(args[1], DEFAULT_CPU_MODEL);
+    }
+
+    #[test]
+    fn cpu_model_is_emitted_verbatim_when_set() {
+        let config = test_vm_config(Some("EPYC-Genoa-v2".to_string()));
+        let args = sev_snp_qemu_args(&config, "/OVMF.fd", 51, 1);
+        assert_eq!(args[0], "-cpu");
+        assert_eq!(args[1], "EPYC-Genoa-v2");
     }
 }
