@@ -221,6 +221,39 @@ pub struct QemuConfig {
     // ever set alongside `numa_node`.
     #[serde(default)]
     pub hugepage_size: Option<String>,
+
+    // Opaque-cmdline SEV-SNP rootfs override, Rust-only. Written TOGETHER (or
+    // not at all, `extra="ignore"` on the Python side means an old-controller
+    // config simply never carries them) for an SNP VM whose measured cmdline
+    // came from the agent: that VM boots a WRITABLE rootfs (no dm-verity), so
+    // `build_snp_argv` needs the image's format and read-only flag instead of
+    // assuming the default raw/verity shape. See [`Self::rootfs_override`],
+    // which resolves the pair and fails closed on a half-populated one.
+    #[serde(default)]
+    pub image_format: Option<String>,
+    #[serde(default)]
+    pub image_readonly: Option<bool>,
+}
+
+/// The resolved rootfs-disk override [`QemuConfig::rootfs_override`] produces
+/// from the `image_format` / `image_readonly` pair. The daemon writes both
+/// keys together or neither (see the fields' doc comment); a config with only
+/// one is malformed, so this is a three-way tuple match rather than an
+/// independent `Option::map` per field, which could not tell "no override"
+/// (both absent) apart from "half a pair" (exactly one present). Mirrors the
+/// all-or-nothing shape of [`QemuConfig::is_confidential`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RootfsOverride {
+    /// Neither key present: the caller renders the default raw/verity token.
+    Default,
+    /// Both keys present: `(image_format, image_readonly)`.
+    Writable(String, bool),
+    /// Exactly one key present. The writer always sets both together, so
+    /// this can only mean a corrupt or hand-edited config; callers must fail
+    /// closed rather than guess which half is right (see main.rs's
+    /// `select_run_target`, which refuses to dispatch this into
+    /// `build_snp_argv`).
+    Malformed,
 }
 
 impl QemuConfig {
@@ -267,6 +300,20 @@ impl QemuConfig {
     /// never a silent plain or SEV launch.
     pub fn is_snp_marked(&self) -> bool {
         self.sev_snp == Some(true)
+    }
+
+    /// Resolve the `image_format` / `image_readonly` pair into a
+    /// [`RootfsOverride`]. See that type's doc comment for the three-way
+    /// resolution and why a plain `Option<(String, bool)>` cannot represent
+    /// the malformed (half-populated) case distinctly from "no override".
+    pub fn rootfs_override(&self) -> RootfsOverride {
+        match (self.image_format.as_deref(), self.image_readonly) {
+            (None, None) => RootfsOverride::Default,
+            (Some(format), Some(readonly)) => {
+                RootfsOverride::Writable(format.to_string(), readonly)
+            }
+            _ => RootfsOverride::Malformed,
+        }
     }
 }
 
@@ -461,6 +508,58 @@ mod tests {
             assert!(
                 config.is_snp_marked(),
                 "the marker is still set with {missing} missing"
+            );
+        }
+    }
+
+    #[test]
+    fn rootfs_override_defaults_to_none_and_resolves_to_default() {
+        // A config without the override keys (any non-luks SNP/plain config)
+        // parses both as None and the pair resolves to Default, keeping
+        // build_snp_argv's byte-identical token.
+        let base = r#""qemu_bin_path":"q","image_path":"i","monitor_socket_path":"m",
+            "qmp_socket_path":"p","vcpu_count":1,"mem_size_mb":2048,
+            "host_volumes":[],"gpus":[]"#;
+        let config = QemuConfig::from_json(&format!("{{{base}}}")).unwrap();
+        assert_eq!(config.image_format, None);
+        assert_eq!(config.image_readonly, None);
+        assert_eq!(config.rootfs_override(), RootfsOverride::Default);
+    }
+
+    #[test]
+    fn rootfs_override_resolves_writable_when_both_keys_are_present() {
+        // The luks config (the opaque-cmdline SEV-SNP arm): both keys set
+        // together.
+        let base = r#""qemu_bin_path":"q","image_path":"i","monitor_socket_path":"m",
+            "qmp_socket_path":"p","vcpu_count":1,"mem_size_mb":2048,
+            "host_volumes":[],"gpus":[]"#;
+        let json = format!(r#"{{{base},"image_format":"qcow2","image_readonly":false}}"#);
+        let config = QemuConfig::from_json(&json).unwrap();
+        assert_eq!(config.image_format.as_deref(), Some("qcow2"));
+        assert_eq!(config.image_readonly, Some(false));
+        assert_eq!(
+            config.rootfs_override(),
+            RootfsOverride::Writable("qcow2".to_string(), false)
+        );
+    }
+
+    #[test]
+    fn rootfs_override_is_malformed_when_only_one_key_is_present() {
+        // The writer always sets image_format and image_readonly together;
+        // a config with only one is corrupt/hand-edited and must fail
+        // closed, not guess.
+        let base = r#""qemu_bin_path":"q","image_path":"i","monitor_socket_path":"m",
+            "qmp_socket_path":"p","vcpu_count":1,"mem_size_mb":2048,
+            "host_volumes":[],"gpus":[]"#;
+        for json in [
+            format!(r#"{{{base},"image_format":"qcow2"}}"#),
+            format!(r#"{{{base},"image_readonly":false}}"#),
+        ] {
+            let config = QemuConfig::from_json(&json).unwrap();
+            assert_eq!(
+                config.rootfs_override(),
+                RootfsOverride::Malformed,
+                "half-populated config must resolve as Malformed: {json}"
             );
         }
     }
