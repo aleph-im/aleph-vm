@@ -266,6 +266,42 @@ async def test_build_snp_instance_spec_happy_path(staged_instance_bundle):
 
 
 @pytest.mark.asyncio
+async def test_prefers_the_ra_tls_attestation_port(tmp_path, staged_instance_bundle):
+    """manifest.attestation is ordered by preference, but aleph.ra-tls is the
+    descriptor the CRN forwards: a runtime that lists another protocol first
+    must still get its ra-tls port forwarded, not the first descriptor's."""
+    make_manifest(
+        staged_instance_bundle["tar"],
+        tmp_path,
+        attestation=[
+            {"protocol": "vendor.other-attest", "version": "1", "transport": {"type": "tcp", "port": 7000}},
+            {"protocol": "aleph.ra-tls", "version": "1", "transport": {"type": "tcp", "port": 8443}},
+        ],
+    )
+
+    _, attest_port = await build_snp_instance_spec(VM_HASH, snp_instance_content())
+
+    assert attest_port == 8443
+
+
+@pytest.mark.asyncio
+async def test_falls_back_to_the_first_attestation_port_without_ra_tls(tmp_path, staged_instance_bundle):
+    """A runtime that implements no aleph.ra-tls descriptor still gets a port
+    forwarded: the first (most preferred) descriptor wins."""
+    make_manifest(
+        staged_instance_bundle["tar"],
+        tmp_path,
+        attestation=[
+            {"protocol": "vendor.other-attest", "version": "1", "transport": {"type": "tcp", "port": 7000}},
+        ],
+    )
+
+    _, attest_port = await build_snp_instance_spec(VM_HASH, snp_instance_content())
+
+    assert attest_port == 7000
+
+
+@pytest.mark.asyncio
 async def test_rejects_attestation_port_set(staged_instance_bundle):
     content = snp_instance_content(trusted_execution_overrides={"attestation_port": 9000})
     with pytest.raises(VmSetupError, match="attestation_port"):
@@ -330,7 +366,7 @@ async def test_warns_and_ignores_variables(caplog, staged_instance_bundle):
     with caplog.at_level("WARNING"):
         await build_snp_instance_spec(VM_HASH, content)
 
-    assert any("authorized_keys" in record.message for record in caplog.records)
+    assert any("variables" in record.message for record in caplog.records)
 
 
 @pytest.mark.asyncio

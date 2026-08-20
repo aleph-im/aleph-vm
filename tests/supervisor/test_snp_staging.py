@@ -129,3 +129,26 @@ def test_member_path_rejects_an_escaping_member(tmp_path):
 
     with pytest.raises(VmSetupError, match="escapes the staging directory"):
         member_path(bundle_dir, "../secret", "kernel")
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_stage_bundle_corrupt_tarball_fails_closed(tmp_path, storage_files):
+    """A payload that satisfies the pinned size + sha256 but is not a readable
+    gzip stream fails during extraction, and leaves no half-populated staging
+    directory behind for the launch path to read members out of."""
+    corrupt = tmp_path / "bundle.tar.gz"
+    corrupt.write_bytes(b"pinned faithfully, but not a gzip stream")
+    raw = corrupt.read_bytes()
+    storage_files[BUNDLE_REF] = corrupt
+
+    dest = staging_dir("snp-instance", VM_HASH)
+
+    with pytest.raises(VmSetupError, match="cannot extract"):
+        await fetch_and_stage_bundle(
+            VM_HASH,
+            kind="snp-instance",
+            ref=BUNDLE_REF,
+            sha256=hashlib.sha256(raw).hexdigest(),
+            size=len(raw),
+        )
+    assert not dest.exists()
