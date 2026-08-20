@@ -43,7 +43,7 @@ from aleph.vm.agent.snp_instance_launch import (
 from aleph.vm.agent.vm.downloader import QemuDownloader
 from aleph.vm.conf import settings
 from aleph.vm.supervisor_interface.errors import VmSetupError
-from aleph.vm.supervisor_interface.types import DiskFormat, SpecVmType, TeeBackend
+from aleph.vm.supervisor_interface.types import DiskFormat, TeeBackend
 from aleph.vm.vprogram.manifest import InstanceRuntimeManifest
 
 VM_HASH = ItemHash("deadbeef" * 8)
@@ -250,7 +250,6 @@ async def test_build_snp_instance_spec_happy_path(staged_instance_bundle):
     assert spec.tee.backend is TeeBackend.SEV_SNP
     assert spec.tee.kernel_cmdline == f"console=ttyS0 luks=1 owner={OWNER_LOWER}"
     assert spec.tee.policy == str(DEFAULT_SNP_POLICY)
-    assert spec.vm_type is SpecVmType.INSTANCE
     rootfs = spec.rootfs
     assert rootfs is not None
     assert rootfs.format is DiskFormat.QCOW2

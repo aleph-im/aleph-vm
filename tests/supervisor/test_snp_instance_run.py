@@ -33,7 +33,6 @@ from aleph.vm.supervisor_interface.types import (
     DiskSpec,
     IpAssignment,
     NetworkConfig,
-    SpecVmType,
     TeeBackend,
     TeeConfig,
     VmId,
@@ -71,7 +70,6 @@ def _snp_spec() -> CreateVmSpec:
         gpus=[],
         numa_node=None,
         persistent=True,
-        vm_type=SpecVmType.INSTANCE,
     )
 
 
@@ -133,7 +131,6 @@ async def test_snp_instance_create_uses_snp_builder(monkeypatch):
     sent_spec = supervisor.create_vm.await_args.args[0]
     assert sent_spec.tee is not None
     assert sent_spec.tee.kernel_cmdline
-    assert sent_spec.vm_type is SpecVmType.INSTANCE
 
     forwarded_ports = {int(call.args[0].vm_port) for call in supervisor.add_port_forward.await_args_list}
     assert 22 in forwarded_ports

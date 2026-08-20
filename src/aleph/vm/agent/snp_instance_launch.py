@@ -25,6 +25,7 @@ from aleph_message.models.execution.instance import InstanceContent
 from pydantic import ValidationError
 
 from aleph.vm.agent import snp_staging
+from aleph.vm.agent.guest_ipv6 import compute_requested_ipv6
 from aleph.vm.agent.vm.downloader import QemuDownloader
 from aleph.vm.conf import settings
 from aleph.vm.storage import get_existing_file
@@ -37,12 +38,12 @@ from aleph.vm.supervisor_interface.types import (
     DiskRole,
     DiskSpec,
     NetworkConfig,
-    SpecVmType,
     TeeBackend,
     TeeConfig,
     VmId,
 )
 from aleph.vm.utils import check_amd_sev_snp_supported, get_hostname_from_hash
+from aleph.vm.vm_type import VmType
 from aleph.vm.vprogram.manifest import InstanceRuntimeManifest
 
 if TYPE_CHECKING:
@@ -172,6 +173,10 @@ async def build_snp_instance_spec(vm_hash: ItemHash, content: InstanceContent) -
 
     session_base = settings.CONFIDENTIAL_SESSION_DIRECTORY or (Path(settings.EXECUTION_ROOT) / "sessions")
 
+    # A confidential instance's static IPv6 depends only on the type and item
+    # hash, so the agent computes it upfront (empty under the dynamic policy).
+    requested_ipv6, ipv6_prefix_len = compute_requested_ipv6(vm_hash, VmType.instance)
+
     spec = CreateVmSpec(
         vm_id=VmId(str(vm_hash)),
         backend=Backend.QEMU,
@@ -191,8 +196,8 @@ async def build_snp_instance_spec(vm_hash: ItemHash, content: InstanceContent) -
         ),
         network=NetworkConfig(
             internet_access=bool(content.environment.internet),
-            requested_ipv6="",
-            ipv6_prefix_len=0,
+            requested_ipv6=requested_ipv6,
+            ipv6_prefix_len=ipv6_prefix_len,
         ),
         gpus=[],
         numa_node=None,
@@ -203,6 +208,5 @@ async def build_snp_instance_spec(vm_hash: ItemHash, content: InstanceContent) -
         # owner's LUKS-encrypted rootfs.
         ssh_authorized_keys=[],
         hostname=get_hostname_from_hash(vm_hash),
-        vm_type=SpecVmType.INSTANCE,
     )
     return spec, attest_port
