@@ -26,6 +26,7 @@ from aleph_message.models.execution.environment import (
     InstanceEnvironment,
     LaunchMeasurement,
     MachineResources,
+    SevSnpRegisters,
     TeePlatform,
     TrustedExecutionEnvironment,
 )
@@ -175,7 +176,11 @@ def snp_instance_content(
         "mode": "sev_snp",
         "policy": DEFAULT_SNP_POLICY,
         "runtime": ItemHash(MANIFEST_REF),
-        "measurements": [LaunchMeasurement(platform=TeePlatform.sev_snp, digest="a" * 96, vcpu_type="EPYC-v4")],
+        "measurements": [
+            LaunchMeasurement(
+                platform=TeePlatform.sev_snp, registers=SevSnpRegisters(launch="a" * 96), vcpu_type="EPYC-v4"
+            )
+        ],
     }
     trusted_execution_kwargs.update(trusted_execution_overrides or {})
     return InstanceContent(
