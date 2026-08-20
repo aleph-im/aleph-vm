@@ -43,6 +43,22 @@ def test_compute_requested_ipv6_v_program_hextet(monkeypatch):
     assert prefix_len == 124
 
 
+def test_compute_requested_ipv6_microvm_hextet(monkeypatch):
+    # Firecracker programs (persistent or not) carry the 0x1 microvm field: the
+    # daemon and the scheduler have no persistent_program hextet, so the program
+    # path pins microvm and must produce the same 0x1 address the daemon does.
+    monkeypatch.setattr(settings, "IPV6_ALLOCATION_POLICY", IPv6AllocationPolicy.static)
+    monkeypatch.setattr(settings, "IPV6_ADDRESS_POOL", "1111:2222:3333:4444::/64")
+    monkeypatch.setattr(settings, "IPV6_SUBNET_PREFIX", 124)
+
+    vm_hash = ItemHash("8920215b2e961a4d4c59a8ceb2803af53f91530ff53d6704273ab4d380bc6446")
+    cidr, prefix_len = compute_requested_ipv6(vm_hash, VmType.microvm)
+    # Matches StaticIPv6Allocator(VmType.microvm) in test_ipv6_allocator.py
+    # (str() compresses the 0x1 hextet to `1`).
+    assert cidr == "1111:2222:3333:4444:1:8920:215b:2e90/124"
+    assert prefix_len == 124
+
+
 def test_compute_requested_ipv6_matches_the_scheme(monkeypatch):
     # The helper must return the /124 network the static scheme defines: the
     # daemon parses that string back into the guest address, so any divergence

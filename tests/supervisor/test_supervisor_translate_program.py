@@ -53,3 +53,23 @@ async def test_program_spec_threads_persistence(monkeypatch, tmp_path, persisten
     assert spec.backend is Backend.FIRECRACKER
     assert spec.persistent is persistent
     assert spec.guest_channel is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persistent", [True, False])
+async def test_program_spec_pins_the_microvm_ipv6_hextet(monkeypatch, tmp_path, persistent):
+    # Under the static policy, both persistent and non-persistent programs must
+    # compute the 0x1 microvm hextet the daemon and scheduler expect. A
+    # persistent program deriving its type from the message would drift to 0x2.
+    from aleph.vm.conf import IPv6AllocationPolicy, settings
+
+    monkeypatch.setattr(settings, "IPV6_ALLOCATION_POLICY", IPv6AllocationPolicy.static)
+    monkeypatch.setattr(settings, "IPV6_ADDRESS_POOL", "1111:2222:3333:4444::/64")
+    monkeypatch.setattr(settings, "IPV6_SUBNET_PREFIX", 124)
+    resources = _fake_resources(tmp_path)
+    monkeypatch.setattr(translate, "ProgramDownloader", lambda *a, **k: resources)
+
+    spec, _ = await translate.build_program_create_vm_spec(_VM_HASH, _program_message(persistent=persistent))
+
+    assert spec.network.requested_ipv6 == "1111:2222:3333:4444:1:dead:beef:dea0/124"
+    assert spec.network.ipv6_prefix_len == 124

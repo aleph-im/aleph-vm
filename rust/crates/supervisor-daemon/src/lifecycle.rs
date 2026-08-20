@@ -5932,6 +5932,29 @@ mod tests {
     }
 
     #[test]
+    fn ephemeral_program_create_honors_the_agent_supplied_guest_ipv6() {
+        // The program path honors an agent-supplied static /124 verbatim, like
+        // the QEMU create path. The value here is deliberately off-scheme to
+        // prove it took precedence over the daemon's own microvm computation.
+        // Programs never persist config to disk, so there is nothing to adopt.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+        let requested = "fc00:1:2:3:1:dead:beef:0aa0/124";
+        let mut request = fc_spec(&vm_id, &root, true);
+        request.network.as_mut().unwrap().requested_ipv6 = requested.to_string();
+        request.network.as_mut().unwrap().ipv6_prefix_len = 124;
+
+        let (entry, _) = create_vm(state, request).unwrap();
+        assert_eq!(
+            entry.ipv6,
+            Some(world::ipv6_from_cidr(requested).unwrap()),
+            "the daemon must honor the agent-supplied IPv6 on the program path"
+        );
+    }
+
+    #[test]
     fn ephemeral_create_without_internet_gets_no_tap() {
         let harness = harness();
         let state = &harness.state;

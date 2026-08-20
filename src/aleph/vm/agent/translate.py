@@ -197,8 +197,14 @@ async def build_program_create_vm_spec(
     ]
 
     # A program's static IPv6 also depends only on the type and item hash, so
-    # the agent computes it upfront (empty under the dynamic policy).
-    requested_ipv6, ipv6_prefix_len = compute_requested_ipv6(vm_hash, VmType.from_message_content(message))
+    # the agent computes it upfront (empty under the dynamic policy). The
+    # daemon and the scheduler fold every Firecracker program (persistent or
+    # not) into the microvm hextet: their VmType has no persistent_program
+    # variant, and VmType::ipv6_value() maps them to 0x1. Passing the
+    # message-derived type here would emit hextet 0x2 for persistent programs
+    # and disagree with the address the rest of the network expects, so pin
+    # this to microvm.
+    requested_ipv6, ipv6_prefix_len = compute_requested_ipv6(vm_hash, VmType.microvm)
 
     spec = CreateVmSpec(
         vm_id=VmId(str(vm_hash)),
