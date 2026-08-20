@@ -3,7 +3,8 @@
 TRANSIENT: wraps the sev-snp-measure pip package (0.0.12, matching the nix
 pin in nix/flake.nix). The intended home for measurement computation is
 aleph-rs (the Rust CLI); this module is the stopgap so the publisher can pin
-verification.measurements[].digest for a message-delivered workload.
+verification.measurements[].registers['launch'] for a message-delivered
+workload.
 
 The launch digest is a function of OVMF + kernel + initrd + cmdline + vcpu
 count + vcpu type: this wrapper takes exactly those inputs and nothing else,
