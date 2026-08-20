@@ -87,10 +87,13 @@ section 6.
 
 ## 3. Decisions
 
-1. **`LaunchMeasurement` carries a register map, not a scalar digest**, with a
-   **closed** required-key set validated per platform. An unknown register key
-   is as schema-invalid as an unknown platform. Adding a register later is a
-   schema release, which is the correct fail-closed stance.
+1. **`LaunchMeasurement` carries a register object, not a scalar digest**, with
+   a **closed** key set per platform. An unknown register key is as
+   schema-invalid as an unknown platform. Adding a register later is a schema
+   release, which is the correct fail-closed stance. v1 ships this as a
+   concrete SEV-SNP model rather than a generic map, so the closed set is a
+   property of the type rather than of a validator; a second platform turns it
+   into a discriminated union. See section 4.1.
 2. **The `TeeBackend` trait is unchanged.** `get_report` stays synchronous and
    returns a quote; the TDX backend hides the host round trip inside a blocking
    ConfigFS-TSM `outblob` read. No async infection of `SevSnpBackend` or
@@ -126,44 +129,60 @@ section 6.
 
 ### 4.1 `LaunchMeasurement` (aleph-message)
 
-`digest: str` becomes `registers: Dict[str, str]`:
+`digest: str` becomes `registers`, an object rather than a scalar, because a
+TEE's launch identity is not always one value.
+
+**Shipped shape (v1, SEV-SNP only).** Since exactly one platform is defined,
+`registers` is a concrete model rather than a generic map. The closed key set
+then falls out of the model itself: a required field plus `extra="forbid"`,
+with no validator to keep in step.
 
 ```python
-class TeePlatform(str, Enum):
-    sev_snp = "sev_snp"
-    tdx = "tdx"
-
-
-# Required register keys per platform. A message declaring a key outside this
-# set, or omitting one inside it, is schema-invalid: the same fail-closed
-# stance TeePlatform already takes for unknown platforms.
-_REQUIRED_REGISTERS: Dict[TeePlatform, FrozenSet[str]] = {
-    TeePlatform.sev_snp: frozenset({"launch"}),
-    TeePlatform.tdx: frozenset({"mrtd", "rtmr1", "rtmr2", "mrconfigid"}),
-}
-
-# Every pinned register on every platform is 48 bytes.
-_REGISTER_HEX_LENGTH = 96
+class SevSnpRegisters(HashableModel):
+    launch: RegisterValue          # 96 lowercase hex chars, pattern-constrained
+    model_config = ConfigDict(extra="forbid")
 
 
 class LaunchMeasurement(HashableModel):
-    platform: TeePlatform
-    registers: Dict[str, str]
-    vcpu_type: Optional[str] = None   # direct-boot SNP only; None for tdx
+    platform: TeePlatform          # sev_snp only for now
+    registers: SevSnpRegisters
+    vcpu_type: Optional[str] = None
 ```
 
-The `check_digest_length` validator becomes `check_registers`: the key set must
-equal `_REQUIRED_REGISTERS[platform]` exactly, and every value must be
-`_REGISTER_HEX_LENGTH` lowercase hex characters.
+This was deliberately chosen over a `Dict[str, str]` carrying per-platform
+required-key tables. The generic version needed a `_REQUIRED_REGISTERS` map, a
+`MAX_REGISTERS` cap, a register-name pattern and a `check_registers` validator,
+all to support a platform that does not exist yet. The concrete model gets a
+sharper JSON schema too (`required: ["launch"]` plus
+`additionalProperties: false`, rather than `maxProperties` and a
+`patternProperties` bag that cannot say which keys are expected), and located
+errors (`missing`, `extra_forbidden`) instead of hand-assembled messages.
+
+**Adding TDX.** `registers` becomes a union discriminated on `platform`:
+
+```python
+class TdxRegisters(HashableModel):
+    mrtd: RegisterValue
+    rtmr1: RegisterValue
+    rtmr2: RegisterValue
+    mrconfigid: RegisterValue
+    model_config = ConfigDict(extra="forbid")
+
+registers: Annotated[Union[SevSnpRegisters, TdxRegisters], Field(discriminator=...)]
+```
+
+That is a schema release either way, since an unknown `platform` is already
+schema-invalid (decision 1). The wire shape does not change for SEV-SNP.
 
 SEV-SNP migrates from `digest: "<hex>"` to `registers: {"launch": "<hex>"}`.
 Because `od/vprogram-schema` is unmerged and unreleased, there is no wire
 compatibility burden.
 
-`rtmr3` is deliberately absent from the TDX key set. It carries the launch-TCB
-commitment (section 6.5), which the client *derives* rather than compares
-against a declared constant, so it needs no message field. Keeping it out of the
-schema is also what lets enforcement harden later without a protocol change.
+`rtmr3` is deliberately absent from the TDX register set. It carries the
+launch-TCB commitment (section 6.5), which the client *derives* rather than
+compares against a declared constant, so it needs no message field. Keeping it
+out of the schema is also what lets enforcement harden later without a protocol
+change.
 
 ### 4.2 `TrustedExecutionEnvironment` (aleph-message)
 
