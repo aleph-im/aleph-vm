@@ -554,7 +554,7 @@ pub fn vm_spec_message(entry: &VmEntry) -> pb::VmSpec {
                 } else {
                     String::new()
                 },
-                cpu_model: String::new(),
+                cpu_model: snp.cpu_model.clone().unwrap_or_default(),
             })
         });
     // Echo back the assigned static /124 the agent supplied (persisted as

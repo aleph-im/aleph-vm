@@ -278,6 +278,9 @@ async def test_build_snp_instance_spec_happy_path(staged_instance_bundle):
     assert spec.initrd_path.name == "initrd"
     assert spec.tee.firmware_path is not None
     assert spec.tee.firmware_path.name == "OVMF.fd"
+    # The default content measurement and the probe fixture's default both
+    # name EPYC-v4: the default-model path stays covered here.
+    assert spec.tee.cpu_model == "EPYC-v4"
     assert spec.ssh_authorized_keys == []
     assert spec.persistent is True
     assert spec.hostname
@@ -322,10 +325,15 @@ async def test_falls_back_to_the_first_attestation_port_without_ra_tls(tmp_path,
 
 @pytest.mark.asyncio
 async def test_snp_instance_spec_selects_the_measured_cpu_model(staged_instance_bundle, snp_vcpu_types):
-    snp_vcpu_types(["EPYC", "EPYC-v4"])
-    spec, _attest_port = await build_snp_instance_spec(VM_HASH, snp_instance_content())
+    # A non-default model: a hardcoded "EPYC-v4" fallback would fail this,
+    # unlike an assertion against the default that a bug could satisfy by
+    # accident.
+    snp_vcpu_types(["EPYC", "EPYC-v4", "EPYC-Genoa-v2"])
+    measurements = [LaunchMeasurement(platform=TeePlatform.sev_snp, digest="a" * 96, vcpu_type="EPYC-Genoa-v2")]
+    content = snp_instance_content(trusted_execution_overrides={"measurements": measurements})
+    spec, _attest_port = await build_snp_instance_spec(VM_HASH, content)
     assert spec.tee is not None
-    assert spec.tee.cpu_model == "EPYC-v4"
+    assert spec.tee.cpu_model == "EPYC-Genoa-v2"
 
 
 @pytest.mark.asyncio

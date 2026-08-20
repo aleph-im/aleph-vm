@@ -286,6 +286,9 @@ async def test_build_vprogram_spec(staged_bundle, snp_vcpu_types):
     assert spec.tee.backend is TeeBackend.SEV_SNP
     assert spec.tee.policy == str(content.verification.policy) == "196608"
     assert spec.tee.firmware_path == staging / "image/OVMF.fd"
+    # The fixture measurement's vcpu_type and the probe fixture's default
+    # both name EPYC-v4: the default-model path stays covered here.
+    assert spec.tee.cpu_model == "EPYC-v4"
 
     assert spec.network.internet_access is True
     # The agent computes the static IPv6 upfront (V-PROGRAMs use the 0x4 hextet)
@@ -325,11 +328,15 @@ async def test_build_vprogram_spec_no_ra_tls_attestation_port(tmp_path, storage_
 
 @pytest.mark.asyncio
 async def test_build_vprogram_spec_selects_the_measured_cpu_model(staged_bundle, snp_vcpu_types):
-    snp_vcpu_types(["EPYC", "EPYC-v4"])
+    # A non-default model: a hardcoded "EPYC-v4" fallback would fail this,
+    # unlike an assertion against the default that a bug could satisfy by
+    # accident.
+    snp_vcpu_types(["EPYC", "EPYC-v4", "EPYC-Genoa-v2"])
     message = load_vprogram_message()
+    message.content.verification.measurements[0].vcpu_type = "EPYC-Genoa-v2"
     spec, _attest_port = await build_vprogram_spec(message.item_hash, message.content)
     assert spec.tee is not None
-    assert spec.tee.cpu_model == "EPYC-v4"
+    assert spec.tee.cpu_model == "EPYC-Genoa-v2"
 
 
 @pytest.mark.asyncio

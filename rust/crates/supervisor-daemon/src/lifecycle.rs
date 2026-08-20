@@ -4309,7 +4309,9 @@ mod tests {
         // the same for the SNP arm, so GetVmSpec reports the VM as confidential
         // (SEV-SNP backend + the agent's measured cmdline) and echoes back the
         // static /124 the agent supplied, rather than a bare non-confidential
-        // shell that drops the address.
+        // shell that drops the address. The launch CPU model is also an
+        // attestation input the agent supplies: a non-default value here
+        // catches a reconstruction that silently drops it back to "".
         let harness = harness();
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -4317,6 +4319,8 @@ mod tests {
         let firmware = root.join("OVMF.fd");
         std::fs::write(&firmware, b"ovmf").unwrap();
         let mut request = snp_opaque_spec(&vm_id, &root, &firmware.to_string_lossy());
+        let cpu_model = "EPYC-Genoa-v2";
+        request.tee.as_mut().unwrap().cpu_model = cpu_model.to_string();
         // The canonical (zero-compressed) form the daemon persists and echoes.
         let requested = "fc00:1:2:3:3:dead:beef:aa0/124";
         request.network.as_mut().unwrap().requested_ipv6 = requested.to_string();
@@ -4339,6 +4343,10 @@ mod tests {
             "the agent's measured cmdline round-trips"
         );
         assert_eq!(tee.firmware_path, firmware.to_string_lossy());
+        assert_eq!(
+            tee.cpu_model, cpu_model,
+            "the agent's launch CPU model round-trips"
+        );
         assert_eq!(
             reconstructed.network.unwrap().requested_ipv6,
             requested,

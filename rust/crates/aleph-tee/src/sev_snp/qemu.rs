@@ -446,7 +446,7 @@ mod tests {
         let config = test_vm_config(None);
         let args = sev_snp_qemu_args(&config, "/OVMF.fd", 51, 1);
         assert_eq!(args[0], "-cpu");
-        assert_eq!(args[1], DEFAULT_CPU_MODEL);
+        assert_eq!(args[1], "EPYC-v4");
     }
 
     #[test]
