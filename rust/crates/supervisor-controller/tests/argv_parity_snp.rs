@@ -124,6 +124,9 @@ fn snp_tee_fragment_matches_the_aleph_tee_generator() {
     // implementations agree on the host-derived value, and that neither
     // hardcodes 51.
     let cbit_cases: [(u32, u32); 2] = [(51, 1), (47, 2)];
+    // The CPU model is a measurement input, so both implementations must agree
+    // on it, including on the shared "absent means EPYC-v4" default.
+    let cpu_model_cases: [Option<&str>; 3] = [None, Some("EPYC-v4"), Some("EPYC-Genoa-v2")];
     for (mem, policy, ovmf) in [
         (2048u64, 0x30000u32, "/var/lib/aleph/vm/ovmf/OVMF.fd"),
         (4096, 0x30000, "/opt/ovmf/OVMF.fd"),
@@ -131,59 +134,64 @@ fn snp_tee_fragment_matches_the_aleph_tee_generator() {
     ] {
         for (numa_node, hugepage_qemu, hugepage_size) in numa_hugepage_cases {
             for (cbitpos, reduced_phys_bits) in cbit_cases {
-                let generator_config = VmConfig {
-                    vm_id: "oracle".to_string(),
-                    kernel: None,
-                    initrd: None,
-                    disks: vec![],
-                    vcpus: 2,
-                    memory_mb: mem as u32,
-                    tee: TeeConfig {
-                        backend: TeeType::SevSnp,
-                        // The daemon carries the policy as a u32 and the
-                        // controller renders it hex()-style; feed the generator
-                        // the identical rendering so the two are comparable.
-                        policy: Some(format!("0x{policy:x}")),
-                        cpu_model: None,
-                    },
-                    encrypted: false,
-                    numa_node,
-                    hugepage_size,
-                };
-                let generator = aleph_tee::sev_snp::qemu::sev_snp_qemu_args(
-                    &generator_config,
-                    ovmf,
-                    cbitpos,
-                    reduced_phys_bits,
-                );
-                let controller = snp_tee_fragment(
-                    mem,
-                    policy,
-                    ovmf,
-                    numa_node,
-                    hugepage_qemu,
-                    cbitpos,
-                    reduced_phys_bits,
-                );
-                assert_eq!(
-                    controller, generator,
-                    "controller SNP fragment diverged from the aleph-tee generator \
-                     (mem={mem}, policy={policy:#x}, numa={numa_node:?}, \
-                     hugepage={hugepage_qemu:?}, cbitpos={cbitpos}, \
-                     reduced_phys_bits={reduced_phys_bits})"
-                );
-                // The injected non-51 pair must actually appear (guards against a
-                // regression to a hardcoded 51/1 that would still make the two
-                // sides equal to each other).
-                let sev_obj = controller
-                    .iter()
-                    .find(|a| a.contains("sev-snp-guest"))
-                    .expect("fragment has a sev-snp-guest object");
-                assert!(
-                    sev_obj.contains(&format!("cbitpos={cbitpos}"))
-                        && sev_obj.contains(&format!("reduced-phys-bits={reduced_phys_bits}")),
-                    "fragment did not reflect the injected host values: {sev_obj}"
-                );
+                for cpu_model in cpu_model_cases {
+                    let generator_config = VmConfig {
+                        vm_id: "oracle".to_string(),
+                        kernel: None,
+                        initrd: None,
+                        disks: vec![],
+                        vcpus: 2,
+                        memory_mb: mem as u32,
+                        tee: TeeConfig {
+                            backend: TeeType::SevSnp,
+                            // The daemon carries the policy as a u32 and the
+                            // controller renders it hex()-style; feed the generator
+                            // the identical rendering so the two are comparable.
+                            policy: Some(format!("0x{policy:x}")),
+                            cpu_model: cpu_model.map(str::to_string),
+                        },
+                        encrypted: false,
+                        numa_node,
+                        hugepage_size,
+                    };
+                    let generator = aleph_tee::sev_snp::qemu::sev_snp_qemu_args(
+                        &generator_config,
+                        ovmf,
+                        cbitpos,
+                        reduced_phys_bits,
+                    );
+                    let controller = snp_tee_fragment(
+                        mem,
+                        policy,
+                        ovmf,
+                        numa_node,
+                        hugepage_qemu,
+                        cbitpos,
+                        reduced_phys_bits,
+                        cpu_model,
+                    );
+                    assert_eq!(
+                        controller, generator,
+                        "controller SNP fragment diverged from the aleph-tee generator \
+                         (mem={mem}, policy={policy:#x}, numa={numa_node:?}, \
+                         hugepage={hugepage_qemu:?}, cbitpos={cbitpos}, \
+                         reduced_phys_bits={reduced_phys_bits}, cpu_model={cpu_model:?})"
+                    );
+                    assert_eq!(controller[0], "-cpu");
+                    assert_eq!(controller[1], cpu_model.unwrap_or("EPYC-v4"));
+                    // The injected non-51 pair must actually appear (guards against a
+                    // regression to a hardcoded 51/1 that would still make the two
+                    // sides equal to each other).
+                    let sev_obj = controller
+                        .iter()
+                        .find(|a| a.contains("sev-snp-guest"))
+                        .expect("fragment has a sev-snp-guest object");
+                    assert!(
+                        sev_obj.contains(&format!("cbitpos={cbitpos}"))
+                            && sev_obj.contains(&format!("reduced-phys-bits={reduced_phys_bits}")),
+                        "fragment did not reflect the injected host values: {sev_obj}"
+                    );
+                }
             }
         }
     }

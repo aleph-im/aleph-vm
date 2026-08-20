@@ -207,6 +207,12 @@ pub struct QemuConfig {
     #[serde(default)]
     pub kernel_cmdline: Option<String>,
 
+    /// QEMU CPU model for the measured SNP launch, written by the daemon from
+    /// the spec. A measurement input; `None` (a config written before this
+    /// field existed) means `EPYC-v4`.
+    #[serde(default)]
+    pub cpu_model: Option<String>,
+
     // NUMA memory binding (increment C2), Rust-only. Present exactly when the
     // supervisor placed this VM on a NUMA node (a >1-node host); the argv then
     // binds guest RAM to that host node (`host-nodes={node},policy=bind`) via a
