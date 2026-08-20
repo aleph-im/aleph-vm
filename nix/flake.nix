@@ -7,7 +7,10 @@
   #   aleph-attest-agent static-musl binary and init.sh) + a minimal
   #   dm-verity-protected rootfs + a precomputed, reproducible sev-snp-measure
   #   launch measurement.
-  # Excluded from the donor: compose-rootfs / compose-demo. The
+  # Excluded from the donor: compose-demo (compose-rootfs, initially excluded
+  # too, returned as the aleph.compose/1 flavor: composeRootfs /
+  # composeInitrd / composeImage below, sharing initrd.nix with init-compose.sh
+  # as /init; see docs/plans/2026-08-19-compose-runtime-port-design.md). The
   # encrypted-rootfs (LUKS) mode returns as a second, separate image flavor
   # for confidential instances (instanceInitrd / instanceImage below), built
   # from the same initrd.nix with withVerity=false withNft=false withLuks=true;
@@ -148,7 +151,28 @@
         withLuks = true;
       };
 
+      # Compose flavor of the initrd (aleph.compose/1): identical to `initrd`
+      # except for /init (init-compose.sh instead of init.sh), which inverts
+      # the launch topology to bind-mount the workload data volume into the
+      # platform chroot instead of chrooting the workload directly. Same
+      # dm-verity + nft firewall contents as the v-program initrd (the
+      # withVerity/withNft defaults). See init-compose.sh for the exact
+      # deltas from init.sh.
+      composeInitrd = pkgs.callPackage ./initrd.nix {
+        inherit attest-agent kernel;
+        init-script = ./init-compose.sh;
+        init-common-script = ./init-common.sh;
+        udhcpc-script = ./udhcpc.script;
+        udhcpc6-script = ./udhcpc6.script;
+      };
+
       rootfs = pkgs.callPackage ./rootfs.nix {};
+
+      # Compose-runner platform rootfs (aleph.compose/1): podman + podman-compose
+      # userland that boots a docker-compose workload from a separate measured
+      # volume. See compose-rootfs.nix for the donor deltas (determinism,
+      # ownership, fail-closed init).
+      composeRootfs = pkgs.callPackage ./compose-rootfs.nix { inherit kernel; };
 
       # fib-service V-PROGRAM workload volume: a content-only ext4 carrying the
       # fib-service binary as /sbin/init, delivered to the measured guest as an
@@ -176,6 +200,25 @@
           --salt=${veritySalt} \
           --uuid=${verityUuid} \
           ${rootfs} \
+          $out/hashtree \
+          | tee /dev/stderr \
+          | grep "Root hash:" \
+          | awk '{print $NF}' \
+          | tr -d '\n' > $out/roothash
+      '';
+
+      # dm-verity hash tree + root hash for the compose-runner platform rootfs.
+      # Same mechanism as `verity` above (identical fixed salt/uuid), applied to
+      # composeRootfs instead of rootfs, so composeImage gets its own
+      # reproducible root hash baked into its cmdline/measurement.
+      composeVerity = pkgs.runCommand "compose-rootfs-verity" {
+        nativeBuildInputs = [ pkgs.cryptsetup ];
+      } ''
+        mkdir -p $out
+        veritysetup format \
+          --salt=${veritySalt} \
+          --uuid=${verityUuid} \
+          ${composeRootfs} \
           $out/hashtree \
           | tee /dev/stderr \
           | grep "Root hash:" \
@@ -226,15 +269,27 @@
       #   manifest template (src/aleph/vm/vprogram/bundle.py). Per-workload
       #   measurements are computed by passing this argument; they are never
       #   baked into the platform bundle's own measurement.hex.
+      # initrdDrv/verityDrv: which initrd and platform-rootfs verity derivation
+      #   to measure. Default to `initrd`/`verity` (the base flavor), so
+      #   existing callers are unaffected; the compose flavor below passes
+      #   composeInitrd/composeVerity to reuse this same cmdline template
+      #   instead of duplicating it.
+      # name: the derivation name. Defaults to the exact string this function
+      #   has always used, so the base flavor's `#measurement` store path is
+      #   unchanged; the compose flavor below passes a compose-tagged name so
+      #   `#composeMeasurement` gets its own store path instead of colliding
+      #   with (and being deduplicated to) `#measurement`'s, which it would
+      #   otherwise do purely by having the same derivation name even though
+      #   its inputs (initrd/verity vs composeInitrd/composeVerity) differ.
       # The measurement is a function of (OVMF + kernel + initrd + cmdline +
       # vCPU count + CPU type), so each configuration needs its own value.
-      measurementFor = { vcpus ? 2, vcpuType ? "EPYC-v4", workloadRoothash ? null }: let
-        platformRoothash = builtins.readFile "${verity}/roothash";
+      measurementFor = { vcpus ? 2, vcpuType ? "EPYC-v4", workloadRoothash ? null, initrdDrv ? initrd, verityDrv ? verity, name ? "sev-snp-measurement-${toString vcpus}vcpus-${vcpuType}" }: let
+        platformRoothash = builtins.readFile "${verityDrv}/roothash";
         kernelCmdline =
           if workloadRoothash == null
           then "console=ttyS0 root=/dev/mapper/verity-root ro roothash=${platformRoothash}"
           else "console=ttyS0 root=/dev/mapper/verity-root ro roothash=${platformRoothash} workload_roothash=${workloadRoothash}";
-      in pkgs.runCommand "sev-snp-measurement-${toString vcpus}vcpus-${vcpuType}" {
+      in pkgs.runCommand name {
         nativeBuildInputs = [ sev-snp-measure ];
       } ''
         sev-snp-measure \
@@ -243,7 +298,7 @@
           --vcpu-type ${vcpuType} \
           --ovmf ${ovmfFd} \
           --kernel ${kernel}/bzImage \
-          --initrd ${initrd}/initrd \
+          --initrd ${initrdDrv}/initrd \
           --append "${kernelCmdline}" \
           | tr -d '\n' > $out
       '';
@@ -252,6 +307,22 @@
       # (no workload_roothash). This is the value baked into image/measurement.hex
       # below and MUST stay platform-only for workload-less parity (test_vm_snp).
       measurement = measurementFor { vcpus = 2; vcpuType = "EPYC-v4"; };
+
+      # Compose-flavor measurement builder: same measurementFor machinery (one
+      # cmdline template, no duplication), pinned to composeInitrd and
+      # composeVerity's root hash instead of the base initrd/verity.
+      composeMeasurementFor = { vcpus ? 2, vcpuType ? "EPYC-v4", workloadRoothash ? null }:
+        measurementFor {
+          inherit vcpus vcpuType workloadRoothash;
+          initrdDrv = composeInitrd;
+          verityDrv = composeVerity;
+          name = "sev-snp-measurement-compose-${toString vcpus}vcpus-${vcpuType}";
+        };
+
+      # Default compose measurement: 2 vCPUs, EPYC-v4 (Genoa), platform-only
+      # cmdline. Mirrors `measurement` above for the compose flavor; this is
+      # the value baked into composeImage/measurement.hex below.
+      composeMeasurement = composeMeasurementFor { vcpus = 2; vcpuType = "EPYC-v4"; };
 
       # Convenience: the workload-form measurement for THIS repo's fib-service
       # demo workload (2 vCPUs, EPYC-v4), using workloadVerity's root hash.
@@ -275,6 +346,21 @@
         cp ${measurement} $out/measurement.hex
         cp ${verity}/hashtree $out/rootfs.ext4.verity
         cp ${verity}/roothash $out/rootfs.ext4.roothash
+      '';
+
+      # Convenience: all measured-image artifacts in one directory, for the
+      # compose flavor (aleph.compose/1). Mirrors `image` above exactly, with
+      # composeInitrd/composeRootfs/composeMeasurement/composeVerity in place
+      # of the base flavor's derivations.
+      composeImage = pkgs.runCommand "aleph-compose-image" {} ''
+        mkdir -p $out
+        ln -s ${kernel}/bzImage $out/bzImage
+        ln -s ${composeInitrd}/initrd $out/initrd
+        ln -s ${composeRootfs} $out/rootfs.ext4
+        cp ${ovmfFd} $out/OVMF.fd
+        cp ${composeMeasurement} $out/measurement.hex
+        cp ${composeVerity}/hashtree $out/rootfs.ext4.verity
+        cp ${composeVerity}/roothash $out/rootfs.ext4.roothash
       '';
 
       # Per-deployment measurement helper for the instance image: the owner
@@ -344,14 +430,19 @@
           kernel
           initrd
           instanceInitrd
+          composeInitrd
           rootfs
+          composeRootfs
           verity
+          composeVerity
           workloadImage
           workloadVerity
           workload
           measurement
           workloadMeasurement
+          composeMeasurement
           image
+          composeImage
           instanceImage
           instanceMeasurementSmoke
           instanceTestRootfs;

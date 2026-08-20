@@ -2,6 +2,7 @@
 
 import copy
 import json
+import re
 from collections.abc import Callable
 from copy import deepcopy
 from typing import Any
@@ -9,7 +10,12 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from aleph.vm.vprogram.manifest import InstanceRuntimeManifest, RuntimeManifest
+from aleph.vm.vprogram.bundle import COMPOSE_WORKLOAD
+from aleph.vm.vprogram.manifest import (
+    CONTRACT_PATTERN,
+    InstanceRuntimeManifest,
+    RuntimeManifest,
+)
 
 # The reference manifest from the design doc, with the real mainnet bundle values.
 REFERENCE_MANIFEST: dict[str, Any] = {
@@ -55,6 +61,12 @@ def test_reference_manifest_validates_and_roundtrips() -> None:
     assert json.loads(canonical) == REFERENCE_MANIFEST
     assert ": " not in canonical
     assert canonical == json.dumps(json.loads(canonical), separators=(",", ":"), sort_keys=True)
+
+
+def test_compose_workload_constant() -> None:
+    assert COMPOSE_WORKLOAD.contract == "aleph.compose/1"
+    assert COMPOSE_WORKLOAD.upstream_port == 8080
+    assert re.fullmatch(CONTRACT_PATTERN, COMPOSE_WORKLOAD.contract)
 
 
 def test_workload_roothash_and_verified_volumes_slots_are_legal() -> None:

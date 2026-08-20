@@ -102,6 +102,49 @@ def test_manifest_exec_runtime(image_dir: Path, tmp_path: Path) -> None:
     assert "{workload_roothash}" in manifest.boot.cmdline_template
 
 
+def test_manifest_compose_runtime(image_dir: Path, tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    assert _run("build", "--image-dir", str(image_dir), "--out", str(out)).returncode == 0
+    result = _run(
+        "manifest",
+        "--bundle-info",
+        str(out / "bundle-info.json"),
+        "--bundle-ref",
+        BUNDLE_REF,
+        "--name",
+        "aleph-snp-attest",
+        "--runtime-version",
+        "2026.08.19",
+        "--flavor",
+        "compose",
+    )
+    assert result.returncode == 0, result.stderr
+    manifest = RuntimeManifest.model_validate_json((out / "manifest.json").read_text())
+    assert manifest.workload.contract == "aleph.compose/1"
+    assert "{workload_roothash}" in manifest.boot.cmdline_template
+
+
+def test_manifest_exec_and_compose_are_mutually_exclusive(image_dir: Path, tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    assert _run("build", "--image-dir", str(image_dir), "--out", str(out)).returncode == 0
+    result = _run(
+        "manifest",
+        "--bundle-info",
+        str(out / "bundle-info.json"),
+        "--bundle-ref",
+        BUNDLE_REF,
+        "--name",
+        "aleph-snp-attest",
+        "--runtime-version",
+        "2026.08.19",
+        "--exec",
+        "--flavor",
+        "compose",
+    )
+    assert result.returncode != 0
+    assert "--exec is incompatible with --flavor compose" in result.stderr
+
+
 def test_manifest_rejects_tampered_bundle(image_dir: Path, tmp_path: Path) -> None:
     out = tmp_path / "out"
     assert _run("build", "--image-dir", str(image_dir), "--out", str(out)).returncode == 0
@@ -155,6 +198,39 @@ def test_build_then_manifest_instance_flavor(instance_image_dir: Path, tmp_path:
     assert manifest.format == "aleph-instance-runtime"
     assert manifest.bundle.ref == BUNDLE_REF
     assert manifest.boot.cmdline_template == "console=ttyS0 luks=1 owner={owner}"
+
+
+def test_build_then_manifest_compose_flavor(image_dir: Path, tmp_path: Path) -> None:
+    # Unlike test_manifest_compose_runtime above (which pins that a compose
+    # manifest can be cut from a default-flavor build), this exercises the
+    # fully flavored path: build --flavor compose shares the vprogram byte
+    # layout but must record the composeImage nix target as provenance.
+    out = tmp_path / "out"
+    result = _run("build", "--image-dir", str(image_dir), "--out", str(out), "--flavor", "compose")
+    assert result.returncode == 0, result.stderr
+    assert (out / "snp-image.tar.gz").is_file()
+    info = json.loads((out / "bundle-info.json").read_text())
+    assert info["platform_roothash"] == ROOTHASH
+    assert info["source"]["build"] == 'nix build "git+file://$REPO?dir=nix#composeImage"'
+
+    result = _run(
+        "manifest",
+        "--bundle-info",
+        str(out / "bundle-info.json"),
+        "--bundle-ref",
+        BUNDLE_REF,
+        "--name",
+        "aleph-compose-runtime",
+        "--runtime-version",
+        "2026.08.20",
+        "--flavor",
+        "compose",
+    )
+    assert result.returncode == 0, result.stderr
+    manifest = RuntimeManifest.model_validate_json((out / "manifest.json").read_text())
+    assert manifest.workload.contract == "aleph.compose/1"
+    assert "{workload_roothash}" in manifest.boot.cmdline_template
+    assert manifest.source.build == 'nix build "git+file://$REPO?dir=nix#composeImage"'
 
 
 def test_manifest_rejects_exec_with_instance_flavor(tmp_path: Path) -> None:

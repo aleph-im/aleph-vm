@@ -168,6 +168,29 @@ def test_exec_manifest_uses_workload_template(image_dir: Path, tmp_path: Path) -
     assert manifest.workload.upstream_port == 8080
 
 
+def test_compose_manifest_uses_workload_template(image_dir: Path, tmp_path: Path) -> None:
+    out = _out(tmp_path, "out")
+    info = build_bundle(image_dir=image_dir, out_dir=out, source_epoch=EPOCH, source=SOURCE)
+    manifest = make_manifest(
+        info=info, bundle_ref=BUNDLE_REF, name="aleph-compose", runtime_version="2026.08.20", compose_runtime=True
+    )
+    RuntimeManifest.model_validate(manifest.model_dump(mode="json"))
+    assert manifest.boot.cmdline_template == CMDLINE_TEMPLATE_EXEC_V1
+    assert manifest.workload.contract == "aleph.compose/1"
+    assert manifest.workload.upstream_port == 8080
+
+
+def test_make_manifest_rejects_exec_and_compose_together(image_dir: Path, tmp_path: Path) -> None:
+    # The CLI cannot express this combination (--exec is rejected with
+    # --flavor compose before cmd_manifest runs), so this guards direct
+    # library callers of make_manifest.
+    info = build_bundle(image_dir=image_dir, out_dir=_out(tmp_path, "out"), source_epoch=EPOCH, source=SOURCE)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        make_manifest(
+            info=info, bundle_ref=BUNDLE_REF, name="x", runtime_version="1", exec_runtime=True, compose_runtime=True
+        )
+
+
 def test_make_manifest_rejects_bad_ref(image_dir: Path, tmp_path: Path) -> None:
     info = build_bundle(image_dir=image_dir, out_dir=_out(tmp_path, "out"), source_epoch=EPOCH, source=SOURCE)
     with pytest.raises(ValidationError):

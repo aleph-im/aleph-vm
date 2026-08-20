@@ -128,10 +128,13 @@ def build_bundle(
 
     `flavor="vprogram"` (default) expects the platform rootfs, its dm-verity
     hash tree, and the roothash/measurement sidecars, matching today's byte
-    layout exactly. `flavor="instance"` expects only OVMF/kernel/initrd (the
+    layout exactly. `flavor="compose"` packages the nix `composeImage`
+    output, which has the exact same byte layout (the flavors differ only in
+    which derivations fill the member slots), so it shares the vprogram
+    path below. `flavor="instance"` expects only OVMF/kernel/initrd (the
     nix `instanceImage` output) and never reads a verity sidecar.
     """
-    if flavor not in ("vprogram", "instance"):
+    if flavor not in ("vprogram", "instance", "compose"):
         msg = f"unknown bundle flavor: {flavor!r}"
         raise ValueError(msg)
 
@@ -206,6 +209,10 @@ DEFAULT_WORKLOAD = WorkloadSpec(contract="aleph.builtin/1", upstream_port=8080)
 # Exec-runtime workload contract: a plain executable/command workload rather
 # than the builtin no-workload runtime.
 EXEC_WORKLOAD = WorkloadSpec(contract="aleph.exec/1", upstream_port=8080)
+# Compose-runtime workload contract: a multi-service workload defined by a
+# compose file rather than a single command; it boots a measured workload
+# rootfs just like exec, so it shares CMDLINE_TEMPLATE_EXEC_V1 above.
+COMPOSE_WORKLOAD = WorkloadSpec(contract="aleph.compose/1", upstream_port=8080)
 # Instance-runtime luks-mode cmdline template (format version 1): the
 # instance init parses `luks=` and `owner=` off /proc/cmdline (design section
 # 4.1). No platform_roothash slot: the instance image has no verity rootfs.
@@ -213,19 +220,36 @@ CMDLINE_TEMPLATE_LUKS_V1 = "console=ttyS0 luks=1 owner={owner}"
 
 
 def make_manifest(
-    info: BundleInfo, bundle_ref: str, name: str, runtime_version: str, *, exec_runtime: bool = False
+    info: BundleInfo,
+    bundle_ref: str,
+    name: str,
+    runtime_version: str,
+    *,
+    exec_runtime: bool = False,
+    compose_runtime: bool = False,
 ) -> RuntimeManifest:
     """Build the manifest for an uploaded bundle. Validation is the
     constructor: any inconsistency raises pydantic ValidationError.
 
     By default builds the platform-only, no-workload manifest (builtin
     contract, `{platform_roothash}`-only cmdline template). Pass
-    `exec_runtime=True` to select the `aleph.exec/1` workload contract and
-    the `{platform_roothash}`/`{workload_roothash}` cmdline template used by
-    runtimes that boot a separate measured workload rootfs.
+    `exec_runtime=True` to select the `aleph.exec/1` workload contract, or
+    `compose_runtime=True` to select the `aleph.compose/1` workload
+    contract; both use the same `{platform_roothash}`/`{workload_roothash}`
+    cmdline template, since both boot a separate measured workload rootfs.
+    The two are mutually exclusive.
     """
-    cmdline_template = CMDLINE_TEMPLATE_EXEC_V1 if exec_runtime else CMDLINE_TEMPLATE_V1
-    workload = EXEC_WORKLOAD if exec_runtime else DEFAULT_WORKLOAD
+    if exec_runtime and compose_runtime:
+        msg = "exec_runtime and compose_runtime are mutually exclusive"
+        raise ValueError(msg)
+    workload_runtime = exec_runtime or compose_runtime
+    cmdline_template = CMDLINE_TEMPLATE_EXEC_V1 if workload_runtime else CMDLINE_TEMPLATE_V1
+    if exec_runtime:
+        workload = EXEC_WORKLOAD
+    elif compose_runtime:
+        workload = COMPOSE_WORKLOAD
+    else:
+        workload = DEFAULT_WORKLOAD
     return RuntimeManifest(
         format="aleph-vprogram-runtime",
         format_version=1,
