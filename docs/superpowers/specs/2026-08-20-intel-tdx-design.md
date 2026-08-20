@@ -318,8 +318,14 @@ platform's *current* TCB, not the TD's launch-time TCB. `tee_tcb_svn` gives the
 SEAM module version, which is fixed for a TD's lifetime except that TDX 1.5
 TD-preserving updates can advance it under a running TD. The strongest available
 TDX statement is therefore "this platform is currently at an acceptable TCB",
-which is strictly weaker than the SNP guarantee. Documented, not fixable at this
-layer.
+which is strictly weaker than the SNP guarantee.
+
+Worse than weaker, it is *silently* weaker: after an operator upgrades a
+platform, a TD that ran for months under vulnerable firmware starts producing
+quotes reporting the new, healthy TCB, and passes the client's floor check with
+nothing anywhere recording that it was ever exposed. Section 7.6 makes that
+transition visible node-side. It does not make it verifiable; see the trust
+caveat there.
 
 ---
 
@@ -508,6 +514,62 @@ happily launch instances that can never attest.
 answers.** Advertise the capability, not the CPU bit. This applies to both
 `MachineProperties.cpu.features` and `HostInfo.tdx_supported`.
 
+### 7.6 Node-side launch-TCB tracking
+
+This is the node-side operational hygiene that G1 section 8.1 deferred to a
+separate spec. TDX promotes it from operator convenience to the only mechanism
+that observes the section 5.6 gap at all.
+
+**Trust caveat, stated first.** This is *not* a security boundary and must never
+be presented as one. A recorded launch TCB is a CRN claim, and G1 decision 1
+holds: the node is adversarial and the client's check inside RA-TLS remains the
+authoritative gate. What this buys is that an **honest** operator can find and
+repair exposed VMs, and that a fleet-wide floor raise produces a visible,
+actionable work list instead of silence. For SEV-SNP the same tracking is pure
+convenience, because the client reads `launch_tcb` out of the report directly.
+For TDX the information exists nowhere else in the system.
+
+**Recorded at launch, per VM, persisted** (it must survive a supervisor
+restart): the platform CPUSVN and PCESVN, the TDX module version
+(`tee_tcb_svn`), and the launch timestamp. The natural home is the existing
+per-VM world state alongside the other persisted VM facts. Source of the
+platform values is host-side: the platform PCK certificate held by the PCCS or
+retrieved during registration. The exact read path is an implementation detail
+worth a spike, not a design fork.
+
+**The trigger is a two-phase state machine, not "the floor was raised".**
+Relaunching before the operator upgrades merely relaunches under the same
+vulnerable TCB, so a naive "floor raised means reboot" rule would churn VMs and
+fix nothing:
+
+| `launch_tcb` vs floor | current platform vs floor | State | Operator sees |
+|---|---|---|---|
+| meets | meets | `ok` | nothing |
+| below | below | `blocked` | "upgrade this node's firmware or TDX module" |
+| below | meets | `stale` | "N VMs need a relaunch to clear their exposure" |
+| meets | below | `regressed` | should be impossible; TCB is monotonic. Log loudly. |
+
+Only `stale` is actionable by relaunch. `blocked` is actionable by the operator
+upgrading, after which those VMs transition to `stale`.
+
+**Reading the floor.** The supervisor does not read the settings aggregate for
+TCB purposes today, but the machinery exists: the authorized-allocation-signers
+work already sources a settings-aggregate key CRN-side, and the same fetch,
+cache and degrade-on-unreachable discipline applies here. Consistent with G1
+decision 4, an unreachable aggregate degrades to the compiled-in baseline rather
+than failing open or failing closed.
+
+**Surface.** A per-VM status field plus a node-level count, exposed on the
+existing node information endpoints and as a log line on transition. **Do not
+auto-reboot.** Relaunching a user's confidential VM destroys guest-held state,
+including anything sealed to the previous instance, and the operator may have
+scheduling constraints we cannot see. The design position is: make the work list
+correct and visible; leave the decision with the operator.
+
+**Applies to both backends.** Nothing above is TDX-specific except the priority.
+Implementing it for SEV-SNP at the same time costs little and gives operators
+one consistent mechanism.
+
 ---
 
 ## 8. Testing
@@ -530,6 +592,10 @@ Tier 1, all in CI, no hardware anywhere:
   `mrconfigid` injection rejection (mirroring `test_policy_injection_is_rejected`).
 - **Differential**: our verifier against `dcap-qvl` over the same fixtures, as a
   dev-dependency only, never in the trust path.
+- **Launch-TCB state machine (7.6)**: table-driven over the four states, plus a
+  persistence round trip asserting a recorded launch TCB survives a supervisor
+  restart, plus the degrade-to-baseline path when the settings aggregate is
+  unreachable. All hardware-free.
 
 Tier 2 (`#[ignore]`, requires a Xeon): `get_report`, argv boot, end-to-end
 RA-TLS.
@@ -548,9 +614,15 @@ RA-TLS.
 | 5 | `VerificationResult.registers` | aleph-vm | touches SNP; land before the SNP client ships |
 | 6 | `tee_min_tcb` and `TdxTcbPolicy` | aleph-rs | generalizes G1 |
 | 7 | Spec: `tdx-mrconfigid-v1` recipe, manifest `measurements` block, QGS runbook | aleph-vm docs | spec only |
+| 8 | Node-side launch-TCB tracking (7.6): persisted launch TCB, aggregate floor read, four-state machine, operator surface | aleph-vm | TEE-agnostic; buildable for SNP today |
 
 Increments 1 and 5 are the time-sensitive ones. Increments 2 to 4 are pure
 addition and can proceed at any pace.
+
+Increment 8 is worth calling out separately: it is the only item here that
+delivers value **before** any TDX hardware exists, because the same tracking
+serves SEV-SNP operators today. It also discharges the spec G1 section 8.1
+deferred. If TDX slips indefinitely, increment 8 should still ship.
 
 ---
 
