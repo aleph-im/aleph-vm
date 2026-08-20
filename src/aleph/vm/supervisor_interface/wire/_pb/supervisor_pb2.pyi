@@ -622,6 +622,7 @@ class TeeConfig(google.protobuf.message.Message):
     POLICY_FIELD_NUMBER: builtins.int
     SESSION_DIR_FIELD_NUMBER: builtins.int
     FIRMWARE_PATH_FIELD_NUMBER: builtins.int
+    KERNEL_CMDLINE_FIELD_NUMBER: builtins.int
     backend: global___TeeBackend.ValueType
     """attestation backend (orthogonal to the top-level Backend enum, which selects the VMM)"""
     policy: builtins.str
@@ -630,6 +631,12 @@ class TeeConfig(google.protobuf.message.Message):
     """confidential session files"""
     firmware_path: builtins.str
     """resolved OVMF blob path (empty = none)"""
+    kernel_cmdline: builtins.str
+    """Opaque measured guest kernel cmdline, rendered by the agent from the
+    runtime manifest's template. When set (SEV-SNP only), the daemon passes
+    it to QEMU verbatim and never parses it; it is mutually exclusive with
+    the sidecar-derived verity cmdline. Empty = unset.
+    """
     def __init__(
         self,
         *,
@@ -637,8 +644,9 @@ class TeeConfig(google.protobuf.message.Message):
         policy: builtins.str = ...,
         session_dir: builtins.str = ...,
         firmware_path: builtins.str = ...,
+        kernel_cmdline: builtins.str = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["backend", b"backend", "firmware_path", b"firmware_path", "policy", b"policy", "session_dir", b"session_dir"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["backend", b"backend", "firmware_path", b"firmware_path", "kernel_cmdline", b"kernel_cmdline", "policy", b"policy", "session_dir", b"session_dir"]) -> None: ...
 
 global___TeeConfig = TeeConfig
 
@@ -651,9 +659,9 @@ class NetworkConfig(google.protobuf.message.Message):
     IPV6_PREFIX_LEN_FIELD_NUMBER: builtins.int
     internet_access: builtins.bool
     requested_ipv6: builtins.str
-    """empty = pool-assigned"""
+    """agent-computed static /124 CIDR (network/prefix); empty = daemon-assigned"""
     ipv6_prefix_len: builtins.int
-    """0 = /128"""
+    """the requested prefix (124 for the static scheme); 0 = /128"""
     def __init__(
         self,
         *,

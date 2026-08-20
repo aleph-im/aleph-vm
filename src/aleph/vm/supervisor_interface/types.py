@@ -130,6 +130,11 @@ class TeeConfig:
     # trusted_execution.firmware ref, downloaded to disk by the agent before
     # create). The engine feeds it to QemuConfidentialVMConfiguration.ovmf_path.
     firmware_path: Path | None = None
+    # Opaque measured guest kernel cmdline, rendered by the agent from the
+    # runtime manifest's template. When set (SEV-SNP only), the daemon passes
+    # it to QEMU verbatim and never parses it; mutually exclusive with the
+    # sidecar-derived verity cmdline. Empty = unset.
+    kernel_cmdline: str = ""
 
 
 @dataclass(frozen=True)

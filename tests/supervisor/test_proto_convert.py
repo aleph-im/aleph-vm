@@ -58,6 +58,7 @@ FULL_SPEC = CreateVmSpec(
         policy="0x07",
         session_dir=DirectoryPath(Path("/var/lib/sessions")),
         firmware_path=Path("/var/cache/ovmf.fd"),
+        kernel_cmdline="console=ttyS0 luks=1 owner=0xabc",
     ),
     network=NetworkConfig(internet_access=True, requested_ipv6="fd00::42", ipv6_prefix_len=124),
     gpus=[
@@ -281,6 +282,36 @@ def test_create_vm_spec_carries_tee_firmware_path():
     )
     out = conv.create_vm_spec_from_pb(conv.create_vm_spec_to_pb(spec))
     assert out.tee.firmware_path == Path("/ovmf.fd")
+
+
+def test_create_vm_spec_carries_kernel_cmdline():
+    spec = _minimal_spec(
+        tee=TeeConfig(
+            backend=TeeBackend.SEV_SNP,
+            policy="0x07",
+            session_dir=DirectoryPath(Path("/s")),
+            kernel_cmdline="console=ttyS0 luks=1 owner=0xabc",
+        ),
+    )
+    out = conv.create_vm_spec_from_pb(conv.create_vm_spec_to_pb(spec))
+    assert out.tee.kernel_cmdline == "console=ttyS0 luks=1 owner=0xabc"
+    assert out == spec
+
+
+def test_create_vm_spec_defaults_are_absent_on_wire():
+    spec = _minimal_spec(
+        tee=TeeConfig(
+            backend=TeeBackend.SEV,
+            policy="",
+            session_dir=DirectoryPath(Path("/s")),
+        ),
+    )
+    assert spec.tee.kernel_cmdline == ""
+    msg = conv.create_vm_spec_to_pb(spec)
+    assert msg.tee.kernel_cmdline == ""
+    out = conv.create_vm_spec_from_pb(msg)
+    assert out.tee.kernel_cmdline == ""
+    assert out == spec
 
 
 def test_create_vm_spec_carries_resolved_gpu():

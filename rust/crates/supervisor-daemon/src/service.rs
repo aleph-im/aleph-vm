@@ -518,18 +518,57 @@ pub fn vm_spec_message(entry: &VmEntry) -> pb::VmSpec {
         format: pb::disk_config::Format::Raw as i32,
         role: pb::disk_config::DiskRole::Extra as i32,
     }));
-    let tee = config.confidential().map(|confidential| pb::TeeConfig {
-        backend: pb::TeeBackend::Sev as i32,
-        // Python: hex(vm_cfg.sev_policy), e.g. "0x5".
-        policy: format!("{:#x}", confidential.sev_policy),
-        // Python: sev_session_file.parent (where initialize_confidential
-        // wrote the owner's certificates).
-        session_dir: std::path::Path::new(&confidential.sev_session_file)
-            .parent()
-            .map(|parent| parent.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-        firmware_path: confidential.ovmf_path.clone(),
-    });
+    // Reconstruct the TeeConfig the agent sent, so an adopted confidential VM
+    // round-trips through GetVmSpec and compares equal on an idempotent
+    // re-create. A SEV/SEV-ES config resolves via `confidential()`; an SEV-SNP
+    // config resolves via `snp()` (mutually exclusive: SNP carries no
+    // session/godh). The measured cmdline is echoed back only for the
+    // opaque-cmdline arm, where the agent supplied it (identified by the
+    // writable-rootfs `image_format`); the verity arm's cmdline is
+    // daemon-derived from the roothash sidecar, so the agent never sends it.
+    let tee = config
+        .confidential()
+        .map(|confidential| pb::TeeConfig {
+            backend: pb::TeeBackend::Sev as i32,
+            // Python: hex(vm_cfg.sev_policy), e.g. "0x5".
+            policy: format!("{:#x}", confidential.sev_policy),
+            // Python: sev_session_file.parent (where initialize_confidential
+            // wrote the owner's certificates).
+            session_dir: std::path::Path::new(&confidential.sev_session_file)
+                .parent()
+                .map(|parent| parent.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            firmware_path: confidential.ovmf_path.clone(),
+            kernel_cmdline: String::new(),
+        })
+        .or_else(|| {
+            config.snp().map(|snp| pb::TeeConfig {
+                backend: pb::TeeBackend::SevSnp as i32,
+                policy: format!("{:#x}", snp.sev_policy),
+                // SNP has no session/godh handshake.
+                session_dir: String::new(),
+                firmware_path: snp.ovmf_path.clone(),
+                kernel_cmdline: if config.image_format.is_some() {
+                    snp.kernel_cmdline.clone()
+                } else {
+                    String::new()
+                },
+            })
+        });
+    // Echo back the assigned static /124 the agent supplied (persisted as
+    // `guest_ipv6_cidr`), so an adopted static-policy VM compares equal on an
+    // idempotent re-create. Absent (empty) under the dynamic policy, matching
+    // the agent, which does not compute an address there.
+    let (requested_ipv6, ipv6_prefix_len) = match &config.guest_ipv6_cidr {
+        Some(cidr) => {
+            let prefix = cidr
+                .rsplit_once('/')
+                .and_then(|(_, len)| len.parse().ok())
+                .unwrap_or(0);
+            (cidr.clone(), prefix)
+        }
+        None => (String::new(), 0),
+    };
     pb::VmSpec {
         vm_id: entry.vm_hash.clone(),
         backend: pb::Backend::Qemu as i32,
@@ -545,8 +584,8 @@ pub fn vm_spec_message(entry: &VmEntry) -> pb::VmSpec {
                 .interface_name
                 .as_deref()
                 .is_some_and(|name| !name.is_empty()),
-            requested_ipv6: String::new(),
-            ipv6_prefix_len: 0,
+            requested_ipv6,
+            ipv6_prefix_len,
         }),
         gpus: config
             .gpus

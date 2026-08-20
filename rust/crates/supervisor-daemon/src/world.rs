@@ -220,8 +220,11 @@ impl VmType {
 
     /// The vm type of a QEMU controller config: SEV-SNP measured boot is the
     /// exclusive V-PROGRAM launch path (see [`VmType::VProgram`]), everything
-    /// else is a plain instance. Shared by [`VmEntry::vm_type`] and the
-    /// adoption path in [`build_world_view`], which classifies persisted
+    /// else is a plain instance. This classifies the static-IPv6 recompute
+    /// fallback only (an empty requested_ipv6): the agent supplies the address
+    /// and its hextet for confidential instances under the static policy, so
+    /// this never misclassifies one there. Shared by [`VmEntry::vm_type`] and
+    /// the adoption path in [`build_world_view`], which classifies persisted
     /// configs before any `VmEntry` exists, so the two can never diverge.
     pub fn of_qemu(config: &QemuVmConfig) -> VmType {
         if config.snp().is_some() {

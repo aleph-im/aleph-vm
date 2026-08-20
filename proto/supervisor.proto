@@ -247,6 +247,11 @@ message TeeConfig {
   string policy = 2;                 // empty = default
   string session_dir = 3;            // confidential session files
   string firmware_path = 4;          // resolved OVMF blob path (empty = none)
+  // Opaque measured guest kernel cmdline, rendered by the agent from the
+  // runtime manifest's template. When set (SEV-SNP only), the daemon passes
+  // it to QEMU verbatim and never parses it; it is mutually exclusive with
+  // the sidecar-derived verity cmdline. Empty = unset.
+  string kernel_cmdline = 5;
 }
 
 message NetworkConfig {
