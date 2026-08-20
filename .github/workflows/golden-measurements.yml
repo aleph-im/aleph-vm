@@ -1,0 +1,68 @@
+---
+name: "Golden SEV-SNP measurements"
+
+# Rebuilds the measured boot chain (OVMF + kernel + initrd + cmdline) from
+# nix/flake.nix and verifies the launch measurements still match the
+# committed nix/golden-measurements.json. Deliberately NOT wired into every
+# build: a cold runner compiles the whole chain (edk2, the guest kernel, the
+# static-musl attest-agent), which takes hours. Trigger surface instead:
+#   - PRs and dev/main pushes touching the measured inputs
+#   - a weekly cron, which catches reproducibility drift with unchanged
+#     inputs (the flake is fully pinned, so any diff on cron is drift)
+#   - manual dispatch
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Mondays, 06:17 UTC.
+    - cron: "17 6 * * 1"
+  push:
+    branches: [main, dev]
+    paths:
+      - "nix/**"
+      # The initrd bakes the attest-agent binary, so the agent crate and the
+      # workspace lockfile are measured inputs too. The rest of rust/ is
+      # excluded on purpose: unrelated workspace changes must not cost hours
+      # of CI, and the weekly cron backstops anything the filter misses.
+      - "rust/crates/aleph-attest-agent/**"
+      - "rust/Cargo.lock"
+      - ".github/workflows/golden-measurements.yml"
+  pull_request:
+    # od/** covers stacked PRs (increment N+1 based on increment N's
+    # branch), which must carry CI before the stack lands on dev.
+    branches: [main, dev, od/**]
+    paths:
+      - "nix/**"
+      - "rust/crates/aleph-attest-agent/**"
+      - "rust/Cargo.lock"
+      - ".github/workflows/golden-measurements.yml"
+
+jobs:
+  golden-measurements:
+    name: "build measured boot chain, compare launch measurements"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free runner disk space
+        # The nix store for a full chain build (edk2, kernel, rust
+        # toolchain, static openssl) does not fit next to the runner
+        # image's preinstalled toolchains.
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          df -h /
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      # No nix store caching on purpose: the store for this build is several
+      # GB and the repo's 10 GB Actions cache budget is already spent on the
+      # integration-test caches (PR #978); evicting those on a weekly job is
+      # a bad trade. Revisit with a real binary cache if this job's runtime
+      # becomes a problem.
+      - name: Check launch measurements against the golden file
+        run: ./nix/check-golden-measurements.sh
