@@ -103,15 +103,22 @@ section 6.
    `MRCONFIGID`** for TDX. This is what makes CCN validation tractable without
    emulating TDVF's measurement protocol. See section 6.
 5. **Pinned registers are `{mrtd, rtmr1, rtmr2, mrconfigid}`.** `rtmr0` is
-   deliberately not pinned (it varies with vCPU count and memory map, which are
-   deployment parameters, not code identity); `rtmr3` is runtime-extended and
-   has no launch-time value.
+   deliberately not pinned: it varies with vCPU count and memory map, which are
+   deployment parameters, not code identity. `rtmr3` is not pinned either, but
+   it is not free; see decision 8.
 6. **We own the quote parsing and the policy.** Third-party DCAP crates are used
    as a differential-test oracle only, never in the trust path. Rationale in
    section 5.3.
 7. **The CCN validates `rtmr1`/`rtmr2` by comparison against the runtime
    manifest**, not by derivation from first principles. An accepted, documented
    weakening relative to SNP; see section 6.3.
+8. **`rtmr3` is reserved for a launch-TCB commitment**, extended exactly once by
+   the measured initrd. This is what recovers a cryptographic launch-TCB gate on
+   a platform whose quotes otherwise report only the current TCB. The register
+   is *derived*, not pinned: it appears in no message, and the client recomputes
+   the expected value rather than comparing against a declared constant. The
+   semantics are reserved from v1; client enforcement starts as warn-on-mismatch
+   and hardens once real hardware has exercised it. See section 6.5.
 
 ---
 
@@ -152,6 +159,11 @@ equal `_REQUIRED_REGISTERS[platform]` exactly, and every value must be
 SEV-SNP migrates from `digest: "<hex>"` to `registers: {"launch": "<hex>"}`.
 Because `od/vprogram-schema` is unmerged and unreleased, there is no wire
 compatibility burden.
+
+`rtmr3` is deliberately absent from the TDX key set. It carries the launch-TCB
+commitment (section 6.5), which the client *derives* rather than compares
+against a declared constant, so it needs no message field. Keeping it out of the
+schema is also what lets enforcement harden later without a protocol change.
 
 ### 4.2 `TrustedExecutionEnvironment` (aleph-message)
 
@@ -246,8 +258,9 @@ Steps, with the SEV-SNP analogue in brackets:
 As with SNP, a `valid: true` verdict is **not** sufficient to trust a guest. It
 says only "this is a genuine Intel-attested TD on a platform at an acceptable
 TCB". The caller must still pin the registers against the message's declared
-`LaunchMeasurement` and bind freshness through `report_data`. The existing
-`report_data.rs` domain-separated schemes apply unchanged.
+`LaunchMeasurement`, bind freshness through `report_data`, and check the derived
+`rtmr3` launch-TCB commitment (section 6.5). The existing `report_data.rs`
+domain-separated schemes apply unchanged.
 
 ### 5.3 On third-party crates
 
@@ -307,7 +320,7 @@ hand-calibrate. Given that the rc8 floor audit found Milan's floor too low and
 Zen4c's too strict, having Intel do that calibration is a real asset and not
 merely a difference.
 
-### 5.6 Residual risk: no launch-TCB gate
+### 5.6 The launch-TCB gap
 
 G1 decision 2 gates on `launch_tcb` and is deliberately relaunch-forcing: a host
 firmware update alone does not clear a CVE bump, because a VM that already ran
@@ -323,9 +336,21 @@ which is strictly weaker than the SNP guarantee.
 Worse than weaker, it is *silently* weaker: after an operator upgrades a
 platform, a TD that ran for months under vulnerable firmware starts producing
 quotes reporting the new, healthy TCB, and passes the client's floor check with
-nothing anywhere recording that it was ever exposed. Section 7.6 makes that
-transition visible node-side. It does not make it verifiable; see the trust
-caveat there.
+nothing anywhere recording that it was ever exposed.
+
+Two mechanisms address this, and they are not alternatives:
+
+- **Section 7.6** (node-side tracking) makes the transition visible to an honest
+  operator, so exposed VMs become an actionable work list. It is not a trust
+  boundary: the CRN is the party making the claim.
+- **Section 6.5** (`rtmr3` launch-TCB commitment) makes it *verifiable by the
+  client*, because only the TD can extend an RTMR and the extending initrd is
+  itself covered by the pinned measurements. This is the real fix.
+
+With 6.5 in place the residual risk is not "TDX cannot express the gate" but
+"TDX expresses the gate through a guest-side mechanism whose kernel interface
+needs confirming" (spike 5). Until that spike lands and client enforcement
+hardens, treat the gap as open and rely on 7.6.
 
 ---
 
@@ -426,6 +451,60 @@ booted matches the claim. That means the initrd reading its own RTMRs and
 comparing, which is strictly more guest-side work than simply pinning the RTMRs
 in the message. `MRCONFIGID` earns its place as a deployment binding (6.2), not
 as a measurement substitute.
+
+### 6.5 `rtmr3`: the launch-TCB commitment
+
+This is what closes section 5.6 cryptographically rather than merely
+operationally.
+
+**Why it works.** A TD can read its own TDREPORT locally, with no QGS round trip
+and therefore no host involvement: `CPUSVN` sits in `REPORTMACSTRUCT` and
+`tee_tcb_svn` in `TEE_TCB_INFO`. So the guest can observe the platform TCB at
+boot. RTMRs are extend-only, and **only the TD can extend them**: the host has no
+interface to write one. Combining those two facts gives the guest a way to make
+an unforgeable, unrewindable statement about what it saw at launch.
+
+**The scheme.**
+
+1. The measured initrd, before any untrusted code runs, extends `rtmr3` once:
+
+   ```
+   rtmr3 = extend(0, SHA-384(DOMAIN_LAUNCH_TCB || cpusvn || pcesvn || tee_tcb_svn))
+   ```
+
+2. Every subsequent quote carries that `rtmr3` value.
+3. The guest reports its observed launch TCB in band over the attested channel.
+4. The client recomputes the expected `rtmr3` from the reported values and
+   compares against the quote.
+
+The in-band report is a claim, but `rtmr3` makes it unforgeable, and the initrd
+doing the extending is covered by the `mrtd`/`rtmr1`/`rtmr2` pins we already
+enforce. A TDX 1.5 TD-preserving update can advance `tee_tcb_svn` under a
+running TD, but it cannot rewind `rtmr3`, so the launch-time statement survives
+exactly the event that would otherwise erase it.
+
+`DOMAIN_LAUNCH_TCB` belongs in `aleph_tee::report_data` beside `DOMAIN_KEY` and
+`DOMAIN_FRESH`, for the same anti-drift reason that module already states: the
+constructing side (the initrd) and the verifying side (the client) must not be
+able to diverge, and a third domain tag keeps this namespace from colliding with
+the two attested-TLS schemes.
+
+**Register discipline.** `rtmr3` is reserved. It is extended **exactly once**,
+by the initrd, and never again: because the client checks an exact value, any
+later extension by workload code breaks verification. This is a constraint the
+runtime bundle owns, and it is the reason the semantics are reserved from v1
+even though enforcement is not. Adding the extend later would change the initrd,
+therefore change `rtmr1`/`rtmr2`, therefore force every published bundle to
+re-version.
+
+**Why `rtmr3` specifically.** `rtmr0` and `rtmr1` are firmware-owned. `rtmr2` is
+already in the pinned set, so extending it would break the pin. `rtmr3` is the
+only register both guest-extendable and free.
+
+**Rollout.** Client enforcement is warn-on-mismatch in v1 and hard-fail once
+spike 5 confirms the kernel interface and real hardware has exercised the path.
+`rtmr3` never appears in a message: it is derived, so no schema field is needed
+and hardening later is not a protocol change.
 
 ---
 
@@ -596,6 +675,11 @@ Tier 1, all in CI, no hardware anywhere:
   persistence round trip asserting a recorded launch TCB survives a supervisor
   restart, plus the degrade-to-baseline path when the settings aggregate is
   unreachable. All hardware-free.
+- **`rtmr3` commitment (6.5)**: assert the client's recomputation matches a
+  fixture quote; assert a mismatched in-band launch TCB is rejected; assert a
+  second extension breaks verification (the register-discipline constraint);
+  assert `DOMAIN_LAUNCH_TCB` cannot collide with `DOMAIN_KEY` or `DOMAIN_FRESH`,
+  mirroring the existing domain-separation tests in `report_data.rs`.
 
 Tier 2 (`#[ignore]`, requires a Xeon): `get_report`, argv boot, end-to-end
 RA-TLS.
@@ -615,6 +699,7 @@ RA-TLS.
 | 6 | `tee_min_tcb` and `TdxTcbPolicy` | aleph-rs | generalizes G1 |
 | 7 | Spec: `tdx-mrconfigid-v1` recipe, manifest `measurements` block, QGS runbook | aleph-vm docs | spec only |
 | 8 | Node-side launch-TCB tracking (7.6): persisted launch TCB, aggregate floor read, four-state machine, operator surface | aleph-vm | TEE-agnostic; buildable for SNP today |
+| 9 | `DOMAIN_LAUNCH_TCB` + client-side `rtmr3` recomputation, warn-on-mismatch (6.5) | aleph-vm, aleph-rs | hardware-free; the guest-side extend ships with 7 |
 
 Increments 1 and 5 are the time-sensitive ones. Increments 2 to 4 are pure
 addition and can proceed at any pace.
@@ -639,8 +724,12 @@ deferred. If TDX slips indefinitely, increment 8 should still ship.
 - **IGVM for TDX.** TDX is in the IGVM format but not in QEMU's IGVM loader, and
   CRN hosts run QEMU well below the required version. Section 10 of the protocol
   design already tags IGVM as a future recipe; nothing here changes that.
-- **TD-preserving update semantics** beyond noting in 5.6 that they weaken the
-  launch-TCB story.
+- **Hard-fail enforcement of the `rtmr3` commitment.** Reserved and implemented
+  as warn-on-mismatch now (increment 9); hardening waits on spike 5 and on real
+  hardware exercising the path.
+- **TD-preserving update semantics** beyond noting in 5.6 that they advance
+  `tee_tcb_svn` under a running TD, which is precisely the event `rtmr3` is
+  designed to survive.
 - **TDX for the legacy SEV `mode="sev"` flow.** There is no TDX analogue of the
   CRN-mediated launch-secret handshake, and none is wanted.
 
@@ -667,3 +756,11 @@ deferred. If TDX slips indefinitely, increment 8 should still ship.
    actually report?** The 5.5 baseline rejects `ConfigurationNeeded`; if that
    status is near-universal in practice, the baseline needs revisiting before
    any hardware lands.
+5. **Is a guest-side RTMR extend interface available and stable on our kernel?**
+   Decision 8 and section 6.5 rest on it. Mainline Linux exposure of RTMR
+   extension has been contentious, and the usable path (a `tsm` interface, or
+   the `/dev/tdx_guest` extend ioctl) needs confirming on the 6.18 guest kernel.
+   This spike gates hardening client enforcement from warn to hard-fail; it does
+   not gate reserving the register, which is why decision 8 is safe to take now.
+   If the interface turns out unusable, section 5.6's residual risk is reinstated
+   in full and section 7.6 becomes the only mitigation.
