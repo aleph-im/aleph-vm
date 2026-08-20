@@ -4094,6 +4094,7 @@ mod tests {
             session_dir: String::new(),
             firmware_path: firmware.to_string(),
             kernel_cmdline: String::new(),
+            cpu_model: String::new(),
         });
         request
     }
@@ -4180,6 +4181,7 @@ mod tests {
             session_dir: String::new(),
             firmware_path: firmware.to_string(),
             kernel_cmdline: String::new(),
+            cpu_model: String::new(),
         });
         request
     }
@@ -4206,6 +4208,7 @@ mod tests {
             session_dir: String::new(),
             firmware_path: firmware.to_string(),
             kernel_cmdline: OPAQUE_CMDLINE.to_string(),
+            cpu_model: String::new(),
         });
         request
     }

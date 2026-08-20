@@ -540,6 +540,7 @@ pub fn vm_spec_message(entry: &VmEntry) -> pb::VmSpec {
                 .unwrap_or_default(),
             firmware_path: confidential.ovmf_path.clone(),
             kernel_cmdline: String::new(),
+            cpu_model: String::new(),
         })
         .or_else(|| {
             config.snp().map(|snp| pb::TeeConfig {
@@ -553,6 +554,7 @@ pub fn vm_spec_message(entry: &VmEntry) -> pb::VmSpec {
                 } else {
                     String::new()
                 },
+                cpu_model: String::new(),
             })
         });
     // Echo back the assigned static /124 the agent supplied (persisted as

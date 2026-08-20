@@ -135,6 +135,11 @@ class TeeConfig:
     # it to QEMU verbatim and never parses it; mutually exclusive with the
     # sidecar-derived verity cmdline. Empty = unset.
     kernel_cmdline: str = ""
+    # QEMU CPU model for a measured SEV-SNP launch (e.g. "EPYC-v4"), chosen by
+    # the agent from the message's launch measurements and what this host can
+    # launch. A measurement input (per-vCPU VMSA), so the daemon passes it
+    # through verbatim. Empty = the launcher's "EPYC-v4" default.
+    cpu_model: str = ""
 
 
 @dataclass(frozen=True)

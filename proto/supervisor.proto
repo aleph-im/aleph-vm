@@ -252,6 +252,12 @@ message TeeConfig {
   // it to QEMU verbatim and never parses it; it is mutually exclusive with
   // the sidecar-derived verity cmdline. Empty = unset.
   string kernel_cmdline = 5;
+  // QEMU CPU model for a measured SEV-SNP launch (e.g. "EPYC-v4"). The agent
+  // picks it from the message's launch measurements, intersected with what
+  // this host's QEMU can launch; it IS a measurement input (per-vCPU VMSA),
+  // so the supervisor passes it through verbatim. Empty = "EPYC-v4", which is
+  // what controller configs written before this field imply.
+  string cpu_model = 6;
 }
 
 message NetworkConfig {
