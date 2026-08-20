@@ -221,6 +221,7 @@ def create_vm_spec_to_pb(spec: CreateVmSpec) -> pb.VmSpec:
                 policy=spec.tee.policy,
                 session_dir=path_to_wire(Path(spec.tee.session_dir)),
                 firmware_path=path_to_wire(spec.tee.firmware_path) if spec.tee.firmware_path is not None else "",
+                kernel_cmdline=spec.tee.kernel_cmdline,
             )
         )
     if spec.numa_node is not None:
@@ -236,6 +237,7 @@ def create_vm_spec_from_pb(msg: pb.VmSpec) -> CreateVmSpec:
             policy=msg.tee.policy,
             session_dir=DirectoryPath(path_from_wire(msg.tee.session_dir)),
             firmware_path=path_from_wire(msg.tee.firmware_path) if msg.tee.firmware_path else None,
+            kernel_cmdline=msg.tee.kernel_cmdline,
         )
     return CreateVmSpec(
         vm_id=VmId(msg.vm_id),
