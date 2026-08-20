@@ -2041,6 +2041,7 @@ fn build_written_config(
         kernel_path,
         initrd_path,
         kernel_cmdline,
+        cpu_model,
     ) = match (&snp_slice, confidential_slice) {
         (Some(snp), _) => (
             Some(snp.ovmf_path.clone()),
@@ -2051,6 +2052,7 @@ fn build_written_config(
             Some(snp.kernel_path.clone()),
             Some(snp.initrd_path.clone()),
             Some(snp.kernel_cmdline.clone()),
+            snp.cpu_model.clone(),
         ),
         (None, Some(slice)) => (
             Some(slice.ovmf_path),
@@ -2061,8 +2063,9 @@ fn build_written_config(
             None,
             None,
             None,
+            None,
         ),
-        (None, None) => (None, None, None, None, None, None, None, None),
+        (None, None) => (None, None, None, None, None, None, None, None, None),
     };
     // A measured SNP VM boots from the Nix image via kernel+initrd (its in-guest
     // init handles networking / provisioning), so it carries NO cloud-init drive
@@ -2127,6 +2130,7 @@ fn build_written_config(
             kernel_path,
             initrd_path,
             kernel_cmdline,
+            cpu_model,
             // NUMA memory binding + hugepages (increment C2) are filled in by
             // the create path AFTER placement is chosen (place_vm_numa runs
             // after this builder), so they start None here and are injected
@@ -2229,6 +2233,9 @@ struct SnpSlice {
     initrd_path: String,
     kernel_cmdline: String,
     sev_policy: u32,
+    /// Measured launch CPU model from the spec; `None` when the agent sent
+    /// none, which the launcher reads as `EPYC-v4`.
+    cpu_model: Option<String>,
     /// The dm-verity hash tree image (verity arm only); `None` on the opaque
     /// arm, which has no hash tree to attach.
     hashtree_path: Option<String>,
@@ -2291,6 +2298,8 @@ fn snp_config_slice(_state: &DaemonState, spec: &pb::VmSpec) -> Result<Option<Sn
     } else {
         parse_sev_policy(&tee.policy)?
     };
+    // Empty means "unset" on a proto3 scalar; the launcher defaults it.
+    let cpu_model = (!tee.cpu_model.is_empty()).then(|| tee.cpu_model.clone());
     // The opaque arm: the agent rendered the measured cmdline itself. The
     // supervisor is a dumb launcher here, it passes the string through verbatim
     // and stays agnostic of what it selects in the guest. The image then has NO
@@ -2319,6 +2328,7 @@ fn snp_config_slice(_state: &DaemonState, spec: &pb::VmSpec) -> Result<Option<Sn
             initrd_path: spec.initrd_path.clone(),
             kernel_cmdline: tee.kernel_cmdline.clone(),
             sev_policy,
+            cpu_model,
             hashtree_path: None,
             rootfs_format: Some(snp_image_format(rootfs.format)?),
             rootfs_readonly: Some(rootfs.readonly),
@@ -2417,6 +2427,7 @@ fn snp_config_slice(_state: &DaemonState, spec: &pb::VmSpec) -> Result<Option<Sn
         initrd_path: spec.initrd_path.clone(),
         kernel_cmdline,
         sev_policy,
+        cpu_model,
         hashtree_path: Some(format!("{rootfs_path}.verity")),
         // The verity rootfs is a read-only raw image behind the verity mapper;
         // the controller has always attached it that way, so the keys stay
@@ -5029,6 +5040,35 @@ mod tests {
             "console=ttyS0 root=/dev/mapper/verity-root ro roothash=deadbeef00",
             "no workload sidecar must leave the cmdline byte-identical to before"
         );
+    }
+
+    #[test]
+    fn snp_config_slice_carries_the_spec_cpu_model() {
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+
+        let mut spec = snp_spec("cpumodel", &root, &firmware.to_string_lossy());
+        spec.tee.as_mut().unwrap().cpu_model = "EPYC-Genoa-v2".to_string();
+        let slice = snp_config_slice(state, &spec).unwrap().unwrap();
+        assert_eq!(slice.cpu_model.as_deref(), Some("EPYC-Genoa-v2"));
+    }
+
+    #[test]
+    fn snp_config_slice_leaves_an_empty_cpu_model_unset() {
+        // Proto3 scalars have no presence: empty means "the agent sent none",
+        // and the launcher then defaults it to EPYC-v4.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+
+        let spec = snp_spec("nocpumodel", &root, &firmware.to_string_lossy());
+        let slice = snp_config_slice(state, &spec).unwrap().unwrap();
+        assert!(slice.cpu_model.is_none());
     }
 
     #[test]
