@@ -18,7 +18,7 @@ failures.
 ### The contract surface
 
 `proto/supervisor.proto` defines one gRPC service, `Supervisor`, grouped into
-host, VM lifecycle, port forwarding, events, logs, backups, confidential and
+host, VM lifecycle, port forwarding, events, logs, guest quiescence, confidential and
 network RPCs. The proto's own header states the **same-host invariant**: this
 is a process boundary, not a network boundary, so every path-carrying field
 (`kernel_path`, `DiskConfig.path`, `TeeConfig.session_dir`,
@@ -74,8 +74,8 @@ up repeatedly in the RPC surface:
 - `WatchEvents` is a no-replay server stream: a client snapshots with
   `ListVms` first, then watches. Every unary RPC carries a client-side
   deadline (`QUERY_TIMEOUT_SECS` / `LIFECYCLE_TIMEOUT_SECS` in
-  `src/aleph/vm/supervisor_interface/client.py`); streams (logs, events,
-  backup download) carry none.
+  `src/aleph/vm/supervisor_interface/client.py`); streams (logs, events)
+  carry none.
 - `LogChunk.timestamp_ns` is stamped at capture time, not delivery time, so
   replayed journal history is not restamped with wall-clock time when it is
   streamed back later.
@@ -106,7 +106,7 @@ flowchart LR
 
 **Rust daemon.** Each leaf module owns its own typed `thiserror` error
 (`TapError`, `NftError`, `DhcpError`, `NdppdError`, `UnitsError`,
-`PortsError`, `world::WorldError`, `BackupError`, `FirecrackerError`,
+`PortsError`, `world::WorldError`, `FirecrackerError`,
 `QmpError`, `LogsError`, `CloudInitError`, `ConfigWriteError` (an enum) and
 `ConfigParseError` (a `thiserror` tuple struct) in `controller_config.rs`,
 `ChecksError`, `HugepagesError`, `DnsError` in `net.rs`).
@@ -124,7 +124,7 @@ top:
   rather than passing through a `.map_err(|e| e.to_string())` hop.
 - `RpcError` is the actual wire vocabulary slice the gRPC layer speaks:
   `NotFound`, `AlreadyExists`, `InsufficientResources`, `InvalidBackend`,
-  `BackupNotFound`, `MicroVmInit`, `Unimplemented`, `Internal`. Every
+  `MicroVmInit`, `Unimplemented`, `Internal`. Every
   `RpcError` variant's `Display` is `{0}` verbatim: "every payload IS the
   message that reaches the client" (the enum's own doc comment). A
   `LifecycleError` collapses into `RpcError::Internal(error.to_string())`;
@@ -134,9 +134,8 @@ top:
   RpcError`, `impl From<crate::tap::TapError> for RpcError`, and similarly
   for `world::WorldError`, `crate::ndppd::NdppdError`, `dhcp::DhcpError`,
   `ports::PortsError`, `controller_config::ConfigWriteError`/`ConfigParseError`,
-  `crate::backup::BackupError`, `crate::qmp::QmpError`,
-  `crate::firecracker::FirecrackerError`, `crate::error::DaemonError`: 12
-  direct impls in total).
+  `crate::qmp::QmpError`, `crate::firecracker::FirecrackerError`,
+  `crate::error::DaemonError`: 11 direct impls in total).
 
 `rust/crates/supervisor-daemon/src/service.rs` turns an `RpcError` into a
 gRPC `Status`: `rpc_error_status` matches each variant onto a `tonic::Code`
@@ -306,7 +305,7 @@ value the real backend could genuinely construct.
 - `rust/crates/supervisor-daemon/src/error.rs`: `DaemonError`, the daemon's
   settings/startup-level error type.
 - `rust/crates/supervisor-daemon/src/` leaf modules
-  (`tap`, `nft`, `dhcp`, `ndppd`, `units`, `ports`, `world`, `backup`,
+  (`tap`, `nft`, `dhcp`, `ndppd`, `units`, `ports`, `world`,
   `firecracker`, `qmp`, `logs`, `cloudinit`, `controller_config`, `checks`,
   `hugepages`, `net`): the leaf `thiserror` enums and, where present, the
   typed failure-injection fakes.

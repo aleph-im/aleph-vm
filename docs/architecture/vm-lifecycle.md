@@ -9,7 +9,8 @@ create paths (persistent QEMU, confidential SEV/SEV-ES, SEV-SNP, ephemeral
 Firecracker programs), admission and capacity checks, a summary of adoption
 and boot reconcile (the deep story lives in
 [`process-model.md`](process-model.md)), stop/start/reboot semantics,
-reinstall and restore, the backup archive format and registry, and who
+reinstall and restore, backups (agent-owned; the supervisor's part is
+guest quiescence), and who
 owns a VM's storage (the agent) and therefore what a delete leaves on disk. Networking mechanics (tap/IP derivation,
 nftables) and the confidential attestation stack are covered in
 [`networking.md`](networking.md) and [`confidential.md`](confidential.md);
@@ -290,47 +291,55 @@ A failed rebuild after the purge answers 400 (base image not available) or
 500 with a reason; the VM is left stopped and a retry of the reinstall
 rebuilds it.
 
-`RestoreBackup` and `RestoreFromImage` are QEMU-persistent-only operations
-(a program's rootfs-path resolution fails with `InvalidBackend`): both stop
-the VM if it is running, swap the rootfs file (from a backup archive's
-`rootfs.qcow2` member, or from an already-staged, `qemu-img check`-verified
-QCOW2 upload), and start it again. `RestoreFromImage` additionally rejects
-an upload whose virtual size exceeds the VM's declared rootfs size, since a
-restore must never grow the disk. Both hold the VM's per-VM backup disk lock
-(`state.backups.vm_lock`, shared with a running `StartBackup`) across the
-swap, so a restore and a backup of the same VM's disks can never race.
+Restore is the same shape, agent-side (`BackupManager.restore_backup` /
+`restore_from_image`, `src/aleph/vm/agent/vm/backup.py`): QEMU instances
+only (a VM with no `rootfs.qcow2` of its own, that is a program on the
+shared runtime cache, is refused), `StopVm` if the VM runs, swap the rootfs
+file (from a backup archive's `rootfs.qcow2` member, or from an
+already-staged, `qemu-img check`-verified QCOW2 upload), `StartVm`.
+`restore_from_image` additionally rejects an upload whose virtual size
+exceeds the VM's declared rootfs size, since a restore must never grow the
+disk. Restore and backup of one VM serialize on the manager's per-VM lock,
+so a restore's rootfs swap and a backup's disk read can never interleave.
 
-### Backups: archive format, registry, download
+### Backups: agent-owned archives, supervisor quiescence
+
+Whoever allocates, deallocates, and copies. The agent created the VM's
+disks, so the agent's `BackupManager` (`src/aleph/vm/agent/vm/backup.py`,
+one per webapp at `app["backups"]`) owns the archives: it resolves the disks
+from the VM's namespace directories (`{pool}/{vm_hash}/rootfs.qcow2`, plus
+the writable data volumes when `include_volumes` is set; a device-mapper
+volume is read through its `/dev/mapper` device, not its backing file),
+copies them, stores, lists, streams, expires and deletes the archives, and
+restores from them. Nothing about an archive crosses the wire. The
+supervisor's only part is quiescence: `FreezeGuest` freezes the guest
+filesystems through the QEMU guest agent before the copy and `ThawGuest`
+releases them after it (in a `finally`). Both are best effort: a guest
+without an agent, or a stopped VM, answers `frozen=false` and the copy
+proceeds crash-consistent; a thaw of an unfrozen guest is a no-op. A freeze
+is idempotent while it holds, and the supervisor thaws a guest itself after
+`GUEST_FREEZE_TIMEOUT` (600 s) without a `ThawGuest`, so an agent that dies
+mid-copy cannot leave a guest with its filesystems frozen (the Rust daemon
+tags each freeze with a generation so a stale timer never thaws a newer
+freeze).
 
 A backup is one uncompressed `tar` archive per run, containing a
-`qemu-img convert -c` compressed copy of the VM's rootfs
-(`rootfs.qcow2`) plus, when `include_volumes` is set, one compressed member
-per non-read-only host volume. Alongside the `.tar` sit a `.tar.sha256`
-checksum sidecar and a `.tar.meta.json` metadata sidecar (`vm_hash`,
-`created_at`, per-member `source_sizes`). The archive on disk is the record
-of truth; only in-flight (`RUNNING`) and `FAILED` runs live in the
-in-process `BackupRegistry` (`rust/crates/supervisor-daemon/src/backup.rs`).
-The format is deliberately cross-readable between the Rust and Python
-daemons (either can read the other's archive and verify it against its own
-recorded checksum), but the exact tar bytes are not guaranteed identical,
-since the Rust `tar` crate and Python's `tarfile` differ in PAX header
-encoding.
-
-`StartBackup` is idempotent twice over: a running job for the VM is returned
-as-is, and a non-expired existing archive (`BACKUP_TTL_HOURS = 24`) is
-returned without doing any work, both checked once unlocked (fast path) and
-again under the registry's admission lock (so two concurrent `StartBackup`
-calls can never both spawn a run). Archives, and their stale intermediate
-`.qcow2`/`.restore.qcow2` transients, are swept by TTL both when a new
-backup starts and, for the transients, as robustness against a daemon killed
-mid-run. `ListBackups` merges the on-disk archives with the in-memory jobs;
-`DownloadBackup` streams the tar in `BACKUP_DOWNLOAD_CHUNK_BYTES` (1 MiB)
-chunks with byte offsets so a client can detect gaps and resume.
-`DeleteBackup` refuses while the backup is `RUNNING` and otherwise removes
-the archive and both sidecars. Guest fs-freeze around the disk copy
-(`quiesce_guest`) is best-effort over the QEMU guest agent socket: an
-unavailable agent is a warning, not a failure, and the backup proceeds
-unfrozen.
+`qemu-img convert -c` compressed, standalone copy of the rootfs
+(`rootfs.qcow2`) plus one compressed member per writable data volume when
+`include_volumes` is set. Alongside the `.tar` sit a `.tar.sha256` checksum
+sidecar and a `.tar.meta.json` metadata sidecar (`vm_hash`, `created_at`,
+per-member `source_sizes`); the format lives in
+`src/aleph/vm/backup/archive.py`. The archive on disk is the record of
+truth; only in-flight (`RUNNING`) and `FAILED` runs live in the manager's
+memory. `start_backup` is idempotent twice over: a running job for the VM
+is returned as-is, and a non-expired existing archive
+(`BACKUP_TTL_HOURS = 24`) is returned without doing any work. Archives and
+stale `.tar.partial` transients are swept by TTL when a new backup starts.
+Listing merges the on-disk archives with the in-memory jobs; the download
+streams the tar in 1 MiB chunks; delete refuses while the backup is
+`RUNNING` and otherwise removes the archive and both sidecars. An erase
+(`operate_erase`) drops the manager's in-memory state for the VM; its
+archives on disk stay until they expire.
 
 ### Storage ownership
 
@@ -365,8 +374,8 @@ disks), remove the world entry, remove the NUMA reservation and its
 `AllowedCPUs` drop-in (unlike a stop, a delete does release these), remove
 the on-disk controller config plus cloud-init seed plus the dead
 monitor/QMP/QGA control sockets
-(`controller_config::remove_controller_configuration`), and reap the VM's
-backup registry entry so no stale job or disk lock outlives it. Persisted
+(`controller_config::remove_controller_configuration`), and drop any
+freeze record the VM had so it cannot shadow a recreated VM's. Persisted
 port-forward mappings are deleted unless the caller passes
 `keep_port_mappings=true`, which is used by callers that redeploy the same
 `vm_id` right after deleting it: the agent's update-watcher reap (a message
@@ -407,13 +416,15 @@ it would steal capacity from a co-located VM that legitimately holds it.
 - `DeleteVm` never deletes a byte of a VM's storage; the agent, which
   allocated it, owns its deletion (`src/aleph/vm/agent/vm/purge.py`), and
   a purge cannot reach a shared cache entry or another VM's directory.
-- Restore operations (`RestoreBackup`, `RestoreFromImage`) and a running
-  backup share one per-VM disk lock, so a restore's rootfs swap and a
-  backup's disk read can never interleave
-  (`rust/crates/supervisor-daemon/src/backup.rs`).
-- A backup archive on disk is the record of truth; the in-memory registry
-  only ever holds `RUNNING` or `FAILED` runs, never `COMPLETE` ones
-  (`rust/crates/supervisor-daemon/src/backup.rs`).
+- The supervisor never reads, writes or lists a backup archive; its part
+  in a backup is `FreezeGuest`/`ThawGuest`, and a freeze it performed is
+  released by the caller or by its own timeout, never left behind
+  (`rust/crates/supervisor-daemon/src/quiesce.rs`).
+- Restore and a running backup of one VM share the agent's per-VM lock, so
+  a restore's rootfs swap and a backup's disk read can never interleave;
+  a backup archive on disk is the record of truth and the in-memory jobs
+  only ever hold `RUNNING` or `FAILED` runs
+  (`src/aleph/vm/agent/vm/backup.py`).
 - Deleting a hidden (never-adopted) VM never touches the NUMA ledger, since
   it was never registered into it
   (`rust/crates/supervisor-daemon/src/lifecycle.rs`).
@@ -424,16 +435,18 @@ it would steal capacity from a co-located VM that legitimately holds it.
 ## Pointers into code
 
 - `rust/crates/supervisor-daemon/src/lifecycle.rs`: every lifecycle RPC
-  (`create_vm`, `stop_vm`, `start_vm`, `reboot_vm`,
-  `restore_backup`, `restore_from_image`, `delete_vm`,
+  (`create_vm`, `stop_vm`, `start_vm`, `reboot_vm`, `delete_vm`,
   `add_port_forward`/`remove_port_forward`), plus adoption/reconcile
   (`reconcile_boot`, `retry_failed_reattachments_once`,
   `readopt_live_controller`).
 - `rust/crates/supervisor-daemon/src/world.rs`: `VmEntry`, `VmTimes`, the
   world map and its NUMA/reservation bookkeeping.
-- `rust/crates/supervisor-daemon/src/backup.rs`: the backup archive format,
-  `BackupRegistry`, `start_backup`/`list_backups`/`resolve_download`/
-  `delete_backup`, and the `DiskTools` (`qemu-img`) seam.
+- `rust/crates/supervisor-daemon/src/quiesce.rs`: `freeze_guest`,
+  `thaw_guest`, the auto-thaw and the `FrozenGuests` record.
+- `src/aleph/vm/agent/vm/backup.py`: the agent's `BackupManager` (disk
+  resolution, the copy under freeze/thaw, the archive registry, restore);
+  `src/aleph/vm/backup/archive.py`: the archive format and the `qemu-img`
+  calls.
 - `rust/crates/supervisor-daemon/src/confidential.rs`: `initialize_confidential`,
   `get_measurement`, `inject_secret`.
 - `rust/crates/supervisor-daemon/src/controller_config.rs`:
