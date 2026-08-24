@@ -9,8 +9,8 @@ create paths (persistent QEMU, confidential SEV/SEV-ES, SEV-SNP, ephemeral
 Firecracker programs), admission and capacity checks, a summary of adoption
 and boot reconcile (the deep story lives in
 [`process-model.md`](process-model.md)), stop/start/reboot semantics,
-reinstall and restore, the backup archive format and registry, and the rules
-for what gets erased on delete. Networking mechanics (tap/IP derivation,
+reinstall and restore, the backup archive format and registry, and who
+owns a VM's storage (the agent) and therefore what a delete leaves on disk. Networking mechanics (tap/IP derivation,
 nftables) and the confidential attestation stack are covered in
 [`networking.md`](networking.md) and [`confidential.md`](confidential.md);
 this doc only describes how lifecycle operations invoke them.
@@ -249,11 +249,10 @@ handler that is about to serve a VM cancels its pending timer first
 re-arms a fresh one in the request's `finally` block, so a timer only ever
 fires after a VM has sat idle for the full window with no intervening
 request. When it fires, `_expire` reaps the VM through
-`self.supervisor.delete_vm(vm_id)` with no `wipe` argument, which defaults
-to `wipe=False` (`src/aleph/vm/supervisor_interface/abc.py`): an idle reap
-tears the VM down and releases its definition but never erases its
-persistent data volumes, only its (already-ephemeral) rootfs disk stays
-gone via the normal delete path. Each timer task removes only its own dict
+`self.supervisor.delete_vm(vm_id)`: an idle reap tears the VM down and
+releases its definition, and leaves the VM's volumes on disk (`DeleteVm`
+never touches storage, see "Storage ownership" below), so the program is
+recreated against them on its next request. Each timer task removes only its own dict
 entry on exit (a current-task identity check in the `finally`), so a
 concurrent re-schedule that already replaced the entry is never clobbered,
 and `VmNotFoundError` during the reap is treated as success (the VM is
@@ -266,15 +265,30 @@ path never leaves the other's subscription or timer leaking.
 
 ### Reinstall and restore
 
-`ReinstallVm` always erases and rebuilds the rootfs; whether it also erases
-writable data volumes is the caller's `wipe_volumes` flag. For a persistent
-QEMU VM: stop, `erase_volumes(include_rootfs=true, include_data_volumes=wipe_volumes)`,
-re-stamp the preparation timestamps, start again. For an ephemeral program:
-stop, drop the world entry, erase the rootfs (data volumes are never in
-scope for a program's `erase_volumes` call, see below), and return the
-stopped result for the agent to recreate through the create path, since the
-agent (not the supervisor) holds the message a program needs to be rebuilt
-from.
+Reinstall is agent orchestration (`operate_reinstall`,
+`src/aleph/vm/agent/views/operator.py`); there is no `ReinstallVm` RPC. The
+agent allocated the VM's volumes, so the agent is the side that can delete
+and rebuild them (see "Storage ownership" below). Two shapes:
+
+- In place, for a persistent plain instance or program: `StopVm`, then
+  `purge_vm_volumes` (the rootfs always; the writable data volumes unless
+  the caller passed `?erase_volumes=false`), then `recreate_vm_volumes`
+  (the same downloaders the create path uses, under a
+  `storage_pools.pin_layout` so each volume is rebuilt on the pool it was
+  deleted from: the running VM's spec still names those exact paths), then
+  `StartVm`. The execution is kept throughout, so the VM holds its
+  `vm_index` and with it its addresses.
+- From scratch, for an ephemeral program or any confidential VM (SEV,
+  SEV-SNP, V-PROGRAM): `DeleteVm(keep_port_mappings=true)`, purge the
+  volumes and the staged runtime bundle, then the ordinary create path. A
+  confidential rootfs is measured and staged rather than built from the
+  message, and a SEV VM comes back awaiting its owner's session, so the
+  full create is the only honest rebuild; the persisted host ports are kept
+  so the rebuilt VM reloads them.
+
+A failed rebuild after the purge answers 400 (base image not available) or
+500 with a reason; the VM is left stopped and a retry of the reinstall
+rebuilds it.
 
 `RestoreBackup` and `RestoreFromImage` are QEMU-persistent-only operations
 (a program's rootfs-path resolution fails with `InvalidBackend`): both stop
@@ -318,39 +332,49 @@ the archive and both sidecars. Guest fs-freeze around the disk copy
 unavailable agent is a warning, not a failure, and the backup proceeds
 unfrozen.
 
-### Erase-on-delete rules
+### Storage ownership
 
-`DeleteVm(wipe)` has an asymmetry worth stating precisely, because it is
-easy to assume delete-with-wipe erases everything: it does not erase the
-rootfs. It only ever erases writable (non-read-only) host volumes, and only
-when `wipe` is true (`erase_volumes(&entry, include_rootfs=false,
-include_data_volumes=wipe)` in `delete_tracked_vm`); the comment there is
-explicit: "writable data volumes go, the rootfs stays." Contrast this with
-`ReinstallVm`, which always erases the rootfs regardless of `wipe_volumes`.
-For an ephemeral program, `erase_volumes` resolves the program's spec-held
-`ROOTFS` disk path but always returns an empty volume list (a program's
-`EXTRA` disks are never candidates), and `DeleteVm` always calls it with
-`include_rootfs=false`; the practical result is that `DeleteVm` never
-erases any disk belonging to a program, wipe or not. Only `ReinstallVm`'s
-program branch, which forces `include_rootfs=true`, actually erases a
-program's rootfs.
+Whoever allocates, deallocates. The agent resolves a message into on-host
+paths and creates every volume file (`qemu-img create` for a rootfs
+overlay, `fallocate`/`mkfs.ext4` for persistent volumes, placed through
+`src/aleph/vm/storage_pools.py`) before `CreateVm`; the supervisor is
+handed resolved absolute paths on the spec and never allocates
+(`VmExecution.prepare`: "No download (paths are resolved)"). So the
+supervisor also never deletes: it cannot tell a per-VM volume from a shared
+cache entry (a program's `rootfs_path` *is* `RUNTIME_CACHE/<runtime_ref>`,
+shared by every program on that runtime), and a spec-only view misses the
+namespace directory itself, volumes on other pools and the staging
+directories. `DeleteVm` therefore takes no erase flag at all
+(`DeleteVmRequest` field 2, the former `wipe`, is reserved).
 
-What `DeleteVm` always does, regardless of `wipe`: stop the VM (tearing down
-its network state exactly as `StopVm` would), remove the world entry, remove
-the NUMA reservation and its `AllowedCPUs` drop-in (unlike a stop, a delete
-does release these), remove the on-disk controller config plus cloud-init
-seed plus the dead monitor/QMP/QGA control sockets
+Deletion lives in `src/aleph/vm/agent/vm/purge.py`, keyed by `vm_hash` and
+scoped to directories the agent created, so a shared cache entry is not
+merely spared by a check but unreachable: `purge_vm_volumes` deletes the
+files under `{pool}/{vm_hash}/` on every pool (the reinstall path);
+`purge_vm_storage` removes those directories, the confidential session
+directory and the SNP/V-PROGRAM staging directory (`operate_erase`, the
+owner's "delete all my data", which erases the rootfs too). A `.btrfs`
+volume whose device-mapper target is still present is refused with an
+error rather than unlinked (the loop device would pin the inode and
+`create_devmapper` would skip the rebuild), until dm teardown on stop
+exists.
+
+What `DeleteVm` does: stop the VM (tearing down its network state exactly
+as `StopVm` would, and releasing every handle the daemon holds on the VM's
+disks), remove the world entry, remove the NUMA reservation and its
+`AllowedCPUs` drop-in (unlike a stop, a delete does release these), remove
+the on-disk controller config plus cloud-init seed plus the dead
+monitor/QMP/QGA control sockets
 (`controller_config::remove_controller_configuration`), and reap the VM's
 backup registry entry so no stale job or disk lock outlives it. Persisted
 port-forward mappings are deleted unless the caller passes
-`keep_port_mappings=true` *and* `wipe` is false; `wipe=true` always deletes
-them even if the caller asked to keep them. `keep_port_mappings=true` is used by callers that redeploy the same `vm_id`
-right after deleting it: the agent's update-watcher reap (a message update
-is a delete+recreate, not a real deallocation,
-`src/aleph/vm/agent/update_watcher.py`) and `start_persistent_vm`'s crash
+`keep_port_mappings=true`, which is used by callers that redeploy the same
+`vm_id` right after deleting it: the agent's update-watcher reap (a message
+update is a delete+recreate, not a real deallocation,
+`src/aleph/vm/agent/update_watcher.py`), `start_persistent_vm`'s crash
 recovery, which deletes and recreates a persistent VM found in the terminal
-`FAILED` state so the recreated VM reloads the same host ports
-(`src/aleph/vm/agent/run.py`).
+`FAILED` state (`src/aleph/vm/agent/run.py`), and the from-scratch
+reinstall above.
 
 A `DeleteVm` against a VM the daemon never adopted (a "hidden" VM left over
 from a failed boot-time reattach) is a distinct code path: it stops and
@@ -380,9 +404,9 @@ it would steal capacity from a co-located VM that legitimately holds it.
 - `StopVm`/`StartVm` on an ephemeral Firecracker program are `Unimplemented`;
   the only supported cycle for a program is `DeleteVm` + `CreateVm`
   (`rust/crates/supervisor-daemon/src/lifecycle.rs`).
-- `DeleteVm(wipe=true)` erases writable data volumes but never the rootfs;
-  only `ReinstallVm` erases the rootfs, unconditionally
-  (`rust/crates/supervisor-daemon/src/lifecycle.rs`).
+- `DeleteVm` never deletes a byte of a VM's storage; the agent, which
+  allocated it, owns its deletion (`src/aleph/vm/agent/vm/purge.py`), and
+  a purge cannot reach a shared cache entry or another VM's directory.
 - Restore operations (`RestoreBackup`, `RestoreFromImage`) and a running
   backup share one per-VM disk lock, so a restore's rootfs swap and a
   backup's disk read can never interleave
@@ -400,7 +424,7 @@ it would steal capacity from a co-located VM that legitimately holds it.
 ## Pointers into code
 
 - `rust/crates/supervisor-daemon/src/lifecycle.rs`: every lifecycle RPC
-  (`create_vm`, `stop_vm`, `start_vm`, `reboot_vm`, `reinstall_vm`,
+  (`create_vm`, `stop_vm`, `start_vm`, `reboot_vm`,
   `restore_backup`, `restore_from_image`, `delete_vm`,
   `add_port_forward`/`remove_port_forward`), plus adoption/reconcile
   (`reconcile_boot`, `retry_failed_reattachments_once`,

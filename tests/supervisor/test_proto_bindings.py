@@ -6,6 +6,8 @@ fields. Behavioural tests live with the Supervisor implementations
 (plans 0.C and 0.D).
 """
 
+import pytest
+
 from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
 
@@ -71,7 +73,10 @@ def test_lifecycle_rpcs_defined():
     from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     methods = {m.name for m in supervisor_pb2.DESCRIPTOR.services_by_name["Supervisor"].methods}
-    assert {"CreateVm", "GetVm", "GetVmSpec", "ListVms", "DeleteVm", "RebootVm", "ReinstallVm"} <= methods
+    assert {"CreateVm", "GetVm", "GetVmSpec", "ListVms", "DeleteVm", "RebootVm"} <= methods
+    # Storage is the agent's: there is no RPC left that asks the supervisor to
+    # delete a VM's disks.
+    assert "ReinstallVm" not in methods
 
 
 def test_backend_enum_complete():
@@ -287,12 +292,15 @@ def test_error_detail_message_shape():
     assert {"code", "message", "vm_id"} <= fields
 
 
-def test_delete_vm_request_has_wipe_field():
+def test_delete_vm_request_has_no_wipe_field():
+    """`wipe` is gone and its field number reserved: DeleteVm never deletes
+    storage, so no client may ask it to."""
     from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
-    req = supervisor_pb2.DeleteVmRequest(vm_id="x", wipe=True)
-    assert req.wipe is True
-    assert supervisor_pb2.DeleteVmRequest(vm_id="x").wipe is False
+    fields = {f.name for f in supervisor_pb2.DeleteVmRequest.DESCRIPTOR.fields}
+    assert "wipe" not in fields
+    with pytest.raises(ValueError):
+        supervisor_pb2.DeleteVmRequest(vm_id="x", wipe=True)
 
 
 def test_delete_vm_request_has_keep_port_mappings_field():
@@ -301,14 +309,6 @@ def test_delete_vm_request_has_keep_port_mappings_field():
     req = supervisor_pb2.DeleteVmRequest(vm_id="x", keep_port_mappings=True)
     assert req.keep_port_mappings is True
     assert supervisor_pb2.DeleteVmRequest(vm_id="x").keep_port_mappings is False
-
-
-def test_reinstall_vm_request_has_wipe_volumes_field():
-    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
-
-    req = supervisor_pb2.ReinstallVmRequest(vm_id="x", wipe_volumes=True)
-    assert req.wipe_volumes is True
-    assert supervisor_pb2.ReinstallVmRequest(vm_id="x").wipe_volumes is False
 
 
 def test_log_source_has_stderr():
@@ -339,7 +339,6 @@ def test_full_service_surface_pinned():
         "StopVm",
         "StartVm",
         "RebootVm",
-        "ReinstallVm",
         "RunProgramCode",
         "RestoreFromImage",
         # Port forwarding

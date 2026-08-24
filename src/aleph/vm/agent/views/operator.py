@@ -14,7 +14,7 @@ import pydantic
 from aiohttp import web
 from aiohttp.web_urldispatcher import UrlMappingMatchInfo
 from aleph_message.exceptions import UnknownHashError
-from aleph_message.models import ItemHash, MessageType
+from aleph_message.models import InstanceContent, ItemHash, MessageType, ProgramContent
 from aleph_message.models.execution import BaseExecutableContent
 from pydantic import BaseModel
 
@@ -22,20 +22,22 @@ from aleph.vm.agent import metrics
 from aleph.vm.agent.custom_logs import set_vm_for_logging
 from aleph.vm.agent.expiry import ExpiryManager
 from aleph.vm.agent.run import create_vm_execution_or_raise_http_error
-from aleph.vm.agent.snp_instance_launch import remove_snp_instance_staging
 from aleph.vm.agent.views.authentication import (
     authenticate_websocket_message,
     require_jwk_authentication,
 )
+from aleph.vm.agent.vm.downloader import recreate_vm_volumes
+from aleph.vm.agent.vm.purge import purge_vm_staging, purge_vm_storage, purge_vm_volumes
 from aleph.vm.agent.vm_registry import AgentVmRecord
-from aleph.vm.agent.vprogram_launch import remove_vprogram_staging
 from aleph.vm.backup_staging import download_volume_by_ref, get_backup_directory
 from aleph.vm.conf import settings
+from aleph.vm.storage_pools import pin_layout
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.errors import (
     BackupNotFoundError,
     InsufficientResourcesError,
     InvalidBackendError,
+    ResourceDownloadError,
     VmNotFoundError,
 )
 from aleph.vm.supervisor_interface.types import (
@@ -658,18 +660,38 @@ async def operate_erase(request: web.Request, authenticated_sender: str) -> web.
         logger.info(f"Erasing {vm_hash}")
         supervisor: Supervisor = request.app["supervisor"]
         try:
-            await supervisor.delete_vm(VmId(str(vm_hash)), wipe=True)
+            await supervisor.delete_vm(VmId(str(vm_hash)))
             request.app["expiry"].cancel(VmId(str(vm_hash)))
             request.app["update_watcher"].cancel(VmId(str(vm_hash)))
         except VmNotFoundError:
             raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
         request.app["vm_registry"].forget(vm_hash)
         await metrics.delete_records_for_vm(str(vm_hash))
-        # wipe=True clears the daemon-side disks; the agent-side staging dir
-        # (extracted runtime bundle) is ours to remove.
-        remove_vprogram_staging(vm_hash)
-        remove_snp_instance_staging(vm_hash)
+        # DeleteVm has released the supervisor's handles on the disks; the
+        # bytes are the agent's to delete, since the agent allocated them.
+        # This erases the rootfs too: an owner asking to erase their VM's data
+        # means all of it, and the rootfs is where most of it lives.
+        await asyncio.to_thread(purge_vm_storage, vm_hash)
         return web.Response(status=200, body=f"Erased VM with ref {vm_hash}")
+
+
+def _supports_in_place_reinstall(record: AgentVmRecord) -> bool:
+    """True when a reinstall can keep the running execution and rebuild the
+    volumes underneath it.
+
+    Keeping the execution keeps its vm_index, and with it the VM's addresses,
+    which a delete-and-recreate would renumber. Excluded are ephemeral VMs
+    (no execution to keep), V-PROGRAMs and confidential VMs: their rootfs is
+    measured and staged from a bundle rather than built from the message, and
+    a confidential VM comes back awaiting its owner's session rather than
+    running, so it has to go through the full create path.
+    """
+    content = record.message
+    if not record.persistent or record.is_vprogram:
+        return False
+    if not isinstance(content, InstanceContent | ProgramContent):
+        return False
+    return getattr(content.environment, "trusted_execution", None) is None
 
 
 @cors_allow_all
@@ -694,17 +716,57 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
 
         logger.info(f"Reinstalling (reset to initial state) {vm_hash}")
         supervisor: Supervisor = request.app["supervisor"]
+        vm_id = VmId(str(vm_hash))
+        include_data_volumes = not rootfs_only
         try:
-            await supervisor.reinstall_vm(VmId(str(vm_hash)), wipe_volumes=not rootfs_only)
+            if _supports_in_place_reinstall(record):
+                # Keep the execution registered so the VM holds its vm_index,
+                # and with it its addresses: stop, rebuild the volumes under
+                # the unchanged spec, start again. Recreating the volumes is
+                # the agent's job because the agent created them; the
+                # supervisor is handed resolved paths and never allocates.
+                await supervisor.stop_vm(vm_id)
+                deleted = await asyncio.to_thread(purge_vm_volumes, vm_hash, include_data_volumes=include_data_volumes)
+                try:
+                    # Rebuild each volume on the pool it was deleted from: the
+                    # running VM's spec still names those paths.
+                    with pin_layout(str(vm_hash), deleted):
+                        await recreate_vm_volumes(record.message, str(vm_hash))
+                    await supervisor.start_vm(vm_id)
+                except VmNotFoundError:
+                    raise
+                except ResourceDownloadError as error:
+                    # The VM stays stopped with its volumes missing; a retry
+                    # of the reinstall (or a plain start, which re-runs
+                    # nothing) is the recovery, so say what went wrong.
+                    logger.exception("Reinstall of %s: base image not available", vm_hash)
+                    raise web.HTTPBadRequest(reason="Base image or runtime not available") from error
+                except Exception as error:
+                    logger.exception("Reinstall of %s failed after purging its volumes", vm_hash)
+                    raise web.HTTPInternalServerError(
+                        reason="Reinstall failed; the VM is stopped, retry to rebuild its volumes"
+                    ) from error
+            else:
+                # Ephemeral and confidential VMs are rebuilt from scratch: a
+                # confidential rootfs is measured and staged, so its bundle
+                # must be re-staged and its owner must re-attest anyway. This
+                # is a delete+recreate cycle, so the persisted host ports are
+                # kept for the recreated VM to reload.
+                await supervisor.delete_vm(vm_id, keep_port_mappings=True)
+                await asyncio.to_thread(purge_vm_volumes, vm_hash, include_data_volumes=include_data_volumes)
+                purge_vm_staging(vm_hash)
+                # The registry record is deliberately left in place: the create
+                # path records it again, and dropping it here would 404 the
+                # owner's own API calls during the rebuild window.
+                await create_vm_execution_or_raise_http_error(
+                    vm_hash=vm_hash,
+                    supervisor=supervisor,
+                    registry=request.app["vm_registry"],
+                    capacity=request.app["capacity"],
+                    persistent=record.persistent,
+                )
         except VmNotFoundError:
             raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
-        if not record.persistent:
-            await create_vm_execution_or_raise_http_error(
-                vm_hash=vm_hash,
-                supervisor=supervisor,
-                registry=request.app["vm_registry"],
-                capacity=request.app["capacity"],
-            )
         return web.Response(status=200, body=f"Reinstalled VM with ref {vm_hash}")
 
 

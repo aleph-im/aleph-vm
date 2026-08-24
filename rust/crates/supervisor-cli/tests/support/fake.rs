@@ -161,13 +161,6 @@ impl Supervisor for FakeSupervisor {
             .ok_or_else(|| not_found(&vm_id))
     }
 
-    async fn reinstall_vm(
-        &self,
-        _request: Request<pb::ReinstallVmRequest>,
-    ) -> Result<Response<pb::VmInfo>, Status> {
-        Err(Status::unimplemented("not faked"))
-    }
-
     async fn run_program_code(
         &self,
         _request: Request<pb::RunProgramCodeRequest>,

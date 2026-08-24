@@ -884,12 +884,7 @@ impl Supervisor for SupervisorService {
         let state = self.state.clone();
         let request = request.into_inner();
         run_lifecycle(move || {
-            crate::lifecycle::delete_vm(
-                &state,
-                &request.vm_id,
-                request.wipe,
-                request.keep_port_mappings,
-            )
+            crate::lifecycle::delete_vm(&state, &request.vm_id, request.keep_port_mappings)
         })
         .await?;
         Ok(Response::new(pb::DeleteVmResponse {}))
@@ -925,22 +920,6 @@ impl Supervisor for SupervisorService {
         let vm_id = request.into_inner().vm_id;
         let (entry, running) =
             run_lifecycle(move || crate::lifecycle::reboot_vm(&state, &vm_id)).await?;
-        Ok(Response::new(vm_info_message(&entry, running, now_ns())))
-    }
-
-    async fn reinstall_vm(
-        &self,
-        request: Request<pb::ReinstallVmRequest>,
-    ) -> Result<Response<pb::VmInfo>, Status> {
-        let state = self.state.clone();
-        let request = request.into_inner();
-        // `optional bool`: an unset field takes the Python ABC's default
-        // (wipe_volumes=True), as the proto documents.
-        let wipe_volumes = request.wipe_volumes.unwrap_or(true);
-        let (entry, running) = run_lifecycle(move || {
-            crate::lifecycle::reinstall_vm(&state, &request.vm_id, wipe_volumes)
-        })
-        .await?;
         Ok(Response::new(vm_info_message(&entry, running, now_ns())))
     }
 

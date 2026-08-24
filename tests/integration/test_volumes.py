@@ -1,5 +1,5 @@
 """Use case 5: extra data disks. Attachment order and guest visibility,
-data persistence across stop/start, and wipe-on-delete semantics."""
+data persistence across stop/start, and that DeleteVm leaves storage alone."""
 
 import pytest
 from conftest import (
@@ -36,11 +36,11 @@ def _find_data_device(key_path, host) -> str:
 
 
 @requires_qemu
-async def test_extra_disk_data_survives_stop_start_and_wipe_erases_it(supervisor, daemon, ssh_keypair):
+async def test_extra_disk_data_survives_stop_start_and_delete(supervisor, daemon, ssh_keypair):
     """One boot covers the whole data-disk story: the extra disk is visible
     in the guest, data written to it survives a stop/start cycle (the disk
-    is a host file, not a tmpfs), and delete(wipe=True) erases the host
-    file while a plain delete would have left it."""
+    is a host file, not a tmpfs), and it outlives DeleteVm -- storage belongs
+    to the agent, and the supervisor never deletes a byte of it."""
     key_path, pubkey = ssh_keypair
     vm_id = fresh_vm_id()
     data_disk = make_data_disk(daemon, vm_id, DATA_DISK_MIB)
@@ -83,9 +83,10 @@ async def test_extra_disk_data_survives_stop_start_and_wipe_erases_it(supervisor
         assert result.stdout.strip() == "persisted"
     finally:
         try:
-            await supervisor.delete_vm(vm_id, wipe=True)
+            await supervisor.delete_vm(vm_id)
         except Exception:
             pass
 
     await eventually(lambda: not vm_processes(vm_id), timeout=90, message="qemu/controller survived delete")
-    assert not data_disk.exists(), "delete(wipe=True) must erase writable data volumes"
+    assert data_disk.exists(), "DeleteVm must leave the VM's storage to the agent"
+    data_disk.unlink()

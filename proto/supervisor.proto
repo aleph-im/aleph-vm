@@ -44,7 +44,6 @@ service Supervisor {
   rpc StopVm(StopVmRequest) returns (VmInfo);
   rpc StartVm(StartVmRequest) returns (VmInfo);
   rpc RebootVm(RebootVmRequest) returns (VmInfo);
-  rpc ReinstallVm(ReinstallVmRequest) returns (VmInfo);
   rpc RunProgramCode(RunProgramCodeRequest) returns (RunProgramCodeResponse);
   rpc RestoreFromImage(RestoreFromImageRequest) returns (VmInfo);
 
@@ -58,7 +57,7 @@ service Supervisor {
   // ListVms first, then watch. This is the client's replacement for
   // in-process lifecycle hooks (e.g. dropping per-VM agent state when a VM
   // goes down). Today events reflect transitions the supervisor itself
-  // performs (create/stop/start/reboot/reinstall/delete); spontaneous
+  // performs (create/stop/start/reboot/delete); spontaneous
   // guest-death detection is a future extension.
   rpc WatchEvents(WatchEventsRequest) returns (stream VmEvent);
 
@@ -336,9 +335,10 @@ message ListVmsRequest    {}
 message ListVmsResponse   { repeated VmInfo vms = 1; }
 message DeleteVmRequest {
   string vm_id = 1;
-  bool wipe = 2;                     // also delete persisted port mappings and writable data volumes
+  reserved 2;                        // was `wipe`: storage is the agent's to delete, never the supervisor's
+  reserved "wipe";
   bool keep_port_mappings = 3;       // the delete is part of a delete+recreate cycle: preserve persisted
-                                     // host-port forwards (ignored when wipe=true)
+                                     // host-port forwards
 }
 message DeleteVmResponse  {}
 message RebootVmRequest {
@@ -348,14 +348,6 @@ message RebootVmRequest {
   // VM and recreates it from the spec it holds. Firecracker has no reboot
   // API. Add a `hard` option when a real implementation lands.
 }
-message ReinstallVmRequest {
-  string vm_id = 1;
-  optional bool wipe_volumes = 2;    // false = reset rootfs only, keep writable data volumes.
-                                     // `optional` so the server can distinguish unset from false:
-                                     // the Python ABC defaults wipe_volumes to true, so an unset
-                                     // field is treated as true.
-}
-
 message RestoreFromImageRequest {
   string vm_id = 1;
   string image_path = 2;             // host path to a staged QCOW2 image

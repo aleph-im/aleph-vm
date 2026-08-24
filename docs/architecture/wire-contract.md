@@ -59,9 +59,12 @@ up repeatedly in the RPC surface:
 - `ConfidentialMode` and `VmInfo.gpus` stay precise (an enum and an exact
   PCI device list) rather than pre-reducing to booleans; any lossy
   reduction for Aleph-facing APIs happens agent-side.
-- `ReinstallVmRequest.wipe_volumes` is `optional bool` specifically so the
-  server can distinguish "unset" from "false" and apply its own default,
-  avoiding the proto3 zero-value ambiguity a plain `bool` would have.
+- No request carries a storage-erase flag. The agent allocates a VM's
+  volumes and hands the supervisor resolved paths, so the agent owns their
+  deletion; `DeleteVm` releases the supervisor's handles on the disks and
+  leaves the bytes alone (`DeleteVmRequest` field 2, the former `wipe`, is
+  reserved), and reinstall is agent orchestration over `StopVm`/`StartVm`
+  or `DeleteVm`/`CreateVm` rather than an RPC.
 - `CreateVm` is idempotent on `vm_id`: resending the same spec for a live VM
   returns its current `VmInfo`; a different spec, or a collision, fails
   `ALREADY_EXISTS`. `StopVm`/`StartVm` exist because a persistent VM's

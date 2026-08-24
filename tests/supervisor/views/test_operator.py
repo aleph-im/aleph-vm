@@ -8,6 +8,7 @@ import aiohttp
 import pytest
 from aiohttp.test_utils import TestClient
 from aleph_message.models import ItemHash
+from aleph_message.models.execution.environment import TrustedExecutionEnvironment
 
 from aleph.vm.agent.metrics import ExecutionRecord
 from aleph.vm.agent.supervisor import setup_webapp
@@ -15,7 +16,7 @@ from aleph.vm.agent.views.operator import _security_aggregate_cache
 from aleph.vm.conf import settings
 from aleph.vm.storage import get_message
 from aleph.vm.supervisor.local import LocalSupervisor
-from aleph.vm.supervisor_interface.errors import VmNotFoundError
+from aleph.vm.supervisor_interface.errors import ResourceDownloadError, VmNotFoundError
 from aleph.vm.supervisor_interface.types import (
     Backend,
     BackupId,
@@ -117,7 +118,6 @@ def _fake_supervisor(status: VmStatus = VmStatus.RUNNING) -> MagicMock:
         stop_vm=AsyncMock(return_value=_vm_info(VmStatus.STOPPED)),
         start_vm=AsyncMock(return_value=_vm_info(VmStatus.RUNNING)),
         reboot_vm=AsyncMock(),
-        reinstall_vm=AsyncMock(),
         get_logs=AsyncMock(return_value=[]),
         stream_logs=_fake_stream([]),
         recreate_network=AsyncMock(return_value=dict(_RECREATE_NETWORK_SUMMARY)),
@@ -953,6 +953,7 @@ async def test_operator_erase_with_delegation(aiohttp_client, mocker):
     fake_sup = _fake_supervisor()
     app["supervisor"] = fake_sup
     mock_delete_records = mocker.patch("aleph.vm.agent.metrics.delete_records_for_vm", new_callable=mocker.AsyncMock)
+    mock_purge = mocker.patch("aleph.vm.agent.views.operator.purge_vm_storage")
     client: TestClient = await aiohttp_client(app)
     response = await client.post(
         f"/control/machine/{vm_hash}/erase",
@@ -960,7 +961,10 @@ async def test_operator_erase_with_delegation(aiohttp_client, mocker):
 
     assert response.status == 200
     assert await response.text() == f"Erased VM with ref {vm_hash}"
-    fake_sup.delete_vm.assert_awaited_once_with(VmId(str(vm_hash)), wipe=True)
+    fake_sup.delete_vm.assert_awaited_once_with(VmId(str(vm_hash)))
+    # The erase owns the storage, rootfs included: the supervisor's delete
+    # only released its handles on the disks.
+    mock_purge.assert_called_once_with(vm_hash)
     # registry record must be forgotten after erase, and its DB records deleted
     assert app["vm_registry"].get(vm_hash) is None
     mock_delete_records.assert_awaited_once_with(str(vm_hash))
@@ -1074,7 +1078,9 @@ async def test_operator_backup_delete_authorized_reads_registry(aiohttp_client, 
 
 @pytest.mark.asyncio
 async def test_operator_reinstall(aiohttp_client, mocker):
-    """Reinstall a persistent VM: supervisor.reinstall_vm is called with wipe_volumes=True."""
+    """Reinstall a persistent VM in place: stop, purge the volumes, rebuild
+    them agent-side, start again. The execution is kept, so the VM holds its
+    vm_index and its addresses."""
     settings.ENABLE_QEMU_SUPPORT = True
     settings.setup()
 
@@ -1090,6 +1096,11 @@ async def test_operator_reinstall(aiohttp_client, mocker):
 
     mock_create_vm = mocker.patch(
         "aleph.vm.agent.views.operator.create_vm_execution_or_raise_http_error",
+        new=AsyncMock(),
+    )
+    mock_purge = mocker.patch("aleph.vm.agent.views.operator.purge_vm_volumes")
+    mock_recreate = mocker.patch(
+        "aleph.vm.agent.views.operator.recreate_vm_volumes",
         new=AsyncMock(),
     )
 
@@ -1109,13 +1120,19 @@ async def test_operator_reinstall(aiohttp_client, mocker):
 
     assert response.status == 200
     assert await response.text() == f"Reinstalled VM with ref {vm_hash}"
-    fake_sup.reinstall_vm.assert_awaited_once_with(VmId(str(vm_hash)), wipe_volumes=True)
+    fake_sup.stop_vm.assert_awaited_once_with(VmId(str(vm_hash)))
+    mock_purge.assert_called_once_with(vm_hash, include_data_volumes=True)
+    mock_recreate.assert_awaited_once_with(instance_message.content, str(vm_hash))
+    fake_sup.start_vm.assert_awaited_once_with(VmId(str(vm_hash)))
+    # The execution is kept: no delete, no re-create through the create path.
+    fake_sup.delete_vm.assert_not_awaited()
     mock_create_vm.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_operator_reinstall_unauthorized(aiohttp_client, mocker):
-    """Test that reinstall endpoint requires authorization; reinstall_vm is NOT called."""
+    """Test that reinstall endpoint requires authorization; nothing is stopped
+    and no volume is touched."""
     settings.ENABLE_QEMU_SUPPORT = True
     settings.setup()
 
@@ -1150,7 +1167,8 @@ async def test_operator_reinstall_unauthorized(aiohttp_client, mocker):
 
     assert response.status == 403
     assert await response.text() == "Unauthorized sender"
-    fake_sup.reinstall_vm.assert_not_awaited()
+    fake_sup.stop_vm.assert_not_awaited()
+    fake_sup.delete_vm.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1613,7 +1631,7 @@ async def test_operator_stop_booting_vm_is_stopped(aiohttp_client, mocker):
 
 @pytest.mark.asyncio
 async def test_operator_reinstall_rootfs_only(aiohttp_client, mocker):
-    """?erase_volumes=false → reinstall_vm called with wipe_volumes=False."""
+    """?erase_volumes=false → the rootfs is purged, the data volumes are kept."""
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     instance_message = await get_message(ref=vm_hash)
 
@@ -1632,6 +1650,8 @@ async def test_operator_reinstall_rootfs_only(aiohttp_client, mocker):
     )
     fake_sup = _fake_supervisor()
     app["supervisor"] = fake_sup
+    mock_purge = mocker.patch("aleph.vm.agent.views.operator.purge_vm_volumes")
+    mocker.patch("aleph.vm.agent.views.operator.recreate_vm_volumes", new=AsyncMock())
 
     client: TestClient = await aiohttp_client(app)
     response = await client.post(
@@ -1639,12 +1659,95 @@ async def test_operator_reinstall_rootfs_only(aiohttp_client, mocker):
     )
 
     assert response.status == 200
-    fake_sup.reinstall_vm.assert_awaited_once_with(VmId(str(vm_hash)), wipe_volumes=False)
+    mock_purge.assert_called_once_with(vm_hash, include_data_volumes=False)
+
+
+@pytest.mark.asyncio
+async def test_operator_reinstall_persistent_confidential_rebuilds_from_scratch(aiohttp_client, mocker):
+    """A persistent confidential instance is not reinstalled in place: its
+    rootfs is measured and staged, so it goes delete -> purge -> create,
+    keeping its host ports and its persistent flag."""
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+    content = instance_message.content.model_copy(deep=True)
+    content.environment.trusted_execution = TrustedExecutionEnvironment()
+
+    mocker.patch(
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
+        return_value=instance_message.sender,
+    )
+    mock_create_vm = mocker.patch(
+        "aleph.vm.agent.views.operator.create_vm_execution_or_raise_http_error",
+        new=AsyncMock(),
+    )
+
+    fake_vm_pool = mocker.AsyncMock(executions={})
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
+    app["vm_registry"].record(vm_hash, message=content, original=content, persistent=True)
+    fake_sup = _fake_supervisor()
+    app["supervisor"] = fake_sup
+    mock_purge = mocker.patch("aleph.vm.agent.views.operator.purge_vm_volumes")
+    mock_staging = mocker.patch("aleph.vm.agent.views.operator.purge_vm_staging")
+    mock_recreate = mocker.patch("aleph.vm.agent.views.operator.recreate_vm_volumes", new=AsyncMock())
+
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(f"/control/machine/{vm_hash}/reinstall")
+
+    assert response.status == 200
+    fake_sup.stop_vm.assert_not_awaited()
+    mock_recreate.assert_not_awaited()
+    fake_sup.delete_vm.assert_awaited_once_with(VmId(str(vm_hash)), keep_port_mappings=True)
+    mock_purge.assert_called_once_with(vm_hash, include_data_volumes=True)
+    mock_staging.assert_called_once_with(vm_hash)
+    mock_create_vm.assert_awaited_once_with(
+        vm_hash=vm_hash,
+        supervisor=fake_sup,
+        registry=app["vm_registry"],
+        capacity=app["capacity"],
+        persistent=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_operator_reinstall_reports_a_failed_volume_rebuild(aiohttp_client, mocker):
+    """A base image that cannot be fetched after the purge is a 400 with a
+    reason, not an opaque 500: the VM is stopped and a retry rebuilds it."""
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+
+    mocker.patch(
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
+        return_value=instance_message.sender,
+    )
+
+    fake_vm_pool = mocker.AsyncMock(executions={})
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    fake_sup = _fake_supervisor()
+    app["supervisor"] = fake_sup
+    mocker.patch("aleph.vm.agent.views.operator.purge_vm_volumes")
+    mocker.patch(
+        "aleph.vm.agent.views.operator.recreate_vm_volumes",
+        new=AsyncMock(side_effect=ResourceDownloadError("gateway down")),
+    )
+
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(f"/control/machine/{vm_hash}/reinstall")
+
+    assert response.status == 400
+    assert "not available" in await response.text()
+    fake_sup.start_vm.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_operator_reinstall_non_persistent_recreates(aiohttp_client, mocker):
-    """Non-persistent record: reinstall_vm called AND create_vm_execution_or_raise_http_error called."""
+    """Non-persistent record: the VM is deleted, its storage purged, and it is
+    rebuilt through the create path."""
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     instance_message = await get_message(ref=vm_hash)
 
@@ -1668,17 +1771,23 @@ async def test_operator_reinstall_non_persistent_recreates(aiohttp_client, mocke
     )
     fake_sup = _fake_supervisor()
     app["supervisor"] = fake_sup
+    mock_purge = mocker.patch("aleph.vm.agent.views.operator.purge_vm_volumes")
+    mock_staging = mocker.patch("aleph.vm.agent.views.operator.purge_vm_staging")
 
     client: TestClient = await aiohttp_client(app)
     response = await client.post(f"/control/machine/{vm_hash}/reinstall")
 
     assert response.status == 200
-    fake_sup.reinstall_vm.assert_awaited_once_with(VmId(str(vm_hash)), wipe_volumes=True)
+    # A delete+recreate cycle: the recreated VM must reload the same host ports.
+    fake_sup.delete_vm.assert_awaited_once_with(VmId(str(vm_hash)), keep_port_mappings=True)
+    mock_purge.assert_called_once_with(vm_hash, include_data_volumes=True)
+    mock_staging.assert_called_once_with(vm_hash)
     mock_create_vm.assert_awaited_once_with(
         vm_hash=vm_hash,
         supervisor=fake_sup,
         registry=app["vm_registry"],
         capacity=app["capacity"],
+        persistent=False,
     )
 
 
@@ -1727,7 +1836,6 @@ async def test_operator_erase_supervisor_not_found_404(aiohttp_client, mocker):
     # Supervisor raises VmNotFoundError on delete_vm
     app["supervisor"] = MagicMock(
         delete_vm=AsyncMock(side_effect=VmNotFoundError("not found")),
-        reinstall_vm=AsyncMock(),
     )
 
     client: TestClient = await aiohttp_client(app)
@@ -1780,7 +1888,8 @@ async def test_operator_erase_unauthorized(aiohttp_client, mocker):
 
 @pytest.mark.asyncio
 async def test_operator_reinstall_supervisor_not_found_404(aiohttp_client, mocker):
-    """Registry seeded, reinstall_vm raises VmNotFoundError → 404; registry record kept."""
+    """Registry seeded, the supervisor no longer knows the VM → 404; registry
+    record kept and no volume touched."""
     vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
     instance_message = await get_message(ref=vm_hash)
 
@@ -1797,11 +1906,12 @@ async def test_operator_reinstall_supervisor_not_found_404(aiohttp_client, mocke
         original=instance_message.content,
         persistent=True,
     )
-    # Supervisor raises VmNotFoundError on reinstall_vm
+    # The in-place path stops the VM first; the supervisor has forgotten it.
     app["supervisor"] = MagicMock(
-        reinstall_vm=AsyncMock(side_effect=VmNotFoundError("not found")),
+        stop_vm=AsyncMock(side_effect=VmNotFoundError("not found")),
         delete_vm=AsyncMock(),
     )
+    mock_purge = mocker.patch("aleph.vm.agent.views.operator.purge_vm_volumes")
 
     client: TestClient = await aiohttp_client(app)
     response = await client.post(f"/control/machine/{vm_hash}/reinstall")
@@ -1809,6 +1919,8 @@ async def test_operator_reinstall_supervisor_not_found_404(aiohttp_client, mocke
     assert response.status == 404
     # Registry record was NOT forgotten (reinstall didn't actually happen)
     assert app["vm_registry"].get(vm_hash) is not None
+    # ... and nothing was deleted on the way to the 404.
+    mock_purge.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

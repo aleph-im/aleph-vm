@@ -256,7 +256,6 @@ async def test_mutations_on_unknown_vms_raise_vm_not_found(lifecycle_daemon):
             client.stop_vm(vm_id),
             client.start_vm(vm_id),
             client.reboot_vm(vm_id),
-            client.reinstall_vm(vm_id),
             client.delete_vm(vm_id),
             client.add_port_forward(
                 PortForwardSpec(vm_id=vm_id, host_port=HostPort(0), vm_port=22, protocol=Protocol.TCP)
@@ -313,8 +312,8 @@ async def test_delete_vm_sweeps_the_definition_and_soft_deletes_the_mappings(sta
         try:
             assert (await client.health()).vm_count == 2
 
-            # Full delete: definition, seed and mappings go; the writable
-            # data volume stays (wipe=False).
+            # Full delete: definition, seed and mappings go; storage is
+            # never the daemon's to delete, so the data volume stays.
             await client.delete_vm(VmId(STOPPED_HASH))
             with pytest.raises(VmNotFoundError):
                 await client.get_vm(VmId(STOPPED_HASH))
@@ -322,16 +321,17 @@ async def test_delete_vm_sweeps_the_definition_and_soft_deletes_the_mappings(sta
             assert not (execution_root / f"cloud-init-{STOPPED_HASH}.img").exists()
             assert (execution_root / "volumes" / f"{STOPPED_HASH}-data.img").exists()
 
-            # keep_port_mappings=True preserves the persisted rows but the
-            # wipe erases the writable volume.
-            await client.delete_vm(VmId(KEPT_HASH), wipe=True, keep_port_mappings=True)
-            assert not (execution_root / "volumes" / f"{KEPT_HASH}-data.img").exists()
+            # A second VM deleted the same way: both retire their port rows
+            # (keep_port_mappings has its own test below) and both keep
+            # their disks.
+            await client.delete_vm(VmId(KEPT_HASH))
+            assert (execution_root / "volumes" / f"{KEPT_HASH}-data.img").exists()
         finally:
             await client.close()
 
-    # The store is read back through the actual SQLAlchemy models: the
-    # deleted VM's row is soft-deleted with the SQLAlchemy datetime
-    # rendering; wipe overrides keep_port_mappings, so both are retired.
+    # The store is read back through the actual SQLAlchemy models: both
+    # deleted VMs' rows are soft-deleted with the SQLAlchemy datetime
+    # rendering.
     (deleted_row,) = _rows(execution_root, STOPPED_HASH)
     assert deleted_row.deleted_at is not None
     (kept_row,) = _rows(execution_root, KEPT_HASH)

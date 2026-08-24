@@ -25,7 +25,7 @@ from os.path import isfile
 from pathlib import Path
 
 from aiohttp import ClientResponseError
-from aleph_message.models import InstanceContent, ProgramContent
+from aleph_message.models import ExecutableContent, InstanceContent, ProgramContent
 from aleph_message.models.execution.instance import RootfsVolume
 from aleph_message.models.execution.volume import PersistentVolume, VolumePersistence
 
@@ -197,3 +197,25 @@ class ProgramDownloader:
             self.download_volumes(),
             self.download_data(),
         )
+
+
+async def recreate_vm_volumes(message_content: ExecutableContent, namespace: str) -> None:
+    """Recreate a VM's volume files in place, from its message.
+
+    The reinstall path deletes a running VM's volumes and calls this to build
+    them again before restarting it. Placement is stable across the round
+    trip: ``storage_pools.volume_path_for`` keeps a VM's volumes on the pool
+    that already holds its directory, so the recreated files land back at the
+    paths the VM's spec already names.
+
+    Only the plain (non-confidential) instance and program flavours are
+    recreated in place; a confidential VM's rootfs is measured and staged, so
+    it goes through a full rebuild instead.
+    """
+    if isinstance(message_content, InstanceContent):
+        await QemuDownloader(message_content, namespace).download_all()
+    elif isinstance(message_content, ProgramContent):
+        await ProgramDownloader(message_content, namespace).download_all()
+    else:
+        msg = f"Cannot recreate volumes for {type(message_content).__name__}"
+        raise VmSetupError(msg)

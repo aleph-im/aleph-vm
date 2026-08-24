@@ -25,7 +25,6 @@ EXPECTED_METHODS = {
     "stop_vm",
     "start_vm",
     "reboot_vm",
-    "reinstall_vm",
     "run_program_code",
     "watch_events",
     "add_port_forward",
@@ -49,10 +48,10 @@ EXPECTED_METHODS = {
 STREAMING_METHODS = {"stream_logs", "download_backup", "watch_events"}
 
 
-def test_supervisor_aggregates_all_29_methods():
+def test_supervisor_aggregates_all_28_methods():
     abstract = Supervisor.__abstractmethods__
     assert abstract == EXPECTED_METHODS
-    assert len(EXPECTED_METHODS) == 29
+    assert len(EXPECTED_METHODS) == 28
 
 
 def test_supervisor_cannot_be_instantiated():
@@ -81,7 +80,6 @@ def test_capability_abcs_partition_the_surface():
             "stop_vm",
             "start_vm",
             "reboot_vm",
-            "reinstall_vm",
             "run_program_code",
         },
         PortForwardingOps: {"add_port_forward", "remove_port_forward", "list_port_forwards"},

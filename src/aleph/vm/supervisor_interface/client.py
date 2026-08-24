@@ -186,10 +186,10 @@ class GrpcSupervisor(Supervisor):
         reply = await self._unary("ListVms", pb.ListVmsRequest(), QUERY_TIMEOUT_SECS)
         return [conv.vm_info_from_pb(info) for info in reply.vms]
 
-    async def delete_vm(self, vm_id: VmId, wipe: bool = False, keep_port_mappings: bool = False) -> None:
+    async def delete_vm(self, vm_id: VmId, keep_port_mappings: bool = False) -> None:
         await self._unary(
             "DeleteVm",
-            pb.DeleteVmRequest(vm_id=str(vm_id), wipe=wipe, keep_port_mappings=keep_port_mappings),
+            pb.DeleteVmRequest(vm_id=str(vm_id), keep_port_mappings=keep_port_mappings),
             LIFECYCLE_TIMEOUT_SECS,
         )
 
@@ -203,14 +203,6 @@ class GrpcSupervisor(Supervisor):
 
     async def reboot_vm(self, vm_id: VmId) -> VmInfo:
         reply = await self._unary("RebootVm", pb.RebootVmRequest(vm_id=str(vm_id)), LIFECYCLE_TIMEOUT_SECS)
-        return conv.vm_info_from_pb(reply)
-
-    async def reinstall_vm(self, vm_id: VmId, wipe_volumes: bool = True) -> VmInfo:
-        reply = await self._unary(
-            "ReinstallVm",
-            pb.ReinstallVmRequest(vm_id=str(vm_id), wipe_volumes=wipe_volumes),
-            LIFECYCLE_TIMEOUT_SECS,
-        )
         return conv.vm_info_from_pb(reply)
 
     async def run_program_code(self, vm_id: VmId, scope: dict, *, timeout: float) -> bytes:
