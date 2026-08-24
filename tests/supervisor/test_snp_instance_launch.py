@@ -329,7 +329,11 @@ async def test_snp_instance_spec_selects_the_measured_cpu_model(staged_instance_
     # unlike an assertion against the default that a bug could satisfy by
     # accident.
     snp_vcpu_types(["EPYC", "EPYC-v4", "EPYC-Genoa-v2"])
-    measurements = [LaunchMeasurement(platform=TeePlatform.sev_snp, digest="a" * 96, vcpu_type="EPYC-Genoa-v2")]
+    measurements = [
+        LaunchMeasurement(
+            platform=TeePlatform.sev_snp, registers=SevSnpRegisters(launch="a" * 96), vcpu_type="EPYC-Genoa-v2"
+        )
+    ]
     content = snp_instance_content(trusted_execution_overrides={"measurements": measurements})
     spec, _attest_port = await build_snp_instance_spec(VM_HASH, content)
     assert spec.tee is not None
