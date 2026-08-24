@@ -302,7 +302,7 @@ impl VmEntry {
     }
 
     /// A minimal QEMU entry for tests that only read a few config fields
-    /// (backups read image_path / host_volumes / qga_socket_path).
+    /// (quiescence reads qga_socket_path, confidential reads image_path).
     #[cfg(test)]
     pub fn test_qemu(vm_hash: &str, image_path: &str) -> Self {
         let mut config = QemuVmConfig::for_program(256, None);

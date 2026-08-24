@@ -18,11 +18,14 @@ fn vm_info_serializes_to_json() {
 }
 
 #[test]
-fn nested_messages_and_maps_serialize() {
-    let backup = pb::BackupInfo {
-        source_sizes: [("rootfs".to_string(), 42u64)].into_iter().collect(),
+fn nested_messages_serialize() {
+    let info = pb::VmInfo {
+        ipv4: Some(pb::IpAssignment {
+            address: "172.16.0.2".to_string(),
+            ..Default::default()
+        }),
         ..Default::default()
     };
-    let value = serde_json::to_value(&backup).unwrap();
-    assert_eq!(value["source_sizes"]["rootfs"], 42);
+    let value = serde_json::to_value(&info).unwrap();
+    assert_eq!(value["ipv4"]["address"], "172.16.0.2");
 }

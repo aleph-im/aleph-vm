@@ -141,12 +141,13 @@ async fn serves_health_and_host_info_on_a_unix_socket() {
     assert!(!info.sev_snp_supported);
     assert!(!info.tdx_supported);
 
-    // Backups are served since increment 5: StartBackup for an unknown VM is
-    // NOT_FOUND with the VM_NOT_FOUND trailer (the empty vm_id is not tracked).
+    // Guest quiescence (the daemon's only part in a backup): FreezeGuest for
+    // an unknown VM is NOT_FOUND with the VM_NOT_FOUND trailer (the empty
+    // vm_id is not tracked), and so is ThawGuest.
     let status = client
-        .start_backup(pb::StartBackupRequest::default())
+        .freeze_guest(pb::FreezeGuestRequest::default())
         .await
-        .expect_err("StartBackup for an unknown VM must fail NOT_FOUND");
+        .expect_err("FreezeGuest for an unknown VM must fail NOT_FOUND");
     assert_eq!(status.code(), Code::NotFound);
     let trailer = status
         .metadata()
@@ -154,23 +155,13 @@ async fn serves_health_and_host_info_on_a_unix_socket() {
         .expect("the ErrorDetail trailer must be attached");
     let detail = pb::ErrorDetail::decode(trailer.to_bytes().unwrap().as_ref()).unwrap();
     assert_eq!(detail.code, pb::ErrorCode::VmNotFound as i32);
-
-    // GetBackupStatus with a malformed id is BACKUP_NOT_FOUND (the id is not
-    // this VM's and cannot be a file name).
     let status = client
-        .get_backup_status(pb::GetBackupStatusRequest {
+        .thaw_guest(pb::ThawGuestRequest {
             vm_id: "a".repeat(64),
-            backup_id: "not-a-valid-id".to_string(),
         })
         .await
-        .expect_err("a malformed backup id must fail NOT_FOUND");
+        .expect_err("ThawGuest for an unknown VM must fail NOT_FOUND");
     assert_eq!(status.code(), Code::NotFound);
-    let trailer = status
-        .metadata()
-        .get_bin(ERROR_TRAILER_KEY)
-        .expect("the ErrorDetail trailer must be attached");
-    let detail = pb::ErrorDetail::decode(trailer.to_bytes().unwrap().as_ref()).unwrap();
-    assert_eq!(detail.code, pb::ErrorCode::BackupNotFound as i32);
 
     // CreateVm with an unspecified backend: the Python BACKEND_FROM_PB
     // KeyError surfaces as INTERNAL.
