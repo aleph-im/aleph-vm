@@ -26,13 +26,7 @@ from aleph.vm.supervisor_interface.errors import (
     NotImplementedSupervisorError,
     SupervisorError,
 )
-from aleph.vm.supervisor_interface.types import (
-    BackupId,
-    DirectoryPath,
-    ErrorCode,
-    HostPort,
-    VmId,
-)
+from aleph.vm.supervisor_interface.types import ErrorCode, HostPort, VmId
 from aleph.vm.supervisor_interface.wire import ERROR_TRAILER_KEY
 from aleph.vm.supervisor_interface.wire import proto_convert as conv
 from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2 as pb
@@ -44,7 +38,6 @@ logger = logging.getLogger(__name__)
 # status code is the coarse fallback for clients that do not read the trailer.
 STATUS_CODE_BY_ERROR = {
     ErrorCode.VM_NOT_FOUND: grpc.StatusCode.NOT_FOUND,
-    ErrorCode.BACKUP_NOT_FOUND: grpc.StatusCode.NOT_FOUND,
     ErrorCode.HOST_NOT_FOUND: grpc.StatusCode.NOT_FOUND,
     ErrorCode.VM_ALREADY_EXISTS: grpc.StatusCode.ALREADY_EXISTS,
     ErrorCode.INSUFFICIENT_RESOURCES: grpc.StatusCode.RESOURCE_EXHAUSTED,
@@ -201,53 +194,16 @@ class SupervisorService(supervisor_pb2_grpc.SupervisorServicer):
             logger.exception("Unhandled error in StreamLogs")
             await _abort(context, translate_exception(error))
 
-    # ── Backups ──
+    # ── Guest quiescence ──
     @_translating
-    async def StartBackup(self, request: pb.StartBackupRequest, context) -> pb.BackupInfo:
-        info = await self._supervisor.start_backup(
-            VmId(request.vm_id), quiesce_guest=request.quiesce_guest, include_volumes=request.include_volumes
-        )
-        return conv.backup_info_to_pb(info)
+    async def FreezeGuest(self, request: pb.FreezeGuestRequest, context) -> pb.FreezeGuestResponse:
+        frozen = await self._supervisor.freeze_guest(VmId(request.vm_id))
+        return pb.FreezeGuestResponse(frozen=frozen)
 
     @_translating
-    async def GetBackupStatus(self, request: pb.GetBackupStatusRequest, context) -> pb.BackupInfo:
-        info = await self._supervisor.get_backup_status(VmId(request.vm_id), BackupId(request.backup_id))
-        return conv.backup_info_to_pb(info)
-
-    @_translating
-    async def ListBackups(self, request: pb.ListBackupsRequest, context) -> pb.ListBackupsResponse:
-        vm_id = VmId(request.vm_id) if request.vm_id else None
-        infos = await self._supervisor.list_backups(vm_id)
-        return pb.ListBackupsResponse(backups=[conv.backup_info_to_pb(info) for info in infos])
-
-    async def DownloadBackup(self, request: pb.DownloadBackupRequest, context) -> AsyncIterator[pb.BackupChunk]:
-        try:
-            async for chunk in self._supervisor.download_backup(VmId(request.vm_id), BackupId(request.backup_id)):
-                yield conv.backup_chunk_to_pb(chunk)
-        except SupervisorError as error:
-            await _abort(context, error)
-        except Exception as error:  # - boundary catch-all
-            logger.exception("Unhandled error in DownloadBackup")
-            await _abort(context, translate_exception(error))
-
-    @_translating
-    async def DeleteBackup(self, request: pb.DeleteBackupRequest, context) -> pb.DeleteBackupResponse:
-        await self._supervisor.delete_backup(VmId(request.vm_id), BackupId(request.backup_id))
-        return pb.DeleteBackupResponse()
-
-    @_translating
-    async def RestoreBackup(self, request: pb.RestoreBackupRequest, context) -> pb.VmInfo:
-        info = await self._supervisor.restore_backup(VmId(request.vm_id), BackupId(request.backup_id))
-        return conv.vm_info_to_pb(info)
-
-    @_translating
-    async def RestoreFromImage(self, request: pb.RestoreFromImageRequest, context) -> pb.VmInfo:
-        info = await self._supervisor.restore_from_image(
-            VmId(request.vm_id),
-            DirectoryPath(conv.path_from_wire(request.image_path)),
-            max_virtual_size_bytes=request.max_virtual_size_bytes,
-        )
-        return conv.vm_info_to_pb(info)
+    async def ThawGuest(self, request: pb.ThawGuestRequest, context) -> pb.ThawGuestResponse:
+        await self._supervisor.thaw_guest(VmId(request.vm_id))
+        return pb.ThawGuestResponse()
 
     # ── Confidential ──
     @_translating

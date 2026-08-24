@@ -11,13 +11,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import shutil
-import subprocess
-import tarfile
 import time
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import psutil
@@ -29,27 +26,12 @@ from aleph.vm.network.firewall import (
     recreate_network_for_vms,
     remove_all_aleph_chains,
 )
-from aleph.vm.supervisor.controllers.qemu.backup import (
-    InsufficientDiskSpaceError,
-    backup_metadata,
-    check_disk_space_for_multiple,
-    cleanup_expired_backups,
-    create_backup_archive,
-    create_qemu_disk_backup,
-    find_existing_backup,
-    get_backup_directory,
-    get_qemu_disk_virtual_size,
-    restore_rootfs,
-    verify_qemu_disk,
-)
 from aleph.vm.supervisor.controllers.qemu.client import QemuVmClient
 from aleph.vm.supervisor.error_mapping import translating_errors
 from aleph.vm.supervisor.networking_db import delete_port_mappings, get_port_mappings
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.configuration import remove_controller_configuration
 from aleph.vm.supervisor_interface.errors import (
-    BackupNotFoundError,
-    InsufficientResourcesError,
     InternalSupervisorError,
     InvalidBackendError,
     NotImplementedSupervisorError,
@@ -57,13 +39,8 @@ from aleph.vm.supervisor_interface.errors import (
 )
 from aleph.vm.supervisor_interface.types import (
     Backend,
-    BackupChunk,
-    BackupId,
-    BackupInfo,
-    BackupStatus,
     ConfidentialMode,
     CreateVmSpec,
-    DirectoryPath,
     GpuDevice,
     GuestPort,
     HealthInfo,
@@ -301,64 +278,10 @@ def _history_chunks(vm_id: VmId) -> list[LogChunk]:
     return chunks
 
 
-# The rootfs archive member, always present in a backup. With include_volumes
-# the VM's non-read-only persistent volumes are added alongside it (named by
-# their on-disk basename). restore_backup replaces only the rootfs member; the
-# extra volumes are carried for the operator's own use (download/restore).
-_BACKUP_ROOTFS_MEMBER = "rootfs.qcow2"
-_BACKUP_DOWNLOAD_CHUNK_BYTES = 1024 * 1024
-
-
-def _validate_backup_id(vm_id: VmId, backup_id: BackupId) -> None:
-    """Reject ids that are not of this VM or that could escape the backup
-    directory (the id becomes a file name)."""
-    malformed = not backup_id or "/" in backup_id or "\\" in backup_id or ".." in backup_id
-    if malformed or not backup_id.startswith(f"{vm_id}-"):
-        raise BackupNotFoundError(backup_id)
-
-
-def _backup_info_from_tar(tar_path: Path, vm_id: VmId) -> BackupInfo:
-    stat = tar_path.stat()
-    try:
-        # checksum/source_sizes come from the sidecars; volumes is read from
-        # the archive index. A corrupt or non-tar file (e.g. a partial write)
-        # still yields a usable BackupInfo, just without the archive metadata.
-        meta = backup_metadata(tar_path)
-    except (tarfile.TarError, OSError):
-        logger.warning("Could not read backup metadata for %s", tar_path.name)
-        meta = {}
-    return BackupInfo(
-        vm_id=vm_id,
-        backup_id=BackupId(tar_path.stem),
-        status=BackupStatus.COMPLETE,
-        size_bytes=stat.st_size,
-        created_at_unix_secs=int(stat.st_mtime),
-        error_message="",
-        checksum=meta.get("checksum", ""),
-        volumes=list(meta.get("volumes", [])),
-        source_sizes=dict(meta.get("source_sizes", {})),
-    )
-
-
-def _extract_rootfs_member(tar_path: Path, destination: Path) -> None:
-    """Stream the rootfs member of a backup archive to *destination*.
-
-    Member-streamed on purpose (no extractall): archive member names never
-    touch the filesystem, so a crafted archive cannot escape the backup
-    directory.
-    """
-    with tarfile.open(tar_path, "r") as tar:
-        try:
-            member = tar.getmember(_BACKUP_ROOTFS_MEMBER)
-        except KeyError:
-            msg = f"Backup archive {tar_path.name} has no {_BACKUP_ROOTFS_MEMBER} member"
-            raise InternalSupervisorError(msg) from None
-        source = tar.extractfile(member)
-        if source is None:
-            msg = f"Backup member {_BACKUP_ROOTFS_MEMBER} in {tar_path.name} is not a regular file"
-            raise InternalSupervisorError(msg)
-        with source, destination.open("wb") as dst:
-            shutil.copyfileobj(source, dst)
+@dataclass
+class _FrozenGuest:
+    client: QemuVmClient
+    timer: asyncio.Task
 
 
 class LocalSupervisor(Supervisor):
@@ -366,13 +289,10 @@ class LocalSupervisor(Supervisor):
         self.pool = pool
         # Live watch_events subscribers; events are fan-out, no replay.
         self._event_queues: set[asyncio.Queue[VmEvent]] = set()
-        # Backup bookkeeping. Completed archives live on disk (the source of
-        # truth); _backup_jobs only holds in-flight and failed runs.
-        self._backup_jobs: dict[BackupId, BackupInfo] = {}
-        self._backup_tasks: dict[VmId, asyncio.Task] = {}
-        # Serializes backup and restore per VM: neither may touch the disks
-        # while the other one converts or swaps them.
-        self._backup_locks: dict[VmId, asyncio.Lock] = {}
+        # Guests frozen through freeze_guest, each with the QGA client that
+        # froze it and the auto-thaw timer that releases it if the agent never
+        # calls thaw_guest.
+        self._frozen_guests: dict[VmId, _FrozenGuest] = {}
 
     # ── Events ──
     def _emit_event(self, vm_id: VmId, old_status: VmStatus, new_status: VmStatus) -> None:
@@ -680,143 +600,54 @@ class LocalSupervisor(Supervisor):
         finally:
             execution.vm.unregister_queue(queue)
 
-    # Backups
-    def _qemu_rootfs_path(self, execution) -> Path:
-        """The on-disk rootfs of a QEMU VM; backups and restores operate on it."""
-        if _backend_of(execution) is not Backend.QEMU:
-            msg = "Backups operate on the rootfs disk image; only QEMU VMs have one"
-            raise InvalidBackendError(msg)
-        resources = getattr(execution.vm, "resources", None) if execution.vm else None
-        rootfs_path = getattr(resources, "rootfs_path", None)
-        if not rootfs_path:
-            msg = f"VM {execution.vm_id} has no rootfs disk image"
-            raise InternalSupervisorError(msg)
-        return Path(rootfs_path)
-
-    def _backup_disk_paths(self, execution, include_volumes: bool) -> dict[str, Path]:
-        """The archive members for a backup: the rootfs, plus the VM's
-        non-read-only persistent volumes when include_volumes is set. The
-        member name is the disk's basename stem with a .qcow2 suffix; the
-        rootfs is always 'rootfs.qcow2'."""
-        disk_paths: dict[str, Path] = {_BACKUP_ROOTFS_MEMBER: self._qemu_rootfs_path(execution)}
-        if not include_volumes:
-            return disk_paths
-        resources = getattr(execution, "resources", None)
-        volumes = getattr(resources, "volumes", None) or []
-        for vol in volumes:
-            if getattr(vol, "read_only", False):
-                continue
-            vol_path = Path(vol.path_on_host)
-            disk_paths[vol_path.stem + ".qcow2"] = vol_path
-        return disk_paths
-
-    async def start_backup(self, vm_id: VmId, quiesce_guest: bool = False, include_volumes: bool = False) -> BackupInfo:
+    # ── Guest quiescence ──
+    async def freeze_guest(self, vm_id: VmId) -> bool:
+        """Freeze the guest filesystems through the QEMU guest agent for the
+        agent's backup copy. Best effort: False (nothing frozen) when the
+        guest agent is unavailable or the VM is not running. Idempotent: a
+        second freeze while frozen returns True and leaves the timer alone.
+        """
         with translating_errors():
             execution = self._require(vm_id)
-            disk_paths = self._backup_disk_paths(execution, include_volumes)
-            backup_dir = get_backup_directory()
-            cleanup_expired_backups(backup_dir)
+            if vm_id in self._frozen_guests:
+                return True
+            if not _is_running(execution, self.pool):
+                logger.info("Not freezing %s: not running", vm_id)
+                return False
+            client, frozen = await self._try_fsfreeze(execution)
+            if not frozen:
+                return False
+            timer = asyncio.get_running_loop().create_task(self._auto_thaw(vm_id))
+            self._frozen_guests[vm_id] = _FrozenGuest(client=client, timer=timer)
+            return True
 
-            # Idempotent: a backup already running for this VM is the answer
-            # to a second StartBackup, not a conflict.
-            running_task = self._backup_tasks.get(vm_id)
-            if running_task is not None and not running_task.done():
-                for job in self._backup_jobs.values():
-                    if job.vm_id == vm_id and job.status is BackupStatus.RUNNING:
-                        return job
+    async def thaw_guest(self, vm_id: VmId) -> None:
+        """Thaw a guest frozen by freeze_guest; a no-op when nothing is
+        frozen (including after the auto-thaw timeout fired)."""
+        with translating_errors():
+            self._require(vm_id)
+            frozen = self._frozen_guests.pop(vm_id, None)
+            if frozen is None:
+                return
+            frozen.timer.cancel()
+            await self._try_fsthaw(frozen.client, vm_id)
 
-            # A non-expired archive is also the answer; expiry (24h TTL)
-            # defines backup freshness, mirroring the old operator endpoint.
-            existing = find_existing_backup(backup_dir, str(vm_id))
-            if existing is not None:
-                return _backup_info_from_tar(existing, vm_id)
-
-            try:
-                await check_disk_space_for_multiple(list(disk_paths.values()), backup_dir)
-            except InsufficientDiskSpaceError as exc:
-                raise InsufficientResourcesError(str(exc)) from exc
-
-            # Microsecond precision: a retry right after a failed run must get
-            # a fresh id (the id is also the tar stem, which keeps the format
-            # dash-free for list_backups' rsplit).
-            timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-            backup_id = BackupId(f"{vm_id}-{timestamp}")
-            job = BackupInfo(
-                vm_id=vm_id,
-                backup_id=backup_id,
-                status=BackupStatus.RUNNING,
-                size_bytes=0,
-                created_at_unix_secs=int(time.time()),
-                error_message="",
-            )
-            # This run supersedes earlier failed attempts for the VM.
-            for old_id, old_job in list(self._backup_jobs.items()):
-                if old_job.vm_id == vm_id and old_job.status is BackupStatus.FAILED:
-                    del self._backup_jobs[old_id]
-            self._backup_jobs[backup_id] = job
-            self._backup_tasks[vm_id] = asyncio.create_task(
-                self._run_backup(execution, vm_id, backup_id, timestamp, disk_paths, backup_dir, quiesce_guest)
-            )
-            return job
-
-    async def _run_backup(
-        self,
-        execution,
-        vm_id: VmId,
-        backup_id: BackupId,
-        timestamp: str,
-        disk_paths: dict[str, Path],
-        backup_dir: Path,
-        quiesce_guest: bool,
-    ) -> None:
-        lock = self._backup_locks.setdefault(vm_id, asyncio.Lock())
-        disk_backups: list[Path] = []
-        try:
-            async with lock:
-                client = None
-                frozen = False
-                if quiesce_guest and _is_running(execution, self.pool):
-                    client, frozen = await self._try_fsfreeze(execution)
-                backup_files: dict[str, Path] = {}
-                try:
-                    for member_name, source_path in disk_paths.items():
-                        disk_backup = await create_qemu_disk_backup(str(vm_id), source_path, backup_dir)
-                        disk_backups.append(disk_backup)
-                        backup_files[member_name] = disk_backup
-                finally:
-                    if frozen and client is not None:
-                        await self._try_fsthaw(client, vm_id)
-                for disk_backup in disk_backups:
-                    await verify_qemu_disk(disk_backup)
-                await create_backup_archive(
-                    vm_hash=str(vm_id),
-                    backup_files=backup_files,
-                    destination_dir=backup_dir,
-                    source_sizes={name: src.stat().st_size for name, src in disk_paths.items()},
-                    timestamp=timestamp,
-                )
-                # The archive on disk is now the record; drop the live job.
-                self._backup_jobs.pop(backup_id, None)
-        except Exception as exc:
-            logger.exception("Backup %s failed", backup_id)
-            self._backup_jobs[backup_id] = BackupInfo(
-                vm_id=vm_id,
-                backup_id=backup_id,
-                status=BackupStatus.FAILED,
-                size_bytes=0,
-                created_at_unix_secs=int(time.time()),
-                error_message=str(exc),
-            )
-        finally:
-            for disk_backup in disk_backups:
-                disk_backup.unlink(missing_ok=True)
-            self._backup_tasks.pop(vm_id, None)
+    async def _auto_thaw(self, vm_id: VmId) -> None:
+        """The freeze deadline: an agent that dies mid-copy must not leave a
+        guest with its filesystems frozen."""
+        await asyncio.sleep(settings.GUEST_FREEZE_TIMEOUT)
+        frozen = self._frozen_guests.pop(vm_id, None)
+        if frozen is None:
+            return
+        logger.warning(
+            "Guest %s was still frozen after %ss without a ThawGuest; thawing it",
+            vm_id,
+            settings.GUEST_FREEZE_TIMEOUT,
+        )
+        await self._try_fsthaw(frozen.client, vm_id)
 
     async def _try_fsfreeze(self, execution):
-        """Best-effort guest fs-freeze through the QEMU guest agent; the
-        backup proceeds unfrozen when the agent is unavailable."""
-        from aleph.vm.supervisor.controllers.qemu.client import QemuVmClient
-
+        """Best-effort guest fs-freeze through the QEMU guest agent."""
         try:
             client = QemuVmClient(execution.vm)
             frozen = await asyncio.wait_for(client.guest_fsfreeze_freeze(), timeout=30)
@@ -831,153 +662,6 @@ class LocalSupervisor(Supervisor):
             await client.guest_fsfreeze_thaw()
         except Exception:
             logger.exception("Failed to thaw filesystems for %s", vm_id)
-
-    async def get_backup_status(self, vm_id: VmId, backup_id: BackupId) -> BackupInfo:
-        with translating_errors():
-            _validate_backup_id(vm_id, backup_id)
-            tar_path = get_backup_directory() / f"{backup_id}.tar"
-            if tar_path.exists():
-                return _backup_info_from_tar(tar_path, vm_id)
-            job = self._backup_jobs.get(backup_id)
-            if job is not None:
-                return job
-            raise BackupNotFoundError(backup_id)
-
-    async def list_backups(self, vm_id: VmId | None = None) -> list[BackupInfo]:
-        with translating_errors():
-            backup_dir = get_backup_directory()
-            pattern = f"{vm_id}-*.tar" if vm_id else "*.tar"
-            # The archive stem is "<vm_id>-<timestamp>"; neither part contains
-            # a dash (hex item hash, %Y%m%dT%H%M%SZ), so rsplit is exact.
-            infos = [
-                _backup_info_from_tar(tar_path, VmId(tar_path.stem.rsplit("-", 1)[0]))
-                for tar_path in sorted(backup_dir.glob(pattern))
-            ]
-            infos += [job for job in self._backup_jobs.values() if vm_id is None or job.vm_id == vm_id]
-            return infos
-
-    async def download_backup(self, vm_id: VmId, backup_id: BackupId) -> AsyncIterator[BackupChunk]:
-        with translating_errors():
-            _validate_backup_id(vm_id, backup_id)
-            tar_path = get_backup_directory() / f"{backup_id}.tar"
-            if not tar_path.exists():
-                raise BackupNotFoundError(backup_id)
-        offset = 0
-        with tar_path.open("rb") as tar_file:
-            while True:
-                data = await asyncio.to_thread(tar_file.read, _BACKUP_DOWNLOAD_CHUNK_BYTES)
-                if not data:
-                    return
-                yield BackupChunk(data=data, offset=offset)
-                offset += len(data)
-
-    async def delete_backup(self, vm_id: VmId, backup_id: BackupId) -> None:
-        with translating_errors():
-            _validate_backup_id(vm_id, backup_id)
-            job = self._backup_jobs.get(backup_id)
-            if job is not None and job.status is BackupStatus.RUNNING:
-                msg = f"Backup {backup_id} is still running"
-                raise InternalSupervisorError(msg)
-            tar_path = get_backup_directory() / f"{backup_id}.tar"
-            existed = tar_path.exists()
-            tar_path.unlink(missing_ok=True)
-            tar_path.with_suffix(".tar.sha256").unlink(missing_ok=True)
-            tar_path.with_suffix(".tar.meta.json").unlink(missing_ok=True)
-            # Deleting a FAILED record is also a valid delete.
-            if self._backup_jobs.pop(backup_id, None) is None and not existed:
-                raise BackupNotFoundError(backup_id)
-
-    async def restore_backup(self, vm_id: VmId, backup_id: BackupId) -> VmInfo:
-        with translating_errors():
-            execution = self._require(vm_id)
-            rootfs_path = self._qemu_rootfs_path(execution)
-            if not (execution.persistent and getattr(execution, "systemd_manager", None)):
-                msg = "Restoring an ephemeral VM is not supported; only persistent QEMU VMs can be restored"
-                raise NotImplementedSupervisorError(msg)
-            _validate_backup_id(vm_id, backup_id)
-            backup_dir = get_backup_directory()
-            tar_path = backup_dir / f"{backup_id}.tar"
-            if not tar_path.exists():
-                raise BackupNotFoundError(backup_id)
-
-            lock = self._backup_locks.setdefault(vm_id, asyncio.Lock())
-            async with lock:
-                staging = backup_dir / f"{backup_id}.restore.qcow2"
-                try:
-                    await asyncio.to_thread(_extract_rootfs_member, tar_path, staging)
-                    await verify_qemu_disk(staging)
-                    old_status = self._status_snapshot(execution)
-                    if _is_running(execution, self.pool):
-                        await self.pool.stop_vm(vm_id)
-                        # Fresh stop_event defuses the pool's forget-on-stop
-                        # task; the VM stays registered through the swap (same
-                        # trick as stop_vm).
-                        execution.stop_event = asyncio.Event()
-                        self.pool.executions[execution.vm_id] = execution
-                        self._emit_event(vm_id, old_status, VmStatus.STOPPED)
-                    await restore_rootfs(staging, rootfs_path)
-                    await self.pool.restart_persistent_vm(execution)
-                finally:
-                    staging.unlink(missing_ok=True)
-                info = _to_vm_info(execution, _is_running(execution, self.pool))
-                if info.status is not VmStatus.STOPPED:
-                    self._emit_event(vm_id, VmStatus.STOPPED, info.status)
-                return info
-
-    async def restore_from_image(
-        self, vm_id: VmId, image_path: DirectoryPath, max_virtual_size_bytes: int = 0
-    ) -> VmInfo:
-        """Restore the rootfs from a QCOW2 image already staged on a host path.
-
-        The agent stages the uploaded image (or the downloaded volume) to
-        image_path, then hands the disk/VM work here: validate the image,
-        reject one larger than max_virtual_size_bytes (a restore must not grow
-        the disk), swap it in for the current rootfs and restart the VM.
-        """
-        with translating_errors():
-            execution = self._require(vm_id)
-            rootfs_path = self._qemu_rootfs_path(execution)
-            if not (execution.persistent and getattr(execution, "systemd_manager", None)):
-                msg = "Restoring an ephemeral VM is not supported; only persistent QEMU VMs can be restored"
-                raise NotImplementedSupervisorError(msg)
-
-            image = Path(image_path)
-            if not image.exists():
-                raise InternalSupervisorError(f"staged restore image {image} does not exist")
-
-            # qemu-img rejects anything that is not a valid QCOW2 image with a
-            # non-zero exit code. That is a client error (a bad upload), so map
-            # it to InvalidBackendError; the agent turns that into a 400. A bare
-            # CalledProcessError would translate to InternalSupervisorError -> 500.
-            try:
-                await verify_qemu_disk(image)
-            except subprocess.CalledProcessError as exc:
-                raise InvalidBackendError(f"Restore image {image.name} is not a valid QCOW2 disk") from exc
-            if max_virtual_size_bytes:
-                new_size = await get_qemu_disk_virtual_size(image)
-                if new_size > max_virtual_size_bytes:
-                    msg = (
-                        f"New rootfs virtual size ({new_size} bytes) exceeds the declared rootfs size "
-                        f"({max_virtual_size_bytes} bytes). Restore cannot increase disk size."
-                    )
-                    raise InvalidBackendError(msg)
-
-            lock = self._backup_locks.setdefault(vm_id, asyncio.Lock())
-            async with lock:
-                old_status = self._status_snapshot(execution)
-                if _is_running(execution, self.pool):
-                    await self.pool.stop_vm(vm_id)
-                    # Fresh stop_event defuses the pool's forget-on-stop task;
-                    # the VM stays registered through the swap.
-                    execution.stop_event = asyncio.Event()
-                    self.pool.executions[execution.vm_id] = execution
-                    self._emit_event(vm_id, old_status, VmStatus.STOPPED)
-                await restore_rootfs(image, rootfs_path)
-                await self.pool.restart_persistent_vm(execution)
-                info = _to_vm_info(execution, _is_running(execution, self.pool))
-                if info.status is not VmStatus.STOPPED:
-                    self._emit_event(vm_id, VmStatus.STOPPED, info.status)
-                return info
 
     # ── Migration ──
     #

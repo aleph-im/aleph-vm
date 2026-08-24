@@ -216,29 +216,18 @@ def test_log_rpcs_defined_with_streaming():
     assert {"timestamp_ns", "line", "source"} <= fields
 
 
-def test_backup_rpcs_defined():
+def test_guest_quiescence_rpcs_defined():
+    """The supervisor's only part in a backup: freeze and thaw the guest.
+    The archive surface itself (StartBackup and friends) is the agent's."""
     from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     methods = {m.name: m for m in supervisor_pb2.DESCRIPTOR.services_by_name["Supervisor"].methods}
-    assert {"StartBackup", "GetBackupStatus", "ListBackups", "DownloadBackup", "DeleteBackup", "RestoreBackup"} <= set(
-        methods
-    )
-    assert methods["DownloadBackup"].server_streaming is True
-
-
-def test_backup_info_shape():
-    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
-
-    fields = {f.name for f in supervisor_pb2.BackupInfo.DESCRIPTOR.fields}
-    assert {"vm_id", "backup_id", "status", "size_bytes", "created_at_unix_secs"} <= fields
-    statuses = {v.name for v in supervisor_pb2.BackupStatus.DESCRIPTOR.values}
-    assert {
-        "BACKUP_STATUS_UNSPECIFIED",
-        "BACKUP_STATUS_PENDING",
-        "BACKUP_STATUS_RUNNING",
-        "BACKUP_STATUS_COMPLETE",
-        "BACKUP_STATUS_FAILED",
-    } <= statuses
+    assert {"FreezeGuest", "ThawGuest"} <= set(methods)
+    assert not any(name.endswith("Backup") or name.startswith("Backup") for name in methods)
+    assert "RestoreFromImage" not in methods
+    assert {f.name for f in supervisor_pb2.FreezeGuestRequest.DESCRIPTOR.fields} == {"vm_id"}
+    assert {f.name for f in supervisor_pb2.FreezeGuestResponse.DESCRIPTOR.fields} == {"frozen"}
+    assert {f.name for f in supervisor_pb2.ThawGuestRequest.DESCRIPTOR.fields} == {"vm_id"}
 
 
 def test_confidential_rpcs_defined():
@@ -277,7 +266,6 @@ def test_error_code_enum_covers_design_doc_cases():
         "ERROR_CODE_INVALID_BACKEND",
         "ERROR_CODE_TEE_UNAVAILABLE",
         "ERROR_CODE_PORT_UNAVAILABLE",
-        "ERROR_CODE_BACKUP_NOT_FOUND",
         "ERROR_CODE_HOST_NOT_FOUND",
         "ERROR_CODE_INTERNAL",
     }
@@ -340,7 +328,6 @@ def test_full_service_surface_pinned():
         "StartVm",
         "RebootVm",
         "RunProgramCode",
-        "RestoreFromImage",
         # Port forwarding
         "AddPortForward",
         "RemovePortForward",
@@ -350,13 +337,9 @@ def test_full_service_surface_pinned():
         # Logs
         "GetLogs",
         "StreamLogs",
-        # Backups
-        "StartBackup",
-        "GetBackupStatus",
-        "ListBackups",
-        "DownloadBackup",
-        "DeleteBackup",
-        "RestoreBackup",
+        # Guest quiescence
+        "FreezeGuest",
+        "ThawGuest",
         # Confidential
         "InitializeConfidential",
         "GetMeasurement",

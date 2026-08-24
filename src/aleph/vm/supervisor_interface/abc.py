@@ -11,11 +11,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 
 from aleph.vm.supervisor_interface.types import (
-    BackupChunk,
-    BackupId,
-    BackupInfo,
     CreateVmSpec,
-    DirectoryPath,
     HealthInfo,
     HostInfo,
     HostPort,
@@ -115,37 +111,23 @@ class LogsOps(ABC):
     def stream_logs(self, vm_id: VmId, include_history: bool = False) -> AsyncIterator[LogChunk]: ...
 
 
-class BackupOps(ABC):
-    @abstractmethod
-    async def start_backup(self, vm_id: VmId, quiesce_guest: bool = False, include_volumes: bool = False) -> BackupInfo:
-        """Start (or return) a backup of the VM's rootfs. quiesce_guest freezes
-        the guest filesystems through the QEMU agent during the copy;
-        include_volumes also archives the VM's non-read-only persistent volumes."""
+class QuiesceOps(ABC):
+    """The supervisor's part in a backup. The agent owns the archives (it
+    created the disks, so it copies, stores, expires and restores them); the
+    one thing it cannot do from outside the VM is quiesce the guest."""
 
     @abstractmethod
-    async def get_backup_status(self, vm_id: VmId, backup_id: BackupId) -> BackupInfo: ...
+    async def freeze_guest(self, vm_id: VmId) -> bool:
+        """Freeze the guest filesystems through the QEMU guest agent. Best
+        effort: False when the agent is unavailable (nothing is frozen and
+        the caller's copy is crash-consistent). A freeze is auto-thawed
+        after settings.GUEST_FREEZE_TIMEOUT so a caller that dies mid-copy
+        cannot leave the guest frozen."""
 
     @abstractmethod
-    async def list_backups(self, vm_id: VmId | None = None) -> list[BackupInfo]: ...
-
-    @abstractmethod
-    def download_backup(self, vm_id: VmId, backup_id: BackupId) -> AsyncIterator[BackupChunk]: ...
-
-    @abstractmethod
-    async def delete_backup(self, vm_id: VmId, backup_id: BackupId) -> None: ...
-
-    @abstractmethod
-    async def restore_backup(self, vm_id: VmId, backup_id: BackupId) -> VmInfo: ...
-
-    @abstractmethod
-    async def restore_from_image(
-        self, vm_id: VmId, image_path: DirectoryPath, max_virtual_size_bytes: int = 0
-    ) -> VmInfo:
-        """Restore a VM's rootfs from a QCOW2 image already staged on a host
-        path (an uploaded image or a downloaded volume). Validates the image,
-        rejects one whose virtual size exceeds max_virtual_size_bytes (0 = no
-        cap), swaps the rootfs and restarts the VM. The agent owns the staging;
-        the engine owns the disk/VM work."""
+    async def thaw_guest(self, vm_id: VmId) -> None:
+        """Thaw a guest frozen by freeze_guest. A no-op when nothing is
+        frozen."""
 
 
 class ConfidentialOps(ABC):
@@ -173,7 +155,7 @@ class Supervisor(
     PortForwardingOps,
     EventsOps,
     LogsOps,
-    BackupOps,
+    QuiesceOps,
     ConfidentialOps,
     NetworkOps,
     ABC,

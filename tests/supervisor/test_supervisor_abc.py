@@ -3,7 +3,6 @@ import inspect
 import pytest
 
 from aleph.vm.supervisor_interface.abc import (
-    BackupOps,
     ConfidentialOps,
     EventsOps,
     HostOps,
@@ -11,6 +10,7 @@ from aleph.vm.supervisor_interface.abc import (
     LogsOps,
     NetworkOps,
     PortForwardingOps,
+    QuiesceOps,
     Supervisor,
 )
 
@@ -32,26 +32,21 @@ EXPECTED_METHODS = {
     "list_port_forwards",
     "get_logs",
     "stream_logs",
-    "start_backup",
-    "get_backup_status",
-    "list_backups",
-    "download_backup",
-    "delete_backup",
-    "restore_backup",
-    "restore_from_image",
+    "freeze_guest",
+    "thaw_guest",
     "initialize_confidential",
     "get_measurement",
     "inject_secret",
     "recreate_network",
 }
 
-STREAMING_METHODS = {"stream_logs", "download_backup", "watch_events"}
+STREAMING_METHODS = {"stream_logs", "watch_events"}
 
 
-def test_supervisor_aggregates_all_28_methods():
+def test_supervisor_aggregates_all_23_methods():
     abstract = Supervisor.__abstractmethods__
     assert abstract == EXPECTED_METHODS
-    assert len(EXPECTED_METHODS) == 28
+    assert len(EXPECTED_METHODS) == 23
 
 
 def test_supervisor_cannot_be_instantiated():
@@ -85,15 +80,7 @@ def test_capability_abcs_partition_the_surface():
         PortForwardingOps: {"add_port_forward", "remove_port_forward", "list_port_forwards"},
         EventsOps: {"watch_events"},
         LogsOps: {"get_logs", "stream_logs"},
-        BackupOps: {
-            "start_backup",
-            "get_backup_status",
-            "list_backups",
-            "download_backup",
-            "delete_backup",
-            "restore_backup",
-            "restore_from_image",
-        },
+        QuiesceOps: {"freeze_guest", "thaw_guest"},
         ConfidentialOps: {"initialize_confidential", "get_measurement", "inject_secret"},
         NetworkOps: {"recreate_network"},
     }

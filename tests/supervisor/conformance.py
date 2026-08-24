@@ -52,7 +52,7 @@ class SupervisorContractTests:
                     await method(*dummy_args)
 
     def test_streaming_methods_return_async_iterators(self, supervisor):
-        for name in ("stream_logs", "download_backup"):
+        for name in ("stream_logs",):
             method = getattr(supervisor, name)
             # async generator function, not a plain coroutine
             assert not inspect.iscoroutinefunction(method) or inspect.isasyncgenfunction(method)

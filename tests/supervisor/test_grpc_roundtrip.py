@@ -16,7 +16,6 @@ mock with ``fake.<method>.return_value = ...`` before calling the client, then
 assert on ``fake.<method>`` (e.g. ``assert_awaited_once_with(...)``).
 """
 
-from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -27,7 +26,6 @@ from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.client import GrpcSupervisor
 from aleph.vm.supervisor_interface.types import (
     Backend,
-    DirectoryPath,
     IpAssignment,
     VmId,
     VmInfo,
@@ -50,12 +48,8 @@ _ASYNC_METHODS = (
     "remove_port_forward",
     "list_port_forwards",
     "get_logs",
-    "start_backup",
-    "get_backup_status",
-    "list_backups",
-    "delete_backup",
-    "restore_backup",
-    "restore_from_image",
+    "freeze_guest",
+    "thaw_guest",
     "initialize_confidential",
     "get_measurement",
     "inject_secret",
@@ -72,7 +66,6 @@ class _Fake(Supervisor):
 
     def watch_events(self): ...
     def stream_logs(self, *a, **k): ...
-    def download_backup(self, *a, **k): ...
 
 
 # ABCMeta recomputes __abstractmethods__ from the class body, so clear it after
@@ -147,12 +140,14 @@ async def test_run_program_code_roundtrip(grpc_pair):
 
 
 @pytest.mark.asyncio
-async def test_restore_from_image_roundtrip(grpc_pair, make_vm_info):
+async def test_freeze_and_thaw_guest_roundtrip(grpc_pair):
     client, fake = grpc_pair
-    fake.restore_from_image.return_value = make_vm_info("vm1")
-    out = await client.restore_from_image(VmId("vm1"), DirectoryPath(Path("/img.qcow2")), max_virtual_size_bytes=42)
-    assert out.vm_id == "vm1"
-    fake.restore_from_image.assert_awaited_once()
-    args, kwargs = fake.restore_from_image.call_args
-    assert str(args[1]) == "/img.qcow2"
-    assert kwargs.get("max_virtual_size_bytes", args[2] if len(args) > 2 else None) == 42
+    fake.freeze_guest.return_value = True
+    assert await client.freeze_guest(VmId("vm1")) is True
+    fake.freeze_guest.assert_awaited_once_with(VmId("vm1"))
+
+    fake.freeze_guest.return_value = False
+    assert await client.freeze_guest(VmId("vm1")) is False
+
+    await client.thaw_guest(VmId("vm1"))
+    fake.thaw_guest.assert_awaited_once_with(VmId("vm1"))

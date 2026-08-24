@@ -1,3 +1,12 @@
+"""The backup archive format and the ``qemu-img`` seam.
+
+Pure disk and archive work: a ``qemu-img convert -c`` compressed copy per
+disk, an uncompressed tar of those copies next to a ``.tar.sha256`` checksum
+sidecar and a ``.tar.meta.json`` sidecar, the TTL cleanup and the rootfs
+swap. Driven by the agent's ``BackupManager``; the supervisor never touches an
+archive.
+"""
+
 import asyncio
 import hashlib
 import json
@@ -8,9 +17,9 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Neutral staging helpers shared with the agent; re-exported here for the
-# supervisor backup paths (and tests) that import them from this module.
-from aleph.vm.backup_staging import (  # noqa: F401
+# The staging helpers are re-exported for the callers (and tests) that
+# import the whole archive vocabulary from this module.
+from aleph.vm.backup.staging import (  # noqa: F401
     download_volume_by_ref,
     get_backup_directory,
 )

@@ -11,7 +11,7 @@ before an event loop exists (e.g. at app wiring time).
 
 Every unary call carries a deadline: gRPC's default is no deadline at all,
 so a wedged supervisor would otherwise hang the agent's HTTP handler
-forever. Streams (logs, events, backup download) are long-lived by design
+forever. Streams (logs, events) are long-lived by design
 and carry none.
 """
 
@@ -28,7 +28,6 @@ from google.protobuf.message import Message
 
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.errors import (
-    BackupNotFoundError,
     FileTooLargeError,
     HostNotFoundError,
     InsufficientResourcesError,
@@ -45,11 +44,7 @@ from aleph.vm.supervisor_interface.errors import (
     VmSetupError,
 )
 from aleph.vm.supervisor_interface.types import (
-    BackupChunk,
-    BackupId,
-    BackupInfo,
     CreateVmSpec,
-    DirectoryPath,
     ErrorCode,
     HealthInfo,
     HostInfo,
@@ -89,7 +84,6 @@ ERROR_CLASS_BY_CODE: dict[ErrorCode, type[SupervisorError]] = {
     ErrorCode.TEE_UNAVAILABLE: TeeUnavailableError,
     ErrorCode.PORT_UNAVAILABLE: PortUnavailableError,
     ErrorCode.HOST_NOT_FOUND: HostNotFoundError,
-    ErrorCode.BACKUP_NOT_FOUND: BackupNotFoundError,
     ErrorCode.INTERNAL: InternalSupervisorError,
 }
 
@@ -271,69 +265,13 @@ class GrpcSupervisor(Supervisor):
         finally:
             call.cancel()
 
-    # ── Backups ──
-    async def start_backup(self, vm_id: VmId, quiesce_guest: bool = False, include_volumes: bool = False) -> BackupInfo:
-        reply = await self._unary(
-            "StartBackup",
-            pb.StartBackupRequest(vm_id=str(vm_id), quiesce_guest=quiesce_guest, include_volumes=include_volumes),
-            LIFECYCLE_TIMEOUT_SECS,
-        )
-        return conv.backup_info_from_pb(reply)
+    # ── Guest quiescence ──
+    async def freeze_guest(self, vm_id: VmId) -> bool:
+        reply = await self._unary("FreezeGuest", pb.FreezeGuestRequest(vm_id=str(vm_id)), LIFECYCLE_TIMEOUT_SECS)
+        return bool(reply.frozen)
 
-    async def get_backup_status(self, vm_id: VmId, backup_id: BackupId) -> BackupInfo:
-        reply = await self._unary(
-            "GetBackupStatus",
-            pb.GetBackupStatusRequest(vm_id=str(vm_id), backup_id=str(backup_id)),
-            QUERY_TIMEOUT_SECS,
-        )
-        return conv.backup_info_from_pb(reply)
-
-    async def list_backups(self, vm_id: VmId | None = None) -> list[BackupInfo]:
-        reply = await self._unary(
-            "ListBackups",
-            pb.ListBackupsRequest(vm_id=str(vm_id) if vm_id is not None else ""),
-            QUERY_TIMEOUT_SECS,
-        )
-        return [conv.backup_info_from_pb(info) for info in reply.backups]
-
-    async def download_backup(self, vm_id: VmId, backup_id: BackupId) -> AsyncIterator[BackupChunk]:
-        call = self._ensure_stub().DownloadBackup(pb.DownloadBackupRequest(vm_id=str(vm_id), backup_id=str(backup_id)))
-        try:
-            async for chunk in call:
-                yield conv.backup_chunk_from_pb(chunk)
-        except grpc.aio.AioRpcError as error:
-            raise translate_rpc_error(error) from error
-        finally:
-            call.cancel()
-
-    async def delete_backup(self, vm_id: VmId, backup_id: BackupId) -> None:
-        await self._unary(
-            "DeleteBackup",
-            pb.DeleteBackupRequest(vm_id=str(vm_id), backup_id=str(backup_id)),
-            QUERY_TIMEOUT_SECS,
-        )
-
-    async def restore_backup(self, vm_id: VmId, backup_id: BackupId) -> VmInfo:
-        reply = await self._unary(
-            "RestoreBackup",
-            pb.RestoreBackupRequest(vm_id=str(vm_id), backup_id=str(backup_id)),
-            LIFECYCLE_TIMEOUT_SECS,
-        )
-        return conv.vm_info_from_pb(reply)
-
-    async def restore_from_image(
-        self, vm_id: VmId, image_path: DirectoryPath, max_virtual_size_bytes: int = 0
-    ) -> VmInfo:
-        reply = await self._unary(
-            "RestoreFromImage",
-            pb.RestoreFromImageRequest(
-                vm_id=str(vm_id),
-                image_path=conv.path_to_wire(Path(image_path)),
-                max_virtual_size_bytes=max_virtual_size_bytes,
-            ),
-            LIFECYCLE_TIMEOUT_SECS,
-        )
-        return conv.vm_info_from_pb(reply)
+    async def thaw_guest(self, vm_id: VmId) -> None:
+        await self._unary("ThawGuest", pb.ThawGuestRequest(vm_id=str(vm_id)), LIFECYCLE_TIMEOUT_SECS)
 
     # ── Confidential ──
     async def initialize_confidential(self, vm_id: VmId, session_bytes: bytes, godh_bytes: bytes) -> None:

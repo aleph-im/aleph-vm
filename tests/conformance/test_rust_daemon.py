@@ -24,7 +24,7 @@ from conftest import cargo_missing
 
 from aleph.vm.supervisor_interface.client import GrpcSupervisor
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
-from aleph.vm.supervisor_interface.types import BackupId, HealthStatus, VmId
+from aleph.vm.supervisor_interface.types import HealthStatus, VmId
 
 HAVE_LSPCI = shutil.which("lspci") is not None
 
@@ -170,28 +170,17 @@ async def test_get_host_info_matches_the_python_sources(rust_daemon):
 
 
 @pytest.mark.asyncio
-async def test_backup_surface_answers_without_root(rust_daemon):
-    # Increment 5: the backup RPCs are served. The no-root slice (an empty
-    # backup directory, unknown-VM and malformed-id rejections) is a clean
-    # conformance target; the full backup/restore cycle needs a live QEMU VM
-    # (tests/integration/test_backup_restore.py).
-    from aleph.vm.supervisor_interface.errors import BackupNotFoundError
-
+async def test_guest_quiescence_answers_without_root(rust_daemon):
+    # The supervisor's only part in a backup is FreezeGuest/ThawGuest; the
+    # archives are the agent's. The no-root slice: an unknown VM is
+    # VmNotFoundError for both (the world view has no such entry).
     _, socket_path = rust_daemon
     client = GrpcSupervisor(socket_path)
     try:
-        # A fresh daemon has no archives and no in-flight jobs.
-        assert await client.list_backups() == []
-        # StartBackup for an unknown VM is VmNotFoundError (the pool has no
-        # such execution).
         with pytest.raises(VmNotFoundError):
-            await client.start_backup(VmId("a" * 64))
-        # A malformed / foreign backup id is BackupNotFoundError (it is not
-        # this VM's and could escape the backup directory).
-        with pytest.raises(BackupNotFoundError):
-            await client.get_backup_status(VmId("a" * 64), BackupId("not-a-valid-id"))
-        with pytest.raises(BackupNotFoundError):
-            await client.delete_backup(VmId("a" * 64), BackupId("../escape"))
+            await client.freeze_guest(VmId("a" * 64))
+        with pytest.raises(VmNotFoundError):
+            await client.thaw_guest(VmId("a" * 64))
     finally:
         await client.close()
 

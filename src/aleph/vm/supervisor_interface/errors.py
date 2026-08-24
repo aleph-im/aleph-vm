@@ -70,10 +70,6 @@ class HostNotFoundError(SupervisorError):
     code = ErrorCode.HOST_NOT_FOUND
 
 
-class BackupNotFoundError(SupervisorError):
-    code = ErrorCode.BACKUP_NOT_FOUND
-
-
 class NotImplementedSupervisorError(SupervisorError):
     """A boundary method that is intentionally not implemented yet."""
 

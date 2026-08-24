@@ -1,6 +1,6 @@
 """Unit tests for the neutral modules extracted in the controller split (PR-2).
 
-These modules (``aleph.vm.host_volumes``, ``aleph.vm.backup_staging``,
+These modules (``aleph.vm.host_volumes``, ``aleph.vm.backup.staging``,
 ``aleph.vm.program_config`` and the agent-side ``aleph.vm.agent.vm.downloader``)
 sit on the shared, hardware-free side of the agent/supervisor boundary: the
 download paths resolve resources to on-host paths through ``aleph.vm.storage``,
@@ -18,8 +18,9 @@ from aiohttp import ClientResponseError
 from aleph_message.models.execution.base import Encoding
 from aleph_message.models.execution.volume import PersistentVolume
 
-from aleph.vm import backup_staging, host_volumes, program_config
+from aleph.vm import host_volumes, program_config
 from aleph.vm.agent.vm import downloader
+from aleph.vm.backup import staging as backup_staging
 from aleph.vm.program_config import (
     ConfigurationPayloadV1,
     ConfigurationPayloadV2,
