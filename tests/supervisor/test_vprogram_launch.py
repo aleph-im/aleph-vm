@@ -173,6 +173,20 @@ def staged_bundle(tmp_path, storage_files) -> dict[str, Path]:
     return {"tar": tar_path, "manifest": manifest_path, **workload}
 
 
+@pytest.fixture
+def snp_vcpu_types(monkeypatch):
+    """Serve the QEMU probe from a list instead of spawning qemu."""
+
+    def _set(models: list[str]) -> None:
+        async def fake_probe() -> list[str]:
+            return models
+
+        monkeypatch.setattr("aleph.vm.agent.vprogram_launch.get_supported_snp_vcpu_types", fake_probe)
+
+    _set(["EPYC", "EPYC-v4"])
+    return _set
+
+
 @pytest.mark.asyncio
 async def test_fetch_runtime_manifest_parses(staged_bundle):
     manifest = await fetch_runtime_manifest(MANIFEST_REF)
@@ -229,7 +243,7 @@ async def test_bundle_size_mismatch_fails_closed(tmp_path, storage_files):
 
 
 @pytest.mark.asyncio
-async def test_build_vprogram_spec(staged_bundle):
+async def test_build_vprogram_spec(staged_bundle, snp_vcpu_types):
     """The spec mirrors the on-host SNP launch template: QEMU + SEV_SNP tee,
     direct-kernel boot from the extracted members, and a disk order that IS
     the guest contract: platform rootfs (/dev/vda), platform hash tree
@@ -272,6 +286,9 @@ async def test_build_vprogram_spec(staged_bundle):
     assert spec.tee.backend is TeeBackend.SEV_SNP
     assert spec.tee.policy == str(content.verification.policy) == "196608"
     assert spec.tee.firmware_path == staging / "image/OVMF.fd"
+    # The fixture measurement's vcpu_type and the probe fixture's default
+    # both name EPYC-v4: the default-model path stays covered here.
+    assert spec.tee.cpu_model == "EPYC-v4"
 
     assert spec.network.internet_access is True
     # The agent computes the static IPv6 upfront (V-PROGRAMs use the 0x4 hextet)
@@ -286,7 +303,7 @@ async def test_build_vprogram_spec(staged_bundle):
 
 
 @pytest.mark.asyncio
-async def test_build_vprogram_spec_no_ra_tls_attestation_port(tmp_path, storage_files):
+async def test_build_vprogram_spec_no_ra_tls_attestation_port(tmp_path, storage_files, snp_vcpu_types):
     """A manifest whose attestation list has no aleph.ra-tls tcp entry
     surfaces attest_port=None: the caller (run.py) skips port-forward setup
     rather than failing the create path on it."""
@@ -310,7 +327,30 @@ async def test_build_vprogram_spec_no_ra_tls_attestation_port(tmp_path, storage_
 
 
 @pytest.mark.asyncio
-async def test_roothash_sidecar_present_after_staging(staged_bundle):
+async def test_build_vprogram_spec_selects_the_measured_cpu_model(staged_bundle, snp_vcpu_types):
+    # A non-default model: a hardcoded "EPYC-v4" fallback would fail this,
+    # unlike an assertion against the default that a bug could satisfy by
+    # accident.
+    snp_vcpu_types(["EPYC", "EPYC-v4", "EPYC-Genoa-v2"])
+    message = load_vprogram_message()
+    message.content.verification.measurements[0].vcpu_type = "EPYC-Genoa-v2"
+    spec, _attest_port = await build_vprogram_spec(message.item_hash, message.content)
+    assert spec.tee is not None
+    assert spec.tee.cpu_model == "EPYC-Genoa-v2"
+
+
+@pytest.mark.asyncio
+async def test_build_vprogram_spec_refuses_a_model_the_host_cannot_launch(staged_bundle, snp_vcpu_types):
+    # The fixture's only measurement is tagged EPYC-v4 and this host can only
+    # launch the baseline model: launching anyway would attest wrong.
+    snp_vcpu_types(["EPYC"])
+    message = load_vprogram_message()
+    with pytest.raises(VmSetupError, match="launch measurements"):
+        await build_vprogram_spec(message.item_hash, message.content)
+
+
+@pytest.mark.asyncio
+async def test_roothash_sidecar_present_after_staging(staged_bundle, snp_vcpu_types):
     """The daemon derives the measured cmdline from <rootfs>.roothash and the
     hash tree from <rootfs>.verity next to the rootfs disk: both must be in
     place after staging, with the manifest's platform roothash."""
@@ -326,7 +366,7 @@ async def test_roothash_sidecar_present_after_staging(staged_bundle):
 
 
 @pytest.mark.asyncio
-async def test_roothash_sidecar_written_when_bundle_lacks_it(tmp_path, storage_files):
+async def test_roothash_sidecar_written_when_bundle_lacks_it(tmp_path, storage_files, snp_vcpu_types):
     """A bundle without the roothash sidecar (only the 5 declared members)
     still stages one, sourced from manifest.boot.platform_roothash."""
     files = {name: data for name, data in BUNDLE_FILES.items() if name != "rootfs.ext4.roothash"}
@@ -393,7 +433,7 @@ async def test_corrupt_tarball_fails_closed_on_extract(tmp_path, storage_files):
 
 
 @pytest.mark.asyncio
-async def test_workload_attached_and_sidecar_written(staged_bundle):
+async def test_workload_attached_and_sidecar_written(staged_bundle, snp_vcpu_types):
     """content.workload is attached as two EXTRA disks (data, then hash tree)
     after the rootfs, and its roothash is staged in a sidecar next to the
     rootfs: the daemon has no cmdline field on the proto, so this sidecar is

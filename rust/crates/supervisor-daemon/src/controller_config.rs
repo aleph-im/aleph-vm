@@ -155,6 +155,8 @@ pub struct SnpConfig {
     pub initrd_path: String,
     pub kernel_cmdline: String,
     pub sev_policy: u32,
+    /// Measured launch CPU model; `None` means the launcher's `EPYC-v4`.
+    pub cpu_model: Option<String>,
 }
 
 /// `QemuVMConfiguration` / `QemuConfidentialVMConfiguration` (the plain
@@ -200,6 +202,8 @@ pub struct QemuVmConfig {
     initrd_path: Option<String>,
     #[serde(default)]
     kernel_cmdline: Option<String>,
+    #[serde(default)]
+    cpu_model: Option<String>,
 
     // NUMA memory binding + hugepages (increment C2), Rust-only. Present when
     // the supervisor placed this VM on a node; the controller then binds guest
@@ -259,6 +263,7 @@ impl QemuVmConfig {
             kernel_path: None,
             initrd_path: None,
             kernel_cmdline: None,
+            cpu_model: None,
             numa_node: None,
             hugepage_size: None,
             guest_ipv6_cidr: None,
@@ -310,6 +315,7 @@ impl QemuVmConfig {
                     initrd_path: initrd.clone(),
                     kernel_cmdline: cmdline.clone(),
                     sev_policy: policy,
+                    cpu_model: self.cpu_model.clone(),
                 })
             }
             _ => None,
@@ -494,6 +500,12 @@ pub struct WrittenQemuVmConfiguration {
     pub initrd_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kernel_cmdline: Option<String>,
+    // Measured launch CPU model (SNP only), Rust-only. `None` (and so
+    // omitted) for plain and SEV/SEV-ES configs, keeping their bytes
+    // identical; also `None` for an SNP config whose spec carried no model,
+    // in which case the launcher defaults to `EPYC-v4`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_model: Option<String>,
     // NUMA memory binding + hugepages slice (increment C2), Rust-only. Both
     // None (and so omitted via exclude_none) for single-node / no-NUMA /
     // unplaced VMs, keeping their bytes identical to the pydantic writer and to
@@ -736,6 +748,55 @@ mod tests {
         assert!(sev_vm.snp().is_none(), "a SEV config is not SNP");
     }
 
+    fn snp_config_json_with(extra: &str) -> String {
+        format!(
+            r#"{{
+            "vm_id": 9, "vm_hash": "abcd", "settings": {{}},
+            "hypervisor": "qemu",
+            "vm_configuration": {{
+                "qemu_bin_path": "/usr/bin/qemu-system-x86_64",
+                "image_path": "/img/rootfs.ext4",
+                "monitor_socket_path": "/m.sock", "qmp_socket_path": "/q.sock",
+                "vcpu_count": 2, "mem_size_mb": 2048,
+                "host_volumes": [], "gpus": [],
+                "sev_snp": true,
+                "ovmf_path": "/img/OVMF.fd",
+                "sev_policy": 196608,
+                "kernel_path": "/img/bzImage",
+                "initrd_path": "/img/initrd",
+                {extra}
+                "kernel_cmdline": "console=ttyS0 root=/dev/mapper/verity-root ro roothash=abc"
+            }}
+        }}"#
+        )
+    }
+
+    #[test]
+    fn snp_slice_carries_the_cpu_model_when_present() {
+        let json = snp_config_json_with(r#""cpu_model": "EPYC-Genoa-v2","#);
+        let config = parse_controller_config(&json).unwrap();
+        let VmConfiguration::Qemu(vm) = &config.vm else {
+            panic!("expected a QEMU configuration");
+        };
+        assert_eq!(
+            vm.snp().unwrap().cpu_model.as_deref(),
+            Some("EPYC-Genoa-v2")
+        );
+    }
+
+    #[test]
+    fn snp_slice_without_a_cpu_model_stays_snp() {
+        // Configs written before the field existed must still parse AND still
+        // be recognised as SNP; the launcher supplies the EPYC-v4 default.
+        let json = snp_config_json_with("");
+        let config = parse_controller_config(&json).unwrap();
+        let VmConfiguration::Qemu(vm) = &config.vm else {
+            panic!("expected a QEMU configuration");
+        };
+        let snp = vm.snp().expect("marker plus all required fields is SNP");
+        assert!(snp.cpu_model.is_none());
+    }
+
     #[test]
     fn a_firecracker_config_resolves_to_the_unsupported_variant() {
         let json = r#"{
@@ -900,6 +961,7 @@ mod tests {
                 kernel_path: None,
                 initrd_path: None,
                 kernel_cmdline: None,
+                cpu_model: None,
                 numa_node: None,
                 hugepage_size: None,
                 guest_ipv6_cidr: None,
@@ -945,6 +1007,7 @@ mod tests {
             kernel_path: None,
             initrd_path: None,
             kernel_cmdline: None,
+            cpu_model: None,
             numa_node: None,
             hugepage_size: None,
             guest_ipv6_cidr: None,
@@ -1033,6 +1096,7 @@ mod tests {
                 kernel_path: None,
                 initrd_path: None,
                 kernel_cmdline: None,
+                cpu_model: None,
                 numa_node: None,
                 hugepage_size: None,
                 guest_ipv6_cidr: None,

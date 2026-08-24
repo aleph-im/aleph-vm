@@ -111,6 +111,11 @@ pub struct VmConfig {
 pub struct TeeConfig {
     pub backend: TeeType,
     pub policy: Option<String>,
+    /// QEMU CPU model for a measured SEV-SNP launch. A measurement input (it
+    /// selects the per-vCPU VMSA contents), so it is carried, never inferred
+    /// from the host. `None` = [`crate::sev_snp::qemu::DEFAULT_CPU_MODEL`].
+    #[serde(default)]
+    pub cpu_model: Option<String>,
 }
 
 /// Serde helper for hex-encoding `Vec<u8>` fields.

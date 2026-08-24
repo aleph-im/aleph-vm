@@ -232,7 +232,21 @@ def snp_supported(monkeypatch):
 
 
 @pytest.fixture
-def staged_instance_bundle(tmp_path, storage_files, snp_supported, monkeypatch) -> dict[str, Path]:
+def snp_vcpu_types(monkeypatch):
+    """Serve the QEMU probe from a list instead of spawning qemu."""
+
+    def _set(models: list[str]) -> None:
+        async def fake_probe() -> list[str]:
+            return models
+
+        monkeypatch.setattr("aleph.vm.agent.snp_instance_launch.get_supported_snp_vcpu_types", fake_probe)
+
+    _set(["EPYC", "EPYC-v4"])
+    return _set
+
+
+@pytest.fixture
+def staged_instance_bundle(tmp_path, storage_files, snp_supported, snp_vcpu_types, monkeypatch) -> dict[str, Path]:
     tar_path = make_bundle(tmp_path)
     manifest_path = make_manifest(tar_path, tmp_path)
     storage_files[MANIFEST_REF] = manifest_path
@@ -264,6 +278,9 @@ async def test_build_snp_instance_spec_happy_path(staged_instance_bundle):
     assert spec.initrd_path.name == "initrd"
     assert spec.tee.firmware_path is not None
     assert spec.tee.firmware_path.name == "OVMF.fd"
+    # The default content measurement and the probe fixture's default both
+    # name EPYC-v4: the default-model path stays covered here.
+    assert spec.tee.cpu_model == "EPYC-v4"
     assert spec.ssh_authorized_keys == []
     assert spec.persistent is True
     assert spec.hostname
@@ -304,6 +321,30 @@ async def test_falls_back_to_the_first_attestation_port_without_ra_tls(tmp_path,
     _, attest_port = await build_snp_instance_spec(VM_HASH, snp_instance_content())
 
     assert attest_port == 7000
+
+
+@pytest.mark.asyncio
+async def test_snp_instance_spec_selects_the_measured_cpu_model(staged_instance_bundle, snp_vcpu_types):
+    # A non-default model: a hardcoded "EPYC-v4" fallback would fail this,
+    # unlike an assertion against the default that a bug could satisfy by
+    # accident.
+    snp_vcpu_types(["EPYC", "EPYC-v4", "EPYC-Genoa-v2"])
+    measurements = [
+        LaunchMeasurement(
+            platform=TeePlatform.sev_snp, registers=SevSnpRegisters(launch="a" * 96), vcpu_type="EPYC-Genoa-v2"
+        )
+    ]
+    content = snp_instance_content(trusted_execution_overrides={"measurements": measurements})
+    spec, _attest_port = await build_snp_instance_spec(VM_HASH, content)
+    assert spec.tee is not None
+    assert spec.tee.cpu_model == "EPYC-Genoa-v2"
+
+
+@pytest.mark.asyncio
+async def test_snp_instance_spec_refuses_a_model_the_host_cannot_launch(staged_instance_bundle, snp_vcpu_types):
+    snp_vcpu_types(["EPYC"])
+    with pytest.raises(VmSetupError, match="launch measurements"):
+        await build_snp_instance_spec(VM_HASH, snp_instance_content())
 
 
 @pytest.mark.asyncio

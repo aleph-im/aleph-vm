@@ -64,6 +64,12 @@ pub const UNIT_STOP_TIMEOUT: Duration = Duration::from_secs(60);
 /// systemd SIGKILL deadline this code exists to beat.
 const QMP_CALL_BUDGET: Duration = Duration::from_secs(qmp::COMMAND_DEADLINE.as_secs() + 3);
 
+/// Default SEV-SNP guest CPU model. Mirrors
+/// `aleph_tee::sev_snp::qemu::DEFAULT_CPU_MODEL`; the byte-parity conformance
+/// test asserts the two agree. Controller configs written before the
+/// `cpu_model` field existed carry none and must keep producing this argv.
+const DEFAULT_SNP_CPU_MODEL: &str = "EPYC-v4";
+
 /// The qga chardev socket path as the Python f-string renders it. Python
 /// interpolates `qga_socket_path` unconditionally, so a `None` renders as the
 /// literal string "None" (the create path always sets it, so this only bites a
@@ -430,7 +436,7 @@ pub fn build_confidential_argv(config: &QemuConfig, sev: SevHostInfo) -> Vec<Str
 /// a runtime dependency on `aleph-tee` (which pulls openssl/reqwest); a
 /// dev-dependency conformance test asserts this matches the generator
 /// byte-for-byte. The fragment is:
-///   -cpu EPYC-v4
+///   -cpu {cpu_model, default EPYC-v4}
 ///   -machine q35,confidential-guest-support=sev0,memory-backend=ram1,vmport=off
 ///   -object memory-backend-memfd,id=ram1,size={mem}M,share=true
 ///   -object sev-snp-guest,id=sev0,cbitpos={cbitpos},reduced-phys-bits={reduced_phys_bits},kernel-hashes=on,policy={policy}
@@ -442,9 +448,11 @@ pub fn build_confidential_argv(config: &QemuConfig, sev: SevHostInfo) -> Vec<Str
 /// measurement inputs: they configure memory encryption, not the launch digest,
 /// so reading them from the host keeps the supervisor architecture-agnostic
 /// without affecting the measurement. On the current EPYC target CPUID reports
-/// `cbitpos=51, reduced_phys_bits=1`. `-cpu EPYC-v4` (a fixed vcpu-type that IS
-/// a measurement input via the VMSA) stays fixed so measurements are
-/// host-independent. See divergence 68.
+/// `cbitpos=51, reduced_phys_bits=1`. `-cpu {model}` IS a measurement input (via
+/// the per-vCPU VMSA). The model is carried from the agent, which picks it from
+/// the message's launch measurements intersected with what this host's QEMU
+/// can launch; an absent value means `EPYC-v4`, which is what pre-`cpu_model`
+/// configs imply. See divergence 68.
 ///
 /// `kernel-hashes=on` makes OVMF hash-verify the -kernel/-initrd/-append blobs;
 /// `policy` is rendered `hex()`-style (`0x{:x}`) from the daemon-carried u32,
@@ -460,6 +468,7 @@ pub fn build_confidential_argv(config: &QemuConfig, sev: SevHostInfo) -> Vec<Str
 ///
 /// `pub` so the conformance test can assert byte-parity against the aleph-tee
 /// generator (the oracle).
+#[allow(clippy::too_many_arguments)]
 pub fn snp_tee_fragment(
     mem_size_mb: u64,
     sev_policy: u32,
@@ -468,12 +477,13 @@ pub fn snp_tee_fragment(
     hugepage_size: Option<&str>,
     cbitpos: u32,
     reduced_phys_bits: u32,
+    cpu_model: Option<&str>,
 ) -> Vec<String> {
     let policy = format!("0x{sev_policy:x}");
     let suffix = memory_backend_suffix(numa_node, hugepage_size);
     vec![
         "-cpu".into(),
-        "EPYC-v4".into(),
+        cpu_model.unwrap_or(DEFAULT_SNP_CPU_MODEL).into(),
         "-machine".into(),
         "q35,confidential-guest-support=sev0,memory-backend=ram1,vmport=off".into(),
         "-object".into(),
@@ -544,6 +554,7 @@ pub fn build_snp_argv(config: &QemuConfig, sev: SevHostInfo) -> Vec<String> {
         .as_deref()
         .expect("SNP config carries kernel_cmdline");
     let policy = config.sev_policy.expect("SNP config carries sev_policy");
+    let cpu_model = config.cpu_model.as_deref();
 
     // rootfs drive. Default: dm-verity DATA device (/dev/vda), read-only raw.
     // The opaque-cmdline luks arm (the image_format/image_readonly pair)
@@ -648,6 +659,7 @@ pub fn build_snp_argv(config: &QemuConfig, sev: SevHostInfo) -> Vec<String> {
         config.hugepage_size.as_deref(),
         sev.cbitpos,
         sev.reduced_phys_bits,
+        cpu_model,
     ));
 
     args

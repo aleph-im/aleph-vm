@@ -33,6 +33,8 @@ from pydantic import ValidationError
 
 from aleph.vm.agent import snp_staging
 from aleph.vm.agent.guest_ipv6 import compute_requested_ipv6
+from aleph.vm.agent.vcpu_probe import get_supported_snp_vcpu_types
+from aleph.vm.agent.vcpu_select import requested_vcpu_types, select_snp_vcpu_type
 from aleph.vm.conf import settings
 from aleph.vm.storage import get_existing_file
 from aleph.vm.supervisor_interface.errors import VmSetupError
@@ -230,6 +232,14 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
     # agent computes it upfront (empty under the dynamic policy).
     requested_ipv6, ipv6_prefix_len = compute_requested_ipv6(vm_hash, VmType.from_message_content(content))
 
+    # The launched CPU model IS a measurement input: only a model one of the
+    # message's measurements was computed for, and that this host's QEMU can
+    # actually launch, may be used. Fails closed.
+    cpu_model = select_snp_vcpu_type(
+        requested_vcpu_types(content.verification.measurements),
+        await get_supported_snp_vcpu_types(),
+    )
+
     spec = CreateVmSpec(
         vm_id=VmId(str(vm_hash)),
         backend=Backend.QEMU,
@@ -245,6 +255,7 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
             # for SNP (lifecycle.rs): required-but-ignored placeholder.
             session_dir=DirectoryPath(Path(session_base) / str(vm_hash)),
             firmware_path=ovmf_path,
+            cpu_model=cpu_model,
         ),
         network=NetworkConfig(
             internet_access=bool(content.environment.internet),

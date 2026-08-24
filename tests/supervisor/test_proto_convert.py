@@ -59,6 +59,7 @@ FULL_SPEC = CreateVmSpec(
         session_dir=DirectoryPath(Path("/var/lib/sessions")),
         firmware_path=Path("/var/cache/ovmf.fd"),
         kernel_cmdline="console=ttyS0 luks=1 owner=0xabc",
+        cpu_model="EPYC-Genoa-v2",
     ),
     network=NetworkConfig(internet_access=True, requested_ipv6="fd00::42", ipv6_prefix_len=124),
     gpus=[
@@ -124,6 +125,16 @@ def test_create_vm_spec_round_trip_minimal():
     assert restored.numa_node is None
     assert restored.guest_channel == GuestChannelSpec(ready_port=52, ready_timeout_secs=45)
     assert restored == MINIMAL_SPEC
+
+
+def test_create_vm_spec_tee_cpu_model_defaults_to_empty():
+    spec = conv.create_vm_spec_from_pb(conv.create_vm_spec_to_pb(FULL_SPEC))
+    assert spec.tee is not None
+    assert spec.tee.cpu_model == "EPYC-Genoa-v2"
+
+    bare = conv.create_vm_spec_to_pb(FULL_SPEC)
+    bare.tee.ClearField("cpu_model")
+    assert conv.create_vm_spec_from_pb(bare).tee.cpu_model == ""
 
 
 def test_vm_info_round_trip_full():

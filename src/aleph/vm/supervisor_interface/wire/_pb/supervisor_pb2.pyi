@@ -623,6 +623,7 @@ class TeeConfig(google.protobuf.message.Message):
     SESSION_DIR_FIELD_NUMBER: builtins.int
     FIRMWARE_PATH_FIELD_NUMBER: builtins.int
     KERNEL_CMDLINE_FIELD_NUMBER: builtins.int
+    CPU_MODEL_FIELD_NUMBER: builtins.int
     backend: global___TeeBackend.ValueType
     """attestation backend (orthogonal to the top-level Backend enum, which selects the VMM)"""
     policy: builtins.str
@@ -637,6 +638,13 @@ class TeeConfig(google.protobuf.message.Message):
     it to QEMU verbatim and never parses it; it is mutually exclusive with
     the sidecar-derived verity cmdline. Empty = unset.
     """
+    cpu_model: builtins.str
+    """QEMU CPU model for a measured SEV-SNP launch (e.g. "EPYC-v4"). The agent
+    picks it from the message's launch measurements, intersected with what
+    this host's QEMU can launch; it IS a measurement input (per-vCPU VMSA),
+    so the supervisor passes it through verbatim. Empty = "EPYC-v4", which is
+    what controller configs written before this field imply.
+    """
     def __init__(
         self,
         *,
@@ -645,8 +653,9 @@ class TeeConfig(google.protobuf.message.Message):
         session_dir: builtins.str = ...,
         firmware_path: builtins.str = ...,
         kernel_cmdline: builtins.str = ...,
+        cpu_model: builtins.str = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["backend", b"backend", "firmware_path", b"firmware_path", "kernel_cmdline", b"kernel_cmdline", "policy", b"policy", "session_dir", b"session_dir"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["backend", b"backend", "cpu_model", b"cpu_model", "firmware_path", b"firmware_path", "kernel_cmdline", b"kernel_cmdline", "policy", b"policy", "session_dir", b"session_dir"]) -> None: ...
 
 global___TeeConfig = TeeConfig
 
