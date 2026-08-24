@@ -167,9 +167,6 @@ async def _gpus_from_host_info(host_info) -> GpuProperties:
     )
 
 
-machine_properties_cached = None
-
-
 async def _get_tee_properties() -> TeeProperties | None:
     """TEE launch capability, absent when there is nothing provable to advertise."""
     snp_vcpu_types = await get_supported_snp_vcpu_types()
@@ -226,7 +223,12 @@ async def get_machine_properties() -> MachineProperties:
 
 
 @async_cache
-async def get_machine_capability() -> MachineCapability:
+async def _get_static_machine_capability() -> MachineCapability:
+    """The part of the machine capability that cannot change while the agent
+    runs. Cached because ``get_hardware_info`` shells out. ``tee`` is left
+    ``None`` and filled in per call by ``get_machine_capability``, for the
+    same reason as ``_get_static_machine_properties``.
+    """
     hw = await get_hardware_info()
     cpu_info = get_cpu_info(hw)
     mem_info = get_memory_info(hw)
@@ -255,8 +257,15 @@ async def get_machine_capability() -> MachineCapability:
             type=mem_info["type"],
             clock=mem_info["clock"],
         ),
-        tee=await _get_tee_properties(),
+        tee=None,
     )
+
+
+async def get_machine_capability() -> MachineCapability:
+    """What ``/about/capability`` reports. Static part cached, TEE block
+    re-evaluated per call so a recovered probe is advertised again."""
+    static = await _get_static_machine_capability()
+    return static.model_copy(update={"tee": await _get_tee_properties()})
 
 
 def _disk_usage_from_pools(host_info) -> DiskUsage:

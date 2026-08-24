@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from aleph.vm.agent import resources
-from aleph.vm.agent.resources import get_machine_properties
+from aleph.vm.agent.resources import get_machine_capability, get_machine_properties
 from aleph.vm.agent.vcpu_probe import (
     PROBE_RETRY_SECONDS,
     filter_snp_vcpu_types,
@@ -85,6 +85,11 @@ def _fresh_static_properties(monkeypatch):
         resources,
         "_get_static_machine_properties",
         async_cache(resources._get_static_machine_properties.__wrapped__),
+    )
+    monkeypatch.setattr(
+        resources,
+        "_get_static_machine_capability",
+        async_cache(resources._get_static_machine_capability.__wrapped__),
     )
 
 
@@ -250,6 +255,29 @@ async def test_advertisement_recovers_after_a_failed_first_probe(mocker):
     assert properties.tee is not None
     assert properties.tee.sev_snp is not None
     assert properties.tee.sev_snp.supported_vcpu_types == ["EPYC-v4"]
+
+
+@pytest.mark.asyncio
+async def test_capability_advertisement_recovers_after_a_failed_first_probe(mocker):
+    # /about/capability had the same frozen tee block as /about/usage/system;
+    # the scheduler does not read it, but it is public and says the same thing.
+    _static_host(mocker)
+    mocker.patch(
+        "aleph.vm.agent.resources.get_memory_info",
+        return_value={"size": 64, "units": "GiB", "type": "DDR5", "clock": 4800},
+    )
+    clock = _clock(mocker)
+    probe = _snp_host(mocker, {"side_effect": OSError("qemu-system-x86_64 not found")})
+
+    assert (await get_machine_capability()).tee is None
+
+    probe.side_effect = None
+    probe.return_value = [{"name": "EPYC-v4", "unavailable-features": []}]
+    clock["t"] += PROBE_RETRY_SECONDS
+    capability = await get_machine_capability()
+    assert capability.tee is not None
+    assert capability.tee.sev_snp is not None
+    assert capability.tee.sev_snp.supported_vcpu_types == ["EPYC-v4"]
 
 
 @pytest.mark.asyncio
