@@ -18,7 +18,9 @@ import json
 import logging
 import os
 import shutil
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -327,32 +329,45 @@ def find_existing_volume(namespace: str, filename: str) -> Path | None:
     return matches[0]
 
 
-def _pool_holding_namespace(namespace: str, size_mib: int) -> StoragePool | None:
-    """The pool that already holds this VM's directory, when it has room.
+_pinned_layouts: ContextVar[dict[str, dict[str, Path]]] = ContextVar("pinned_volume_layouts", default={})
 
-    Keeps a VM's volumes together: a volume recreated after its file was
-    deleted (the reinstall path purges the volumes and re-runs the
-    downloader) must land back on the pool the VM already occupies, because
-    the running VM's spec still names that path. Falls back to normal
-    placement when the pool is full or unreachable, so a wedged pool never
-    blocks a create.
+
+@contextmanager
+def pin_layout(namespace: str, previous_paths: Iterable[Path]) -> Iterator[None]:
+    """Place this namespace's volumes back at ``previous_paths`` while active.
+
+    The reinstall path deletes a running VM's volumes and rebuilds them under
+    the VM's unchanged spec, which still names the old paths. Placement is
+    per volume (``select_pool`` picks the emptiest pool for each), so a VM
+    can legitimately span pools and "the pool that holds the VM" is not a
+    well-defined thing to be sticky on. Pin each filename to the pool it was
+    deleted from instead: exactly the constraint, stated directly. A fresh
+    create runs without a pin and places normally.
     """
-    occupied = {directory.parent for directory in iter_namespace_dirs(namespace)}
-    if not occupied:
+    layout = {path.name: path.parent.parent for path in previous_paths}
+    pinned = dict(_pinned_layouts.get())
+    pinned[namespace] = layout
+    token = _pinned_layouts.set(pinned)
+    try:
+        yield
+    finally:
+        _pinned_layouts.reset(token)
+
+
+def _pinned_pool(namespace: str, filename: str) -> StoragePool | None:
+    pool_path = _pinned_layouts.get().get(namespace, {}).get(filename)
+    if pool_path is None:
         return None
-    required_bytes = size_mib * 1024 * 1024
     for pool in get_pools():
-        if pool.path not in occupied or not pool.vm_eligible:
-            continue
-        free = _pool_free_bytes(pool)
-        if free is not None and free >= required_bytes:
+        if pool.path == pool_path:
             return pool
+    logger.error("Pinned pool %s for %s/%s is not configured; placing normally", pool_path, namespace, filename)
     return None
 
 
 def volume_path_for(namespace: str, filename: str, size_mib: int, *, pool0_only: bool = False) -> Path:
     """The host path for a volume: its existing file when one pool already
-    holds it (sticky), else the pool already holding this VM's other volumes,
+    holds it (sticky), else the pool a ``pin_layout`` context names for it,
     else a fresh placement on the best pool. The namespace directory is
     created; the volume file itself is not.
 
@@ -379,7 +394,7 @@ def volume_path_for(namespace: str, filename: str, size_mib: int, *, pool0_only:
     if pool0_only:
         pool = _select_from([pool0], size_mib)
     else:
-        pool = _pool_holding_namespace(namespace, size_mib) or select_pool(size_mib)
+        pool = _pinned_pool(namespace, filename) or select_pool(size_mib)
     parent = pool.path / namespace
     parent.mkdir(parents=True, exist_ok=True)
     return parent / filename

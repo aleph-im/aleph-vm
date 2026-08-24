@@ -9,8 +9,10 @@ recreated at the same path (the reinstall round trip).
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
+from aleph_message.models import InstanceContent, ProgramContent
 
 import aleph.vm.storage_pools as storage_pools_module
 from aleph.vm.agent.vm.purge import (
@@ -19,7 +21,14 @@ from aleph.vm.agent.vm.purge import (
     purge_vm_volumes,
 )
 from aleph.vm.conf import settings
-from aleph.vm.storage_pools import MediaClass, StoragePool, reset_pools, volume_path_for
+from aleph.vm.storage_pools import (
+    MediaClass,
+    StoragePool,
+    pin_layout,
+    reset_pools,
+    volume_path_for,
+)
+from aleph.vm.supervisor_interface.errors import VmSetupError
 
 VM_HASH = "cafe" * 16  # 64 hex chars, the shape of an item hash
 OTHER_HASH = "beef" * 16
@@ -63,7 +72,7 @@ def test_purge_volumes_spans_every_pool(pools):
     rootfs = _volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
     data = _volume(pools["pool1"], VM_HASH, "data.ext4")
 
-    assert purge_vm_volumes(VM_HASH) == 2
+    assert len(purge_vm_volumes(VM_HASH)) == 2
 
     assert not rootfs.exists()
     assert not data.exists()
@@ -75,7 +84,7 @@ def test_purge_volumes_can_keep_the_data_volumes(pools):
     rootfs = _volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
     data = _volume(pools["pool0"], VM_HASH, "data.ext4")
 
-    assert purge_vm_volumes(VM_HASH, include_data_volumes=False) == 1
+    assert len(purge_vm_volumes(VM_HASH, include_data_volumes=False)) == 1
 
     assert not rootfs.exists()
     assert data.exists()
@@ -85,7 +94,7 @@ def test_purge_volumes_can_keep_the_rootfs(pools):
     rootfs = _volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
     data = _volume(pools["pool0"], VM_HASH, "data.ext4")
 
-    assert purge_vm_volumes(VM_HASH, include_rootfs=False) == 1
+    assert len(purge_vm_volumes(VM_HASH, include_rootfs=False)) == 1
 
     assert rootfs.exists()
     assert not data.exists()
@@ -149,25 +158,25 @@ def test_only_regular_files_directly_in_the_directory_are_volumes(pools):
     assert [path.name for path in iter_volume_files(VM_HASH)] == ["rootfs.qcow2"]
 
 
-def test_a_purged_volume_is_recreated_on_the_same_pool(pools):
-    """The reinstall round trip: a running VM keeps its spec (and so the
-    paths in it) across a reinstall, so the rebuilt volume must land back
-    where it was, not on whichever pool happens to be emptiest."""
-    original = volume_path_for(VM_HASH, "rootfs.qcow2", size_mib=1)
-    original.write_bytes(b"x")
-    # Place the VM on pool 1, then leave far more room on pool 0 so plain
-    # "emptiest pool" placement would move the volume.
-    assert original.parent.parent == pools["pool0"]
-    moved = _volume(pools["pool1"], VM_HASH, "rootfs.qcow2")
-    original.unlink()
-    (pools["pool0"] / VM_HASH).rmdir()
+def test_purged_volumes_are_rebuilt_on_the_pools_they_came_from(pools):
+    """The reinstall round trip. Placement is per volume, so a VM can span
+    pools; after the purge each volume must return to its own pool, since
+    the running VM's spec still names those exact paths."""
+    rootfs = _volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    data = _volume(pools["pool1"], VM_HASH, "data.qcow2")
 
-    purge_vm_volumes(VM_HASH)
-    assert not moved.exists()
+    deleted = purge_vm_volumes(VM_HASH)
+    assert sorted(deleted) == sorted([rootfs, data])
 
-    rebuilt = volume_path_for(VM_HASH, "rootfs.qcow2", size_mib=1)
+    with pin_layout(VM_HASH, deleted):
+        assert volume_path_for(VM_HASH, "rootfs.qcow2", size_mib=1) == rootfs
+        assert volume_path_for(VM_HASH, "data.qcow2", size_mib=1) == data
+        # A volume the VM never had is not pinned and places normally.
+        fresh = volume_path_for(VM_HASH, "new.qcow2", size_mib=1)
+        assert fresh.parent.parent in (pools["pool0"], pools["pool1"])
 
-    assert rebuilt == moved, "the rebuilt volume must return to the VM's pool"
+    # Outside the context nothing is pinned any more.
+    assert VM_HASH not in storage_pools_module._pinned_layouts.get()
 
 
 def test_a_volume_still_held_by_device_mapper_is_not_deleted(pools, monkeypatch, caplog):
@@ -180,8 +189,49 @@ def test_a_volume_still_held_by_device_mapper_is_not_deleted(pools, monkeypatch,
     real_is_block_device = Path.is_block_device
     monkeypatch.setattr(Path, "is_block_device", lambda self: self == dm_path or real_is_block_device(self))
 
-    assert purge_vm_volumes(VM_HASH) == 1
+    assert len(purge_vm_volumes(VM_HASH)) == 1
 
     assert held.exists()
     assert not free.exists()
     assert "device-mapper target is still present" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# recreate_vm_volumes: the rebuild half of the reinstall round trip
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_recreate_dispatches_an_instance_to_the_qemu_downloader(mocker):
+    from aleph.vm.agent.vm import downloader
+
+    qemu = mocker.patch.object(downloader, "QemuDownloader")
+    qemu.return_value.download_all = AsyncMock()
+    content = mocker.MagicMock(spec=InstanceContent)
+
+    await downloader.recreate_vm_volumes(content, VM_HASH)
+
+    qemu.assert_called_once_with(content, VM_HASH)
+    qemu.return_value.download_all.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_recreate_dispatches_a_program_to_the_program_downloader(mocker):
+    from aleph.vm.agent.vm import downloader
+
+    program = mocker.patch.object(downloader, "ProgramDownloader")
+    program.return_value.download_all = AsyncMock()
+    content = mocker.MagicMock(spec=ProgramContent)
+
+    await downloader.recreate_vm_volumes(content, VM_HASH)
+
+    program.assert_called_once_with(content, VM_HASH)
+    program.return_value.download_all.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_recreate_refuses_anything_else():
+    from aleph.vm.agent.vm.downloader import recreate_vm_volumes
+
+    with pytest.raises(VmSetupError):
+        await recreate_vm_volumes(object(), VM_HASH)  # type: ignore[arg-type]

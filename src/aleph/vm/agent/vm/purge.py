@@ -98,14 +98,16 @@ def purge_vm_volumes(
     *,
     include_rootfs: bool = True,
     include_data_volumes: bool = True,
-) -> int:
+) -> list[Path]:
     """Delete a VM's volume files, leaving the namespace directories in place.
 
     Used by the reinstall path, which deletes the volumes and then re-runs
-    the downloader to recreate them. Returns the number of files deleted.
+    the downloader to recreate them; the returned paths feed
+    ``storage_pools.pin_layout`` so each volume is rebuilt on the pool it
+    came from.
     """
     namespace = _checked_namespace(vm_hash)
-    deleted = 0
+    deleted: list[Path] = []
     for volume in iter_volume_files(
         namespace,
         include_rootfs=include_rootfs,
@@ -128,7 +130,7 @@ def purge_vm_volumes(
             logger.warning("Failed to delete volume %s", volume, exc_info=True)
             continue
         logger.info("Deleted volume %s", volume)
-        deleted += 1
+        deleted.append(volume)
     return deleted
 
 
@@ -161,7 +163,7 @@ def purge_vm_storage(vm_hash: ItemHash | str) -> int:
     # File by file first, then the directories: rmtree alone would do, but
     # the per-file pass logs each volume and yields the count, which is the
     # audit trail an erase should leave.
-    deleted = purge_vm_volumes(namespace)
+    deleted = len(purge_vm_volumes(namespace))
 
     for volumes_dir in list(iter_namespace_dirs(namespace)):
         try:

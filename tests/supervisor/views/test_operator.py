@@ -952,6 +952,7 @@ async def test_operator_erase_with_delegation(aiohttp_client, mocker):
     fake_sup = _fake_supervisor()
     app["supervisor"] = fake_sup
     mock_delete_records = mocker.patch("aleph.vm.agent.metrics.delete_records_for_vm", new_callable=mocker.AsyncMock)
+    mock_purge = mocker.patch("aleph.vm.agent.views.operator.purge_vm_storage")
     client: TestClient = await aiohttp_client(app)
     response = await client.post(
         f"/control/machine/{vm_hash}/erase",
@@ -960,6 +961,9 @@ async def test_operator_erase_with_delegation(aiohttp_client, mocker):
     assert response.status == 200
     assert await response.text() == f"Erased VM with ref {vm_hash}"
     fake_sup.delete_vm.assert_awaited_once_with(VmId(str(vm_hash)))
+    # The erase owns the storage, rootfs included: the supervisor's delete
+    # only released its handles on the disks.
+    mock_purge.assert_called_once_with(vm_hash)
     # registry record must be forgotten after erase, and its DB records deleted
     assert app["vm_registry"].get(vm_hash) is None
     mock_delete_records.assert_awaited_once_with(str(vm_hash))

@@ -31,6 +31,7 @@ from aleph.vm.agent.vm.purge import purge_vm_staging, purge_vm_storage, purge_vm
 from aleph.vm.agent.vm_registry import AgentVmRecord
 from aleph.vm.backup_staging import download_volume_by_ref, get_backup_directory
 from aleph.vm.conf import settings
+from aleph.vm.storage_pools import pin_layout
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.errors import (
     BackupNotFoundError,
@@ -670,7 +671,7 @@ async def operate_erase(request: web.Request, authenticated_sender: str) -> web.
         # bytes are the agent's to delete, since the agent allocated them.
         # This erases the rootfs too: an owner asking to erase their VM's data
         # means all of it, and the rootfs is where most of it lives.
-        purge_vm_storage(vm_hash)
+        await asyncio.to_thread(purge_vm_storage, vm_hash)
         return web.Response(status=200, body=f"Erased VM with ref {vm_hash}")
 
 
@@ -725,9 +726,12 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
                 # the agent's job because the agent created them; the
                 # supervisor is handed resolved paths and never allocates.
                 await supervisor.stop_vm(vm_id)
-                purge_vm_volumes(vm_hash, include_data_volumes=include_data_volumes)
+                deleted = await asyncio.to_thread(purge_vm_volumes, vm_hash, include_data_volumes=include_data_volumes)
                 try:
-                    await recreate_vm_volumes(record.message, str(vm_hash))
+                    # Rebuild each volume on the pool it was deleted from: the
+                    # running VM's spec still names those paths.
+                    with pin_layout(str(vm_hash), deleted):
+                        await recreate_vm_volumes(record.message, str(vm_hash))
                     await supervisor.start_vm(vm_id)
                 except VmNotFoundError:
                     raise
@@ -749,7 +753,7 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
                 # is a delete+recreate cycle, so the persisted host ports are
                 # kept for the recreated VM to reload.
                 await supervisor.delete_vm(vm_id, keep_port_mappings=True)
-                purge_vm_volumes(vm_hash, include_data_volumes=include_data_volumes)
+                await asyncio.to_thread(purge_vm_volumes, vm_hash, include_data_volumes=include_data_volumes)
                 purge_vm_staging(vm_hash)
                 # The registry record is deliberately left in place: the create
                 # path records it again, and dropping it here would 404 the
