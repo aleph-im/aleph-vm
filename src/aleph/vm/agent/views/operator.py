@@ -36,6 +36,7 @@ from aleph.vm.supervisor_interface.errors import (
     BackupNotFoundError,
     InsufficientResourcesError,
     InvalidBackendError,
+    ResourceDownloadError,
     VmNotFoundError,
 )
 from aleph.vm.supervisor_interface.types import (
@@ -725,13 +726,29 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
                 # supervisor is handed resolved paths and never allocates.
                 await supervisor.stop_vm(vm_id)
                 purge_vm_volumes(vm_hash, include_data_volumes=include_data_volumes)
-                await recreate_vm_volumes(record.message, str(vm_hash))
-                await supervisor.start_vm(vm_id)
+                try:
+                    await recreate_vm_volumes(record.message, str(vm_hash))
+                    await supervisor.start_vm(vm_id)
+                except VmNotFoundError:
+                    raise
+                except ResourceDownloadError as error:
+                    # The VM stays stopped with its volumes missing; a retry
+                    # of the reinstall (or a plain start, which re-runs
+                    # nothing) is the recovery, so say what went wrong.
+                    logger.exception("Reinstall of %s: base image not available", vm_hash)
+                    raise web.HTTPBadRequest(reason="Base image or runtime not available") from error
+                except Exception as error:
+                    logger.exception("Reinstall of %s failed after purging its volumes", vm_hash)
+                    raise web.HTTPInternalServerError(
+                        reason="Reinstall failed; the VM is stopped, retry to rebuild its volumes"
+                    ) from error
             else:
                 # Ephemeral and confidential VMs are rebuilt from scratch: a
                 # confidential rootfs is measured and staged, so its bundle
-                # must be re-staged and its owner must re-attest anyway.
-                await supervisor.delete_vm(vm_id)
+                # must be re-staged and its owner must re-attest anyway. This
+                # is a delete+recreate cycle, so the persisted host ports are
+                # kept for the recreated VM to reload.
+                await supervisor.delete_vm(vm_id, keep_port_mappings=True)
                 purge_vm_volumes(vm_hash, include_data_volumes=include_data_volumes)
                 purge_vm_staging(vm_hash)
                 # The registry record is deliberately left in place: the create

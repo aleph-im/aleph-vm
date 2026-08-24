@@ -80,7 +80,7 @@ def test_capability_abcs_partition_the_surface():
             "stop_vm",
             "start_vm",
             "reboot_vm",
-                    "run_program_code",
+            "run_program_code",
         },
         PortForwardingOps: {"add_port_forward", "remove_port_forward", "list_port_forwards"},
         EventsOps: {"watch_events"},

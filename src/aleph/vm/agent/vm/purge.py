@@ -32,6 +32,7 @@ from aleph_message.models import ItemHash
 from aleph.vm.agent.snp_instance_launch import remove_snp_instance_staging
 from aleph.vm.agent.vprogram_launch import remove_vprogram_staging
 from aleph.vm.conf import settings
+from aleph.vm.storage import DEVICE_MAPPER_DIRECTORY
 from aleph.vm.storage_pools import iter_namespace_dirs
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,13 @@ def iter_volume_files(
             yield entry
 
 
+def _held_by_device_mapper(namespace: str, volume: Path) -> bool:
+    """True when ``volume`` is the backing file of a live dm target."""
+    if volume.suffix != ".btrfs":
+        return False
+    return (Path(DEVICE_MAPPER_DIRECTORY) / f"{namespace}_{volume.stem}").is_block_device()
+
+
 def purge_vm_volumes(
     vm_hash: ItemHash | str,
     *,
@@ -96,12 +104,24 @@ def purge_vm_volumes(
     Used by the reinstall path, which deletes the volumes and then re-runs
     the downloader to recreate them. Returns the number of files deleted.
     """
+    namespace = _checked_namespace(vm_hash)
     deleted = 0
     for volume in iter_volume_files(
-        vm_hash,
+        namespace,
         include_rootfs=include_rootfs,
         include_data_volumes=include_data_volumes,
     ):
+        if _held_by_device_mapper(namespace, volume):
+            # A parent-backed volume (create_devmapper) is a loop device
+            # under a dm snapshot, and nothing tears those down on stop yet.
+            # Unlinking the file would neither free its blocks (the loop
+            # device pins the inode) nor reset the volume (create_devmapper
+            # returns early while the dm device exists). Fail loud instead.
+            logger.error(
+                "Not deleting %s: its device-mapper target is still present; remove it first",
+                volume,
+            )
+            continue
         try:
             volume.unlink()
         except OSError:
@@ -138,6 +158,9 @@ def purge_vm_storage(vm_hash: ItemHash | str) -> int:
     nothing on disk is a no-op.
     """
     namespace = _checked_namespace(vm_hash)
+    # File by file first, then the directories: rmtree alone would do, but
+    # the per-file pass logs each volume and yields the count, which is the
+    # audit trail an erase should leave.
     deleted = purge_vm_volumes(namespace)
 
     for volumes_dir in list(iter_namespace_dirs(namespace)):
@@ -152,9 +175,9 @@ def purge_vm_storage(vm_hash: ItemHash | str) -> int:
         if session_dir.exists():
             try:
                 shutil.rmtree(session_dir)
-                logger.info("Removed confidential session directory %s", session_dir)
+                logger.info("Removed the confidential session directory of %s", namespace)
             except OSError:
-                logger.warning("Failed to remove session directory %s", session_dir, exc_info=True)
+                logger.warning("Failed to remove the session directory of %s", namespace, exc_info=True)
 
     purge_vm_staging(namespace)
 

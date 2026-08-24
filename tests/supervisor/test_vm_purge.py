@@ -168,3 +168,20 @@ def test_a_purged_volume_is_recreated_on_the_same_pool(pools):
     rebuilt = volume_path_for(VM_HASH, "rootfs.qcow2", size_mib=1)
 
     assert rebuilt == moved, "the rebuilt volume must return to the VM's pool"
+
+
+def test_a_volume_still_held_by_device_mapper_is_not_deleted(pools, monkeypatch, caplog):
+    """A parent-backed (.btrfs) volume whose dm target is still present must
+    not be unlinked: the loop device would pin the inode (no space freed) and
+    create_devmapper would skip the rebuild (no reset). Fail loud instead."""
+    held = _volume(pools["pool0"], VM_HASH, "data.btrfs")
+    free = _volume(pools["pool0"], VM_HASH, "other.ext4")
+    dm_path = Path("/dev/mapper") / f"{VM_HASH}_data"
+    real_is_block_device = Path.is_block_device
+    monkeypatch.setattr(Path, "is_block_device", lambda self: self == dm_path or real_is_block_device(self))
+
+    assert purge_vm_volumes(VM_HASH) == 1
+
+    assert held.exists()
+    assert not free.exists()
+    assert "device-mapper target is still present" in caplog.text

@@ -15,7 +15,7 @@ from aleph.vm.agent.views.operator import _security_aggregate_cache
 from aleph.vm.conf import settings
 from aleph.vm.storage import get_message
 from aleph.vm.supervisor.local import LocalSupervisor
-from aleph.vm.supervisor_interface.errors import VmNotFoundError
+from aleph.vm.supervisor_interface.errors import ResourceDownloadError, VmNotFoundError
 from aleph.vm.supervisor_interface.types import (
     Backend,
     BackupId,
@@ -1658,6 +1658,42 @@ async def test_operator_reinstall_rootfs_only(aiohttp_client, mocker):
 
 
 @pytest.mark.asyncio
+async def test_operator_reinstall_reports_a_failed_volume_rebuild(aiohttp_client, mocker):
+    """A base image that cannot be fetched after the purge is a 400 with a
+    reason, not an opaque 500: the VM is stopped and a retry rebuilds it."""
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+
+    mocker.patch(
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
+        return_value=instance_message.sender,
+    )
+
+    fake_vm_pool = mocker.AsyncMock(executions={})
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    fake_sup = _fake_supervisor()
+    app["supervisor"] = fake_sup
+    mocker.patch("aleph.vm.agent.views.operator.purge_vm_volumes")
+    mocker.patch(
+        "aleph.vm.agent.views.operator.recreate_vm_volumes",
+        new=AsyncMock(side_effect=ResourceDownloadError("gateway down")),
+    )
+
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(f"/control/machine/{vm_hash}/reinstall")
+
+    assert response.status == 400
+    assert "not available" in await response.text()
+    fake_sup.start_vm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_operator_reinstall_non_persistent_recreates(aiohttp_client, mocker):
     """Non-persistent record: the VM is deleted, its storage purged, and it is
     rebuilt through the create path."""
@@ -1691,7 +1727,8 @@ async def test_operator_reinstall_non_persistent_recreates(aiohttp_client, mocke
     response = await client.post(f"/control/machine/{vm_hash}/reinstall")
 
     assert response.status == 200
-    fake_sup.delete_vm.assert_awaited_once_with(VmId(str(vm_hash)))
+    # A delete+recreate cycle: the recreated VM must reload the same host ports.
+    fake_sup.delete_vm.assert_awaited_once_with(VmId(str(vm_hash)), keep_port_mappings=True)
     mock_purge.assert_called_once_with(vm_hash, include_data_volumes=True)
     mock_staging.assert_called_once_with(vm_hash)
     mock_create_vm.assert_awaited_once_with(

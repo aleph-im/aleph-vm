@@ -524,7 +524,7 @@ class LocalSupervisor(Supervisor):
             await self.pool.stop_vm(vm_id)
             # Keep the execution registered so the VM stays observable
             # (STOPPED) and start_vm has a handle. A fresh stop_event defuses
-            # the pool's forget-on-stop task (same trick as reinstall).
+            # the pool's forget-on-stop task (same trick as restore_backup).
             execution.stop_event = asyncio.Event()
             self.pool.executions[execution.vm_id] = execution
             self._emit_event(vm_id, old_status, VmStatus.STOPPED)
