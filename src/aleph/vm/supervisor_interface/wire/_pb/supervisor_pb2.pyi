@@ -7,8 +7,8 @@ Aleph VM Supervisor contract.
 
 This service is the infra-only boundary between the network-agent
 (Aleph orchestration: HTTP CRN API, messages, payments, allocations)
-and the supervisor (controllers, hypervisors, networking, systemd,
-backups). Reference: docs/plans/2026-05-28-aleph-vm-architecture-
+and the supervisor (controllers, hypervisors, networking, systemd).
+Reference: docs/plans/2026-05-28-aleph-vm-architecture-
 backport-design.md.
 
 SAME-HOST INVARIANT: this is a process boundary, not a network
@@ -170,28 +170,6 @@ PROTOCOL_TCP: Protocol.ValueType  # 1
 PROTOCOL_UDP: Protocol.ValueType  # 2
 global___Protocol = Protocol
 
-class _BackupStatus:
-    ValueType = typing.NewType("ValueType", builtins.int)
-    V: typing_extensions.TypeAlias = ValueType
-
-class _BackupStatusEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._EnumTypeWrapper[_BackupStatus.ValueType], builtins.type):
-    DESCRIPTOR: google.protobuf.descriptor.EnumDescriptor
-    BACKUP_STATUS_UNSPECIFIED: _BackupStatus.ValueType  # 0
-    BACKUP_STATUS_PENDING: _BackupStatus.ValueType  # 1
-    BACKUP_STATUS_RUNNING: _BackupStatus.ValueType  # 2
-    BACKUP_STATUS_COMPLETE: _BackupStatus.ValueType  # 3
-    BACKUP_STATUS_FAILED: _BackupStatus.ValueType  # 4
-
-class BackupStatus(_BackupStatus, metaclass=_BackupStatusEnumTypeWrapper):
-    """── Backups ──────────────────────────────────────────────────────────────"""
-
-BACKUP_STATUS_UNSPECIFIED: BackupStatus.ValueType  # 0
-BACKUP_STATUS_PENDING: BackupStatus.ValueType  # 1
-BACKUP_STATUS_RUNNING: BackupStatus.ValueType  # 2
-BACKUP_STATUS_COMPLETE: BackupStatus.ValueType  # 3
-BACKUP_STATUS_FAILED: BackupStatus.ValueType  # 4
-global___BackupStatus = BackupStatus
-
 class _ErrorCode:
     ValueType = typing.NewType("ValueType", builtins.int)
     V: typing_extensions.TypeAlias = ValueType
@@ -214,8 +192,6 @@ class _ErrorCodeEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._Enum
     ERROR_CODE_PORT_UNAVAILABLE: _ErrorCode.ValueType  # 10
     """Networking"""
     ERROR_CODE_HOST_NOT_FOUND: _ErrorCode.ValueType  # 11
-    ERROR_CODE_BACKUP_NOT_FOUND: _ErrorCode.ValueType  # 12
-    """Backup"""
     ERROR_CODE_INTERNAL: _ErrorCode.ValueType  # 99
     """Catch-all"""
 
@@ -246,8 +222,6 @@ ERROR_CODE_TEE_UNAVAILABLE: ErrorCode.ValueType  # 9
 ERROR_CODE_PORT_UNAVAILABLE: ErrorCode.ValueType  # 10
 """Networking"""
 ERROR_CODE_HOST_NOT_FOUND: ErrorCode.ValueType  # 11
-ERROR_CODE_BACKUP_NOT_FOUND: ErrorCode.ValueType  # 12
-"""Backup"""
 ERROR_CODE_INTERNAL: ErrorCode.ValueType  # 99
 """Catch-all"""
 global___ErrorCode = ErrorCode
@@ -961,29 +935,6 @@ class RebootVmRequest(google.protobuf.message.Message):
 global___RebootVmRequest = RebootVmRequest
 
 @typing.final
-class RestoreFromImageRequest(google.protobuf.message.Message):
-    DESCRIPTOR: google.protobuf.descriptor.Descriptor
-
-    VM_ID_FIELD_NUMBER: builtins.int
-    IMAGE_PATH_FIELD_NUMBER: builtins.int
-    MAX_VIRTUAL_SIZE_BYTES_FIELD_NUMBER: builtins.int
-    vm_id: builtins.str
-    image_path: builtins.str
-    """host path to a staged QCOW2 image"""
-    max_virtual_size_bytes: builtins.int
-    """0 = no cap"""
-    def __init__(
-        self,
-        *,
-        vm_id: builtins.str = ...,
-        image_path: builtins.str = ...,
-        max_virtual_size_bytes: builtins.int = ...,
-    ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["image_path", b"image_path", "max_virtual_size_bytes", b"max_virtual_size_bytes", "vm_id", b"vm_id"]) -> None: ...
-
-global___RestoreFromImageRequest = RestoreFromImageRequest
-
-@typing.final
 class RunProgramCodeRequest(google.protobuf.message.Message):
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 
@@ -1281,113 +1232,9 @@ class LogChunk(google.protobuf.message.Message):
 global___LogChunk = LogChunk
 
 @typing.final
-class BackupInfo(google.protobuf.message.Message):
-    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+class FreezeGuestRequest(google.protobuf.message.Message):
+    """── Guest quiescence ─────────────────────────────────────────────────────"""
 
-    @typing.final
-    class SourceSizesEntry(google.protobuf.message.Message):
-        DESCRIPTOR: google.protobuf.descriptor.Descriptor
-
-        KEY_FIELD_NUMBER: builtins.int
-        VALUE_FIELD_NUMBER: builtins.int
-        key: builtins.str
-        value: builtins.int
-        def __init__(
-            self,
-            *,
-            key: builtins.str = ...,
-            value: builtins.int = ...,
-        ) -> None: ...
-        def ClearField(self, field_name: typing.Literal["key", b"key", "value", b"value"]) -> None: ...
-
-    VM_ID_FIELD_NUMBER: builtins.int
-    BACKUP_ID_FIELD_NUMBER: builtins.int
-    STATUS_FIELD_NUMBER: builtins.int
-    SIZE_BYTES_FIELD_NUMBER: builtins.int
-    CREATED_AT_UNIX_SECS_FIELD_NUMBER: builtins.int
-    ERROR_MESSAGE_FIELD_NUMBER: builtins.int
-    CHECKSUM_FIELD_NUMBER: builtins.int
-    VOLUMES_FIELD_NUMBER: builtins.int
-    SOURCE_SIZES_FIELD_NUMBER: builtins.int
-    vm_id: builtins.str
-    backup_id: builtins.str
-    """supervisor-issued"""
-    status: global___BackupStatus.ValueType
-    size_bytes: builtins.int
-    """0 until COMPLETE"""
-    created_at_unix_secs: builtins.int
-    error_message: builtins.str
-    """populated when status = FAILED"""
-    checksum: builtins.str
-    """archive checksum, populated when COMPLETE"""
-    @property
-    def volumes(self) -> google.protobuf.internal.containers.RepeatedScalarFieldContainer[builtins.str]:
-        """archived volume names"""
-
-    @property
-    def source_sizes(self) -> google.protobuf.internal.containers.ScalarMap[builtins.str, builtins.int]:
-        """per-volume uncompressed source size"""
-
-    def __init__(
-        self,
-        *,
-        vm_id: builtins.str = ...,
-        backup_id: builtins.str = ...,
-        status: global___BackupStatus.ValueType = ...,
-        size_bytes: builtins.int = ...,
-        created_at_unix_secs: builtins.int = ...,
-        error_message: builtins.str = ...,
-        checksum: builtins.str = ...,
-        volumes: collections.abc.Iterable[builtins.str] | None = ...,
-        source_sizes: collections.abc.Mapping[builtins.str, builtins.int] | None = ...,
-    ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["backup_id", b"backup_id", "checksum", b"checksum", "created_at_unix_secs", b"created_at_unix_secs", "error_message", b"error_message", "size_bytes", b"size_bytes", "source_sizes", b"source_sizes", "status", b"status", "vm_id", b"vm_id", "volumes", b"volumes"]) -> None: ...
-
-global___BackupInfo = BackupInfo
-
-@typing.final
-class StartBackupRequest(google.protobuf.message.Message):
-    DESCRIPTOR: google.protobuf.descriptor.Descriptor
-
-    VM_ID_FIELD_NUMBER: builtins.int
-    QUIESCE_GUEST_FIELD_NUMBER: builtins.int
-    INCLUDE_VOLUMES_FIELD_NUMBER: builtins.int
-    vm_id: builtins.str
-    quiesce_guest: builtins.bool
-    """request guest fs-freeze if supported"""
-    include_volumes: builtins.bool
-    """also archive non-read-only persistent volumes"""
-    def __init__(
-        self,
-        *,
-        vm_id: builtins.str = ...,
-        quiesce_guest: builtins.bool = ...,
-        include_volumes: builtins.bool = ...,
-    ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["include_volumes", b"include_volumes", "quiesce_guest", b"quiesce_guest", "vm_id", b"vm_id"]) -> None: ...
-
-global___StartBackupRequest = StartBackupRequest
-
-@typing.final
-class GetBackupStatusRequest(google.protobuf.message.Message):
-    DESCRIPTOR: google.protobuf.descriptor.Descriptor
-
-    VM_ID_FIELD_NUMBER: builtins.int
-    BACKUP_ID_FIELD_NUMBER: builtins.int
-    vm_id: builtins.str
-    backup_id: builtins.str
-    def __init__(
-        self,
-        *,
-        vm_id: builtins.str = ...,
-        backup_id: builtins.str = ...,
-    ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["backup_id", b"backup_id", "vm_id", b"vm_id"]) -> None: ...
-
-global___GetBackupStatusRequest = GetBackupStatusRequest
-
-@typing.final
-class ListBackupsRequest(google.protobuf.message.Message):
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 
     VM_ID_FIELD_NUMBER: builtins.int
@@ -1399,106 +1246,48 @@ class ListBackupsRequest(google.protobuf.message.Message):
     ) -> None: ...
     def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id"]) -> None: ...
 
-global___ListBackupsRequest = ListBackupsRequest
+global___FreezeGuestRequest = FreezeGuestRequest
 
 @typing.final
-class ListBackupsResponse(google.protobuf.message.Message):
+class FreezeGuestResponse(google.protobuf.message.Message):
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 
-    BACKUPS_FIELD_NUMBER: builtins.int
-    @property
-    def backups(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___BackupInfo]: ...
+    FROZEN_FIELD_NUMBER: builtins.int
+    frozen: builtins.bool
+    """false: guest agent unavailable, nothing frozen"""
     def __init__(
         self,
         *,
-        backups: collections.abc.Iterable[global___BackupInfo] | None = ...,
+        frozen: builtins.bool = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["backups", b"backups"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["frozen", b"frozen"]) -> None: ...
 
-global___ListBackupsResponse = ListBackupsResponse
+global___FreezeGuestResponse = FreezeGuestResponse
 
 @typing.final
-class DownloadBackupRequest(google.protobuf.message.Message):
+class ThawGuestRequest(google.protobuf.message.Message):
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 
     VM_ID_FIELD_NUMBER: builtins.int
-    BACKUP_ID_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
-    backup_id: builtins.str
     def __init__(
         self,
         *,
         vm_id: builtins.str = ...,
-        backup_id: builtins.str = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["backup_id", b"backup_id", "vm_id", b"vm_id"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id"]) -> None: ...
 
-global___DownloadBackupRequest = DownloadBackupRequest
+global___ThawGuestRequest = ThawGuestRequest
 
 @typing.final
-class BackupChunk(google.protobuf.message.Message):
-    DESCRIPTOR: google.protobuf.descriptor.Descriptor
-
-    DATA_FIELD_NUMBER: builtins.int
-    OFFSET_FIELD_NUMBER: builtins.int
-    data: builtins.bytes
-    offset: builtins.int
-    """byte offset of `data` in the backup; lets the client detect gaps and resume after a transient stream failure."""
-    def __init__(
-        self,
-        *,
-        data: builtins.bytes = ...,
-        offset: builtins.int = ...,
-    ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["data", b"data", "offset", b"offset"]) -> None: ...
-
-global___BackupChunk = BackupChunk
-
-@typing.final
-class DeleteBackupRequest(google.protobuf.message.Message):
-    DESCRIPTOR: google.protobuf.descriptor.Descriptor
-
-    VM_ID_FIELD_NUMBER: builtins.int
-    BACKUP_ID_FIELD_NUMBER: builtins.int
-    vm_id: builtins.str
-    backup_id: builtins.str
-    def __init__(
-        self,
-        *,
-        vm_id: builtins.str = ...,
-        backup_id: builtins.str = ...,
-    ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["backup_id", b"backup_id", "vm_id", b"vm_id"]) -> None: ...
-
-global___DeleteBackupRequest = DeleteBackupRequest
-
-@typing.final
-class DeleteBackupResponse(google.protobuf.message.Message):
+class ThawGuestResponse(google.protobuf.message.Message):
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 
     def __init__(
         self,
     ) -> None: ...
 
-global___DeleteBackupResponse = DeleteBackupResponse
-
-@typing.final
-class RestoreBackupRequest(google.protobuf.message.Message):
-    DESCRIPTOR: google.protobuf.descriptor.Descriptor
-
-    VM_ID_FIELD_NUMBER: builtins.int
-    BACKUP_ID_FIELD_NUMBER: builtins.int
-    vm_id: builtins.str
-    backup_id: builtins.str
-    def __init__(
-        self,
-        *,
-        vm_id: builtins.str = ...,
-        backup_id: builtins.str = ...,
-    ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["backup_id", b"backup_id", "vm_id", b"vm_id"]) -> None: ...
-
-global___RestoreBackupRequest = RestoreBackupRequest
+global___ThawGuestResponse = ThawGuestResponse
 
 @typing.final
 class InitializeConfidentialRequest(google.protobuf.message.Message):

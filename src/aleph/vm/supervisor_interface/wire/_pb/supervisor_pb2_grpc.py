@@ -89,11 +89,6 @@ class SupervisorStub(object):
                 request_serializer=supervisor__pb2.RunProgramCodeRequest.SerializeToString,
                 response_deserializer=supervisor__pb2.RunProgramCodeResponse.FromString,
                 _registered_method=True)
-        self.RestoreFromImage = channel.unary_unary(
-                '/aleph.supervisor.v1.Supervisor/RestoreFromImage',
-                request_serializer=supervisor__pb2.RestoreFromImageRequest.SerializeToString,
-                response_deserializer=supervisor__pb2.VmInfo.FromString,
-                _registered_method=True)
         self.AddPortForward = channel.unary_unary(
                 '/aleph.supervisor.v1.Supervisor/AddPortForward',
                 request_serializer=supervisor__pb2.AddPortForwardRequest.SerializeToString,
@@ -124,35 +119,15 @@ class SupervisorStub(object):
                 request_serializer=supervisor__pb2.StreamLogsRequest.SerializeToString,
                 response_deserializer=supervisor__pb2.LogChunk.FromString,
                 _registered_method=True)
-        self.StartBackup = channel.unary_unary(
-                '/aleph.supervisor.v1.Supervisor/StartBackup',
-                request_serializer=supervisor__pb2.StartBackupRequest.SerializeToString,
-                response_deserializer=supervisor__pb2.BackupInfo.FromString,
+        self.FreezeGuest = channel.unary_unary(
+                '/aleph.supervisor.v1.Supervisor/FreezeGuest',
+                request_serializer=supervisor__pb2.FreezeGuestRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.FreezeGuestResponse.FromString,
                 _registered_method=True)
-        self.GetBackupStatus = channel.unary_unary(
-                '/aleph.supervisor.v1.Supervisor/GetBackupStatus',
-                request_serializer=supervisor__pb2.GetBackupStatusRequest.SerializeToString,
-                response_deserializer=supervisor__pb2.BackupInfo.FromString,
-                _registered_method=True)
-        self.ListBackups = channel.unary_unary(
-                '/aleph.supervisor.v1.Supervisor/ListBackups',
-                request_serializer=supervisor__pb2.ListBackupsRequest.SerializeToString,
-                response_deserializer=supervisor__pb2.ListBackupsResponse.FromString,
-                _registered_method=True)
-        self.DownloadBackup = channel.unary_stream(
-                '/aleph.supervisor.v1.Supervisor/DownloadBackup',
-                request_serializer=supervisor__pb2.DownloadBackupRequest.SerializeToString,
-                response_deserializer=supervisor__pb2.BackupChunk.FromString,
-                _registered_method=True)
-        self.DeleteBackup = channel.unary_unary(
-                '/aleph.supervisor.v1.Supervisor/DeleteBackup',
-                request_serializer=supervisor__pb2.DeleteBackupRequest.SerializeToString,
-                response_deserializer=supervisor__pb2.DeleteBackupResponse.FromString,
-                _registered_method=True)
-        self.RestoreBackup = channel.unary_unary(
-                '/aleph.supervisor.v1.Supervisor/RestoreBackup',
-                request_serializer=supervisor__pb2.RestoreBackupRequest.SerializeToString,
-                response_deserializer=supervisor__pb2.VmInfo.FromString,
+        self.ThawGuest = channel.unary_unary(
+                '/aleph.supervisor.v1.Supervisor/ThawGuest',
+                request_serializer=supervisor__pb2.ThawGuestRequest.SerializeToString,
+                response_deserializer=supervisor__pb2.ThawGuestResponse.FromString,
                 _registered_method=True)
         self.InitializeConfidential = channel.unary_unary(
                 '/aleph.supervisor.v1.Supervisor/InitializeConfidential',
@@ -256,12 +231,6 @@ class SupervisorServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def RestoreFromImage(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
     def AddPortForward(self, request, context):
         """── Port forwarding ──
         """
@@ -307,38 +276,25 @@ class SupervisorServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def StartBackup(self, request, context):
-        """── Backups ──
+    def FreezeGuest(self, request, context):
+        """── Guest quiescence ──
+        The supervisor's only part in a backup. The agent owns the archives
+        (it created the disks, so it copies, stores, expires and restores
+        them); what it cannot do from outside the VM is quiesce the guest, so
+        it asks the supervisor to freeze the guest filesystems through the QEMU
+        guest agent around its copy. Best effort: frozen=false when the guest
+        agent is unavailable and the copy proceeds crash-consistent. A freeze
+        is auto-thawed after GUEST_FREEZE_TIMEOUT so an agent that dies
+        mid-copy cannot leave a guest frozen. ThawGuest on an unfrozen guest
+        is a no-op. (The former StartBackup / GetBackupStatus / ListBackups /
+        DownloadBackup / DeleteBackup / RestoreBackup / RestoreFromImage RPCs
+        moved to the agent with the archives.)
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def GetBackupStatus(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def ListBackups(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def DownloadBackup(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def DeleteBackup(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def RestoreBackup(self, request, context):
+    def ThawGuest(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -428,11 +384,6 @@ def add_SupervisorServicer_to_server(servicer, server):
                     request_deserializer=supervisor__pb2.RunProgramCodeRequest.FromString,
                     response_serializer=supervisor__pb2.RunProgramCodeResponse.SerializeToString,
             ),
-            'RestoreFromImage': grpc.unary_unary_rpc_method_handler(
-                    servicer.RestoreFromImage,
-                    request_deserializer=supervisor__pb2.RestoreFromImageRequest.FromString,
-                    response_serializer=supervisor__pb2.VmInfo.SerializeToString,
-            ),
             'AddPortForward': grpc.unary_unary_rpc_method_handler(
                     servicer.AddPortForward,
                     request_deserializer=supervisor__pb2.AddPortForwardRequest.FromString,
@@ -463,35 +414,15 @@ def add_SupervisorServicer_to_server(servicer, server):
                     request_deserializer=supervisor__pb2.StreamLogsRequest.FromString,
                     response_serializer=supervisor__pb2.LogChunk.SerializeToString,
             ),
-            'StartBackup': grpc.unary_unary_rpc_method_handler(
-                    servicer.StartBackup,
-                    request_deserializer=supervisor__pb2.StartBackupRequest.FromString,
-                    response_serializer=supervisor__pb2.BackupInfo.SerializeToString,
+            'FreezeGuest': grpc.unary_unary_rpc_method_handler(
+                    servicer.FreezeGuest,
+                    request_deserializer=supervisor__pb2.FreezeGuestRequest.FromString,
+                    response_serializer=supervisor__pb2.FreezeGuestResponse.SerializeToString,
             ),
-            'GetBackupStatus': grpc.unary_unary_rpc_method_handler(
-                    servicer.GetBackupStatus,
-                    request_deserializer=supervisor__pb2.GetBackupStatusRequest.FromString,
-                    response_serializer=supervisor__pb2.BackupInfo.SerializeToString,
-            ),
-            'ListBackups': grpc.unary_unary_rpc_method_handler(
-                    servicer.ListBackups,
-                    request_deserializer=supervisor__pb2.ListBackupsRequest.FromString,
-                    response_serializer=supervisor__pb2.ListBackupsResponse.SerializeToString,
-            ),
-            'DownloadBackup': grpc.unary_stream_rpc_method_handler(
-                    servicer.DownloadBackup,
-                    request_deserializer=supervisor__pb2.DownloadBackupRequest.FromString,
-                    response_serializer=supervisor__pb2.BackupChunk.SerializeToString,
-            ),
-            'DeleteBackup': grpc.unary_unary_rpc_method_handler(
-                    servicer.DeleteBackup,
-                    request_deserializer=supervisor__pb2.DeleteBackupRequest.FromString,
-                    response_serializer=supervisor__pb2.DeleteBackupResponse.SerializeToString,
-            ),
-            'RestoreBackup': grpc.unary_unary_rpc_method_handler(
-                    servicer.RestoreBackup,
-                    request_deserializer=supervisor__pb2.RestoreBackupRequest.FromString,
-                    response_serializer=supervisor__pb2.VmInfo.SerializeToString,
+            'ThawGuest': grpc.unary_unary_rpc_method_handler(
+                    servicer.ThawGuest,
+                    request_deserializer=supervisor__pb2.ThawGuestRequest.FromString,
+                    response_serializer=supervisor__pb2.ThawGuestResponse.SerializeToString,
             ),
             'InitializeConfidential': grpc.unary_unary_rpc_method_handler(
                     servicer.InitializeConfidential,
@@ -822,33 +753,6 @@ class Supervisor(object):
             _registered_method=True)
 
     @staticmethod
-    def RestoreFromImage(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/aleph.supervisor.v1.Supervisor/RestoreFromImage',
-            supervisor__pb2.RestoreFromImageRequest.SerializeToString,
-            supervisor__pb2.VmInfo.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
     def AddPortForward(request,
             target,
             options=(),
@@ -1011,7 +915,7 @@ class Supervisor(object):
             _registered_method=True)
 
     @staticmethod
-    def StartBackup(request,
+    def FreezeGuest(request,
             target,
             options=(),
             channel_credentials=None,
@@ -1024,9 +928,9 @@ class Supervisor(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/aleph.supervisor.v1.Supervisor/StartBackup',
-            supervisor__pb2.StartBackupRequest.SerializeToString,
-            supervisor__pb2.BackupInfo.FromString,
+            '/aleph.supervisor.v1.Supervisor/FreezeGuest',
+            supervisor__pb2.FreezeGuestRequest.SerializeToString,
+            supervisor__pb2.FreezeGuestResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -1038,7 +942,7 @@ class Supervisor(object):
             _registered_method=True)
 
     @staticmethod
-    def GetBackupStatus(request,
+    def ThawGuest(request,
             target,
             options=(),
             channel_credentials=None,
@@ -1051,117 +955,9 @@ class Supervisor(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/aleph.supervisor.v1.Supervisor/GetBackupStatus',
-            supervisor__pb2.GetBackupStatusRequest.SerializeToString,
-            supervisor__pb2.BackupInfo.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def ListBackups(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/aleph.supervisor.v1.Supervisor/ListBackups',
-            supervisor__pb2.ListBackupsRequest.SerializeToString,
-            supervisor__pb2.ListBackupsResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def DownloadBackup(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_stream(
-            request,
-            target,
-            '/aleph.supervisor.v1.Supervisor/DownloadBackup',
-            supervisor__pb2.DownloadBackupRequest.SerializeToString,
-            supervisor__pb2.BackupChunk.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def DeleteBackup(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/aleph.supervisor.v1.Supervisor/DeleteBackup',
-            supervisor__pb2.DeleteBackupRequest.SerializeToString,
-            supervisor__pb2.DeleteBackupResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def RestoreBackup(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/aleph.supervisor.v1.Supervisor/RestoreBackup',
-            supervisor__pb2.RestoreBackupRequest.SerializeToString,
-            supervisor__pb2.VmInfo.FromString,
+            '/aleph.supervisor.v1.Supervisor/ThawGuest',
+            supervisor__pb2.ThawGuestRequest.SerializeToString,
+            supervisor__pb2.ThawGuestResponse.FromString,
             options,
             channel_credentials,
             insecure,
