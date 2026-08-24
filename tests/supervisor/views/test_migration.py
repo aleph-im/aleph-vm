@@ -671,8 +671,9 @@ class TestMigrationCleanupEndpoint:
         data = await response.json()
         assert data["status"] == "completed"
         # Cleanup drops the migrated-away source through the standard delete_vm
-        # RPC (wipe=False: the destination owns the disks now).
-        supervisor.delete_vm.assert_awaited_once_with(VmId(str(mock_vm_hash)), wipe=False)
+        # RPC. The disks stay: the destination owns the data now, and
+        # DeleteVm never touches storage.
+        supervisor.delete_vm.assert_awaited_once_with(VmId(str(mock_vm_hash)))
 
 
 class TestMigrationState:

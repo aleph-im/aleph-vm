@@ -45,7 +45,6 @@ _ASYNC_METHODS = (
     "stop_vm",
     "start_vm",
     "reboot_vm",
-    "reinstall_vm",
     "run_program_code",
     "add_port_forward",
     "remove_port_forward",

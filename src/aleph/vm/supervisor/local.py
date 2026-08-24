@@ -469,7 +469,7 @@ class LocalSupervisor(Supervisor):
             execution = self._require(vm_id)
             return execution.vm_spec
 
-    async def delete_vm(self, vm_id: VmId, wipe: bool = False, keep_port_mappings: bool = False) -> None:
+    async def delete_vm(self, vm_id: VmId, keep_port_mappings: bool = False) -> None:
         with translating_errors():
             execution = self.pool.executions.get(vm_id)
             if execution is None:
@@ -495,20 +495,24 @@ class LocalSupervisor(Supervisor):
             # Delete releases the definition: the controller config and the
             # cloud-init seed go too (stop_vm keeps them for reattach).
             remove_controller_configuration(str(vm_id))
+            # Storage is not touched here. The agent allocates every volume and
+            # hands the supervisor resolved paths on the spec, so the supervisor
+            # cannot tell a per-VM volume from a shared cache entry (a program's
+            # rootfs path *is* the shared runtime cache file). DeleteVm's job is
+            # to leave the VM stopped with no handles held on its disks; the
+            # agent decides what happens to the bytes afterwards
+            # (aleph.vm.agent.vm.purge).
+            #
             # The VM is gone, so its persisted port mappings normally go too:
             # a delete is final unless the caller says otherwise. Delete+recreate
             # cycles (crash recovery, message updates) pass keep_port_mappings=True
-            # so the recreated VM reloads the same host ports; wipe overrides it
-            # (an erase is always final). Port mappings are hypervisor-owned state,
-            # so this lives here rather than as a residual direct DB call
-            # agent-side. Note: VmExecution.record_usage (models.py) also deletes
-            # the mappings of non-persistent VMs on stop; keep both sites in sync.
-            if wipe or not keep_port_mappings:
+            # so the recreated VM reloads the same host ports. Port mappings are
+            # hypervisor-owned state, so this lives here rather than as a residual
+            # direct DB call agent-side. Note: VmExecution.record_usage (models.py)
+            # also deletes the mappings of non-persistent VMs on stop; keep both
+            # sites in sync.
+            if not keep_port_mappings:
                 await delete_port_mappings(execution.vm_id)
-            if wipe:
-                # Mirrors the old operate_erase semantics: writable data volumes
-                # go, the rootfs stays.
-                execution.erase_volumes()
 
     async def stop_vm(self, vm_id: VmId) -> VmInfo:
         with translating_errors():
@@ -567,35 +571,6 @@ class LocalSupervisor(Supervisor):
             new_execution = await self.pool.create_vm_from_spec(spec)
             info = _to_vm_info(new_execution, _is_running(new_execution, self.pool))
             self._emit_event(vm_id, VmStatus.STOPPED, info.status)
-            return info
-
-    async def reinstall_vm(self, vm_id: VmId, wipe_volumes: bool = True) -> VmInfo:
-        with translating_errors():
-            execution = self._require(vm_id)
-            old_status = self._status_snapshot(execution)
-            await self.pool.stop_vm(vm_id)
-            self._emit_event(vm_id, old_status, VmStatus.STOPPED)
-            if execution.persistent:
-                # Keep the execution registered so the allocation loop cannot
-                # create a duplicate while we re-prepare (mirrors the old
-                # operate_reinstall persistent branch). Note: restart_persistent_vm
-                # re-registers the execution again after prepare(); the duplicate
-                # write is intentional.
-                execution.stop_event = asyncio.Event()
-                self.pool.executions[execution.vm_id] = execution
-                execution.erase_volumes(include_rootfs=True, include_data_volumes=wipe_volumes)
-                execution.resources = None
-                await execution.prepare()
-                await self.pool.restart_persistent_vm(execution)
-            else:
-                if execution.vm_id in self.pool.executions:
-                    self.pool.forget_vm(execution.vm_id)
-                execution.erase_volumes(include_rootfs=True, include_data_volumes=wipe_volumes)
-                # The agent re-creates non-persistent VMs through the create
-                # path (it owns the message); we return the stopped state.
-            info = _to_vm_info(execution, _is_running(execution, self.pool))
-            if info.status is not VmStatus.STOPPED:
-                self._emit_event(vm_id, VmStatus.STOPPED, info.status)
             return info
 
     async def run_program_code(self, vm_id: VmId, scope: dict, *, timeout: float) -> bytes:
@@ -936,7 +911,7 @@ class LocalSupervisor(Supervisor):
                         await self.pool.stop_vm(vm_id)
                         # Fresh stop_event defuses the pool's forget-on-stop
                         # task; the VM stays registered through the swap (same
-                        # trick as stop_vm and reinstall_vm).
+                        # trick as stop_vm).
                         execution.stop_event = asyncio.Event()
                         self.pool.executions[execution.vm_id] = execution
                         self._emit_event(vm_id, old_status, VmStatus.STOPPED)

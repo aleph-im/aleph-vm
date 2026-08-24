@@ -22,11 +22,11 @@ def _program_content():
 
 class FakeSupervisor:
     def __init__(self, *, raise_not_found: bool = False):
-        self.deleted: list[tuple[str, bool, bool]] = []
+        self.deleted: list[tuple[str, bool]] = []
         self.raise_not_found = raise_not_found
 
-    async def delete_vm(self, vm_id: VmId, wipe: bool = False, keep_port_mappings: bool = False) -> None:
-        self.deleted.append((str(vm_id), wipe, keep_port_mappings))
+    async def delete_vm(self, vm_id: VmId, keep_port_mappings: bool = False) -> None:
+        self.deleted.append((str(vm_id), keep_port_mappings))
         if self.raise_not_found:
             raise VmNotFoundError(str(vm_id))
 
@@ -80,7 +80,7 @@ async def test_watch_reaps_on_update():
     pubsub.trigger()
     await asyncio.sleep(0.02)
 
-    assert sup.deleted == [(_HASH, False, True)]  # reap keeps the host-port forwards
+    assert sup.deleted == [(_HASH, True)]  # reap keeps the host-port forwards
     assert watcher.cancel(vm_id) is False  # task removed itself after firing
 
 
@@ -145,7 +145,7 @@ async def test_watch_swallows_vm_not_found():
     pubsub.trigger()
     await asyncio.sleep(0.02)  # must not raise
 
-    assert sup.deleted == [(_HASH, False, True)]
+    assert sup.deleted == [(_HASH, True)]
     assert watcher.cancel(vm_id) is False
 
 
@@ -187,7 +187,7 @@ async def test_watch_again_after_completion_rewatches():
     await asyncio.sleep(0)
     pubsub1.trigger()  # fires -> deletes -> task completes
     await asyncio.sleep(0.02)
-    assert sup.deleted == [(_HASH, False, True)]
+    assert sup.deleted == [(_HASH, True)]
 
     watcher.watch(vm_id, _HASH, pubsub2)  # prior task done -> a new watch starts
     await asyncio.sleep(0)
@@ -215,7 +215,7 @@ async def test_expiry_reap_cancels_update_watch():
     # task completes, so awaiting the task is enough to observe the cancellation.
     await asyncio.wait_for(expiry._tasks[vm_id], timeout=WAIT_TIMEOUT)
 
-    assert sup.deleted == [(_HASH, False, False)]  # expiry reaped: plain dealloc
+    assert sup.deleted == [(_HASH, False)]  # expiry reaped: plain dealloc
     assert watcher.cancel(vm_id) is False  # the watch was cancelled (gone)
 
 

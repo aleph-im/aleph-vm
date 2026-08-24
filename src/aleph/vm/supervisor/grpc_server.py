@@ -130,9 +130,7 @@ class SupervisorService(supervisor_pb2_grpc.SupervisorServicer):
 
     @_translating
     async def DeleteVm(self, request: pb.DeleteVmRequest, context) -> pb.DeleteVmResponse:
-        await self._supervisor.delete_vm(
-            VmId(request.vm_id), wipe=request.wipe, keep_port_mappings=request.keep_port_mappings
-        )
+        await self._supervisor.delete_vm(VmId(request.vm_id), keep_port_mappings=request.keep_port_mappings)
         return pb.DeleteVmResponse()
 
     @_translating
@@ -146,12 +144,6 @@ class SupervisorService(supervisor_pb2_grpc.SupervisorServicer):
     @_translating
     async def RebootVm(self, request: pb.RebootVmRequest, context) -> pb.VmInfo:
         return conv.vm_info_to_pb(await self._supervisor.reboot_vm(VmId(request.vm_id)))
-
-    @_translating
-    async def ReinstallVm(self, request: pb.ReinstallVmRequest, context) -> pb.VmInfo:
-        # `optional bool`: an unset field takes the ABC's default (True).
-        wipe_volumes = request.wipe_volumes if request.HasField("wipe_volumes") else True
-        return conv.vm_info_to_pb(await self._supervisor.reinstall_vm(VmId(request.vm_id), wipe_volumes=wipe_volumes))
 
     @_translating
     async def RunProgramCode(self, request: pb.RunProgramCodeRequest, context) -> pb.RunProgramCodeResponse:

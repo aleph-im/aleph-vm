@@ -54,13 +54,16 @@ class LifecycleOps(ABC):
     async def list_vms(self) -> list[VmInfo]: ...
 
     @abstractmethod
-    async def delete_vm(self, vm_id: VmId, wipe: bool = False, keep_port_mappings: bool = False) -> None:
-        """Stop the VM and release its definition. A delete is final by
-        default: persisted host-port mappings go too, and wipe=True also
-        erases writable data volumes. keep_port_mappings=True preserves the
-        persisted host-port forwards for a delete+recreate cycle (crash
-        recovery, message updates), so the recreated VM reloads the same
-        host ports; it is ignored when wipe is True."""
+    async def delete_vm(self, vm_id: VmId, keep_port_mappings: bool = False) -> None:
+        """Stop the VM, release its definition, and release every handle held
+        on its storage. The VM's volumes are NOT deleted: the agent allocates
+        them and is the only side that can tell a per-VM volume from a shared
+        cache entry, so it owns their deletion (aleph.vm.agent.vm.purge).
+
+        A delete is final by default, so persisted host-port mappings go too.
+        keep_port_mappings=True preserves them for a delete+recreate cycle
+        (crash recovery, message updates), so the recreated VM reloads the
+        same host ports."""
 
     @abstractmethod
     async def stop_vm(self, vm_id: VmId) -> VmInfo:
@@ -73,9 +76,6 @@ class LifecycleOps(ABC):
 
     @abstractmethod
     async def reboot_vm(self, vm_id: VmId) -> VmInfo: ...
-
-    @abstractmethod
-    async def reinstall_vm(self, vm_id: VmId, wipe_volumes: bool = True) -> VmInfo: ...
 
     @abstractmethod
     async def run_program_code(self, vm_id: VmId, scope: dict, *, timeout: float) -> bytes:

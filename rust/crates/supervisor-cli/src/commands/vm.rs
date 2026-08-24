@@ -244,7 +244,6 @@ pub async fn delete(
     let response = client
         .delete_vm(pb::DeleteVmRequest {
             vm_id: vm_id.to_string(),
-            wipe: false,
             keep_port_mappings: false,
         })
         .await

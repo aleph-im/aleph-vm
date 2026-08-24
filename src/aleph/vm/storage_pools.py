@@ -327,10 +327,34 @@ def find_existing_volume(namespace: str, filename: str) -> Path | None:
     return matches[0]
 
 
+def _pool_holding_namespace(namespace: str, size_mib: int) -> StoragePool | None:
+    """The pool that already holds this VM's directory, when it has room.
+
+    Keeps a VM's volumes together: a volume recreated after its file was
+    deleted (the reinstall path purges the volumes and re-runs the
+    downloader) must land back on the pool the VM already occupies, because
+    the running VM's spec still names that path. Falls back to normal
+    placement when the pool is full or unreachable, so a wedged pool never
+    blocks a create.
+    """
+    occupied = {directory.parent for directory in iter_namespace_dirs(namespace)}
+    if not occupied:
+        return None
+    required_bytes = size_mib * 1024 * 1024
+    for pool in get_pools():
+        if pool.path not in occupied or not pool.vm_eligible:
+            continue
+        free = _pool_free_bytes(pool)
+        if free is not None and free >= required_bytes:
+            return pool
+    return None
+
+
 def volume_path_for(namespace: str, filename: str, size_mib: int, *, pool0_only: bool = False) -> Path:
     """The host path for a volume: its existing file when one pool already
-    holds it (sticky), else a fresh placement on the best pool. The namespace
-    directory is created; the volume file itself is not.
+    holds it (sticky), else the pool already holding this VM's other volumes,
+    else a fresh placement on the best pool. The namespace directory is
+    created; the volume file itself is not.
 
     ``pool0_only`` pins fresh placements to pool 0. Firecracker's jailer
     hardlinks drive files into its chroot and silently *copies* across
@@ -352,7 +376,10 @@ def volume_path_for(namespace: str, filename: str, size_mib: int, *, pool0_only:
                 pool0.path,
             )
         return existing
-    pool = _select_from([pool0], size_mib) if pool0_only else select_pool(size_mib)
+    if pool0_only:
+        pool = _select_from([pool0], size_mib)
+    else:
+        pool = _pool_holding_namespace(namespace, size_mib) or select_pool(size_mib)
     parent = pool.path / namespace
     parent.mkdir(parents=True, exist_ok=True)
     return parent / filename

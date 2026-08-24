@@ -93,18 +93,6 @@ pub enum LifecycleError {
     #[error("no entry for {vm_id}")]
     NoEntry { vm_id: String },
 
-    #[error("cannot delete the rootfs {path}: {source}")]
-    EraseRootfs {
-        path: String,
-        source: std::io::Error,
-    },
-
-    #[error("cannot delete the volume {path}: {source}")]
-    EraseVolume {
-        path: String,
-        source: std::io::Error,
-    },
-
     /// The create path's context wrapper around a failed boot wait.
     #[error("controller failed to start: {source}")]
     ControllerStart { source: Box<LifecycleError> },
@@ -1204,123 +1192,6 @@ pub fn reboot_vm(state: &DaemonState, vm_id: &str) -> Result<(VmEntry, bool), Rp
     Ok((entry, running))
 }
 
-pub fn reinstall_vm(
-    state: &DaemonState,
-    vm_id: &str,
-    wipe_volumes: bool,
-) -> Result<(VmEntry, bool), RpcError> {
-    let lock = vm_lock(state, vm_id);
-    let _guard = lock
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
-    if entry.is_program {
-        // Python reinstall_vm, non-persistent branch: stop, forget, erase;
-        // the agent re-creates through the create path (it owns the
-        // message), so the stopped state is returned.
-        let old_status = status_snapshot(state, &entry);
-        stop_program_execution(state, vm_id)?;
-        state.events.emit(vm_id, old_status, pb::VmStatus::Stopped);
-        let stopped =
-            entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
-        state.world.blocking_write().entries.remove(vm_id);
-        erase_volumes(&stopped, true, wipe_volumes)?;
-        // Status is STOPPED, so no second event (the Python
-        // `if info.status is not VmStatus.STOPPED` guard).
-        return Ok((stopped, false));
-    }
-    let old_status = status_snapshot(state, &entry);
-    stop_vm_execution(state, vm_id)?;
-    state.events.emit(vm_id, old_status, pb::VmStatus::Stopped);
-    // erase_volumes(include_rootfs=True, include_data_volumes=wipe_volumes).
-    erase_volumes(&entry, true, wipe_volumes)?;
-    // prepare(): resources rebuilt from the spec, re-stamping the
-    // preparation instants.
-    with_entry_mut(state, vm_id, |entry| {
-        entry.times.preparing_at_ns = now_ns();
-        entry.times.prepared_at_ns = now_ns();
-    });
-    start_vm_execution(state, vm_id)?;
-    let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
-    let running = unit_active(state, &entry.unit_name());
-    let new_status = crate::service::vm_status(&entry.times, running);
-    if new_status != pb::VmStatus::Stopped {
-        state.events.emit(vm_id, pb::VmStatus::Stopped, new_status);
-    }
-    Ok((entry, running))
-}
-
-/// Python `VmExecution.erase_volumes`: unlink errors propagate (an
-/// undeletable rootfs fails the reinstall/delete INTERNAL, exactly like
-/// the Python unlink), except where Python passes missing_ok=True (a
-/// vanished data volume is tolerated).
-fn erase_volumes(
-    entry: &VmEntry,
-    include_rootfs: bool,
-    include_data_volumes: bool,
-) -> Result<(), LifecycleError> {
-    // The on-disk sources: the controller config for QEMU VMs, the spec's
-    // disks for ephemeral programs (SpecProgramResources: the ROOTFS disk
-    // plus the EXTRA disks, none of which reach a controller config).
-    let (rootfs_path, volumes): (String, Vec<(String, bool)>) = if entry.is_program {
-        // The Python erase_volumes crashes on programs before reaching the
-        // extra disks: `self.resources.volumes` does not exist on
-        // SpecProgramResources (models.py:653), so the AttributeError
-        // answers INTERNAL after the rootfs step already ran. The Rust
-        // daemon keeps Python's disk outcome (rootfs erased when asked,
-        // extra disks never touched) but answers success instead of
-        // reproducing the crash (ledger entry 43, fix-in-python-later).
-        let spec_disks = entry
-            .spec
-            .as_ref()
-            .map(|spec| spec.disks.as_slice())
-            .unwrap_or_default();
-        let rootfs = spec_disks
-            .iter()
-            .find(|disk| disk.role == pb::disk_config::DiskRole::Rootfs as i32)
-            .map(|disk| disk.path.clone())
-            .unwrap_or_default();
-        (rootfs, Vec::new())
-    } else {
-        (
-            entry.config.image_path.clone(),
-            entry
-                .config
-                .host_volumes
-                .iter()
-                .map(|volume| (volume.path_on_host.clone(), volume.read_only))
-                .collect(),
-        )
-    };
-    if include_rootfs {
-        let rootfs = std::path::Path::new(&rootfs_path);
-        if rootfs.exists() {
-            tracing::info!(path = %rootfs.display(), "deleting rootfs");
-            std::fs::remove_file(rootfs).map_err(|error| LifecycleError::EraseRootfs {
-                path: rootfs.display().to_string(),
-                source: error,
-            })?;
-        }
-    }
-    if include_data_volumes {
-        for (path_on_host, read_only) in &volumes {
-            if *read_only {
-                continue;
-            }
-            tracing::info!(path = path_on_host, "deleting volume");
-            if let Err(error) = std::fs::remove_file(path_on_host)
-                && error.kind() != std::io::ErrorKind::NotFound
-            {
-                return Err(LifecycleError::EraseVolume {
-                    path: path_on_host.clone(),
-                    source: error,
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
 /// `LocalSupervisor.restore_backup`: swap the rootfs for a verified backup
 /// archive's rootfs member, stopping and restarting the VM around the swap.
 /// Persistent QEMU VMs only (a program fails the rootfs-path resolution with
@@ -1466,7 +1337,6 @@ pub fn restore_from_image(
 pub fn delete_vm(
     state: &DaemonState,
     vm_id: &str,
-    wipe: bool,
     keep_port_mappings: bool,
 ) -> Result<(), RpcError> {
     {
@@ -1475,7 +1345,7 @@ pub fn delete_vm(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if entry_snapshot(state, vm_id).is_some() {
-            return delete_tracked_vm(state, vm_id, wipe, keep_port_mappings);
+            return delete_tracked_vm(state, vm_id, keep_port_mappings);
         }
     }
 
@@ -1497,7 +1367,7 @@ pub fn delete_vm(
     if entry_snapshot(state, vm_id).is_some() {
         // A concurrent retry pass adopted the VM while we waited for the
         // creation lock; the delete goes through the tracked path.
-        return delete_tracked_vm(state, vm_id, wipe, keep_port_mappings);
+        return delete_tracked_vm(state, vm_id, keep_port_mappings);
     }
 
     let root = &state.host.settings.execution_root;
@@ -1560,7 +1430,6 @@ pub fn delete_vm(
 fn delete_tracked_vm(
     state: &DaemonState,
     vm_id: &str,
-    wipe: bool,
     keep_port_mappings: bool,
 ) -> Result<(), RpcError> {
     let root = &state.host.settings.execution_root;
@@ -1574,9 +1443,7 @@ fn delete_tracked_vm(
     }
     state.events.emit(vm_id, old_status, pb::VmStatus::Stopped);
 
-    // The per-VM backup disk lock, shared with a running StartBackup: a delete
-    // that erases writable volumes must not race a backup's qemu-img read of
-    // the same disks (a corrupt member or a spurious FAILED job), and the
+    // The per-VM backup disk lock, shared with a running StartBackup: the
     // world-entry removal must not leave a backup run tracked for a VM that no
     // longer exists. Lock order matches the restore paths: the lifecycle
     // vm_lock (held by the caller) then this disk lock (ledger entry 51).
@@ -1604,18 +1471,20 @@ fn delete_tracked_vm(
     // Delete releases the definition: the controller config and the
     // cloud-init seed go too (stop keeps them for reattach).
     controller_config::remove_controller_configuration(root, vm_id)?;
+    // Storage is not touched here. The agent allocates every volume and hands
+    // the daemon resolved paths on the spec, so the daemon cannot tell a per-VM
+    // volume from a shared cache entry (a program's rootfs path *is* the shared
+    // runtime cache file). DeleteVm leaves the VM stopped with no handles held
+    // on its disks; the agent decides what happens to the bytes.
+    //
     // A delete is final unless the caller says otherwise; delete+recreate
-    // cycles pass keep_port_mappings, wipe overrides it.
-    if wipe || !keep_port_mappings {
+    // cycles pass keep_port_mappings.
+    if !keep_port_mappings {
         ports::delete_port_mappings(
             &state.host.settings.supervisor_database,
             vm_id,
             &ports::sqlalchemy_utc_now(),
         )?;
-    }
-    if wipe {
-        // Mirrors operate_erase: writable data volumes go, the rootfs stays.
-        erase_volumes(&entry, false, true)?;
     }
     // Reap the backup registry entry (jobs, the in-flight task slot, the disk
     // lock) for the now-deleted VM so a completed/failed run does not linger
@@ -4663,7 +4532,7 @@ mod tests {
         create_vm(state, request).unwrap();
         assert!(harness.dhcp.is_running(&vm_id));
 
-        delete_vm(state, &vm_id, false, false).unwrap();
+        delete_vm(state, &vm_id, false).unwrap();
         assert!(
             !harness.dhcp.is_running(&vm_id),
             "delete tears the DHCP server down"
@@ -4744,7 +4613,7 @@ mod tests {
         let vm_id = hash('a');
 
         create_vm(state, spec(&vm_id, &root)).unwrap();
-        delete_vm(state, &vm_id, false, false).unwrap();
+        delete_vm(state, &vm_id, false).unwrap();
         assert!(
             harness.dhcp.stopped().is_empty(),
             "a plain VM teardown touches no DHCP server, got {:?}",
@@ -4773,7 +4642,7 @@ mod tests {
         assert!(harness.dhcp.is_running(&vm_id));
         state.world.blocking_write().entries.remove(&vm_id);
 
-        delete_vm(state, &vm_id, false, false).unwrap();
+        delete_vm(state, &vm_id, false).unwrap();
         assert!(
             !harness.dhcp.is_running(&vm_id),
             "the discard path tears the DHCP server down"
@@ -5351,13 +5220,13 @@ mod tests {
         );
 
         // Delete: the entry, the config, the seed and the mappings go.
-        delete_vm(state, &vm_id, false, false).unwrap();
+        delete_vm(state, &vm_id, false).unwrap();
         assert!(state.world.blocking_read().is_empty());
         assert!(!root.join(format!("{vm_id}-controller.json")).exists());
         assert!(!root.join(format!("cloud-init-{vm_id}.img")).exists());
 
         // Delete of an unknown VM: NOT_FOUND with the vm_id as message.
-        match delete_vm(state, &vm_id, false, false) {
+        match delete_vm(state, &vm_id, false) {
             Err(RpcError::NotFound(id)) => assert_eq!(id, vm_id),
             other => panic!("expected NotFound, got {other:?}"),
         }
@@ -5456,26 +5325,6 @@ mod tests {
     }
 
     #[test]
-    fn reinstall_erases_the_rootfs_and_restarts() {
-        let harness = harness();
-        let state = &harness.state;
-        let root = state.host.settings.execution_root.clone();
-        let vm_id = hash('1');
-        let request = spec(&vm_id, &root);
-        std::fs::write(root.join("rootfs.qcow2"), b"disk").unwrap();
-        create_vm(state, request).unwrap();
-
-        let (entry, running) = reinstall_vm(state, &vm_id, true).unwrap();
-        assert!(running);
-        assert!(
-            !root.join("rootfs.qcow2").exists(),
-            "reinstall unlinks the rootfs (bug-for-bug: the spec path never \
-             recreates it; the controller boots against the missing file)"
-        );
-        assert_ne!(entry.times.started_at_ns, 0);
-    }
-
-    #[test]
     fn delete_discards_an_untracked_on_disk_vm() {
         // The Python discard_failed_reattach port: a VM hidden at adoption
         // still has a config and possibly a live controller; DeleteVm stops
@@ -5494,7 +5343,7 @@ mod tests {
             .systemd
             .set_state(&controller_unit_name(vm_id), "active");
 
-        delete_vm(state, vm_id, false, false).unwrap();
+        delete_vm(state, vm_id, false).unwrap();
         assert!(!root.join(format!("{vm_id}-controller.json")).exists());
         assert_eq!(
             harness
@@ -5536,7 +5385,7 @@ mod tests {
             "the FAILED job lists before the delete"
         );
 
-        delete_vm(state, &vm_id, true, false).unwrap();
+        delete_vm(state, &vm_id, false).unwrap();
 
         // The VM is gone and its backup registry entry with it.
         assert!(
@@ -5839,28 +5688,8 @@ mod tests {
         // The fake still holds the device (delete failed), like a stuck tap.
         assert!(harness.taps.interface_exists("vmtap4"));
         // The follow-up delete also succeeds (stop is already done).
-        delete_vm(state, &vm_id, false, false).unwrap();
+        delete_vm(state, &vm_id, false).unwrap();
         assert!(state.world.blocking_read().is_empty());
-    }
-
-    #[test]
-    fn reinstall_propagates_an_undeletable_rootfs_like_python() {
-        // C11: Python's rootfs.unlink() propagates; an immutable rootfs
-        // (here: a directory at the path) makes ReinstallVm INTERNAL
-        // instead of logging and pretending success.
-        let harness = harness();
-        let state = &harness.state;
-        let root = state.host.settings.execution_root.clone();
-        let vm_id = hash('d');
-        create_vm(state, spec(&vm_id, &root)).unwrap();
-        // remove_file on a directory fails whatever the euid.
-        std::fs::create_dir(root.join("rootfs.qcow2")).unwrap();
-        match reinstall_vm(state, &vm_id, true) {
-            Err(RpcError::Internal(message)) => {
-                assert!(message.contains("cannot delete the rootfs"), "{message}");
-            }
-            other => panic!("expected Internal, got {other:?}"),
-        }
     }
 
     #[test]
@@ -6079,68 +5908,6 @@ mod tests {
         assert!(
             tap_created < nft_batch && nft_batch < restarted,
             "start ordering broken: {events:?}"
-        );
-    }
-
-    #[test]
-    fn reinstall_without_wipe_keeps_the_data_volumes() {
-        // E5: wipe_volumes=false erases the rootfs only; the writable data
-        // volume survives.
-        let harness = harness();
-        let state = &harness.state;
-        let root = state.host.settings.execution_root.clone();
-        let vm_id = hash('2');
-        let data = root.join("data.img");
-        std::fs::write(root.join("rootfs.qcow2"), b"disk").unwrap();
-        std::fs::write(&data, b"data").unwrap();
-        let mut request = spec(&vm_id, &root);
-        request.disks.push(pb::DiskConfig {
-            path: data.to_string_lossy().into_owned(),
-            readonly: false,
-            format: pb::disk_config::Format::Raw as i32,
-            role: pb::disk_config::DiskRole::Extra as i32,
-        });
-        create_vm(state, request).unwrap();
-
-        let (_, running) = reinstall_vm(state, &vm_id, false).unwrap();
-        assert!(running);
-        assert!(!root.join("rootfs.qcow2").exists(), "rootfs erased");
-        assert!(data.exists(), "wipe_volumes=false keeps the data volume");
-    }
-
-    #[test]
-    fn the_erase_loop_skips_read_only_volumes_and_tolerates_missing_files() {
-        // E5: erase_volumes(include_data_volumes=True) removes writable
-        // volumes, skips read-only ones, and tolerates a vanished file
-        // (Python's missing_ok=True).
-        let harness = harness();
-        let state = &harness.state;
-        let root = state.host.settings.execution_root.clone();
-        let vm_id = hash('3');
-        let writable = root.join("data.img");
-        let read_only = root.join("blob.img");
-        let vanished = root.join("gone.img");
-        std::fs::write(root.join("rootfs.qcow2"), b"disk").unwrap();
-        std::fs::write(&writable, b"data").unwrap();
-        std::fs::write(&read_only, b"blob").unwrap();
-        let mut request = spec(&vm_id, &root);
-        for (path, readonly) in [(&writable, false), (&read_only, true), (&vanished, false)] {
-            request.disks.push(pb::DiskConfig {
-                path: path.to_string_lossy().into_owned(),
-                readonly,
-                format: pb::disk_config::Format::Raw as i32,
-                role: pb::disk_config::DiskRole::Extra as i32,
-            });
-        }
-        create_vm(state, request).unwrap();
-
-        // DeleteVm(wipe=true) drives erase_volumes(false, true).
-        delete_vm(state, &vm_id, true, false).unwrap();
-        assert!(!writable.exists(), "writable volume erased");
-        assert!(read_only.exists(), "read-only volume kept");
-        assert!(
-            root.join("rootfs.qcow2").exists(),
-            "wipe never touches the rootfs"
         );
     }
 
@@ -6543,7 +6310,7 @@ mod tests {
         .unwrap();
         assert!(info.host_port >= ports::MIN_DYNAMIC_PORT);
 
-        delete_vm(state, &vm_id, false, false).unwrap();
+        delete_vm(state, &vm_id, false).unwrap();
         assert!(state.world.blocking_read().is_empty());
         assert_eq!(harness.programs.teardowns(), vec![vm_id.clone()]);
         assert!(!harness.taps.interface_exists("vmtap4"));
@@ -6556,7 +6323,7 @@ mod tests {
         );
 
         // Double delete: NOT_FOUND with the vm_id as message.
-        match delete_vm(state, &vm_id, false, false) {
+        match delete_vm(state, &vm_id, false) {
             Err(RpcError::NotFound(id)) => assert_eq!(id, vm_id),
             other => panic!("expected NotFound, got {other:?}"),
         }
@@ -6603,37 +6370,11 @@ mod tests {
     }
 
     #[test]
-    fn ephemeral_reinstall_erases_the_rootfs_and_preserves_extra_disks() {
-        // Python's erase_volumes crashes on programs after the rootfs step
-        // (SpecProgramResources has no `volumes`, models.py:653); the Rust
-        // daemon pins the same disk outcome (rootfs gone, extra disks
-        // untouched) but answers success (ledger entry 43).
-        let harness = harness();
-        let state = &harness.state;
-        let root = state.host.settings.execution_root.clone();
-        let vm_id = hash('1');
-        std::fs::write(root.join("rootfs.squashfs"), b"squash").unwrap();
-        std::fs::write(root.join("data.img"), b"data").unwrap();
-        create_vm(state, fc_spec(&vm_id, &root, false)).unwrap();
-
-        let (entry, running) = reinstall_vm(state, &vm_id, true).unwrap();
-        assert!(!running);
-        assert_ne!(entry.times.stopped_at_ns, 0);
-        assert!(!root.join("rootfs.squashfs").exists());
-        assert!(
-            root.join("data.img").exists(),
-            "extra disks are never reached by the Python erase"
-        );
-        // The agent re-creates through the create path; the VM is gone.
-        assert!(state.world.blocking_read().is_empty());
-        assert_eq!(harness.programs.teardowns(), vec![vm_id]);
-    }
-
-    #[test]
-    fn ephemeral_delete_with_wipe_leaves_every_disk_alone() {
-        // DeleteVm(wipe=true) on a program: Python crashes before touching
-        // any disk (erase_volumes starts at the data volumes for a delete);
-        // the Rust daemon succeeds with the same disk outcome.
+    fn ephemeral_delete_leaves_every_disk_alone() {
+        // Storage is the agent's: DeleteVm releases the daemon's handles on
+        // a VM's disks and leaves the bytes untouched. A program's rootfs is
+        // the SHARED runtime cache file, so deleting it here would break
+        // every other program running that runtime.
         let harness = harness();
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -6642,16 +6383,34 @@ mod tests {
         std::fs::write(root.join("data.img"), b"data").unwrap();
         create_vm(state, fc_spec(&vm_id, &root, false)).unwrap();
 
-        delete_vm(state, &vm_id, true, false).unwrap();
+        delete_vm(state, &vm_id, false).unwrap();
         assert!(state.world.blocking_read().is_empty());
         assert!(
             root.join("rootfs.squashfs").exists(),
-            "a delete-wipe never includes the rootfs"
+            "DeleteVm must not delete the shared runtime image"
         );
         assert!(
             root.join("data.img").exists(),
-            "extra disks are never reached by the Python erase"
+            "DeleteVm must not delete a VM's data volumes"
         );
+    }
+
+    #[test]
+    fn delete_leaves_a_persistent_vms_disks_alone() {
+        // The QEMU counterpart of the contract above: the agent allocated
+        // these files and is the only side that may delete them.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('5');
+        create_vm(state, spec(&vm_id, &root)).unwrap();
+        let entry = entry_snapshot(state, &vm_id).unwrap();
+        let rootfs = std::path::PathBuf::from(&entry.config.image_path);
+        std::fs::write(&rootfs, b"rootfs").unwrap();
+
+        delete_vm(state, &vm_id, false).unwrap();
+        assert!(state.world.blocking_read().is_empty());
+        assert!(rootfs.exists(), "DeleteVm must not delete the rootfs");
     }
 
     #[test]
@@ -6807,7 +6566,7 @@ mod tests {
         // Start while running: the short circuit emits nothing.
         start_vm(state, &vm_id).unwrap();
         reboot_vm(state, &vm_id).unwrap();
-        delete_vm(state, &vm_id, false, false).unwrap();
+        delete_vm(state, &vm_id, false).unwrap();
 
         let mut seen = Vec::new();
         let mut timestamps = Vec::new();
@@ -7010,7 +6769,7 @@ mod tests {
             .systemd
             .set_state(&controller_unit_name(&vm_id), "active");
 
-        delete_vm(state, &vm_id, false, false).unwrap();
+        delete_vm(state, &vm_id, false).unwrap();
 
         let world = state.world.blocking_read();
         assert!(world.failed_reattach.is_empty());
@@ -7607,7 +7366,7 @@ mod tests {
             "pages reserved on create"
         );
 
-        delete_vm(state, &vm_id, false, false).unwrap();
+        delete_vm(state, &vm_id, false).unwrap();
         assert_eq!(
             allocated_2m(state, 0),
             pre,
@@ -7773,7 +7532,7 @@ mod tests {
         create_vm(state, spec(&vm_id, &root)).unwrap();
         assert_eq!(allocated(state, 0), 1);
 
-        delete_vm(state, &vm_id, false, false).unwrap();
+        delete_vm(state, &vm_id, false).unwrap();
         assert_eq!(allocated(state, 0), 0, "the vCPU reservation is freed");
         assert!(
             crate::numa::read_cpuset_dropin(&state.host.settings.systemd_unit_dir, &vm_id)
@@ -7849,7 +7608,7 @@ mod tests {
         reconcile_numa_ledger(state);
         assert_eq!(entry_snapshot(state, &vm_id).unwrap().numa_node, None);
 
-        delete_vm(state, &vm_id, false, false).unwrap();
+        delete_vm(state, &vm_id, false).unwrap();
         assert!(
             crate::numa::read_cpuset_dropin(&unit_dir, &vm_id).is_none(),
             "the stale drop-in must not outlive the VM"
@@ -8108,7 +7867,7 @@ mod tests {
             .systemd
             .set_state(&controller_unit_name(&vm_id), "inactive");
 
-        delete_vm(state, &vm_id, false, false).unwrap();
+        delete_vm(state, &vm_id, false).unwrap();
 
         assert_eq!(
             allocated(state, 0),

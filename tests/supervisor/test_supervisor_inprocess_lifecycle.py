@@ -112,74 +112,42 @@ async def test_reboot_unknown_vm_raises():
 
 
 @pytest.mark.asyncio
-async def test_reinstall_persistent_erases_prepares_and_restarts():
-    execution = _make_execution(persistent=True)
-    execution.erase_volumes = MagicMock()
-    pool = _make_pool({VM_ID: execution})
-    pool.restart_persistent_vm = AsyncMock()
-    supervisor = LocalSupervisor(pool)
-
-    await supervisor.reinstall_vm(VM_ID, wipe_volumes=False)
-
-    pool.stop_vm.assert_awaited_once_with(VM_ID)
-    execution.erase_volumes.assert_called_once_with(include_rootfs=True, include_data_volumes=False)
-    assert execution.resources is None
-    execution.prepare.assert_awaited_once()
-    pool.restart_persistent_vm.assert_awaited_once_with(execution)
-
-
-@pytest.mark.asyncio
-async def test_reinstall_non_persistent_stops_forgets_and_erases():
-    execution = _make_execution(persistent=False)
-    execution.erase_volumes = MagicMock()
-    pool = _make_pool({VM_ID: execution})
-    supervisor = LocalSupervisor(pool)
-
-    await supervisor.reinstall_vm(VM_ID)
-
-    pool.stop_vm.assert_awaited_once_with(VM_ID)
-    pool.forget_vm.assert_called_once_with(VM_ID)
-    execution.erase_volumes.assert_called_once_with(include_rootfs=True, include_data_volumes=True)
-
-
-@pytest.mark.asyncio
-async def test_delete_vm_wipe_erases_data_volumes_and_port_mappings(monkeypatch):
+async def test_delete_vm_never_touches_storage(monkeypatch, tmp_path):
+    """DeleteVm releases the definition and the port mappings, and leaves
+    every byte of the VM's storage alone: the agent allocated it and is the
+    only side that can tell a per-VM volume from a shared cache entry."""
     execution = make_execution()
+    rootfs = tmp_path / "rootfs.qcow2"
+    rootfs.touch()
+    data = tmp_path / "data.qcow2"
+    data.touch()
+    execution.resources = SimpleNamespace(
+        rootfs_path=rootfs,
+        volumes=[SimpleNamespace(read_only=False, path_on_host=data)],
+    )
     pool = FakePool(executions={VM_ID: execution})
     pool.stop_vm = AsyncMock()
     pool.forget_vm = MagicMock()
     supervisor = LocalSupervisor(pool)
     deleted = AsyncMock()
     monkeypatch.setattr("aleph.vm.supervisor.local.delete_port_mappings", deleted)
-    erased = MagicMock(return_value=1)
-    execution.erase_volumes = erased
-
-    await supervisor.delete_vm(VM_ID, wipe=True)
-
-    pool.stop_vm.assert_awaited_once_with(VM_ID)
-    deleted.assert_awaited_once_with(execution.vm_id)
-    erased.assert_called_once_with()
-
-
-@pytest.mark.asyncio
-async def test_delete_vm_without_wipe_keeps_data_but_drops_port_mappings(monkeypatch):
-    execution = make_execution()
-    pool = FakePool(executions={VM_ID: execution})
-    pool.stop_vm = AsyncMock()
-    pool.forget_vm = MagicMock()
-    supervisor = LocalSupervisor(pool)
-    deleted = AsyncMock()
-    monkeypatch.setattr("aleph.vm.supervisor.local.delete_port_mappings", deleted)
-    execution.erase_volumes = MagicMock()
 
     await supervisor.delete_vm(VM_ID)
 
     pool.stop_vm.assert_awaited_once_with(VM_ID)
     pool.forget_vm.assert_called_once_with(VM_ID)
-    # The VM is gone, so its port mappings go regardless of wipe ...
+    # The VM is gone, so its port mappings go ...
     deleted.assert_awaited_once_with(execution.vm_id)
-    # ... but the data volumes are kept without wipe.
-    execution.erase_volumes.assert_not_called()
+    # ... but its disks are not the supervisor's to delete.
+    assert rootfs.exists()
+    assert data.exists()
+
+
+def test_supervisor_has_no_storage_deleting_api():
+    """The regression guard for the ownership split: nothing on the
+    supervisor side may erase a VM's volumes."""
+    assert not hasattr(VmExecution, "erase_volumes")
+    assert not hasattr(LocalSupervisor, "reinstall_vm")
 
 
 @pytest.mark.asyncio
@@ -191,62 +159,12 @@ async def test_delete_vm_keep_port_mappings_preserves_rows(monkeypatch):
     supervisor = LocalSupervisor(pool)
     deleted = AsyncMock()
     monkeypatch.setattr("aleph.vm.supervisor.local.delete_port_mappings", deleted)
-    execution.erase_volumes = MagicMock()
 
     await supervisor.delete_vm(VM_ID, keep_port_mappings=True)
 
     pool.stop_vm.assert_awaited_once_with(VM_ID)
     pool.forget_vm.assert_called_once_with(VM_ID)
     deleted.assert_not_awaited()
-    execution.erase_volumes.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_delete_vm_wipe_overrides_keep_port_mappings(monkeypatch):
-    """wipe=True is final: the port mappings go even when a (nonsensical)
-    keep_port_mappings=True is passed along."""
-    execution = make_execution()
-    pool = _make_pool({VM_ID: execution})
-    supervisor = LocalSupervisor(pool)
-    deleted = AsyncMock()
-    monkeypatch.setattr("aleph.vm.supervisor.local.delete_port_mappings", deleted)
-    erased = MagicMock(return_value=1)
-    execution.erase_volumes = erased
-
-    await supervisor.delete_vm(VM_ID, wipe=True, keep_port_mappings=True)
-
-    deleted.assert_awaited_once_with(execution.vm_id)
-    erased.assert_called_once_with()
-
-
-def test_erase_volumes_deletes_rootfs_and_data(tmp_path):
-    """Verify the erase_volumes logic against real tmp-path files.
-
-    Calls VmExecution.erase_volumes as an unbound method on a SimpleNamespace
-    so we can test the file-deletion logic without a full VmExecution instance.
-    """
-    rootfs = tmp_path / "rootfs.qcow2"
-    rootfs.touch()
-    vol = tmp_path / "data.qcow2"
-    vol.touch()
-    ro = tmp_path / "ro.sqsh"
-    ro.touch()
-    # Use a plain SimpleNamespace as `self` — erase_volumes only reads
-    # self.resources, so no VmExecution __init__ is needed.
-    execution = SimpleNamespace(
-        resources=SimpleNamespace(
-            rootfs_path=rootfs,
-            volumes=[
-                SimpleNamespace(read_only=False, path_on_host=vol),
-                SimpleNamespace(read_only=True, path_on_host=ro),
-            ],
-        )
-    )
-
-    deleted = VmExecution.erase_volumes(execution, include_rootfs=True)
-
-    assert deleted == 2
-    assert not rootfs.exists() and not vol.exists() and ro.exists()
 
 
 def _spec_for(vm_hash: str):

@@ -916,21 +916,17 @@ class DeleteVmRequest(google.protobuf.message.Message):
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 
     VM_ID_FIELD_NUMBER: builtins.int
-    WIPE_FIELD_NUMBER: builtins.int
     KEEP_PORT_MAPPINGS_FIELD_NUMBER: builtins.int
     vm_id: builtins.str
-    wipe: builtins.bool
-    """also delete persisted port mappings and writable data volumes"""
     keep_port_mappings: builtins.bool
     """the delete is part of a delete+recreate cycle: preserve persisted"""
     def __init__(
         self,
         *,
         vm_id: builtins.str = ...,
-        wipe: builtins.bool = ...,
         keep_port_mappings: builtins.bool = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["keep_port_mappings", b"keep_port_mappings", "vm_id", b"vm_id", "wipe", b"wipe"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["keep_port_mappings", b"keep_port_mappings", "vm_id", b"vm_id"]) -> None: ...
 
 global___DeleteVmRequest = DeleteVmRequest
 
@@ -963,27 +959,6 @@ class RebootVmRequest(google.protobuf.message.Message):
     def ClearField(self, field_name: typing.Literal["vm_id", b"vm_id"]) -> None: ...
 
 global___RebootVmRequest = RebootVmRequest
-
-@typing.final
-class ReinstallVmRequest(google.protobuf.message.Message):
-    DESCRIPTOR: google.protobuf.descriptor.Descriptor
-
-    VM_ID_FIELD_NUMBER: builtins.int
-    WIPE_VOLUMES_FIELD_NUMBER: builtins.int
-    vm_id: builtins.str
-    wipe_volumes: builtins.bool
-    """false = reset rootfs only, keep writable data volumes."""
-    def __init__(
-        self,
-        *,
-        vm_id: builtins.str = ...,
-        wipe_volumes: builtins.bool | None = ...,
-    ) -> None: ...
-    def HasField(self, field_name: typing.Literal["_wipe_volumes", b"_wipe_volumes", "wipe_volumes", b"wipe_volumes"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing.Literal["_wipe_volumes", b"_wipe_volumes", "vm_id", b"vm_id", "wipe_volumes", b"wipe_volumes"]) -> None: ...
-    def WhichOneof(self, oneof_group: typing.Literal["_wipe_volumes", b"_wipe_volumes"]) -> typing.Literal["wipe_volumes"] | None: ...
-
-global___ReinstallVmRequest = ReinstallVmRequest
 
 @typing.final
 class RestoreFromImageRequest(google.protobuf.message.Message):
