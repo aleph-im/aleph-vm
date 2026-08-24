@@ -321,7 +321,9 @@ async def test_delete_vm_sweeps_the_definition_and_soft_deletes_the_mappings(sta
             assert not (execution_root / f"cloud-init-{STOPPED_HASH}.img").exists()
             assert (execution_root / "volumes" / f"{STOPPED_HASH}-data.img").exists()
 
-            # A second delete, this one keeping the persisted port rows.
+            # A second VM deleted the same way: both retire their port rows
+            # (keep_port_mappings has its own test below) and both keep
+            # their disks.
             await client.delete_vm(VmId(KEPT_HASH))
             assert (execution_root / "volumes" / f"{KEPT_HASH}-data.img").exists()
         finally:

@@ -8,6 +8,7 @@ import aiohttp
 import pytest
 from aiohttp.test_utils import TestClient
 from aleph_message.models import ItemHash
+from aleph_message.models.execution.environment import TrustedExecutionEnvironment
 
 from aleph.vm.agent.metrics import ExecutionRecord
 from aleph.vm.agent.supervisor import setup_webapp
@@ -1659,6 +1660,52 @@ async def test_operator_reinstall_rootfs_only(aiohttp_client, mocker):
 
     assert response.status == 200
     mock_purge.assert_called_once_with(vm_hash, include_data_volumes=False)
+
+
+@pytest.mark.asyncio
+async def test_operator_reinstall_persistent_confidential_rebuilds_from_scratch(aiohttp_client, mocker):
+    """A persistent confidential instance is not reinstalled in place: its
+    rootfs is measured and staged, so it goes delete -> purge -> create,
+    keeping its host ports and its persistent flag."""
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+    content = instance_message.content.model_copy(deep=True)
+    content.environment.trusted_execution = TrustedExecutionEnvironment()
+
+    mocker.patch(
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
+        return_value=instance_message.sender,
+    )
+    mock_create_vm = mocker.patch(
+        "aleph.vm.agent.views.operator.create_vm_execution_or_raise_http_error",
+        new=AsyncMock(),
+    )
+
+    fake_vm_pool = mocker.AsyncMock(executions={})
+    app = setup_webapp(supervisor=LocalSupervisor(fake_vm_pool))
+    app["vm_registry"].record(vm_hash, message=content, original=content, persistent=True)
+    fake_sup = _fake_supervisor()
+    app["supervisor"] = fake_sup
+    mock_purge = mocker.patch("aleph.vm.agent.views.operator.purge_vm_volumes")
+    mock_staging = mocker.patch("aleph.vm.agent.views.operator.purge_vm_staging")
+    mock_recreate = mocker.patch("aleph.vm.agent.views.operator.recreate_vm_volumes", new=AsyncMock())
+
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(f"/control/machine/{vm_hash}/reinstall")
+
+    assert response.status == 200
+    fake_sup.stop_vm.assert_not_awaited()
+    mock_recreate.assert_not_awaited()
+    fake_sup.delete_vm.assert_awaited_once_with(VmId(str(vm_hash)), keep_port_mappings=True)
+    mock_purge.assert_called_once_with(vm_hash, include_data_volumes=True)
+    mock_staging.assert_called_once_with(vm_hash)
+    mock_create_vm.assert_awaited_once_with(
+        vm_hash=vm_hash,
+        supervisor=fake_sup,
+        registry=app["vm_registry"],
+        capacity=app["capacity"],
+        persistent=True,
+    )
 
 
 @pytest.mark.asyncio

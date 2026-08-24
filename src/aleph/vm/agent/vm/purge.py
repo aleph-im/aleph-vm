@@ -166,6 +166,18 @@ def purge_vm_storage(vm_hash: ItemHash | str) -> int:
     deleted = len(purge_vm_volumes(namespace))
 
     for volumes_dir in list(iter_namespace_dirs(namespace)):
+        held = [volume for volume in iter_volume_files(namespace) if _held_by_device_mapper(namespace, volume)]
+        if any(volume.parent == volumes_dir for volume in held):
+            # Same rule as purge_vm_volumes: an rmtree here would unlink the
+            # dm-held file behind the guard's back, pinning its blocks behind
+            # a target nothing removes. Leave the directory for the operator
+            # to reclaim once the dm target is gone.
+            logger.error(
+                "Not removing %s: it still holds device-mapper-backed volumes %s",
+                volumes_dir,
+                ", ".join(volume.name for volume in held if volume.parent == volumes_dir),
+            )
+            continue
         try:
             shutil.rmtree(volumes_dir)
             logger.info("Removed volume directory %s", volumes_dir)

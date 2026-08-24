@@ -235,3 +235,19 @@ async def test_recreate_refuses_anything_else():
 
     with pytest.raises(VmSetupError):
         await recreate_vm_volumes(object(), VM_HASH)  # type: ignore[arg-type]
+
+
+def test_erase_leaves_a_directory_that_still_holds_a_dm_backed_volume(pools, monkeypatch, caplog):
+    """The full erase must not rmtree its way around the device-mapper guard."""
+    held = _volume(pools["pool0"], VM_HASH, "data.btrfs")
+    other_pool_dir = _volume(pools["pool1"], VM_HASH, "extra.ext4").parent
+    dm_path = Path("/dev/mapper") / f"{VM_HASH}_data"
+    real_is_block_device = Path.is_block_device
+    monkeypatch.setattr(Path, "is_block_device", lambda self: self == dm_path or real_is_block_device(self))
+
+    purge_vm_storage(VM_HASH)
+
+    assert held.exists()
+    assert held.parent.exists(), "the directory holding the dm-backed volume must survive"
+    assert not other_pool_dir.exists(), "directories with nothing held are still removed"
+    assert "still holds device-mapper-backed volumes" in caplog.text
