@@ -287,7 +287,7 @@ class SupervisorServicer(object):
         ListVms first, then watch. This is the client's replacement for
         in-process lifecycle hooks (e.g. dropping per-VM agent state when a VM
         goes down). Today events reflect transitions the supervisor itself
-        performs (create/stop/start/reboot/reinstall/delete); spontaneous
+        performs (create/stop/start/reboot/delete); spontaneous
         guest-death detection is a future extension.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
