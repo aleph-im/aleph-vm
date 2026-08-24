@@ -179,11 +179,16 @@ async def _get_tee_properties() -> TeeProperties | None:
 
 
 @async_cache
-async def get_machine_properties() -> MachineProperties:
-    """Fetch machine properties such as architecture, CPU vendor, ...
-    These should not change while the supervisor is running.
+async def _get_static_machine_properties() -> MachineProperties:
+    """The part of the machine properties that cannot change while the agent
+    runs: architecture, vendor and the SEV feature flags. Cached because
+    ``get_hardware_info`` shells out.
 
-    In the future, some properties may have to be fetched from within a VM.
+    ``tee`` is deliberately left ``None`` here and filled in per call by
+    ``get_machine_properties``: it depends on the QEMU probe, which can fail
+    transiently and then recover, and caching it alongside the static facts
+    would freeze a failed probe's empty advertisement for the life of the
+    process.
     """
     hw = await get_hardware_info()
     cpu_info = get_cpu_info(hw)
@@ -202,8 +207,22 @@ async def get_machine_properties() -> MachineProperties:
                 )
             ),
         ),
-        tee=await _get_tee_properties(),
+        tee=None,
     )
+
+
+async def get_machine_properties() -> MachineProperties:
+    """Fetch machine properties such as architecture, CPU vendor, ...
+
+    The static part is cached; the TEE block is re-evaluated on every call so
+    that a probe which failed once and has since recovered is advertised
+    again. Cheap once the probe has succeeded, since the probe keeps its own
+    result.
+
+    In the future, some properties may have to be fetched from within a VM.
+    """
+    static = await _get_static_machine_properties()
+    return static.model_copy(update={"tee": await _get_tee_properties()})
 
 
 @async_cache

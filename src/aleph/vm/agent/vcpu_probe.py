@@ -8,12 +8,19 @@ exact QEMU build + host kernel + silicon), not a static CPUID table.
 import asyncio
 import json
 import logging
+import time
 
-from aleph.vm.utils import async_cache, check_amd_sev_snp_supported
+from aleph.vm.utils import check_amd_sev_snp_supported
 
 logger = logging.getLogger(__name__)
 
 PROBE_TIMEOUT_SECONDS = 15.0
+
+# How long a failed probe is remembered before it is retried. Long enough that
+# a host with no working qemu is not re-probed (and stalled for up to
+# PROBE_TIMEOUT_SECONDS) on every usage poll and every launch, short enough
+# that a transient failure at boot heals without anyone restarting the agent.
+PROBE_RETRY_SECONDS = 60.0
 
 
 async def _read_qmp_response(stdout: asyncio.StreamReader) -> dict:
@@ -82,15 +89,60 @@ def filter_snp_vcpu_types(definitions: list[dict]) -> list[str]:
     )
 
 
-@async_cache
+class _ProbeCache:
+    """Process-wide memory of the QEMU probe.
+
+    A successful probe is a fact about this QEMU build, kernel and silicon, so it
+    is kept for the life of the process. A failed one is not a fact about the
+    host, only about that attempt (a spawn that timed out during boot, say), so
+    it is kept only for PROBE_RETRY_SECONDS and then tried again. The generic
+    ``async_cache`` cannot tell the two apart: it would pin the empty list from
+    a failed attempt forever, and this list feeds both what the node advertises
+    and which models it will launch, so one bad probe at startup would take the
+    node out of the confidential pool until someone restarted the agent.
+
+    The lock keeps concurrent first callers (the usage endpoint and a launch
+    racing at startup) from each spawning a qemu.
+    """
+
+    def __init__(self) -> None:
+        self.supported: list[str] | None = None
+        self.failed_at: float | None = None
+        self.lock = asyncio.Lock()
+
+    def reset(self) -> None:
+        self.supported = None
+        self.failed_at = None
+
+
+_probe_cache = _ProbeCache()
+
+
+def reset_snp_vcpu_probe_cache() -> None:
+    """Forget the cached probe. For tests; production never needs it."""
+    _probe_cache.reset()
+
+
 async def get_supported_snp_vcpu_types() -> list[str]:
     """SNP guest CPU models this node can launch; [] when SNP is unsupported
     or the probe fails. We never advertise what we cannot prove."""
     if not check_amd_sev_snp_supported():
         return []
-    try:
-        definitions = await query_cpu_definitions()
-    except Exception:
-        logger.warning("QEMU vCPU probe failed, not advertising SNP guest models", exc_info=True)
-        return []
-    return filter_snp_vcpu_types(definitions)
+    async with _probe_cache.lock:
+        if _probe_cache.supported is not None:
+            return _probe_cache.supported
+        now = time.monotonic()
+        if _probe_cache.failed_at is not None and now - _probe_cache.failed_at < PROBE_RETRY_SECONDS:
+            return []
+        try:
+            definitions = await query_cpu_definitions()
+        except Exception:
+            _probe_cache.failed_at = now
+            logger.warning(
+                "QEMU vCPU probe failed, not advertising SNP guest models; retrying in %ss",
+                PROBE_RETRY_SECONDS,
+                exc_info=True,
+            )
+            return []
+        _probe_cache.supported = filter_snp_vcpu_types(definitions)
+        return _probe_cache.supported
