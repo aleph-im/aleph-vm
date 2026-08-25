@@ -19,6 +19,7 @@ from pydantic import Field, HttpUrl, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from aleph.vm.chains import STREAM_CHAINS
+from aleph.vm.storage_budget import parse_budget
 from aleph.vm.utils import (
     check_amd_sev_es_supported,
     check_amd_sev_supported,
@@ -289,6 +290,33 @@ class Settings(BaseSettings):
 
     MAX_PROGRAM_ARCHIVE_SIZE: int = 10_000_000  # 10 MB
     MAX_DATA_ARCHIVE_SIZE: int = 10_000_000  # 10 MB
+    MAX_RUNTIME_ARCHIVE_SIZE: int = Field(
+        default=100 * 1024**3,
+        description="Maximum size in bytes of a runtime or instance base image download (default 100 GiB)",
+    )
+
+    VOLUME_RETENTION: Literal["reap", "keep"] = Field(
+        default="reap",
+        description="What happens to a VM's volumes when the VM is gone for good: "
+        "'reap' deletes them immediately, 'keep' retains them (within VOLUME_RETENTION_BUDGET, "
+        "oldest evicted first) so the same VM can be re-created with its data.",
+    )
+    VOLUME_RETENTION_BUDGET: str = Field(
+        default="10%",
+        description="Cap on retained (reclaimable) bytes per volume pool: a percentage of the pool "
+        "or an absolute size such as '50G'.",
+    )
+    VOLUME_RECONCILE_INTERVAL: int = Field(default=3600, description="Seconds between storage reconciler passes.")
+    VOLUME_CREATE_GUARD: int = Field(
+        default=600,
+        description="Seconds a directory or .part file is considered part of an in-flight create "
+        "and left alone by the reconciler.",
+    )
+    CACHE_BUDGET: str = Field(
+        default="20%",
+        description="Cap on each download cache (runtime, code, data, message): a percentage of the "
+        "filesystem the cache sits on or an absolute size.",
+    )
 
     HOST_MEMORY_RESERVED_MIB: int = Field(
         default=2048,
@@ -570,6 +598,12 @@ class Settings(BaseSettings):
             "enable it setting the env variable `ENABLE_QEMU_SUPPORT=True` in configuration"
         if self.ENABLE_GPU_SUPPORT:
             assert self.ENABLE_QEMU_SUPPORT, "Qemu Support is needed for GPU support and it's disabled, "
+
+        for setting_name in ("VOLUME_RETENTION_BUDGET", "CACHE_BUDGET"):
+            try:
+                parse_budget(getattr(self, setting_name), 0)
+            except ValueError as error:
+                raise ValueError(f"Invalid {setting_name}: {error}") from error
 
     def setup(self):
         """Setup the environment defined by the settings. Call this method after loading the settings."""
