@@ -80,8 +80,10 @@ async def create_qemu_disk_backup(
     """
     qemu_img = _require_qemu_img()
 
+    # The source stem keeps the copies of one include_volumes run apart:
+    # two disks converted within the same second must not share a path.
     timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    dest = destination_dir / f"{vm_hash}-{timestamp}.qcow2"
+    dest = destination_dir / f"{vm_hash}-{source_disk_path.stem}-{timestamp}.qcow2"
 
     logger.info("Creating backup %s from %s", dest, source_disk_path)
 

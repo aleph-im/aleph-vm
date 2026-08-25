@@ -134,7 +134,7 @@ async def test_create_backup_success(mocker, tmp_path):
     result = await create_qemu_disk_backup(vm_hash, source, dest_dir)
 
     assert result.parent == dest_dir
-    assert result.name.startswith("abc123-")
+    assert result.name.startswith("abc123-disk-")
     assert result.name.endswith(".qcow2")
 
     mock_run.assert_called_once()
@@ -146,6 +146,23 @@ async def test_create_backup_success(mocker, tmp_path):
     assert "-f" not in cmd  # auto-detect source format
     assert str(source) in cmd
     assert str(result) in cmd
+
+
+@pytest.mark.asyncio
+async def test_disks_copied_within_the_same_second_get_distinct_paths(mocker, tmp_path):
+    """An include_volumes backup converts several disks back to back; the
+    intermediate copies must never overwrite one another."""
+    rootfs = tmp_path / "rootfs.qcow2"
+    data = tmp_path / "data.qcow2"
+    rootfs.write_bytes(b"\x00")
+    data.write_bytes(b"\x00")
+    mocker.patch("aleph.vm.backup.archive.shutil.which", return_value="/usr/bin/qemu-img")
+    mocker.patch("aleph.vm.backup.archive.run_in_subprocess", AsyncMock(return_value=b""))
+
+    first = await create_qemu_disk_backup("abc123", rootfs, tmp_path)
+    second = await create_qemu_disk_backup("abc123", data, tmp_path)
+
+    assert first != second
 
 
 @pytest.mark.asyncio
