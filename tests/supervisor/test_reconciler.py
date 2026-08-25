@@ -207,6 +207,28 @@ def test_side_dirs_of_unknown_hashes_are_removed(pools, registry):  # noqa: F811
     assert report.side_dirs_removed == 3
 
 
+def test_a_non_empty_mnt_directory_is_never_removed(pools, registry):  # noqa: F811
+    """/mnt is the operator's directory. An agent mount point there is empty
+    once unmounted (create_devmapper only mkdirs it), so anything with content
+    under a name that merely matches the pattern is somebody else's disk."""
+    mnt = pools["execution_root"] / "mnt"
+    operator_disk = mnt / f"{VM_HASH}_1"
+    operator_disk.mkdir(parents=True)
+    (operator_disk / "customer-data.img").write_bytes(b"x")
+    stale_mount = mnt / f"{OTHER_HASH}_data"
+    stale_mount.mkdir()
+    for path in (operator_disk, stale_mount):
+        _age(path, 10_000)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(reconciler_module, "MOUNT_ROOT", mnt)
+        report = reconcile_storage(registry, now=NOW)
+
+    assert (operator_disk / "customer-data.img").exists()
+    assert not stale_mount.exists()
+    assert report.side_dirs_removed == 1
+
+
 def test_young_side_dirs_are_inside_the_create_guard(pools, registry):  # noqa: F811
     young = pools["sessions"] / VM_HASH
     young.mkdir()
