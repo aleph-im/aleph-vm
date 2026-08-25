@@ -69,28 +69,36 @@ class ReclaimableMarker:
         )
 
 
+def file_size_bytes(path: Path) -> int:
+    """Allocated bytes of one regular file, 0 for anything else.
+
+    Uses st_blocks so a sparse qcow2 counts what it really occupies rather
+    than its virtual size. A symlink counts 0: what it points at is not this
+    directory's space, and counting it would let a link inflate any figure
+    derived from here (a reclaim estimate, an admission discount).
+
+    The single definition of "how much disk does this file actually hold" for
+    the agent: everything that measures a VM's storage goes through here or
+    through ``directory_size_bytes``."""
+    try:
+        st = path.lstat()
+    except OSError:
+        return 0
+    if path.is_symlink() or not path.is_file():
+        return 0
+    return st.st_blocks * 512
+
+
 def directory_size_bytes(directory: Path) -> int:
     """Allocated bytes of the regular files directly inside ``directory``.
 
-    Uses st_blocks so a sparse qcow2 counts what it really occupies. The
-    marker itself is excluded, so the recorded size_bytes does not shift
+    The marker itself is excluded, so the recorded size_bytes does not shift
     depending on whether the marker already exists when this runs."""
-    total = 0
     try:
         entries = list(directory.iterdir())
     except OSError:
         return 0
-    for entry in entries:
-        if entry.name == MARKER_NAME:
-            continue
-        try:
-            st = entry.lstat()
-        except OSError:
-            continue
-        if not entry.is_file() or entry.is_symlink():
-            continue
-        total += st.st_blocks * 512
-    return total
+    return sum(file_size_bytes(entry) for entry in entries if entry.name != MARKER_NAME)
 
 
 def read_marker(namespace_dir: Path) -> ReclaimableMarker | None:

@@ -847,8 +847,8 @@ async def notify_allocation(request: web.Request):
     update_watcher = request.app["update_watcher"]
 
     # Capacity admission is not checked here: the create path runs the
-    # agent-side policy (CapacityManager.check_capacity) before create_vm,
-    # raising the typed InsufficientResourcesError. The
+    # agent-side policy (CapacityManager.check_message) before it downloads a
+    # byte, raising the typed InsufficientResourcesError. The
     # vm_creation_exceptions / 503 path below surfaces that error to the
     # caller.
 

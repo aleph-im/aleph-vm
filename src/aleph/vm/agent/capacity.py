@@ -15,15 +15,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import psutil
 from aleph_message.models import ExecutableContent, ItemHash, VerifiableProgramContent
 from aleph_message.models.execution.instance import InstanceContent
 
 from aleph.vm import storage_pools
-from aleph.vm.agent.vm.reclaimable import directory_size_bytes, reclaimable_bytes
+from aleph.vm.agent.vm.purge import ROOTFS_STEM, _checked_namespace
+from aleph.vm.agent.vm.reclaimable import (
+    MARKER_NAME,
+    file_size_bytes,
+    reclaimable_bytes,
+)
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
 from aleph.vm.resources import GpuDevice, InsufficientResourcesError
@@ -50,6 +57,61 @@ class ResourceRequirements:
     gpu_device_ids: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class DeclaredVolume:
+    """One volume a message asks the node to allocate.
+
+    ``stems`` are the filename stems the volume's file can carry inside
+    ``{pool}/{vm_hash}/``: "rootfs" for the boot disk, the volume's name for
+    an extra persistent volume (see ``purge.ROOTFS_STEM`` and the naming
+    convention it documents). Both spellings of a name are listed because
+    ``storage.get_volume_path`` sanitizes a name that is not already
+    ``[\\w\\-_/]+`` while ``downloader._make_writable_volume`` does not.
+    """
+
+    stems: tuple[str, ...]
+    size_mib: int
+
+
+@dataclass(frozen=True)
+class HeldVolume:
+    """An existing file that already backs a declared volume.
+
+    ``size_bytes`` is what the file allocates on disk, capped at the size the
+    volume declares: a file cannot discount more than the message asks for.
+    """
+
+    path: Path
+    size_bytes: int
+
+    @property
+    def pool_path(self) -> Path:
+        """The pool holding the file (``{pool}/{vm_hash}/{name.ext}``)."""
+        return self.path.parent.parent
+
+
+def _volume_stems(name: str) -> tuple[str, ...]:
+    """The filename stems a declared volume's file can carry on disk."""
+    sanitized = name if re.match(r"^[\w\-_/]+$", name) else re.sub(r"[^\w\-_]", "_", name)
+    return (name,) if sanitized == name else (name, sanitized)
+
+
+def declared_volumes(content: ExecutableContent) -> list[DeclaredVolume]:
+    """The per-VM volumes a message asks the node to allocate.
+
+    Immutable volumes are absent on purpose: they resolve to a shared cache
+    entry, not to a file this VM owns.
+    """
+    volumes: list[DeclaredVolume] = []
+    if isinstance(content, InstanceContent) and content.rootfs:
+        volumes.append(DeclaredVolume(stems=(ROOTFS_STEM,), size_mib=content.rootfs.size_mib))
+    for volume in content.volumes or []:
+        size_mib = getattr(volume, "size_mib", 0) or 0
+        name = getattr(volume, "name", "") or ""
+        volumes.append(DeclaredVolume(stems=_volume_stems(name) if name else (), size_mib=size_mib))
+    return volumes
+
+
 def requirements_from_message(content: ExecutableContent) -> ResourceRequirements:
     """Extract the resources a message requests into a message-free DTO.
 
@@ -60,25 +122,66 @@ def requirements_from_message(content: ExecutableContent) -> ResourceRequirement
     starve the small program bucket and hide its memory from instance
     admission (silent over-commit).
     """
-    is_instance = isinstance(content, (InstanceContent, VerifiableProgramContent))
-    volume_sizes_mib: list[int] = []
-    if isinstance(content, InstanceContent) and content.rootfs:
-        volume_sizes_mib.append(content.rootfs.size_mib)
-    for volume in content.volumes or []:
-        volume_sizes_mib.append(getattr(volume, "size_mib", 0) or 0)
+    volume_sizes_mib = [volume.size_mib for volume in declared_volumes(content)]
     return ResourceRequirements(
         vcpus=content.resources.vcpus,
         memory_mib=content.resources.memory,
         disk_mib=sum(volume_sizes_mib),
         max_volume_mib=max(volume_sizes_mib, default=0),
-        is_instance=is_instance,
+        is_instance=isinstance(content, InstanceContent | VerifiableProgramContent),
         gpu_device_ids=requested_gpu_ids(content),
     )
 
 
-def allocated_bytes_for(vm_hash: ItemHash | str) -> int:
-    """Bytes already sitting under this VM's directories on every pool."""
-    return sum(directory_size_bytes(directory) for directory in storage_pools.iter_namespace_dirs(str(vm_hash)))
+def existing_volume_files(vm_hash: ItemHash | str) -> dict[str, Path]:
+    """``{stem: path}`` of the VM's existing volume files, on every pool.
+
+    The namespace is validated before it reaches a path join, like every
+    other caller of ``iter_namespace_dirs``: ``pool.path / namespace`` is a
+    bare join, so an unchecked hash lets "../.." resolve and be counted as
+    space the VM already holds, and an inflated discount relaxes admission.
+
+    Symlinks and the marker are skipped, and pools are walked in order with
+    the first match winning, so the result does not depend on iteration luck.
+    """
+    namespace = _checked_namespace(vm_hash)
+    files: dict[str, Path] = {}
+    for directory in storage_pools.iter_namespace_dirs(namespace):
+        try:
+            entries = sorted(directory.iterdir())
+        except OSError:
+            logger.warning("Volume directory %s not readable, not discounting it", directory)
+            continue
+        for entry in entries:
+            if entry.name == MARKER_NAME or entry.is_symlink() or not entry.is_file():
+                continue
+            files.setdefault(entry.stem, entry)
+    return files
+
+
+def held_volumes(vm_hash: ItemHash | str, volumes: list[DeclaredVolume]) -> list[HeldVolume | None]:
+    """What the VM already holds for each declared volume, positionally.
+
+    The discount is per declared volume, never per directory: a file that
+    backs no declared volume (a volume the updated message renamed or
+    dropped, left behind on a node the VM is re-scheduled to) discounts
+    nothing. Summing the directory instead would let such a leftover cancel
+    the space a genuinely new volume still needs, turning the disk check off
+    for exactly the create that needs it.
+
+    Each hit is capped at the size its volume declares, so a file that grew
+    past its declaration cannot credit the difference either.
+    """
+    existing = existing_volume_files(vm_hash)
+    held: list[HeldVolume | None] = []
+    for volume in volumes:
+        path = next((existing[stem] for stem in volume.stems if stem in existing), None)
+        if path is None:
+            held.append(None)
+            continue
+        size_bytes = min(file_size_bytes(path), volume.size_mib * 1024 * 1024)
+        held.append(HeldVolume(path=path, size_bytes=size_bytes))
+    return held
 
 
 def requested_gpu_ids(content: ExecutableContent) -> list[str]:
@@ -123,28 +226,36 @@ class CapacityManager:
         written the volumes. Judging disk after the build would measure space
         this very VM has just taken, which is why there is no second check.
 
-        What the VM already holds on disk is subtracted, so an existing VM is
-        never refused for space it already occupies. This matters for a
-        RECREATE and for an adoption: ``creating()`` adopts the retained
-        directory on entry, which drops its ``.reclaimable`` marker, so those
-        bytes stop counting as free in ``_available_disk_bytes`` at the very
-        moment the VM asks for them again.
+        What the VM already holds for each volume the message declares is
+        subtracted, so an existing VM is never refused for space it already
+        occupies. This matters for a RECREATE and for an adoption:
+        ``creating()`` adopts the retained directory on entry, which drops its
+        ``.reclaimable`` marker, so those bytes stop counting as free in
+        ``_available_disk_bytes`` at the very moment the VM asks for them
+        again.
+
+        The discount is matched volume by volume (see ``held_volumes``), never
+        summed over the directory: a leftover file from a volume the message
+        no longer declares must not pay for a new one.
         """
+        volumes = declared_volumes(content)
+        held = held_volumes(exclude_vm_hash, volumes) if exclude_vm_hash is not None else [None] * len(volumes)
+        declared_mib = sum(volume.size_mib for volume in volumes)
+        held_mib = sum(hit.size_bytes for hit in held if hit is not None) // (1024 * 1024)
+        # The largest declared volume decides the per-pool check, and it is
+        # judged at its declared size: shrinking that figure by what is held
+        # elsewhere would let a discount from one volume excuse the placement
+        # of another. What the VM already holds *for that volume* is instead
+        # credited to the pool its file sits on, which is the only pool that
+        # would have to find room for it again.
+        largest = max(range(len(volumes)), key=lambda index: volumes[index].size_mib, default=None)
         requirements = requirements_from_message(content)
-        held_mib = allocated_bytes_for(exclude_vm_hash) // (1024 * 1024) if exclude_vm_hash is not None else 0
-        disk_mib = max(requirements.disk_mib - held_mib, 0)
-        # The largest-single-volume check is per pool, and it needs the same
-        # discount: a volume the VM already holds is already placed, so no
-        # pool has to find room for it. Capping the figure at what is still to
-        # be allocated is the discount that needs no per-volume bookkeeping,
-        # and it is exact in the two cases that matter: nothing held (the cap
-        # never binds) and everything held (nothing left to place).
-        max_volume_mib = min(requirements.max_volume_mib, disk_mib)
         self.check_capacity(
             memory_mib=requirements.memory_mib,
             vcpus=requirements.vcpus,
-            disk_mib=disk_mib,
-            max_volume_mib=max_volume_mib,
+            disk_mib=max(declared_mib - held_mib, 0),
+            max_volume_mib=volumes[largest].size_mib if largest is not None else 0,
+            max_volume_credit=held[largest] if largest is not None else None,
             is_instance=requirements.is_instance,
             exclude_vm_hash=exclude_vm_hash,
         )
@@ -156,6 +267,7 @@ class CapacityManager:
         vcpus: int,
         disk_mib: int,
         max_volume_mib: int = 0,
+        max_volume_credit: HeldVolume | None = None,
         is_instance: bool,
         exclude_vm_hash: ItemHash | None = None,
     ) -> None:
@@ -167,6 +279,10 @@ class CapacityManager:
         physical cores times VCPU_OVERCOMMIT_FACTOR. Disk is only checked for
         disk_mib > 0, so a caller with nothing left to allocate (a recreate
         whose volumes are all on disk already) skips it.
+
+        ``max_volume_credit`` is the file already backing the largest declared
+        volume, if any: see ``_check_max_volume``, which credits it to the one
+        pool that holds it.
 
         Callers that hold a message should go through ``check_message``, which
         derives every figure here from it; the scalars are the seam for the
@@ -234,7 +350,7 @@ class CapacityManager:
         if required_disk_mib > 0 and required_disk_mib > available_disk_mib:
             errors.append(f"Disk: required {required_disk_mib} MiB, " f"available {available_disk_mib} MiB")
 
-        max_volume_error = self._check_max_volume(max_volume_mib)
+        max_volume_error = self._check_max_volume(max_volume_mib, max_volume_credit)
         if max_volume_error:
             errors.append(max_volume_error)
 
@@ -292,7 +408,7 @@ class CapacityManager:
         return committed_instance_memory_mib, committed_program_memory_mib, committed_vcpus
 
     @staticmethod
-    def _check_max_volume(max_volume_mib: int) -> str | None:
+    def _check_max_volume(max_volume_mib: int, credit: HeldVolume | None = None) -> str | None:
         """None when ``max_volume_mib`` fits the roomiest eligible pool, else
         an error string describing the shortfall. No pool holds a volume
         split across disks, so this catches a request the aggregate free
@@ -301,11 +417,25 @@ class CapacityManager:
         A pool's room is its free bytes plus the reclaimable bytes it holds,
         for the same reason the aggregate figure counts them: placement
         evicts that pool's retained directories before it refuses the volume.
+
+        ``credit`` is the file that already backs this very volume, if there
+        is one. Its bytes are added to the room of the one pool that holds it
+        and to no other: that pool does not have to find the space again,
+        while a pool that has never seen this volume still has to fit it whole.
+        Crediting it globally (by shrinking ``max_volume_mib``) would instead
+        excuse every pool, which is how a stale file could switch this check
+        off entirely.
         """
         if max_volume_mib <= 0:
             return None
+        credited_pool = credit.pool_path if credit is not None else None
         roomiest_bytes = max(
-            (free + reclaimable_bytes(pool.path) for pool, free in storage_pools.eligible_pool_free_bytes()),
+            (
+                free
+                + reclaimable_bytes(pool.path)
+                + (credit.size_bytes if credit is not None and pool.path == credited_pool else 0)
+                for pool, free in storage_pools.eligible_pool_free_bytes()
+            ),
             default=0,
         )
         roomiest_mib = roomiest_bytes // (1024 * 1024)
