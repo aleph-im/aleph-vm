@@ -501,6 +501,21 @@ def test_evicting_a_directory_that_already_vanished_counts_nothing(pools, monkey
     assert report.evicted == [] and report.bytes_freed == 0
 
 
+def test_a_refused_purge_is_not_counted_as_an_eviction(pools, monkeypatch):  # noqa: F811
+    """purge_vm_storage refuses a directory a device-mapper target still
+    holds. make_room must not then report room it did not make."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    retained = volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=8192)
+    mark_reclaimable(VM_HASH, "gone", now=NOW)
+    monkeypatch.setattr(reconciler_module, "purge_vm_storage", lambda _namespace: 0)
+    _fake_disk_usage(monkeypatch, 0)
+
+    freed = make_room(get_pools()[0], needed_bytes=8192)
+
+    assert freed == 0
+    assert retained.exists()
+
+
 @pytest.mark.asyncio
 async def test_two_reconcile_passes_do_not_overlap(pools, registry, monkeypatch):  # noqa: F811
     """A GONE fires a pass while the periodic one may be running: without a
