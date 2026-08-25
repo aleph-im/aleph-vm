@@ -8,6 +8,7 @@ mocked supervisor HostInfo (the supervisor only supplies the GPU inventory).
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -432,14 +433,22 @@ def test_requirements_carry_the_largest_single_volume():
     assert requirements.disk_mib >= requirements.max_volume_mib
 
 
+def _patch_pools(mocker, *free_bytes: int, reclaimable: int = 0):
+    """One eligible pool per free-bytes figure, each holding ``reclaimable``
+    retained bytes."""
+    pools = [SimpleNamespace(path=Path(f"/pool{index}"), index=index) for index in range(len(free_bytes))]
+    mocker.patch(
+        "aleph.vm.agent.capacity.storage_pools.eligible_pool_free_bytes",
+        return_value=list(zip(pools, free_bytes)),
+    )
+    mocker.patch("aleph.vm.agent.capacity.reclaimable_bytes", return_value=reclaimable)
+
+
 def test_check_capacity_rejects_a_volume_no_pool_can_hold(mocker):
     manager = _manager()
     _patch_host(mocker, memory_bytes=64 * 1024**3, cores=16, disk_bytes=900 * 1024**3)
     # Aggregate says 900 GiB free, but the roomiest single pool has 400 GiB.
-    mocker.patch(
-        "aleph.vm.agent.capacity.storage_pools.roomiest_pool_free_bytes",
-        return_value=400 * 1024**3,
-    )
+    _patch_pools(mocker, 400 * 1024**3)
     with pytest.raises(InsufficientResourcesError, match="single volume"):
         manager.check_capacity(
             memory_mib=1024,
@@ -453,10 +462,7 @@ def test_check_capacity_rejects_a_volume_no_pool_can_hold(mocker):
 def test_check_capacity_accepts_when_the_roomiest_pool_fits(mocker):
     manager = _manager()
     _patch_host(mocker, memory_bytes=64 * 1024**3, cores=16, disk_bytes=900 * 1024**3)
-    mocker.patch(
-        "aleph.vm.agent.capacity.storage_pools.roomiest_pool_free_bytes",
-        return_value=400 * 1024**3,
-    )
+    _patch_pools(mocker, 400 * 1024**3)
     manager.check_capacity(
         memory_mib=1024,
         vcpus=1,
@@ -482,3 +488,26 @@ def test_available_disk_counts_reclaimable_bytes_as_free(mocker):
     mocker.patch("aleph.vm.agent.capacity.storage_pools.pools_disk_usage", return_value=(100, 10))
     mocker.patch("aleph.vm.agent.capacity.reclaimable_bytes", return_value=5)
     assert CapacityManager._available_disk_bytes() == 15
+
+
+def test_max_volume_check_counts_that_pools_reclaimable_bytes(mocker):
+    """Retention is a budgeted cache: a volume that fits once the pool's
+    retained directories are evicted must be admitted, since the room maker
+    evicts them at placement time (spec section 1)."""
+    manager = _manager()
+    _patch_host(mocker, memory_bytes=64 * 1024**3, cores=16, disk_bytes=900 * 1024**3)
+    # 200 GiB free, 300 GiB retained: a 400 GiB volume still fits.
+    _patch_pools(mocker, 200 * 1024**3, reclaimable=300 * 1024**3)
+
+    manager.check_capacity(memory_mib=1024, vcpus=1, disk_mib=400 * 1024, max_volume_mib=400 * 1024, is_instance=True)
+
+
+def test_max_volume_check_still_refuses_what_no_pool_can_hold_even_after_eviction(mocker):
+    manager = _manager()
+    _patch_host(mocker, memory_bytes=64 * 1024**3, cores=16, disk_bytes=900 * 1024**3)
+    _patch_pools(mocker, 200 * 1024**3, reclaimable=100 * 1024**3)
+
+    with pytest.raises(InsufficientResourcesError, match="single volume"):
+        manager.check_capacity(
+            memory_mib=1024, vcpus=1, disk_mib=400 * 1024, max_volume_mib=400 * 1024, is_instance=True
+        )

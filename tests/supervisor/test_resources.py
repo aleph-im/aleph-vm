@@ -61,3 +61,34 @@ def test_get_gpu_devices():
             assert expected_gpu_devices[0].device_class == "0300"
             assert expected_gpu_devices[0].pci_host == "01:00.0"
             assert expected_gpu_devices[0].device_id == "10de:27b0"
+
+
+def test_disk_usage_counts_reclaimable_bytes_as_available(mocker):
+    """What the node advertises must match what it will admit: retained
+    volumes are evicted on demand, so they are available disk, not usage
+    (spec section 1). Advertising less than admission accepts would make the
+    scheduler stop sending work the node can still take."""
+    from types import SimpleNamespace
+
+    from aleph.vm.agent.resources import _disk_usage_from_pools
+
+    mocker.patch("aleph.vm.agent.resources.pools_disk_usage", return_value=(1_000_000, 400_000))
+    mocker.patch("aleph.vm.agent.resources.reclaimable_bytes", return_value=100_000)
+
+    usage = _disk_usage_from_pools(SimpleNamespace(available_disk_bytes=0))
+
+    assert usage.total_kB == 1000
+    assert usage.available_kB == 500
+
+
+def test_disk_usage_adds_reclaimable_to_the_supervisors_figure(mocker):
+    from types import SimpleNamespace
+
+    from aleph.vm.agent.resources import _disk_usage_from_pools
+
+    mocker.patch("aleph.vm.agent.resources.pools_disk_usage", return_value=(1_000_000, 400_000))
+    mocker.patch("aleph.vm.agent.resources.reclaimable_bytes", return_value=100_000)
+
+    usage = _disk_usage_from_pools(SimpleNamespace(available_disk_bytes=200_000))
+
+    assert usage.available_kB == 300

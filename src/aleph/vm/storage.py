@@ -333,7 +333,12 @@ async def create_volume_file(
 ) -> Path:
     volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
     # Assume that the main filesystem format is BTRFS
-    path = volume_path_for(namespace, f"{volume_name}.btrfs", volume.size_mib, pool0_only=pool0_only)
+    # Off the loop: placement reads every pool's free space and can call the
+    # reclaimer's evictor (storage_pools.set_room_maker), which walks pools and
+    # removes directories.
+    path = await asyncio.to_thread(
+        volume_path_for, namespace, f"{volume_name}.btrfs", volume.size_mib, pool0_only=pool0_only
+    )
     if not path.is_file():
         logger.debug(f"Creating {volume.size_mib}MB volume")
         # Create an empty file the right size
@@ -496,7 +501,10 @@ async def get_volume_path(volume: MachineVolume, namespace: str, *, pool0_only: 
             # pool 0 (jailer hardlink-copy would lose guest writes).
             return await create_devmapper(volume, namespace, pool0_only=pool0_only)
         else:
-            volume_path = volume_path_for(namespace, f"{volume_name}.ext4", volume.size_mib, pool0_only=pool0_only)
+            # Off the loop, same reason as create_volume_file above.
+            volume_path = await asyncio.to_thread(
+                volume_path_for, namespace, f"{volume_name}.ext4", volume.size_mib, pool0_only=pool0_only
+            )
             await create_ext4(volume_path, volume.size_mib)
             return volume_path
     else:

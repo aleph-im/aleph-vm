@@ -292,6 +292,7 @@ async def migration_import(request: web.Request) -> web.Response:
             job,
             supervisor,
             capacity=request.app["capacity"],
+            registry=request.app["vm_registry"],
             disk_files=params.disk_files,
             export_token=params.export_token,
             prior_task=prior_task,

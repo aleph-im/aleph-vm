@@ -34,6 +34,8 @@ from aleph.vm.agent.migration.jobs import (
 )
 from aleph.vm.agent.run import finish_instance_create
 from aleph.vm.agent.translate import build_create_vm_spec
+from aleph.vm.agent.vm.reconciler import creating
+from aleph.vm.agent.vm_registry import AgentVmRegistry, persist_record
 from aleph.vm.conf import settings
 from aleph.vm.storage import get_rootfs_base_path
 from aleph.vm.storage_pools import iter_namespace_dirs, select_pool
@@ -221,6 +223,7 @@ async def run_import(
     supervisor: "Supervisor",
     *,
     capacity: CapacityManager,
+    registry: AgentVmRegistry,
     disk_files: list[DiskFileInfo],
     export_token: str,
     prior_task: asyncio.Task | None = None,
@@ -248,114 +251,136 @@ async def run_import(
     start = time.monotonic()
     async with sem:
         try:
-            job.current_step = "fetching_message"
-            message, _original_message = await load_updated_message(job.vm_hash)
+            # The whole import runs under the create guard. Nothing here is in
+            # the agent registry yet, the namespace directory's own mtime does
+            # not advance while a multi-GB disk is streamed into it, and a
+            # transfer easily outlives VOLUME_CREATE_GUARD: without this the
+            # reconciler would classify the staging directory as an orphan and
+            # reap it (and its .part files) mid-transfer.
+            with creating(str(job.vm_hash)):
+                job.current_step = "fetching_message"
+                message, original_message = await load_updated_message(job.vm_hash)
 
-            if message.type != MessageType.instance:
-                msg = "Message is not an instance"
-                raise RuntimeError(msg)
-            # Resolve the hypervisor exactly as the create path does
-            # (translate.build_create_vm_spec): an instance message that omits
-            # the field (the CLI never sets it) falls back to
-            # INSTANCE_DEFAULT_HYPERVISOR, which is QEMU. A hardcoded Firecracker
-            # fallback here rejected every default instance before create_vm,
-            # so migrated VMs never booted on the destination.
-            hypervisor = message.content.environment.hypervisor or settings.INSTANCE_DEFAULT_HYPERVISOR
-            if hypervisor != HypervisorType.qemu:
-                msg = "Migration only supported for QEMU instances"
-                raise RuntimeError(msg)
-            if message.content.environment.trusted_execution is not None:
-                msg = "Migration not supported for confidential VMs"
-                raise RuntimeError(msg)
-
-            job.current_step = "downloading_parent"
-            parent_ref = message.content.rootfs.parent.ref
-            parent_path = await get_rootfs_base_path(parent_ref)
-            parent_format = await detect_parent_format(parent_path)
-
-            # Stage onto the pool with the most room for the whole transfer;
-            # build_create_vm_spec later adopts the staged overlay wherever it
-            # is (the downloader's volume lookup scans every pool).
-            incoming_mib = sum(df.size_bytes for df in disk_files) // (1024 * 1024)
-            dest_dir = select_pool(incoming_mib).path / str(job.vm_hash)
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            job.dest_dir = dest_dir
-            job.total_bytes_expected = sum(df.size_bytes for df in disk_files)
-
-            job.current_step = "downloading_disks"
-            scheme = "https" if job.source_port == 443 else "http"
-            base_url = f"{scheme}://{job.source_host}:{job.source_port}"
-
-            # No total cap (transfers can be large), but require steady progress —
-            # without this a hung peer leaves the import task running forever and
-            # holding the migration semaphore slot.
-            timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=300)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                for disk_file in disk_files:
-                    url = f"{base_url}{disk_file.download_path}"
-                    dest_path = dest_dir / disk_file.name
-                    job.downloaded_files.append(dest_path)
-                    base_so_far = job.bytes_downloaded
-
-                    def _progress(file_total: int, _b=base_so_far) -> None:
-                        job.bytes_downloaded = _b + file_total
-
-                    await download_disk_from_source(
-                        session,
-                        url,
-                        dest_path,
-                        export_token,
-                        expected_sha256=disk_file.sha256,
-                        on_chunk=_progress,
-                    )
-
-            job.current_step = "rebasing"
-            for disk_file in disk_files:
-                overlay_path = dest_dir / disk_file.name
-                if not overlay_path.exists():
-                    msg = f"Expected overlay {overlay_path} missing after download"
+                if message.type != MessageType.instance:
+                    msg = "Message is not an instance"
                     raise RuntimeError(msg)
-                await rebase_overlay(overlay_path, parent_path, parent_format)
+                # Resolve the hypervisor exactly as the create path does
+                # (translate.build_create_vm_spec): an instance message that omits
+                # the field (the CLI never sets it) falls back to
+                # INSTANCE_DEFAULT_HYPERVISOR, which is QEMU. A hardcoded Firecracker
+                # fallback here rejected every default instance before create_vm,
+                # so migrated VMs never booted on the destination.
+                hypervisor = message.content.environment.hypervisor or settings.INSTANCE_DEFAULT_HYPERVISOR
+                if hypervisor != HypervisorType.qemu:
+                    msg = "Migration only supported for QEMU instances"
+                    raise RuntimeError(msg)
+                if message.content.environment.trusted_execution is not None:
+                    msg = "Migration not supported for confidential VMs"
+                    raise RuntimeError(msg)
 
-            job.current_step = "creating_vm"
-            # The standard instance-create path: build the same spec a normal
-            # persistent-instance create uses (run.create_vm_execution ->
-            # build_create_vm_spec). The spec's rootfs path resolves through
-            # the pool-aware volume lookup, which finds the overlay exactly
-            # where the download+rebase staged it, and build_create_vm_spec
-            # adopts an already-present host-persistence overlay rather than
-            # recreating it, so create_vm reuses the staged disk (no
-            # re-download).
-            spec = await build_create_vm_spec(job.vm_hash, message.content)
-            # Same agent-side admission as the normal create: bucket from the
-            # message type, GPU requests resolved to concrete host cards on
-            # this destination (owner = message.address).
-            capacity.check_capacity(
-                memory_mib=message.content.resources.memory,
-                vcpus=message.content.resources.vcpus,
-                disk_mib=0,
-                is_instance=True,
-                exclude_vm_hash=job.vm_hash,
-            )
-            requested_gpus = requested_gpu_ids(message.content)
-            if requested_gpus:
-                resolved_gpus = await capacity.resolve_gpus(requested_gpus, owner=message.content.address)
-                spec = replace(spec, gpus=resolved_gpus)
-            await supervisor.create_vm(spec)
+                job.current_step = "downloading_parent"
+                parent_ref = message.content.rootfs.parent.ref
+                parent_path = await get_rootfs_base_path(parent_ref)
+                parent_format = await detect_parent_format(parent_path)
 
-            # A fresh destination has no persisted port mappings, and
-            # create_vm_from_spec only reloads those - it never applies the
-            # agent's port-forwarding policy. Run the same post-create tail the
-            # normal create path runs so the migrated instance gets its SSH (and
-            # any aggregate) host port forwards; without this mapped_ports stays
-            # empty and the VM is unreachable on the new CRN.
-            job.current_step = "port_forwards"
-            await finish_instance_create(supervisor, spec.vm_id, message.content)
+                # Stage onto the pool with the most room for the whole transfer;
+                # build_create_vm_spec later adopts the staged overlay wherever it
+                # is (the downloader's volume lookup scans every pool).
+                incoming_mib = sum(df.size_bytes for df in disk_files) // (1024 * 1024)
+                # Off the loop: placement reads every pool's free space and can
+                # call the reclaimer's evictor (storage_pools.set_room_maker),
+                # which walks pools and removes directories.
+                pool = await asyncio.to_thread(select_pool, incoming_mib)
+                dest_dir = pool.path / str(job.vm_hash)
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                job.dest_dir = dest_dir
+                job.total_bytes_expected = sum(df.size_bytes for df in disk_files)
 
-            job.transfer_time_ms = int((time.monotonic() - start) * 1000)
-            job.finished_at = datetime.now(timezone.utc)
-            job.state = MigrationState.IMPORTED
-            schedule_import_ttl(job, IMPORT_TTL_SECONDS)
+                job.current_step = "downloading_disks"
+                scheme = "https" if job.source_port == 443 else "http"
+                base_url = f"{scheme}://{job.source_host}:{job.source_port}"
+
+                # No total cap (transfers can be large), but require steady progress:
+                # without this a hung peer leaves the import task running forever and
+                # holding the migration semaphore slot.
+                timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=300)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    for disk_file in disk_files:
+                        url = f"{base_url}{disk_file.download_path}"
+                        dest_path = dest_dir / disk_file.name
+                        job.downloaded_files.append(dest_path)
+                        base_so_far = job.bytes_downloaded
+
+                        def _progress(file_total: int, _b=base_so_far) -> None:
+                            job.bytes_downloaded = _b + file_total
+
+                        await download_disk_from_source(
+                            session,
+                            url,
+                            dest_path,
+                            export_token,
+                            expected_sha256=disk_file.sha256,
+                            on_chunk=_progress,
+                        )
+
+                job.current_step = "rebasing"
+                for disk_file in disk_files:
+                    overlay_path = dest_dir / disk_file.name
+                    if not overlay_path.exists():
+                        msg = f"Expected overlay {overlay_path} missing after download"
+                        raise RuntimeError(msg)
+                    await rebase_overlay(overlay_path, parent_path, parent_format)
+
+                job.current_step = "creating_vm"
+                # The standard instance-create path: build the same spec a normal
+                # persistent-instance create uses (run.create_vm_execution ->
+                # build_create_vm_spec). The spec's rootfs path resolves through
+                # the pool-aware volume lookup, which finds the overlay exactly
+                # where the download+rebase staged it, and build_create_vm_spec
+                # adopts an already-present host-persistence overlay rather than
+                # recreating it, so create_vm reuses the staged disk (no
+                # re-download).
+                spec = await build_create_vm_spec(job.vm_hash, message.content)
+                # Same agent-side admission as the normal create: bucket from the
+                # message type, GPU requests resolved to concrete host cards on
+                # this destination (owner = message.address).
+                capacity.check_capacity(
+                    memory_mib=message.content.resources.memory,
+                    vcpus=message.content.resources.vcpus,
+                    disk_mib=0,
+                    is_instance=True,
+                    exclude_vm_hash=job.vm_hash,
+                )
+                requested_gpus = requested_gpu_ids(message.content)
+                if requested_gpus:
+                    resolved_gpus = await capacity.resolve_gpus(requested_gpus, owner=message.content.address)
+                    spec = replace(spec, gpus=resolved_gpus)
+                await supervisor.create_vm(spec)
+
+                # The agent records its own knowledge of the VM, exactly as
+                # create_vm_execution does. The registry is what the storage
+                # reconciler reads to tell a live VM's volumes from an orphan's,
+                # and persisting it is what makes the record survive a restart
+                # (rehydrate_registry): without this the imported VM's disks
+                # would be unowned the moment the create guard is released.
+                record = registry.record(
+                    job.vm_hash, message=message.content, original=original_message.content, persistent=True
+                )
+                await persist_record(job.vm_hash, record)
+
+                # A fresh destination has no persisted port mappings, and
+                # create_vm_from_spec only reloads those - it never applies the
+                # agent's port-forwarding policy. Run the same post-create tail the
+                # normal create path runs so the migrated instance gets its SSH (and
+                # any aggregate) host port forwards; without this mapped_ports stays
+                # empty and the VM is unreachable on the new CRN.
+                job.current_step = "port_forwards"
+                await finish_instance_create(supervisor, spec.vm_id, message.content)
+
+                job.transfer_time_ms = int((time.monotonic() - start) * 1000)
+                job.finished_at = datetime.now(timezone.utc)
+                job.state = MigrationState.IMPORTED
+                schedule_import_ttl(job, IMPORT_TTL_SECONDS)
 
         except Exception as error:
             logger.exception("Import failed for %s: %s", job.vm_hash, error)

@@ -467,8 +467,18 @@ def pools_disk_usage() -> tuple[int, int]:
     return total, free
 
 
+def eligible_pool_free_bytes() -> list[tuple[StoragePool, int]]:
+    """``(pool, free bytes)`` for every reachable VM-eligible pool.
+
+    The per-pool breakdown admission needs: a volume never spans pools, and
+    what a pool can still take is its free space plus what it holds for the
+    reclaimer, which only the agent side can add up (this module cannot
+    import the reclaimable marker, which imports it).
+    """
+    return [(pool, free) for pool in get_pools() if pool.vm_eligible and (free := _pool_free_bytes(pool)) is not None]
+
+
 def roomiest_pool_free_bytes() -> int:
     """Free bytes on the emptiest eligible pool (the largest single volume
     that could still be placed); 0 when no pool is reachable."""
-    frees = [free for pool in get_pools() if pool.vm_eligible and (free := _pool_free_bytes(pool)) is not None]
-    return max(frees, default=0)
+    return max((free for _, free in eligible_pool_free_bytes()), default=0)

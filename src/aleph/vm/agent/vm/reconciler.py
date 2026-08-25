@@ -111,14 +111,25 @@ def _dir_bytes(namespace: str) -> int:
     return sum(directory_size_bytes(directory) for directory in iter_namespace_dirs(namespace))
 
 
+def _still_on_disk(namespace: str) -> bool:
+    """False when the namespace's directories vanished between being listed
+    and being acted on.
+
+    Passes can overlap (a GONE fires one while the periodic pass runs, and
+    ``make_room`` evicts from the create path), so losing a race is normal.
+    It is not an error, and it is not space this pass may claim to have
+    freed.
+    """
+    return any(True for _ in iter_namespace_dirs(namespace))
+
+
 def live_hashes(registry: AgentVmRegistry) -> set[str]:
     """Snapshot of the VMs the registry knows are alive.
 
     A pass runs in a worker thread while the event loop keeps creating and
-    retiring VMs, so the set is taken once and handed over rather than read
-    repeatedly mid-mutation. ``list()`` first: the snapshot is then a single
-    atomic step, which matters for the one caller that does run off the loop
-    (the room maker, called from placement inside a worker thread).
+    retiring VMs, so the set is taken once, on the loop, and handed over;
+    iterating the registry from the thread would read it mid-mutation.
+    ``list()`` first, so the snapshot itself is one atomic step.
     """
     return {str(vm_hash) for vm_hash, _ in list(registry.items())}
 
@@ -194,6 +205,9 @@ def _reconcile_namespaces(
         if namespace in seen or not _is_orphan(directory, live, now, guard, dry_run=dry_run):
             continue
         seen.add(namespace)
+        if not dry_run and not _still_on_disk(namespace):
+            logger.debug("Skipping %s: another pass got there first", namespace)
+            continue
         if settings.VOLUME_RETENTION == "keep":
             report.marked_orphans.append(namespace)
             if not dry_run:
@@ -207,11 +221,18 @@ def _reconcile_namespaces(
 
 def _part_roots() -> Iterator[Path]:
     """Where a half-downloaded file can sit: the four caches, and every
-    per-VM volume directory (the downloader streams volumes in place)."""
+    per-VM volume directory (the downloader streams volumes in place).
+
+    A namespace a create holds is skipped whole: a migration import streams
+    multi-GB disks into it for far longer than VOLUME_CREATE_GUARD, and its
+    ``.part`` files belong to that transfer however old they look.
+    """
     for cache in (settings.RUNTIME_CACHE, settings.CODE_CACHE, settings.DATA_CACHE, settings.MESSAGE_CACHE):
         if cache:
             yield Path(cache)
-    yield from iter_namespace_dirs()
+    for directory in iter_namespace_dirs():
+        if not is_creating(directory.name):
+            yield directory
 
 
 def _sweep_parts(now: datetime, guard: timedelta, report: ReconcileReport, *, dry_run: bool) -> None:
@@ -325,6 +346,9 @@ def _reclaimable_on(pool: StoragePool) -> list[tuple[Path, ReclaimableMarker]]:
 
 
 def _evict(namespace: str, report: ReconcileReport, *, dry_run: bool) -> int:
+    if not _still_on_disk(namespace):
+        logger.debug("Not evicting %s: its directories are already gone", namespace)
+        return 0
     size = _dir_bytes(namespace)
     report.evicted.append(namespace)
     report.bytes_freed += size
@@ -367,6 +391,11 @@ def make_room(pool: StoragePool, needed_bytes: int, *, live: Collection[str] | N
     those on every pass), but this runs on its own, off the create path, so
     callers should pass ``live`` (see ``live_hashes``) or have reconciled
     first; a hash in ``live`` is never evicted.
+
+    Synchronous, and called from placement: its callers wrap it in
+    ``asyncio.to_thread`` so the walk and the removals stay off the event
+    loop. It can therefore overlap a pass running in another thread, which is
+    why every removal here tolerates a directory that vanished first.
     """
     protected = set(live or ())
     freed = 0
@@ -376,6 +405,9 @@ def make_room(pool: StoragePool, needed_bytes: int, *, live: Collection[str] | N
             break
         if directory.name in protected:
             logger.warning("Not evicting %s: a live VM owns it despite its reclaimable marker", directory)
+            continue
+        if not directory.is_dir():
+            # A concurrent pass took it between the listing and now.
             continue
         # Only what this pool gets back: _evict purges the VM on every pool
         # it spans, and the other pools' bytes do not help this create.
@@ -387,10 +419,33 @@ def make_room(pool: StoragePool, needed_bytes: int, *, live: Collection[str] | N
     return freed
 
 
+def _pass_lock(app: web.Application) -> asyncio.Lock:
+    """The lock that serializes loop-triggered passes, one per event loop.
+
+    Stored on the app rather than at module level: the app outlives (and in
+    the tests, precedes) the loop, and an asyncio.Lock binds to the first
+    loop that awaits it.
+    """
+    loop = asyncio.get_running_loop()
+    cached = app.get("storage_reconcile_lock")
+    if cached is None or cached[0] is not loop:
+        cached = (loop, asyncio.Lock())
+        app["storage_reconcile_lock"] = cached
+    return cached[1]
+
+
 async def reconcile_now(app: web.Application, *, dry_run: bool = False) -> ReconcileReport:
+    """One pass, off the event loop, serialized against the other passes.
+
+    A GONE fires a pass while the periodic one may still be running: two
+    threads walking the same pools would evict the same directories twice,
+    double-counting the bytes freed and logging each removal twice. The
+    waiting pass is not redundant, it re-reads the filesystem when it starts.
+    """
     registry = app["vm_registry"]
-    live = live_hashes(registry)
-    return await asyncio.to_thread(reconcile_storage, registry, dry_run=dry_run, live=live)
+    async with _pass_lock(app):
+        live = live_hashes(registry)
+        return await asyncio.to_thread(reconcile_storage, registry, dry_run=dry_run, live=live)
 
 
 def _log_startup_preview(preview: ReconcileReport) -> None:

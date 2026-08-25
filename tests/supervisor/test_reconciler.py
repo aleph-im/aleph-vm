@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from aleph.vm.agent.vm.reconciler import (
     is_creating,
     make_room,
     reconcile_at_startup,
+    reconcile_now,
     reconcile_storage,
     start_storage_reconcile_task,
     stop_storage_reconcile_task,
@@ -341,3 +343,52 @@ async def test_the_periodic_task_starts_and_is_cancelled_on_shutdown(pools, regi
     await stop_storage_reconcile_task(app)
 
     assert task.done()
+
+
+def test_a_create_in_flight_keeps_its_directory_and_its_part_files(pools, registry, monkeypatch):  # noqa: F811
+    """A migration import streams multi-GB disks into a namespace no registry
+    record covers yet, for far longer than VOLUME_CREATE_GUARD, and the
+    directory's own mtime does not advance while a file inside it grows. Only
+    ``creating()`` stands between that transfer and the reaper."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    staged = volume(pools["pool0"], VM_HASH, "rootfs.qcow2.part")
+    _age(staged, 10_000)
+    _age(staged.parent, 10_000)
+
+    with creating(VM_HASH):
+        report = reconcile_storage(registry, now=NOW)
+
+    assert staged.exists()
+    assert report.purged_orphans == [] and report.parts_removed == 0
+
+
+def test_evicting_a_directory_that_already_vanished_counts_nothing(pools, monkeypatch):  # noqa: F811
+    """Passes can overlap (a GONE-triggered pass, the periodic one, make_room),
+    so a directory can disappear between being listed and being acted on. That
+    is not an error, and it is not freed space this pass may claim."""
+    report = reconciler_module.ReconcileReport()
+
+    freed = reconciler_module._evict(VM_HASH, report, dry_run=False)
+
+    assert freed == 0
+    assert report.evicted == [] and report.bytes_freed == 0
+
+
+@pytest.mark.asyncio
+async def test_two_reconcile_passes_do_not_overlap(pools, registry, monkeypatch):  # noqa: F811
+    """A GONE fires a pass while the periodic one may be running: without a
+    lock the two threads evict the same directories and double-count."""
+    order = []
+
+    def slow_pass(_registry, **_kwargs):
+        order.append("enter")
+        time.sleep(0.05)
+        order.append("exit")
+        return reconciler_module.ReconcileReport()
+
+    monkeypatch.setattr(reconciler_module, "reconcile_storage", slow_pass)
+    app = {"vm_registry": registry}
+
+    await asyncio.gather(reconcile_now(app), reconcile_now(app))
+
+    assert order == ["enter", "exit", "enter", "exit"]

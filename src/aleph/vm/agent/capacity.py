@@ -235,10 +235,19 @@ class CapacityManager:
         """None when ``max_volume_mib`` fits the roomiest eligible pool, else
         an error string describing the shortfall. No pool holds a volume
         split across disks, so this catches a request the aggregate free
-        figure alone would wrongly admit."""
+        figure alone would wrongly admit.
+
+        A pool's room is its free bytes plus the reclaimable bytes it holds,
+        for the same reason the aggregate figure counts them: placement
+        evicts that pool's retained directories before it refuses the volume.
+        """
         if max_volume_mib <= 0:
             return None
-        roomiest_mib = storage_pools.roomiest_pool_free_bytes() // (1024 * 1024)
+        roomiest_bytes = max(
+            (free + reclaimable_bytes(pool.path) for pool, free in storage_pools.eligible_pool_free_bytes()),
+            default=0,
+        )
+        roomiest_mib = roomiest_bytes // (1024 * 1024)
         if max_volume_mib <= roomiest_mib:
             return None
         return f"Disk (largest single volume): required {max_volume_mib} MiB, roomiest pool has {roomiest_mib} MiB"

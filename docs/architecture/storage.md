@@ -122,9 +122,13 @@ agent registered at startup (`storage_pools.set_room_maker`, wired to
 `reconciler.make_room`) so the retained directories on the target pool are
 evicted oldest-first until the create fits. See "Reclamation" below: a
 retained disk is a cache entry, not usage, so counting it as used would sell
-less capacity than the node actually has. `about_system_usage` is deliberately
-left on the raw `pools_disk_usage()` figures, since it reports what the
-filesystem currently holds, not what a create could get.
+less capacity than the node actually has. The rule holds for all three disk
+figures the agent produces, and they have to agree: the aggregate
+(`_available_disk_bytes`), the largest-single-volume check (`_check_max_volume`,
+which adds each pool's own `reclaimable_bytes(pool.path)` to that pool's free
+space) and the advertised capacity (`about_system_usage` /
+`_disk_usage_from_pools`). A node that advertises less than admission accepts
+is a node the scheduler stops sending work to.
 
 The Rust supervisor daemon does none of this pool selection or admission
 work. It parses `VOLUME_POOLS` (`config.rs`) with the same validation rules
@@ -345,11 +349,23 @@ keyed by a hash validated by `purge._checked_namespace`.
 
 Passes run at startup, every `VOLUME_RECONCILE_INTERVAL` (jittered, so a
 fleet of nodes does not sweep in lockstep), after every `GONE` under `keep`
-(`retire.set_after_gone_hook`), and on admission pressure
-(`make_room`, through `storage_pools.set_room_maker`). A pass runs in a
-worker thread, so the live-VM set is snapshotted on the event loop first
-(`live_hashes`) and handed over; `make_room` never evicts a hash in it, even
-if a stale marker says it could.
+(`retire.set_after_gone_hook`, best effort: a failing pass never breaks the
+sweep that retired the VM), and on admission pressure (`make_room`, through
+`storage_pools.set_room_maker`). A pass runs in a worker thread, so the
+live-VM set is snapshotted on the event loop first (`live_hashes`) and handed
+over; `make_room` never evicts a hash in it, even if a stale marker says it
+could. Loop-triggered passes serialize on a lock (`reconcile_now`), and
+placement runs `make_room` through `asyncio.to_thread`, so it can still
+overlap a pass: every removal therefore tolerates a directory that another
+pass took first, and counts only what it actually removed.
+
+The create guard covers more than the create paths in `run.py`: a migration
+import stages multi-GB disks into `{pool}/{vm_hash}/` for a namespace the
+registry knows nothing about yet, so `run_import` holds `creating()` across
+the whole transfer and records the imported VM in the registry (and the agent
+DB) once `CreateVm` returns. A namespace under the guard is skipped whole,
+`.part` files included: the directory mtime does not advance while a file
+inside it grows, so age is no evidence that a transfer has stopped.
 
 ### Settings
 
@@ -398,9 +414,11 @@ pass against an empty registry would call every running VM an orphan.
 - Disk admission checks aggregate free space and, separately, that the
   single largest requested volume fits the roomiest eligible pool, since no
   pool splits a volume across disks (`src/aleph/vm/agent/capacity.py`).
-- Reclaimable bytes are advertised as free, not as used, and a placement
-  that does not fit evicts them (oldest first) before it is refused
-  (`src/aleph/vm/agent/capacity.py`, `src/aleph/vm/storage_pools.py`).
+- Reclaimable bytes are advertised as free, not as used, in every disk figure
+  the agent reports (aggregate, largest single volume, advertised capacity),
+  and a placement that does not fit evicts them (oldest first) before it is
+  refused (`src/aleph/vm/agent/capacity.py`,
+  `src/aleph/vm/agent/resources.py`, `src/aleph/vm/storage_pools.py`).
 - Every agent-side deletion goes through `retire_vm` with an explicit
   reason; nothing else under `src/aleph/vm/agent/` calls
   `supervisor.delete_vm` (`src/aleph/vm/agent/vm/retire.py`).
