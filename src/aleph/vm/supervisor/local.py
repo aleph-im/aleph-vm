@@ -69,6 +69,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# systemd ActiveState values this module reasons about. The full vocabulary is
+# documented on SystemDManager.get_service_active_state.
+ACTIVE = "active"
+FAILED = "failed"
+
 
 def _backend_of(execution) -> Backend:
     """The VMM only; confidential computing is reported via confidential_mode."""
@@ -77,30 +82,46 @@ def _backend_of(execution) -> Backend:
     return Backend.QEMU
 
 
-def _is_running(execution, pool) -> bool:
+def _controller_state(execution, pool) -> str:
+    """The controller unit's systemd ActiveState.
+
+    Non-persistent executions have no unit, so their liveness (the timestamp
+    pair) is reduced to the same vocabulary: every caller then reasons about
+    one thing instead of a bool here and a string there.
+    """
     if execution.persistent and getattr(execution, "systemd_manager", None) and getattr(pool, "systemd_manager", None):
-        states = pool.systemd_manager.get_services_active_states([execution.controller_service])
-        return states.get(execution.controller_service, False)
+        states = pool.systemd_manager.get_services_states([execution.controller_service])
+        return states.get(execution.controller_service, "unknown")
     times = execution.times
-    return bool(times.starting_at and not times.stopping_at)
+    return ACTIVE if (times.starting_at and not times.stopping_at) else "inactive"
 
 
-def _status_of(execution, running: bool) -> VmStatus:
+def _is_running(execution, pool) -> bool:
+    return _controller_state(execution, pool) == ACTIVE
+
+
+def _status_of(execution, controller_state: str) -> VmStatus:
     times = execution.times
     if times.stopped_at:
         return VmStatus.STOPPED
     if times.stopping_at:
         return VmStatus.STOPPING
-    if running:
+    if controller_state == ACTIVE:
         return VmStatus.RUNNING
+    if controller_state == FAILED:
+        # systemd only reports "failed" once Restart=on-failure has given up,
+        # so the VM is not coming back on its own. Reporting BOOTING here (what
+        # the timestamps alone say) makes a crashed VM look like a starting one,
+        # and the caller waits for a VM that will never run.
+        return VmStatus.FAILED
     if times.starting_at:
         return VmStatus.BOOTING
     return VmStatus.DEFINED
 
 
-def _uptime_secs(execution, running: bool) -> int:
+def _uptime_secs(execution, controller_state: str) -> int:
     started = execution.times.started_at
-    if running and started:
+    if controller_state == ACTIVE and started:
         return int((datetime.now(tz=timezone.utc) - started).total_seconds())
     return 0
 
@@ -117,10 +138,10 @@ def _ns(dt: datetime | None) -> int:
     return int(dt.timestamp()) * 1_000_000_000 + dt.microsecond * 1_000
 
 
-def _running_states(pool) -> dict[str, bool]:
-    """Running flag for every execution with one batched systemd query.
+def _controller_states(pool) -> dict[str, str]:
+    """Controller ActiveState for every execution with one batched systemd query.
 
-    Same semantics as _is_running, but a single D-Bus call covers all
+    Same semantics as _controller_state, but a single D-Bus call covers all
     persistent VMs instead of one call each.
     """
     persistent_services: dict[str, str] = {}
@@ -128,17 +149,17 @@ def _running_states(pool) -> dict[str, bool]:
         if execution.persistent and getattr(execution, "systemd_manager", None):
             persistent_services[execution.controller_service] = str(vm_id)
 
-    service_states: dict[str, bool] = {}
+    service_states: dict[str, str] = {}
     if persistent_services and getattr(pool, "systemd_manager", None):
-        service_states = pool.systemd_manager.get_services_active_states(list(persistent_services.keys()))
+        service_states = pool.systemd_manager.get_services_states(list(persistent_services.keys()))
 
-    states: dict[str, bool] = {}
+    states: dict[str, str] = {}
     for vm_id, execution in pool.executions.items():
         if execution.persistent and getattr(execution, "systemd_manager", None):
-            states[str(vm_id)] = service_states.get(execution.controller_service, False)
+            states[str(vm_id)] = service_states.get(execution.controller_service, "unknown")
         else:
             times = execution.times
-            states[str(vm_id)] = bool(times.starting_at and not times.stopping_at)
+            states[str(vm_id)] = ACTIVE if (times.starting_at and not times.stopping_at) else "inactive"
     return states
 
 
@@ -203,9 +224,17 @@ async def _run_code_over_channel(channel_path: str, scope: dict, *, timeout: flo
         await writer.wait_closed()
 
 
-def _to_vm_info(execution, running: bool) -> VmInfo:
+def _to_vm_info(execution, controller_state: str) -> VmInfo:
     tap = execution.vm.tap_interface if execution.vm else None
     times = execution.times
+    status = _status_of(execution, controller_state)
+    # Only FAILED carries a reason: every other status is self-explanatory, and
+    # a message on them would be noise the agent has to ignore.
+    status_message = (
+        f"controller unit {getattr(execution, 'controller_service', '')} is in failed state"
+        if status is VmStatus.FAILED
+        else ""
+    )
     ipv4 = IpAssignment(
         address=str(tap.guest_ip.ip) if tap else "",
         network_cidr=str(tap.ip_network) if tap else "",
@@ -218,13 +247,13 @@ def _to_vm_info(execution, running: bool) -> VmInfo:
     )
     return VmInfo(
         vm_id=VmId(str(execution.vm_id)),
-        status=_status_of(execution, running),
+        status=status,
         ipv4=ipv4,
         ipv6=ipv6,
-        uptime_secs=_uptime_secs(execution, running),
+        uptime_secs=_uptime_secs(execution, controller_state),
         backend=_backend_of(execution),
         numa_node=None,
-        status_message="",
+        status_message=status_message,
         defined_at_ns=_ns(times.defined_at),
         preparing_at_ns=_ns(times.preparing_at),
         prepared_at_ns=_ns(times.prepared_at),
@@ -316,7 +345,7 @@ class LocalSupervisor(Supervisor):
             self._event_queues.discard(queue)
 
     def _status_snapshot(self, execution) -> VmStatus:
-        return _status_of(execution, _is_running(execution, self.pool))
+        return _status_of(execution, _controller_state(execution, self.pool))
 
     # Host
     async def health(self) -> HealthInfo:
@@ -350,7 +379,7 @@ class LocalSupervisor(Supervisor):
     async def create_vm(self, spec: CreateVmSpec) -> VmInfo:
         with translating_errors():
             execution = await self.pool.create_vm_from_spec(spec)
-            info = _to_vm_info(execution, _is_running(execution, self.pool))
+            info = _to_vm_info(execution, _controller_state(execution, self.pool))
             self._emit_event(spec.vm_id, VmStatus.DEFINED, info.status)
             return info
 
@@ -360,23 +389,23 @@ class LocalSupervisor(Supervisor):
             if execution is None:
                 raise VmNotFoundError(vm_id)
             # Off the event loop, like list_vms: for a persistent VM,
-            # _is_running is a synchronous D-Bus round-trip, and the
+            # _controller_state is a synchronous D-Bus round-trip, and the
             # allocation reconcile calls get_vm once per pushed hash
             # (start_persistent_vm), so keeping it on the loop stalls
             # every other request for the whole sweep on busy CRNs (the
             # in-process remnant of main's batched-lookup fix, #1084).
-            running = await asyncio.to_thread(_is_running, execution, self.pool)
-            return _to_vm_info(execution, running)
+            state = await asyncio.to_thread(_controller_state, execution, self.pool)
+            return _to_vm_info(execution, state)
 
     async def list_vms(self) -> list[VmInfo]:
         with translating_errors():
-            # Off the event loop: _running_states issues a single batched D-Bus
+            # Off the event loop: _controller_states issues a single batched D-Bus
             # ListUnits() call. Keeping it on the loop would stall every caller
             # (the payment sweep and every /about/executions/list request) for
             # the duration of that call. Mirrors main's monitor_payments fix
             # (aleph-vm#963), and applies it to the list endpoints too.
-            running = await asyncio.to_thread(_running_states, self.pool)
-            return [_to_vm_info(execution, running[str(vm_id)]) for vm_id, execution in self.pool.executions.items()]
+            states = await asyncio.to_thread(_controller_states, self.pool)
+            return [_to_vm_info(execution, states[str(vm_id)]) for vm_id, execution in self.pool.executions.items()]
 
     def _require(self, vm_id: VmId):
         execution = self.pool.executions.get(vm_id)
@@ -449,7 +478,7 @@ class LocalSupervisor(Supervisor):
             execution.stop_event = asyncio.Event()
             self.pool.executions[execution.vm_id] = execution
             self._emit_event(vm_id, old_status, VmStatus.STOPPED)
-            return _to_vm_info(execution, running=False)
+            return _to_vm_info(execution, "inactive")
 
     async def start_vm(self, vm_id: VmId) -> VmInfo:
         with translating_errors():
@@ -458,10 +487,10 @@ class LocalSupervisor(Supervisor):
                 msg = "Starting an ephemeral VM is not supported; the cycle is DeleteVm + CreateVm"
                 raise NotImplementedSupervisorError(msg)
             if _is_running(execution, self.pool):
-                return _to_vm_info(execution, running=True)
+                return _to_vm_info(execution, ACTIVE)
             old_status = self._status_snapshot(execution)
             await self.pool.restart_persistent_vm(execution)
-            info = _to_vm_info(execution, _is_running(execution, self.pool))
+            info = _to_vm_info(execution, _controller_state(execution, self.pool))
             self._emit_event(vm_id, old_status, info.status)
             return info
 
@@ -475,7 +504,7 @@ class LocalSupervisor(Supervisor):
                 # confirmed active so the reported status is truthful.
                 await execution.wait_for_controller_ready()
                 execution.times.started_at = datetime.now(tz=timezone.utc)
-                info = _to_vm_info(execution, _is_running(execution, self.pool))
+                info = _to_vm_info(execution, _controller_state(execution, self.pool))
                 # A reboot is a down-then-up pair; watchers that drop per-VM
                 # state on "down" must see the down.
                 self._emit_event(vm_id, old_status, VmStatus.STOPPED)
@@ -490,7 +519,7 @@ class LocalSupervisor(Supervisor):
             # recreate the VM itself instead of returning a stopped husk
             # and expecting the client to know it must re-create.
             new_execution = await self.pool.create_vm_from_spec(spec)
-            info = _to_vm_info(new_execution, _is_running(new_execution, self.pool))
+            info = _to_vm_info(new_execution, _controller_state(new_execution, self.pool))
             self._emit_event(vm_id, VmStatus.STOPPED, info.status)
             return info
 

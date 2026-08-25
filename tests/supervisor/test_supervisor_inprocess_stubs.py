@@ -39,6 +39,9 @@ class FakeSystemd:
     def __init__(self):
         self.enable_and_start = AsyncMock()
 
+    def get_services_states(self, services):
+        return {service: "inactive" for service in services}
+
 
 class ConfidentialPool:
     def __init__(self, vm_id, execution):
