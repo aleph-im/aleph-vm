@@ -39,10 +39,13 @@ logger = logging.getLogger(__name__)
 DEVICE_MAPPER_DIRECTORY = "/dev/mapper"
 # Where create_devmapper mounts a volume to resize its filesystem.
 MOUNT_ROOT = Path("/mnt")
-# What may be composed into a dmsetup device name. create_devmapper builds
-# names out of a VM hash and a volume name straight from the message, so a
-# name outside this set is one dmsetup would have refused to create.
-DEVICE_NAME_PATTERN = re.compile(r"^[\w\-]+$")
+# A namespace is an item hash, validated here too (agent.vm.purge does the
+# same for its delete paths) because the cost of being wrong is removing
+# another VM's device. ASCII only: a device name is bytes, and \w would match
+# letters that are not.
+NAMESPACE_PATTERN = re.compile(r"^[0-9a-zA-Z]{16,128}$", re.ASCII)
+# DM_NAME_LEN is 128 bytes including the terminating NUL.
+DEVICE_NAME_MAX_BYTES = 127
 
 # Runtimes and base images can be several hundred MiB and are sometimes served by slow
 # gateways (e.g. IPFS). We must not cap the *total* transfer time, or large-but-steady
@@ -495,6 +498,27 @@ async def detach_loop_devices(backing_file: Path) -> list[str]:
     return detached
 
 
+def device_name_for(namespace: str, volume_name: str) -> str | None:
+    """The dm name ``create_devmapper`` builds, or None if it could not have.
+
+    ``PersistentVolume.name`` is an arbitrary string and nothing on the create
+    path narrows it, so the only names that cannot exist are the ones
+    ``dmsetup create`` itself refuses: empty, containing a ``/``, ``.``, ``..``
+    and anything over the device-mapper name limit. A volume called ``data.1``
+    or ``my data`` has a live device and must be removable; refusing it here
+    would strand its loop device and, through ``purge._held_by_device_mapper``,
+    its disk.
+    """
+    if not NAMESPACE_PATTERN.match(namespace):
+        return None
+    if volume_name in ("", ".", "..") or "/" in volume_name:
+        return None
+    name = f"{namespace}_{volume_name}"
+    if len(name.encode()) > DEVICE_NAME_MAX_BYTES:
+        return None
+    return name
+
+
 async def remove_devmapper(namespace: str, volume_name: str) -> None:
     """The inverse of ``create_devmapper`` for one volume.
 
@@ -509,14 +533,16 @@ async def remove_devmapper(namespace: str, volume_name: str) -> None:
     ``create_devmapper`` returns early while the dm device exists (which is
     what ``purge._held_by_device_mapper`` guards against).
     """
-    mapped_name = f"{namespace}_{volume_name}"
-    if not DEVICE_NAME_PATTERN.match(namespace) or not DEVICE_NAME_PATTERN.match(volume_name):
-        logger.error("Refusing to remove an implausible device-mapper name: %r", mapped_name)
+    mapped_name = device_name_for(namespace, volume_name)
+    if mapped_name is None:
+        logger.error("Refusing to remove an implausible device-mapper name: %r/%r", namespace, volume_name)
         return
 
     mapper = Path(DEVICE_MAPPER_DIRECTORY)
     if (mapper / mapped_name).is_block_device():
-        await run_in_subprocess(["dmsetup", "remove", mapped_name])
+        # --retry: udev and blkid settle on the device for a moment after the
+        # VM exits, and a first "device or resource busy" must not strand it.
+        await run_in_subprocess(["dmsetup", "remove", "--retry", mapped_name])
         logger.info("Removed device-mapper target %s", mapped_name)
 
     backing_file = find_existing_volume(namespace, f"{volume_name}.btrfs")
@@ -536,7 +562,7 @@ async def remove_devmapper(namespace: str, volume_name: str) -> None:
     base_name = f"{namespace}_base"
     siblings = [path for path in mapper.glob(f"{namespace}_*") if path.name != base_name and path.is_block_device()]
     if not siblings and (mapper / base_name).is_block_device():
-        await run_in_subprocess(["dmsetup", "remove", base_name])
+        await run_in_subprocess(["dmsetup", "remove", "--retry", base_name])
         logger.info("Removed device-mapper base %s", base_name)
 
 
