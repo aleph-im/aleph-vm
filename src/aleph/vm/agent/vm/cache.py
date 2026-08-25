@@ -682,19 +682,29 @@ def _may_evict_for_admission(registry: AgentVmRegistry) -> bool:
     return True
 
 
-def admit_download(registry: AgentVmRegistry, tmp_path: Path, size_bytes: int) -> None:
+def admit_download(
+    registry: AgentVmRegistry,
+    tmp_path: Path,
+    content_length: int | None,
+    max_bytes: int | None = None,
+) -> None:
     """Refuse, before a byte is written, a download the cache cannot hold.
 
     Registered on ``storage.set_cache_admission`` so it runs inside
-    ``download_file_in_chunks`` once ``Content-Length`` is known (or, when the
-    server does not say, once its cap is). Evicting first is the point: the
-    budget is a cap on what is kept, not on what may be fetched, and only a
-    load that stays over the budget with nothing safely evictable left is
-    refused (spec section 4).
+    ``download_file_in_chunks`` as soon as the response headers are in.
+    Evicting first is the point: the budget is a cap on what is kept, not on
+    what may be fetched, and only a load that stays over the budget with
+    nothing safely evictable left is refused (spec section 4).
 
     An admitted download is then charged to its ``.part`` path until
     ``download_file`` releases it, so the next admission sees the room this
     one was promised and not just the bytes it has managed to write.
+
+    ``content_length`` is None when the server sent none (a chunked-encoding
+    response), and that is a different question, answered by
+    ``_admit_unknown_length``: ``max_bytes`` is then all that bounds the body,
+    and it is a ceiling on every download of that kind rather than a
+    measurement of this one.
 
     Two things it deliberately does not do. It does not reclaim retained VM
     directories (``reclaim_retained=False``): that is an rmtree, and this runs
@@ -711,27 +721,60 @@ def admit_download(registry: AgentVmRegistry, tmp_path: Path, size_bytes: int) -
     if root not in cache_roots():
         logger.debug("Not a download cache, so not subject to CACHE_BUDGET: %s", root)
         return
-    if _may_evict_for_admission(registry):
-        release_parent_devices(
-            evict_caches(registry, needed={root: size_bytes}, reclaim_retained=False),
-        )
     try:
         budget = cache_budget_bytes(root)
     except OSError:
         logger.warning("Cache directory %s is not accessible; admitting the download", root, exc_info=True)
-        reserve_download(tmp_path, size_bytes)
+        if content_length is not None:
+            reserve_download(tmp_path, content_length)
         return
-    usage = _root_usage(root, cache_entries(root)) + size_bytes
+    if content_length is None:
+        _admit_unknown_length(tmp_path, root, budget, max_bytes)
+        return
+    if _may_evict_for_admission(registry):
+        release_parent_devices(
+            evict_caches(registry, needed={root: content_length}, reclaim_retained=False),
+        )
+    usage = _root_usage(root, cache_entries(root)) + content_length
     if usage <= budget:
-        reserve_download(tmp_path, size_bytes)
+        reserve_download(tmp_path, content_length)
         return
-    free = max(budget - (usage - size_bytes), 0)
-    msg = f"Cache {root} cannot hold a {size_bytes} byte download within CACHE_BUDGET"
+    free = max(budget - (usage - content_length), 0)
+    msg = f"Cache {root} cannot hold a {content_length} byte download within CACHE_BUDGET"
     raise InsufficientResourcesError(
         msg,
-        required={"disk_mib": size_bytes // MIB},
+        required={"disk_mib": content_length // MIB},
         available={"disk_mib": free // MIB},
     )
+
+
+def _admit_unknown_length(tmp_path: Path, root: Path, budget: int, max_bytes: int | None) -> None:
+    """Admit a download whose size the server did not state.
+
+    All that is known is the cap the caller is downloading under, and a cap is
+    not a measurement: ``MAX_RUNTIME_ARCHIVE_SIZE`` is 100 GiB, which is the
+    ceiling for a runtime image and equally the ceiling for the few kilobytes
+    of a manifest. Treating it as a size made every chunked-encoding response
+    ask for 100 GiB of room, which on any cache disk under half a terabyte
+    meant evicting the entire unreferenced cache and then refusing the
+    download anyway.
+
+    So: never evict for a figure that is only a ceiling, and refuse only what
+    a root that is already over its budget cannot start at all. What is
+    charged is ``min(cap, budget)``, enough that a handful of concurrent
+    unknown-length downloads still run the root over its budget and the next
+    one is refused, and never more than the budget itself.
+    """
+    usage = _root_usage(root, cache_entries(root))
+    if usage > budget:
+        msg = f"Cache {root} is already over CACHE_BUDGET; not starting a download of unknown length"
+        raise InsufficientResourcesError(
+            msg,
+            required={"disk_mib": (usage - budget) // MIB},
+            available={"disk_mib": 0},
+        )
+    charge = min(max_bytes, budget) if max_bytes is not None else budget
+    reserve_download(tmp_path, charge)
 
 
 def _deleted_cache_backings() -> list[tuple[str, Path]]:

@@ -88,7 +88,14 @@ async def file_downloaded_by_another_task(final_path: Path) -> None:
 # against, and the agent cannot make the downloader import it. It is handed
 # the ``.part`` path, not its directory: the room a download was admitted for
 # is charged to that path until the download ends.
-CacheAdmission = Callable[[Path, int], None]
+#
+# ``(tmp_path, content_length, max_bytes)``, and the middle one is None when
+# the server did not say. The two are not interchangeable: a Content-Length
+# is a measurement of this download, a cap is a ceiling on every download of
+# that kind, and admission has to treat them differently (see
+# ``cache.admit_download``). Deciding that here, by handing over one number,
+# is what made a chunked-encoding response ask for the whole runtime cap.
+CacheAdmission = Callable[[Path, int | None, int | None], None]
 _cache_admission: CacheAdmission | None = None
 
 # Downloads that have been admitted and are still being written, by ``.part``
@@ -135,17 +142,14 @@ async def download_file_in_chunks(url: str, tmp_path: Path, *, max_bytes: int | 
             msg = f"{url} is {resp.content_length} bytes, above the {max_bytes} byte limit"
             raise FileTooLargeError(msg)
 
-        # A response without a Content-Length is admitted for the worst case
-        # it is allowed to send: the cap it is being downloaded under. The
-        # alternative is a download that writes an unbounded number of bytes
-        # into a budget nobody ever charged.
-        admitted = resp.content_length if resp.content_length is not None else max_bytes
-        if _cache_admission is not None and admitted is not None:
+        if _cache_admission is not None:
             # Before the open: a refused download must leave nothing behind,
             # and it may evict, so the room it is admitted against is the
             # room it will actually find. What it was admitted for stays
-            # charged to the .part until download_file releases it.
-            _cache_admission(tmp_path, admitted)
+            # charged to the .part until download_file releases it. Both
+            # figures go over, whether the server measured the body or only
+            # this call's cap bounds it.
+            _cache_admission(tmp_path, resp.content_length, max_bytes)
 
         with open(tmp_path, "wb") as cache_file:
             counter = 0

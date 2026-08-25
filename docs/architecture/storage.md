@@ -481,9 +481,16 @@ admission hook (registered by the agent on `set_cache_admission`) runs inside
 opened. It evicts what it can, and raises `InsufficientResourcesError`
 (mapped to 503 on the create path) when the download still would not fit,
 rather than writing bytes that trigger an eviction storm. A response with no
-`Content-Length` is admitted for the worst case it is allowed to send, its
-`MAX_*_ARCHIVE_SIZE` cap, and refused when that does not fit: the alternative
-is a download charged for nothing at all. What is admitted is then charged to
+`Content-Length` is a different question, and the hook is told the two
+figures separately (`content_length`, `max_bytes`) so it can tell them apart.
+A cap is not a measurement: `MAX_RUNTIME_ARCHIVE_SIZE` is 100 GiB, the
+ceiling for a runtime image and equally the ceiling for a few kilobytes of
+manifest, so charging it as a size would evict a whole cache root for a
+download that never needed the room. An unknown-length download therefore
+never evicts, is refused only when the root is already over its budget, and
+is charged `min(cap, budget)`: bounded, so a stream of them still runs the
+root over budget and the next one is refused, and never more than the budget
+itself. What is admitted is then charged to
 the download's `.part` path (`reserve_download`) until `download_file`
 releases it, so a second create arriving while the first is still writing
 sees the room the first was promised rather than only the bytes it has
