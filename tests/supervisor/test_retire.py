@@ -326,3 +326,30 @@ async def test_device_teardown_of_an_implausible_hash_is_skipped_not_raised(mock
 
     remove.assert_not_awaited()
     assert "skipped" in caplog.text
+
+
+async def test_a_retire_without_a_record_asks_device_mapper_instead(env, monkeypatch, mocker):
+    """FAILED_CREATE fires before the registry commit and a GONE can name a VM
+    the registry never knew: there is no message to read the volumes from, and
+    a dm target left standing makes purge_vm_storage refuse the directory for
+    good."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    fallback = mocker.patch.object(retire_module, "teardown_namespace_devices", new_callable=AsyncMock)
+    env["registry"].forget(ItemHash(VM_HASH))
+
+    await retire_vm(VM_HASH, RetireReason.FAILED_CREATE, supervisor=env["supervisor"], registry=env["registry"])
+
+    fallback.assert_awaited_once_with(VM_HASH)
+
+
+@pytest.mark.asyncio
+async def test_a_retire_with_a_record_reads_the_volumes_from_the_message(env, monkeypatch, mocker):
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    fallback = mocker.patch.object(retire_module, "teardown_namespace_devices", new_callable=AsyncMock)
+    remove = mocker.patch.object(retire_module, "remove_devmapper", new_callable=AsyncMock)
+    _parent_backed_volumes(env["registry"].get(ItemHash(VM_HASH)))
+
+    await retire_vm(VM_HASH, RetireReason.GONE, supervisor=env["supervisor"], registry=env["registry"])
+
+    fallback.assert_not_awaited()
+    remove.assert_awaited_once_with(VM_HASH, "data")
