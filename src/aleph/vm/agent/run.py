@@ -14,6 +14,7 @@ from aiohttp.web_exceptions import (
     HTTPServiceUnavailable,
 )
 from aleph_message.models import (
+    ExecutableContent,
     InstanceContent,
     ItemHash,
     ProgramContent,
@@ -23,7 +24,11 @@ from msgpack import UnpackValueError
 from multidict import CIMultiDict
 
 from aleph.vm.agent.aggregate import get_user_settings
-from aleph.vm.agent.capacity import CapacityManager, requested_gpu_ids
+from aleph.vm.agent.capacity import (
+    CapacityManager,
+    requested_gpu_ids,
+    requirements_from_message,
+)
 from aleph.vm.agent.expiry import ExpiryManager
 from aleph.vm.agent.snp_instance_launch import (
     build_snp_instance_spec,
@@ -329,6 +334,29 @@ async def _wait_until_gone(
         await asyncio.sleep(interval)
 
 
+def _admit(capacity: CapacityManager, content: ExecutableContent, vm_hash: ItemHash, *, is_instance: bool) -> None:
+    """Agent-side admission, ahead of any download.
+
+    Disk is judged here and only here: build_*_spec downloads the resources and
+    creates the volume files, so a disk check after it would measure space this
+    VM has already taken. Refusing here also means a host with no room never
+    pays for the download.
+
+    ``is_instance`` is passed explicitly rather than taken from the message:
+    a V-PROGRAM is an SNP VM and belongs in the instance memory bucket, but it
+    is not an InstanceContent, which is all requirements_from_message can see.
+    """
+    requirements = requirements_from_message(content)
+    capacity.check_capacity(
+        memory_mib=requirements.memory_mib,
+        vcpus=requirements.vcpus,
+        disk_mib=requirements.disk_mib,
+        max_volume_mib=requirements.max_volume_mib,
+        is_instance=is_instance,
+        exclude_vm_hash=vm_hash,
+    )
+
+
 async def create_vm_execution(
     vm_hash: ItemHash,
     *,
@@ -360,6 +388,7 @@ async def create_vm_execution(
         # on the first request through _ensure_program_vm. On-demand programs
         # are created and configured per request there too, so this branch only
         # does eager work for the persistent (scheduled) case.
+        _admit(capacity, content, vm_hash, is_instance=False)
         spec, _resources = await build_program_create_vm_spec(vm_hash, content)
         capacity.check_capacity(
             memory_mib=content.resources.memory,
@@ -400,6 +429,7 @@ async def create_vm_execution(
         snp_instance = is_snp_instance(content)
         attest_port: int | None = None
         try:
+            _admit(capacity, content, vm_hash, is_instance=True)
             if snp_instance:
                 # SEV-SNP confidential instances build through the dedicated
                 # LUKS-rootfs SNP launch path, not build_create_vm_spec (which
@@ -498,6 +528,7 @@ async def create_vm_execution(
         # set), so the plain readiness wait applies.
         record = registry.record(vm_hash, message=content, original=original_message.content, persistent=True)
         try:
+            _admit(capacity, content, vm_hash, is_instance=True)
             spec, attest_port = await build_vprogram_spec(vm_hash, content)
             # Agent-side admission after the download, like the instance path:
             # a failed bundle fetch never consumes capacity.
