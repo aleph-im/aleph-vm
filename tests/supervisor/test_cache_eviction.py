@@ -629,3 +629,62 @@ def test_an_implausible_ref_is_never_free(monkeypatch, tmp_path):
 
     assert cache_module.parent_device_is_free("../escape") is False
     assert cache_module.parent_device_is_free("-o") is False
+
+
+def test_an_unknown_length_download_evicts_nothing(pools, monkeypatch):
+    """A cap is not a measurement. MAX_RUNTIME_ARCHIVE_SIZE is 100 GiB, and
+    charging that for a chunked response wiped every unreferenced entry in the
+    root before refusing the download anyway."""
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "8192")
+    registry = AgentVmRegistry()
+    cache_module.record_live_snapshot(set())
+    old = _entry(pools["runtime"], "old", size=4096, age=1000)
+
+    admit_download(registry, pools["runtime"] / "new.part", None, 100 * 1024**3)
+
+    assert old.exists()
+    assert storage_module.reserved_downloads() == {pools["runtime"] / "new.part": 8192}
+
+
+def test_an_unknown_length_download_is_refused_on_a_root_over_budget(pools, monkeypatch):
+    """The one thing it still refuses, and it evicts nothing on the way out."""
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
+    registry = AgentVmRegistry()
+    cache_module.record_live_snapshot(set())
+    old = _entry(pools["runtime"], "old", size=4096, age=1000)
+
+    with pytest.raises(InsufficientResourcesError):
+        admit_download(registry, pools["runtime"] / "new.part", None, 999)
+
+    assert old.exists()
+    assert storage_module.reserved_downloads() == {}
+
+
+def test_two_unknown_length_downloads_are_both_charged_the_capped_figure(pools, monkeypatch):
+    """Bounded, so a stream of them still runs the root over its budget and
+    the next one is refused, but never charged more than the budget itself."""
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "8192")
+    registry = AgentVmRegistry()
+    cache_module.record_live_snapshot(set())
+    first = pools["runtime"] / "a.part"
+    second = pools["runtime"] / "b.part"
+
+    admit_download(registry, first, None, 4096)
+    admit_download(registry, second, None, 100 * 1024**3)
+
+    assert storage_module.reserved_downloads() == {first: 4096, second: 8192}
+    with pytest.raises(InsufficientResourcesError):
+        admit_download(registry, pools["runtime"] / "c.part", None, 4096)
+
+
+def test_a_measured_download_still_evicts_to_make_room(pools, monkeypatch):
+    """The Content-Length path is unchanged: that figure is this download's
+    size, so the budget may be made to fit it."""
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "8192")
+    registry = AgentVmRegistry()
+    cache_module.record_live_snapshot(set())
+    old = _entry(pools["code"], "old", size=4096, age=1000)
+
+    admit_download(registry, pools["code"] / "new.part", 8000)
+
+    assert not old.exists()

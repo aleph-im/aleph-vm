@@ -188,25 +188,25 @@ async def test_cache_admission_hook_runs_before_writing(tmp_path):
     import aleph.vm.storage as storage_module
 
     seen = []
-    storage_module.set_cache_admission(lambda root, size: seen.append((root, size)))
+    storage_module.set_cache_admission(lambda path, length, cap: seen.append((path, length, cap)))
     session, _ = _session([b"x" * 4], content_length=4)
     try:
         with patch("aleph.vm.storage.aiohttp.ClientSession", return_value=session):
             await download_file_in_chunks("http://x/f", tmp_path / "f.part")
     finally:
         storage_module.set_cache_admission(None)
-    assert seen == [(tmp_path / "f.part", 4)]
+    assert seen == [(tmp_path / "f.part", 4, None)]
 
 
 @pytest.mark.asyncio
-async def test_a_download_without_a_content_length_is_admitted_against_its_cap(tmp_path):
-    """A server that does not say how big the body is gets admitted for the
-    worst case it is allowed to send: the alternative is a download that
-    writes an unbounded number of bytes into a budget nobody charged."""
+async def test_a_download_without_a_content_length_reports_its_cap_as_a_cap(tmp_path):
+    """The hook is told what the server said and what bounds it, separately.
+    Collapsing the two here is what made a chunked response ask the cache for
+    the whole MAX_RUNTIME_ARCHIVE_SIZE."""
     import aleph.vm.storage as storage_module
 
     seen = []
-    storage_module.set_cache_admission(lambda path, size: seen.append((path, size)))
+    storage_module.set_cache_admission(lambda path, length, cap: seen.append((path, length, cap)))
     session, _ = _session([b"x" * 4], content_length=None)
     try:
         with patch("aleph.vm.storage.aiohttp.ClientSession", return_value=session):
@@ -214,7 +214,7 @@ async def test_a_download_without_a_content_length_is_admitted_against_its_cap(t
     finally:
         storage_module.set_cache_admission(None)
         storage_module.release_download(tmp_path / "f.part")
-    assert seen == [(tmp_path / "f.part", 999)]
+    assert seen == [(tmp_path / "f.part", None, 999)]
 
 
 @pytest.mark.asyncio
@@ -242,7 +242,7 @@ async def test_a_refusing_cache_admission_writes_nothing(tmp_path):
     import aleph.vm.storage as storage_module
     from aleph.vm.resources import InsufficientResourcesError
 
-    def refuse(root, size):
+    def refuse(path, length, cap):
         raise InsufficientResourcesError("no room", required={}, available={})
 
     storage_module.set_cache_admission(refuse)
