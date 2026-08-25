@@ -12,6 +12,7 @@ import pytest
 from aleph_message.models import ItemHash
 from reclaim_fixtures import OTHER_HASH, VM_HASH, pools, volume  # noqa: F401
 
+import aleph.vm.agent.vm.cache as cache_module
 import aleph.vm.agent.vm.reconciler as reconciler_module
 from aleph.vm.agent.vm.reclaimable import mark_reclaimable, read_marker
 from aleph.vm.agent.vm.reconciler import (
@@ -69,6 +70,12 @@ def _supervisor(*vm_ids: str, fails: bool = False):
 
 def _app(registry, supervisor=None):
     return {"vm_registry": registry, "supervisor": supervisor if supervisor is not None else _supervisor()}
+
+
+@pytest.fixture(autouse=True)
+def _no_live_snapshot(monkeypatch):
+    """The live-set snapshot the admission hook reads is module state."""
+    monkeypatch.setattr(cache_module, "_live_snapshot", None)
 
 
 @pytest.fixture(autouse=True)
@@ -559,7 +566,7 @@ def test_the_cache_pass_is_skipped_when_a_live_vm_has_no_record(pools, registry,
 
     assert report.cache_evicted == []
     assert stale.exists()
-    assert "cache pass" in caplog.text
+    assert any(record.levelname == "ERROR" and "cache pass" in record.message for record in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -573,3 +580,54 @@ async def test_reconcile_now_removes_the_devices_of_evicted_parents(pools, regis
 
     assert [path.name for path in report.cache_evicted] == ["stale"]
     assert removed == ["stale"]
+
+
+def test_old_tmp_files_are_removed_alongside_the_parts(pools, registry):  # noqa: F811
+    """get_message writes <ref>.json.tmp before renaming, create_ext4 and the
+    marker writer do the same: an interrupted one leaks exactly like a .part."""
+    old_tmp = pools["message"] / "abc.json.tmp"
+    old_tmp.write_bytes(b"x")
+    _age(old_tmp, 10_000)
+    young_tmp = pools["code"] / "def.tmp"
+    young_tmp.write_bytes(b"x")
+    _age(young_tmp, 10)
+
+    report = reconcile_storage(registry, now=NOW)
+
+    assert not old_tmp.exists()
+    assert young_tmp.exists()
+    assert report.parts_removed == 1
+
+
+@pytest.mark.asyncio
+async def test_the_pass_records_the_live_set_for_the_admission_hook(pools, registry):  # noqa: F811
+    await reconcile_now(_app(registry, _supervisor(VM_HASH)))
+
+    assert cache_module.live_snapshot() == frozenset({LIVE, VM_HASH})
+
+
+@pytest.mark.asyncio
+async def test_a_half_known_live_set_is_never_published(pools, registry):  # noqa: F811
+    """Admission evicts against this set; a set missing whatever the
+    supervisor would have listed is not one it may use."""
+    await reconcile_now(_app(registry, _supervisor(fails=True)))
+
+    assert cache_module.live_snapshot() is None
+
+
+@pytest.mark.asyncio
+async def test_a_dry_run_never_touches_a_device(pools, registry, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
+    stale = pools["runtime"] / "stale"
+    stale.write_bytes(b"x" * 4096)
+    removed = []
+    monkeypatch.setattr(reconciler_module, "remove_parent_device", AsyncMock(side_effect=removed.append))
+    swept = AsyncMock(return_value=[])
+    monkeypatch.setattr(reconciler_module, "sweep_leaked_cache_loops", swept)
+
+    report = await reconcile_now(_app(registry), dry_run=True)
+
+    assert [path.name for path in report.cache_evicted] == ["stale"]
+    assert stale.exists()
+    assert removed == []
+    swept.assert_not_awaited()

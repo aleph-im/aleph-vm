@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from aleph_message.models import ExecutableContent, InstanceContent
+from aleph_message.models import ExecutableContent
 
 from aleph.vm.agent.vm.purge import _checked_namespace
 from aleph.vm.storage_pools import iter_namespace_dirs
@@ -127,16 +127,95 @@ def clear_marker(namespace_dir: Path) -> bool:
     return True
 
 
+# The kinds ``iter_content_refs`` labels a parent image with: what a per-VM
+# volume is built on, and so what a retained volume keeps needing.
+PARENT_REF_KINDS = frozenset({"rootfs_parent", "volume_parent"})
+# The kinds that name a runtime manifest, whose bundle tarball is a ref only
+# the manifest itself knows (see agent.vm.cache).
+MANIFEST_REF_KINDS = frozenset({"runtime", "tee_runtime"})
+
+
+def _ref_of(obj: object) -> str | None:
+    ref = getattr(obj, "ref", None) if obj is not None else None
+    return str(ref) if ref else None
+
+
+def _iter_volume_refs(content: ExecutableContent) -> Iterator[tuple[str, str]]:
+    """The rootfs parent image, and each volume's parent image or own ref."""
+    rootfs = getattr(content, "rootfs", None)
+    ref = _ref_of(getattr(rootfs, "parent", None)) if rootfs is not None else None
+    if ref:
+        yield "rootfs_parent", ref
+    for volume in getattr(content, "volumes", None) or []:
+        parent_ref = _ref_of(getattr(volume, "parent", None))
+        if parent_ref:
+            yield "volume_parent", parent_ref
+        volume_ref = _ref_of(volume)
+        if volume_ref:
+            yield "volume", volume_ref
+
+
+def _iter_measured_refs(content: ExecutableContent) -> Iterator[tuple[str, str]]:
+    """What the confidential content types name: a V-PROGRAM's workload image
+    and hash tree (both attached as disks), and a TEE instance's firmware and
+    runtime manifest."""
+    workload = getattr(content, "workload", None)
+    if workload is not None:
+        ref = _ref_of(workload)
+        if ref:
+            yield "workload", ref
+        hash_tree = getattr(workload, "hash_tree", None)
+        if hash_tree:
+            yield "workload_hash_tree", str(hash_tree)
+    environment = getattr(content, "environment", None)
+    trusted_execution = getattr(environment, "trusted_execution", None) if environment is not None else None
+    if trusted_execution is None:
+        return
+    for kind, attribute in (("tee_firmware", "firmware"), ("tee_runtime", "runtime")):
+        value = getattr(trusted_execution, attribute, None)
+        if value:
+            yield kind, str(value)
+
+
+def iter_content_refs(content: ExecutableContent) -> Iterator[tuple[str, str]]:
+    """Every item hash a message names, as ``(kind, ref)`` pairs.
+
+    The single enumeration of what a VM needs out of the download caches, so
+    the two questions asked of it cannot drift apart: what a retained volume
+    depends on (``depends_on_from_content``, the parent images) and what may
+    never be evicted while the VM is alive (``refs_from_content``, all of it).
+    Getting the second one short is how a running VM's disk gets unlinked:
+    a V-PROGRAM's workload image and its hash tree are attached straight out
+    of DATA_CACHE, and so are a confidential instance's firmware and runtime
+    manifest.
+
+    Read with ``getattr``: one enumeration covers program, instance,
+    V-PROGRAM and confidential content, and a field a content type does not
+    have is simply not there.
+    """
+    for kind in ("runtime", "code", "data"):
+        ref = _ref_of(getattr(content, kind, None))
+        if ref:
+            yield kind, ref
+    yield from _iter_volume_refs(content)
+    yield from _iter_measured_refs(content)
+
+
+def refs_from_content(content: ExecutableContent, *, vm_hash: str | None = None) -> set[str]:
+    """Every cache entry a message names, the VM's own message included.
+
+    ``vm_hash`` is the VM's item hash: the message cache holds it as
+    ``<vm_hash>.json`` and a live VM's message is not a spare copy.
+    """
+    refs = {ref for _kind, ref in iter_content_refs(content)}
+    if vm_hash:
+        refs.add(str(vm_hash))
+    return refs
+
+
 def depends_on_from_content(content: ExecutableContent) -> tuple[str, ...]:
     """The cache entries (parent images) a VM's per-VM volumes are built on."""
-    refs: list[str] = []
-    if isinstance(content, InstanceContent) and content.rootfs and content.rootfs.parent:
-        refs.append(str(content.rootfs.parent.ref))
-    for vol in content.volumes or []:
-        parent = getattr(vol, "parent", None)
-        if parent is not None:
-            refs.append(str(parent.ref))
-    return tuple(dict.fromkeys(refs))
+    return tuple(dict.fromkeys(ref for kind, ref in iter_content_refs(content) if kind in PARENT_REF_KINDS))
 
 
 def mark_reclaimable(

@@ -339,8 +339,10 @@ message. One pass does, in order:
    under `keep`. Liveness is asked again immediately before anything is
    marked, purged or evicted, so a create that commits while the pass walks
    is not mistaken for an orphan.
-2. Delete `*.part` files older than the guard, in the four download caches
-   and in the pools (the downloader streams volumes in place).
+2. Delete `*.part` and `*.tmp` files older than the guard, in the four
+   download caches and in the pools (the downloader streams volumes in
+   place). Every write-then-rename in the agent uses one of the two suffixes,
+   and an interrupted one leaks the same way.
 3. Sweep the side directories keyed by VM hash: the confidential session
    directory, the SNP and V-PROGRAM staging directories, and
    `/mnt/{namespace}_{volume}` mount points. A directory that is still a
@@ -408,9 +410,21 @@ default). The pass evicts least recently used first, mtime being a real
 signal because the downloader touches an entry on every cache hit
 (`_touch_cache_hit`). What it may not touch is the point:
 
-- Entries a **live VM** names, meaning every `runtime`, `code`, `data`,
-  rootfs parent, volume parent and immutable volume `ref` of a message in the
-  agent registry. If live references alone exceed the budget the pass logs an
+- Entries a **live VM** names. `reclaimable.iter_content_refs` is the single
+  enumeration of those, so the two questions asked of a message (what a
+  retained volume depends on, what a live VM still needs) cannot drift apart:
+  `runtime`, `code`, `data`, the rootfs parent, volume parents and immutable
+  volume `ref`s, a V-PROGRAM's `workload.ref` and `workload.hash_tree`, a TEE
+  instance's `trusted_execution.firmware` and `trusted_execution.runtime`, and
+  the VM's own message entry (`<vm_hash>.json`). The confidential ones are not
+  a detail: a V-PROGRAM's workload image and hash tree are attached as the
+  VM's disks straight out of `DATA_CACHE`, so evicting one unlinks a running
+  VM's disk. The runtime bundle tarball is the one ref no message carries
+  (only the manifest names it); it is protected whenever the manifest itself
+  is cached, and is otherwise a re-downloadable artifact, since nothing runs
+  off the tarball (it is verified and extracted into the VM's staging
+  directory at create time).
+  If live references alone exceed the budget the pass logs an
   error and stops: that is a capacity problem admission should have refused,
   and eviction cannot fix it. The referenced set is read from the registry's
   messages, so a pass whose live set holds a hash the registry has no record
@@ -420,6 +434,13 @@ signal because the downloader touches an entry on every cache hit
   retained directories go first (oldest marker first, through
   `purge_vm_storage`), and a parent is evicted only once every retained VM
   that named it is gone and its purge actually removed the disks.
+
+The pass also sweeps what an earlier teardown left behind: a loop device
+still backed by a cache entry that is already unlinked (the kernel shows it as
+` (deleted)` in `/sys/block/loop*/loop/backing_file`). That is the recovery
+path for a teardown that crashed or failed, because once the entry is gone
+nothing else can name the loop that pins its blocks; the same holders check
+applies, so a leaked loop whose device is in use after all is left alone.
 
 Evicting a parent image also removes what `create_devmapper` builds once per
 image rather than once per VM: the `/dev/mapper/<ref>` target and the
@@ -441,6 +462,18 @@ rather than writing bytes that trigger an eviction storm. Directories that
 are not cache roots are none of its business: the downloader streams per-VM
 volumes in place, and those are admitted by the capacity checks and the pool
 budget.
+
+It is deliberately weaker than the pass, because it runs on the event loop
+inside a create. It unlinks unreferenced cache entries and nothing else: it
+never reclaims a retained VM directory (that is an `rmtree`, which belongs in
+the reconciler's worker thread), so what it cannot free it refuses and leaves
+to the next pass. And it evicts nothing at all unless the live set can be
+trusted: a pass publishes the live set only when both halves agree (the
+registry and a supervisor that answered `list_vms`), and admission additionally
+requires that every hash in it has a registry record, since a live VM without a
+message means the referenced set is incomplete. Before the first pass there is
+no live set, so admission evicts nothing and simply admits or refuses on the
+budget as it stands.
 
 ### Settings
 
@@ -540,7 +573,9 @@ pass against an empty registry would call every running VM an orphan.
 - `src/aleph/vm/agent/vm/retire.py`: `retire_vm` and `RetireReason`, the one
   way a VM's storage is released.
 - `src/aleph/vm/agent/vm/reclaimable.py`: the `.reclaimable` marker
-  (`mark_reclaimable`, `adopt`, `iter_reclaimable`, `reclaimable_bytes`).
+  (`mark_reclaimable`, `adopt`, `iter_reclaimable`, `reclaimable_bytes`) and
+  the one enumeration of the cache entries a message names
+  (`iter_content_refs`, `refs_from_content`, `depends_on_from_content`).
 - `src/aleph/vm/agent/vm/cache.py`: the cache budget, LRU eviction
   (`evict_caches`), the download admission hook (`admit_download`) and the
   parent image's device teardown (`remove_parent_device`).

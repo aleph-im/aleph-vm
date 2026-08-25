@@ -34,18 +34,22 @@ last, and the next create simply re-downloads what was taken.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import shutil
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 from aleph.vm.agent.vm.purge import _ITEM_HASH_PATTERN, purge_vm_storage
 from aleph.vm.agent.vm.reclaimable import (
+    MANIFEST_REF_KINDS,
     ReclaimableMarker,
     file_size_bytes,
+    iter_content_refs,
     iter_reclaimable,
+    refs_from_content,
 )
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
@@ -58,6 +62,9 @@ from aleph.vm.utils import create_task_log_exceptions, run_in_subprocess
 logger = logging.getLogger(__name__)
 
 MIB = 1024 * 1024
+# A runtime manifest is a few kilobytes of JSON; anything larger in the data
+# cache is a payload, not a manifest, and is not read.
+MANIFEST_MAX_BYTES = 64 * 1024
 # Where the kernel lists the loop devices and what backs them. Read rather
 # than `losetup -j` when the backing file is already unlinked: sysfs keeps
 # the path (with a " (deleted)" suffix), losetup cannot stat it any more.
@@ -67,6 +74,24 @@ DELETED_SUFFIX = " (deleted)"
 # Suffixes of files that are not cache entries: a download in flight
 # (download_file) and a message being written (storage.get_message).
 IN_FLIGHT_SUFFIXES = (".part", ".tmp")
+
+
+# The reconciler's most recent live set. The admission hook runs on the create
+# path, off any pass, and cannot ask the supervisor what it is running; the
+# pass can, so it leaves its answer here. Session state, deliberately: an
+# agent that has not reconciled yet has no live set, and admission treats
+# that as "do not evict" rather than as "nothing is live".
+_live_snapshot: frozenset[str] | None = None
+
+
+def record_live_snapshot(live: Collection[str]) -> None:
+    """Publish the live set a pass established, for the admission hook."""
+    global _live_snapshot  # noqa: PLW0603
+    _live_snapshot = frozenset(str(namespace) for namespace in live)
+
+
+def live_snapshot() -> frozenset[str] | None:
+    return _live_snapshot
 
 
 @dataclass(frozen=True)
@@ -129,31 +154,55 @@ def _entry_refs(path: Path) -> set[str]:
     return {path.name, path.stem}
 
 
-def _record_refs(content) -> set[str]:
-    """Every cache entry one message names: runtime, code, data, the rootfs
-    parent, volume parents and immutable volume refs."""
-    refs: set[str] = set()
-    for attribute in ("runtime", "code", "data"):
-        obj = getattr(content, attribute, None)
-        if obj is not None and getattr(obj, "ref", None):
-            refs.add(str(obj.ref))
-    rootfs = getattr(content, "rootfs", None)
-    if rootfs is not None and getattr(rootfs, "parent", None):
-        refs.add(str(rootfs.parent.ref))
-    for volume in getattr(content, "volumes", None) or []:
-        parent = getattr(volume, "parent", None)
-        if parent is not None and getattr(parent, "ref", None):
-            refs.add(str(parent.ref))
-        if getattr(volume, "ref", None):
-            refs.add(str(volume.ref))
+def _manifest_bundle_ref(ref: str) -> str | None:
+    """The bundle tarball a locally cached runtime manifest names, or None.
+
+    A V-PROGRAM and a confidential instance pin their runtime by the hash of
+    a small JSON manifest, and the tarball it points at is a ref no message
+    carries: it is knowable only from the manifest. So it is protected when
+    the manifest is here to read, and treated as a re-downloadable artifact
+    when it is not (nothing runs off the tarball itself, which is verified
+    and extracted into the VM's staging directory at create time).
+
+    Bounded on purpose: only DATA_CACHE (where both manifests are fetched to)
+    and only a small file, so this never reads a runtime image looking for
+    JSON.
+    """
+    if not settings.DATA_CACHE or not _safe_ref(ref):
+        return None
+    path = Path(settings.DATA_CACHE) / ref
+    try:
+        if not path.is_file() or path.stat().st_size > MANIFEST_MAX_BYTES:
+            return None
+        manifest = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    bundle = manifest.get("bundle") if isinstance(manifest, dict) else None
+    bundle_ref = bundle.get("ref") if isinstance(bundle, dict) else None
+    return str(bundle_ref) if bundle_ref else None
+
+
+def _record_refs(content, vm_hash: object) -> set[str]:
+    """Every cache entry one live record names.
+
+    ``reclaimable.iter_content_refs`` is the enumeration; this adds what only
+    the filesystem knows, the bundle tarball named by a cached manifest.
+    """
+    refs = refs_from_content(content, vm_hash=str(vm_hash) if vm_hash else None)
+    for kind, ref in iter_content_refs(content):
+        if kind not in MANIFEST_REF_KINDS:
+            continue
+        bundle_ref = _manifest_bundle_ref(ref)
+        if bundle_ref:
+            refs.add(bundle_ref)
     return refs
 
 
 def live_refs(registry: AgentVmRegistry) -> set[str]:
     """The refs live records name: never evictable, whatever the budget."""
     refs: set[str] = set()
-    for _vm_hash, record in list(registry.items()):
-        refs |= _record_refs(record.message)
+    for vm_hash, record in list(registry.items()):
+        refs |= _record_refs(record.message, vm_hash)
     return refs
 
 
@@ -382,6 +431,7 @@ def evict_caches(
     needed: dict[Path, int] | None = None,
     dry_run: bool = False,
     is_live: Callable[[str], bool] | None = None,
+    reclaim_retained: bool = True,
 ) -> list[Path]:
     """Bring every cache root under ``CACHE_BUDGET``; return what was evicted.
 
@@ -391,6 +441,11 @@ def evict_caches(
     ``is_live`` decides whether a reclaimable directory may be reclaimed to
     free its parent image; it defaults to the registry alone, which is what a
     caller holding no supervisor handle can offer.
+
+    ``reclaim_retained`` is the second phase, purging retained VM directories
+    to free the parent images they pin. Admission turns it off: it runs on the
+    event loop inside a download, where an rmtree of a retained VM's disks
+    does not belong. What it cannot free there, the next pass frees.
     """
     needed = needed or {}
     evicted: list[Path] = []
@@ -418,12 +473,21 @@ def evict_caches(
         # root changes what this one is allowed to touch.
         markers = _markers()
         _evict_unreferenced(state, entries, state.live_only | _marker_refs(markers))
-        if state.over_budget:
+        if state.over_budget and reclaim_retained:
             _reclaim_pinning_dirs(state, entries, markers)
-        if state.over_budget:
+        if not state.over_budget:
+            continue
+        if reclaim_retained:
             logger.error(
                 "Cache %s is %d bytes over its %d byte budget but only live references remain; "
                 "admission should have refused this load",
+                root,
+                state.usage - budget,
+                budget,
+            )
+        else:
+            logger.info(
+                "Cache %s is %d bytes over its %d byte budget; what is left is pinned, leaving it to the pass",
                 root,
                 state.usage - budget,
                 budget,
@@ -534,22 +598,60 @@ def _still_pinned(ref: str, markers: list[tuple[Path, ReclaimableMarker]], recla
     return any(ref in marker.depends_on and directory.name not in reclaimed for directory, marker in markers)
 
 
+def _may_evict_for_admission(registry: AgentVmRegistry) -> bool:
+    """Whether admission is allowed to evict anything at all.
+
+    The same precondition the pass applies (``reconciler._enforce_cache_budget``):
+    what a cache holds for a live VM is read from that VM's message, so a live
+    VM without a registry record makes the referenced set incomplete, and
+    evicting on an incomplete set unlinks a running VM's disk. Admission is
+    the riskier of the two, since it runs on the create path with no
+    supervisor answer of its own, so it refuses on the same doubt and on one
+    more: no pass has run yet, so there is no live set to check against.
+    """
+    snapshot = live_snapshot()
+    if snapshot is None:
+        logger.warning("No storage reconcile has run yet; admitting downloads without evicting")
+        return False
+    unknown = sorted(namespace for namespace in snapshot if namespace not in registry)
+    if unknown:
+        logger.error(
+            "Not evicting for a download: %d live VM(s) have no registry record (%s), so what they reference is "
+            "unknown and the caches stay unbounded until this is resolved",
+            len(unknown),
+            ", ".join(unknown[:3]),
+        )
+        return False
+    return True
+
+
 def admit_download(registry: AgentVmRegistry, root: Path, size_bytes: int) -> None:
     """Refuse, before a byte is written, a download the cache cannot hold.
 
     Registered on ``storage.set_cache_admission`` so it runs inside
     ``download_file_in_chunks`` once ``Content-Length`` is known. Evicting
     first is the point: the budget is a cap on what is kept, not on what may
-    be fetched, and only a load that stays over the budget with nothing
-    evictable left is refused (spec section 4). A directory that is not a
-    cache root is not this budget's business: the downloader also streams
-    per-VM volumes in place, and those are admitted by the capacity checks
-    and the pool budget.
+    be fetched, and only a load that stays over the budget with nothing safely
+    evictable left is refused (spec section 4).
+
+    Two things it deliberately does not do. It does not reclaim retained VM
+    directories (``reclaim_retained=False``): that is an rmtree, and this runs
+    on the event loop inside a download. And it does not evict at all when the
+    live set cannot be trusted; the download is then admitted or refused on
+    the budget as it stands.
+
+    A directory that is not a cache root is not this budget's business: the
+    downloader also streams per-VM volumes in place, and those are admitted by
+    the capacity checks and the pool budget.
     """
     root = Path(root)
     if root not in cache_roots():
+        logger.debug("Not a download cache, so not subject to CACHE_BUDGET: %s", root)
         return
-    release_parent_devices(evict_caches(registry, needed={root: size_bytes}))
+    if _may_evict_for_admission(registry):
+        release_parent_devices(
+            evict_caches(registry, needed={root: size_bytes}, reclaim_retained=False),
+        )
     try:
         budget = cache_budget_bytes(root)
     except OSError:
@@ -565,3 +667,54 @@ def admit_download(registry: AgentVmRegistry, root: Path, size_bytes: int) -> No
         required={"disk_mib": size_bytes // MIB},
         available={"disk_mib": free // MIB},
     )
+
+
+def _deleted_cache_backings() -> list[tuple[str, Path]]:
+    """``(loop device, cache entry)`` for every loop device still backed by a
+    cache entry that is already unlinked."""
+    roots = cache_roots()
+    leaked: list[tuple[str, Path]] = []
+    try:
+        backing_files = sorted(SYS_BLOCK.glob("loop*/loop/backing_file"))
+    except OSError:
+        return leaked
+    for backing_file in backing_files:
+        try:
+            backing = backing_file.read_text().strip()
+        except OSError:
+            continue
+        if not backing.endswith(DELETED_SUFFIX):
+            continue
+        path = Path(backing.removesuffix(DELETED_SUFFIX))
+        if path.parent in roots:
+            leaked.append((f"/dev/{backing_file.parent.parent.name}", path))
+    return leaked
+
+
+async def sweep_leaked_cache_loops() -> list[str]:
+    """Detach the loop devices of cache entries that are already gone.
+
+    The recovery path for a teardown that never happened or failed: the
+    eviction unlinks the entry and only then removes its devices, so a crash,
+    a restart or a failing ``dmsetup`` in between leaves a loop device holding
+    the inode of a file nobody can name any more. Its blocks are not free, and
+    no later pass would find it, because the entry it belonged to is no longer
+    in the cache. The kernel still knows, so ask it.
+
+    Fail closed the same way the eviction does: a leaked loop whose
+    ``/dev/mapper/<ref>`` target still has holders is in use after all and is
+    left alone.
+    """
+    detached: list[str] = []
+    for loop_device, path in _deleted_cache_backings():
+        ref = path.name
+        device = Path(DEVICE_MAPPER_DIRECTORY) / ref
+        if _is_block_device(device):
+            if not parent_device_is_free(ref):
+                continue
+            await run_in_subprocess(["dmsetup", "remove", "--retry", ref])
+            logger.info("Removed the leaked device of the evicted cache entry %s", ref)
+        await run_in_subprocess(["losetup", "-d", loop_device])
+        logger.info("Detached the leaked loop device %s of the evicted cache entry %s", loop_device, path)
+        detached.append(loop_device)
+    return detached

@@ -43,7 +43,13 @@ from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash
 
 from aleph.vm.agent.vm.backup import sweep_expired_backups
-from aleph.vm.agent.vm.cache import evict_caches, parent_refs_of, remove_parent_device
+from aleph.vm.agent.vm.cache import (
+    evict_caches,
+    parent_refs_of,
+    record_live_snapshot,
+    remove_parent_device,
+    sweep_leaked_cache_loops,
+)
 from aleph.vm.agent.vm.purge import _ITEM_HASH_PATTERN, purge_vm_storage
 from aleph.vm.agent.vm.reclaimable import (
     ReclaimableMarker,
@@ -187,6 +193,11 @@ async def _live_set(app: web.Application) -> tuple[set[str], int | None]:
     The returned count is ``None`` when the supervisor could not be asked,
     which is not the same answer as "it runs nothing" (see
     ``_startup_refusal``).
+
+    A live set both halves agree on is published for the admission hook,
+    which runs on the create path and cannot ask the supervisor itself (see
+    ``cache.admit_download``). A half-known one is not: admission would then
+    evict against a set that may be missing a running VM.
     """
     registry_live = live_hashes(app["vm_registry"])
     supervisor = app.get("supervisor")
@@ -198,7 +209,9 @@ async def _live_set(app: web.Application) -> tuple[set[str], int | None]:
     except Exception as error:
         logger.warning("Could not list the supervisor's VMs (%s); the live set is the agent registry alone", error)
         return registry_live, None
-    return registry_live | running, len(running)
+    live = registry_live | running
+    record_live_snapshot(live)
+    return live, len(running)
 
 
 def _startup_refusal(registry: AgentVmRegistry, running: int | None) -> str | None:
@@ -372,9 +385,15 @@ def _part_roots() -> Iterator[Path]:
 
 
 def _sweep_parts(now: datetime, guard: timedelta, report: ReconcileReport, *, dry_run: bool) -> None:
+    """Remove the half-written files of a download or a write that stopped.
+
+    ``.tmp`` goes with ``.part``: every write-then-rename in the agent uses
+    one (``storage.get_message``, ``create_ext4``, the marker writer), and an
+    interrupted one leaks exactly the same way.
+    """
     for root in _part_roots():
         try:
-            parts = list(root.glob("*.part"))
+            parts = [path for pattern in ("*.part", "*.tmp") for path in root.glob(pattern)]
         except OSError:
             continue
         for part in parts:
@@ -582,8 +601,9 @@ def _enforce_cache_budget(
     """
     unknown = sorted(namespace for namespace in live if namespace not in registry)
     if unknown:
-        logger.warning(
-            "Skipping the cache pass: %d live VM(s) have no registry record (%s), so what they reference is unknown",
+        logger.error(
+            "Skipping the cache pass: %d live VM(s) have no registry record (%s), so what they reference is "
+            "unknown and the caches are unbounded until this is resolved",
             len(unknown),
             ", ".join(unknown[:3]),
         )
@@ -658,22 +678,29 @@ async def reconcile_now(app: web.Application, *, dry_run: bool = False) -> Recon
     async with _pass_lock(app):
         live, _running = await _live_set(app)
         report = await _pass(registry, live, dry_run=dry_run)
-    await _remove_evicted_parent_devices(report)
+    await _release_cache_devices(report, dry_run=dry_run)
     return report
 
 
-async def _remove_evicted_parent_devices(report: ReconcileReport) -> None:
-    """Tear down the shared devices of the parent images the pass evicted.
+async def _release_cache_devices(report: ReconcileReport, *, dry_run: bool) -> None:
+    """Tear down the devices of the parent images the pass evicted, then sweep
+    the ones an earlier teardown left behind.
 
     The pass itself runs in a worker thread and dmsetup has to be awaited, so
-    this is the loop side of the cache pass: nothing else will pick these up,
-    since the cache entry they belong to is already gone.
+    this is the loop side of the cache pass. A dry run reaches none of it: it
+    evicted nothing, and the sweep removes devices.
     """
+    if dry_run:
+        return
     for ref in parent_refs_of(report.cache_evicted):
         try:
             await remove_parent_device(ref)
         except Exception:
             logger.exception("Removing the device of the evicted parent image %s failed", ref)
+    try:
+        await sweep_leaked_cache_loops()
+    except Exception:
+        logger.exception("Sweeping the loop devices of evicted cache entries failed")
 
 
 async def _pass(registry: AgentVmRegistry, live: set[str], *, dry_run: bool) -> ReconcileReport:
@@ -756,7 +783,7 @@ async def reconcile_at_startup(app: web.Application) -> None:
         if refusal is not None:
             return
         report = await _pass(registry, live, dry_run=False)
-    await _remove_evicted_parent_devices(report)
+    await _release_cache_devices(report, dry_run=False)
 
 
 async def periodic_reconcile(app: web.Application) -> None:

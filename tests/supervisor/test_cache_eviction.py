@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import logging
 import os
 import time
 from datetime import datetime, timezone
@@ -26,6 +28,13 @@ NOW = datetime(2026, 8, 24, tzinfo=timezone.utc)
 OLDER = datetime(2026, 8, 23, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def _no_live_snapshot(monkeypatch):
+    """The reconciler's live-set snapshot is module state: no test inherits
+    another's."""
+    monkeypatch.setattr(cache_module, "_live_snapshot", None)
+
+
 def _entry(root, name, size=4096, age=0):
     path = root / name
     path.write_bytes(b"x" * size)
@@ -41,17 +50,22 @@ def _program_record(registry, vm_hash, *, runtime="rt", code="code", data=None):
     content.data = MagicMock(ref=data) if data else None
     content.rootfs = None
     content.volumes = []
+    content.workload = None
+    content.environment = None
     registry.record(ItemHash(vm_hash), message=content, original=content)
     return content
 
 
 def test_referenced_hashes_cover_records_and_markers(pools):
     registry = AgentVmRegistry()
-    _program_record(registry, "ab" * 32, runtime="rt1", code="c1", data="d1")
+    vm_hash = "ab" * 32
+    _program_record(registry, vm_hash, runtime="rt1", code="c1", data="d1")
     volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
     mark_reclaimable(VM_HASH, "gone", ("parent1",), now=NOW)
 
-    assert referenced_hashes(registry) == {"rt1", "c1", "d1", "parent1"}
+    # The VM's own message entry is a reference too: the message cache holds
+    # it as <vm_hash>.json.
+    assert referenced_hashes(registry) == {"rt1", "c1", "d1", "parent1", vm_hash}
 
 
 def test_referenced_hashes_cover_instance_parents_and_immutable_volumes(pools):
@@ -68,9 +82,73 @@ def test_referenced_hashes_cover_instance_parents_and_immutable_volumes(pools):
     immutable = MagicMock(ref="immutable")
     immutable.parent = None
     content.volumes = [parent_backed, immutable]
-    registry.record(ItemHash("ab" * 32), message=content, original=content)
+    content.workload = None
+    content.environment = None
+    vm_hash = "ab" * 32
+    registry.record(ItemHash(vm_hash), message=content, original=content)
 
-    assert referenced_hashes(registry) == {"base", "vparent", "immutable"}
+    assert referenced_hashes(registry) == {"base", "vparent", "immutable", vm_hash}
+
+
+def _vprogram_record(registry, vm_hash, **fields):
+    content = MagicMock()
+    content.runtime = MagicMock(ref=fields.get("runtime", "manifest"))
+    content.code = None
+    content.data = None
+    content.rootfs = None
+    content.volumes = []
+    content.workload = MagicMock(ref=fields.get("workload", "workload"), hash_tree=fields.get("hash_tree", "hashtree"))
+    content.environment = MagicMock()
+    content.environment.trusted_execution = fields.get("trusted_execution")
+    registry.record(ItemHash(vm_hash), message=content, original=content)
+    return content
+
+
+def test_a_live_vprograms_workload_disks_are_never_evicted(pools, monkeypatch):
+    """Both are attached as the VM's disks straight out of DATA_CACHE."""
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
+    registry = AgentVmRegistry()
+    _vprogram_record(registry, "ab" * 32)
+    workload = _entry(pools["data"], "workload", size=4096)
+    hash_tree = _entry(pools["data"], "hashtree", size=4096)
+
+    assert evict_caches(registry) == []
+    assert workload.exists() and hash_tree.exists()
+
+
+def test_a_confidential_instances_firmware_and_runtime_are_never_evicted(pools, monkeypatch):
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
+    registry = AgentVmRegistry()
+    _vprogram_record(registry, "ab" * 32, trusted_execution=MagicMock(firmware="fw", runtime="tee-rt"))
+    firmware = _entry(pools["data"], "fw", size=4096)
+    runtime = _entry(pools["data"], "tee-rt", size=4096)
+
+    assert evict_caches(registry) == []
+    assert firmware.exists() and runtime.exists()
+
+
+def test_the_bundle_a_locally_cached_manifest_names_is_kept(pools, monkeypatch):
+    """The tarball ref is only knowable from the manifest, so it is protected
+    whenever the manifest itself is in the cache."""
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
+    registry = AgentVmRegistry()
+    _vprogram_record(registry, "ab" * 32, workload="w", hash_tree="h")
+    (pools["data"] / "manifest").write_text(json.dumps({"bundle": {"ref": "tarball"}}))
+    tarball = _entry(pools["data"], "tarball", size=4096)
+
+    assert evict_caches(registry) == []
+    assert tarball.exists()
+
+
+def test_a_live_vms_own_message_entry_is_kept(pools, monkeypatch):
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
+    registry = AgentVmRegistry()
+    vm_hash = "ab" * 32
+    _program_record(registry, vm_hash)
+    message = _entry(pools["message"], f"{vm_hash}.json", size=4096)
+
+    assert evict_caches(registry) == []
+    assert message.exists()
 
 
 def test_cache_entries_skip_parts_and_sort_oldest_first(pools):
@@ -223,11 +301,54 @@ def test_parent_refs_of_only_names_runtime_entries(pools):
 def test_admit_download_evicts_to_make_room(pools, monkeypatch):
     monkeypatch.setattr(settings, "CACHE_BUDGET", "8192")
     registry = AgentVmRegistry()
+    cache_module.record_live_snapshot(set())
     old = _entry(pools["code"], "old", size=4096, age=1000)
 
     admit_download(registry, pools["code"], 8000)
 
     assert not old.exists()
+
+
+def test_admit_download_never_reclaims_retained_disks(pools, monkeypatch):
+    """Phase 2 purges VM directories, which on the admission path would mean
+    an rmtree on the event loop: admission evicts cache files or refuses."""
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
+    registry = AgentVmRegistry()
+    cache_module.record_live_snapshot(set())
+    parent = _entry(pools["runtime"], "parent", size=4096)
+    retained = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    mark_reclaimable(VM_HASH, "gone", ("parent",), now=NOW)
+
+    with pytest.raises(InsufficientResourcesError):
+        admit_download(registry, pools["runtime"], 512)
+
+    assert parent.exists() and retained.exists()
+
+
+def test_admit_download_evicts_nothing_when_a_live_vm_has_no_record(pools, monkeypatch, caplog):
+    """The same fail-closed rule the pass applies: without every live VM's
+    message, what the caches hold for them is unknown."""
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "8192")
+    registry = AgentVmRegistry()
+    cache_module.record_live_snapshot({VM_HASH})
+    old = _entry(pools["code"], "old", size=4096, age=1000)
+
+    with pytest.raises(InsufficientResourcesError):
+        admit_download(registry, pools["code"], 8000)
+
+    assert old.exists()
+    assert "no registry record" in caplog.text
+
+
+def test_admit_download_evicts_nothing_before_the_first_pass(pools, monkeypatch):
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "8192")
+    registry = AgentVmRegistry()
+    old = _entry(pools["code"], "old", size=4096, age=1000)
+
+    with pytest.raises(InsufficientResourcesError):
+        admit_download(registry, pools["code"], 8000)
+
+    assert old.exists()
 
 
 def test_admit_download_refuses_what_the_budget_cannot_hold(pools, monkeypatch):
@@ -238,15 +359,18 @@ def test_admit_download_refuses_what_the_budget_cannot_hold(pools, monkeypatch):
         admit_download(registry, pools["code"], 9000)
 
 
-def test_admit_download_ignores_a_directory_that_is_not_a_cache(pools, monkeypatch):
+def test_admit_download_ignores_a_directory_that_is_not_a_cache(pools, monkeypatch, caplog):
     """The downloader streams per-VM volumes in place; those are admitted by
     the capacity checks and the pool budget, not by CACHE_BUDGET."""
+    caplog.set_level(logging.DEBUG)
     monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
     registry = AgentVmRegistry()
     directory = pools["pool0"] / VM_HASH
     directory.mkdir()
 
     admit_download(registry, directory, 10 * 1024**3)
+
+    assert str(directory) in caplog.text
 
 
 def _record_calls(monkeypatch, *, loop_of=None):
@@ -313,4 +437,37 @@ async def test_remove_parent_device_refuses_an_implausible_ref(pools, monkeypatc
 
     await cache_module.remove_parent_device("../escape")
 
+    assert commands == []
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_detaches_a_loop_left_over_a_deleted_cache_entry(pools, monkeypatch):
+    """The recovery path for a teardown that failed: the entry is gone, so
+    only the kernel still knows which loop pins its blocks."""
+    commands = _record_calls(monkeypatch, loop_of=pools["runtime"] / "gone")
+    monkeypatch.setattr(cache_module, "_is_block_device", lambda path: True)
+    monkeypatch.setattr(cache_module, "parent_device_is_free", lambda ref: True)
+
+    assert await cache_module.sweep_leaked_cache_loops() == ["/dev/loop7"]
+    assert commands == [["dmsetup", "remove", "--retry", "gone"], ["losetup", "-d", "/dev/loop7"]]
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_leaves_a_loop_whose_device_is_still_held(pools, monkeypatch):
+    commands = _record_calls(monkeypatch, loop_of=pools["runtime"] / "gone")
+    monkeypatch.setattr(cache_module, "_is_block_device", lambda path: True)
+    monkeypatch.setattr(cache_module, "parent_device_is_free", lambda ref: False)
+
+    assert await cache_module.sweep_leaked_cache_loops() == []
+    assert commands == []
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_ignores_deleted_files_outside_the_caches(pools, monkeypatch):
+    """A VM volume's loop device is remove_devmapper's business, not this
+    sweep's."""
+    commands = _record_calls(monkeypatch, loop_of=pools["pool0"] / "rootfs.btrfs")
+    monkeypatch.setattr(cache_module, "_is_block_device", lambda path: True)
+
+    assert await cache_module.sweep_leaked_cache_loops() == []
     assert commands == []
