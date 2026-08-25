@@ -127,3 +127,55 @@ async def test_getters_pass_their_caps(mocker, tmp_path):
         settings.MAX_RUNTIME_ARCHIVE_SIZE,
         settings.MAX_RUNTIME_ARCHIVE_SIZE,
     ]
+
+
+@pytest.mark.asyncio
+async def test_cache_admission_hook_runs_before_writing(tmp_path):
+    import aleph.vm.storage as storage_module
+
+    seen = []
+    storage_module.set_cache_admission(lambda root, size: seen.append((root, size)))
+    session, _ = _session([b"x" * 4], content_length=4)
+    try:
+        with patch("aleph.vm.storage.aiohttp.ClientSession", return_value=session):
+            await download_file_in_chunks("http://x/f", tmp_path / "f.part")
+    finally:
+        storage_module.set_cache_admission(None)
+    assert seen == [(tmp_path, 4)]
+
+
+@pytest.mark.asyncio
+async def test_a_refusing_cache_admission_writes_nothing(tmp_path):
+    import aleph.vm.storage as storage_module
+    from aleph.vm.resources import InsufficientResourcesError
+
+    def refuse(root, size):
+        raise InsufficientResourcesError("no room", required={}, available={})
+
+    storage_module.set_cache_admission(refuse)
+    session, resp = _session([b"x" * 4], content_length=4)
+    try:
+        with patch("aleph.vm.storage.aiohttp.ClientSession", return_value=session):
+            with pytest.raises(InsufficientResourcesError):
+                await download_file_in_chunks("http://x/f", tmp_path / "f.part")
+    finally:
+        storage_module.set_cache_admission(None)
+    resp.content.read.assert_not_called()
+    assert not (tmp_path / "f.part").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_cache_hit_evicted_mid_touch_falls_through_to_the_download(tmp_path):
+    """The cache pass can unlink an entry between the is_file() check and the
+    mtime touch: reporting that as a hit would hand back a path that is gone."""
+    target = tmp_path / "f"
+    target.write_bytes(b"cached")
+
+    async def fake_download(url, part, max_bytes=None):
+        part.write_bytes(b"fresh")
+
+    with patch("aleph.vm.storage.os.utime", side_effect=FileNotFoundError("gone")):
+        with patch("aleph.vm.storage.download_file_in_chunks", side_effect=fake_download):
+            await download_file("http://x/f", target)
+
+    assert target.read_bytes() == b"fresh"

@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from shutil import make_archive
 from subprocess import CalledProcessError
@@ -80,6 +81,20 @@ async def file_downloaded_by_another_task(final_path: Path) -> None:
         await asyncio.sleep(0.1)
 
 
+# What the caches admit, set by the agent (agent.vm.cache.admit_download):
+# the download caches are budgeted, and a download that cannot fit is refused
+# before a byte is written rather than after the disk is full. A module hook
+# because storage.py knows nothing of the VM registry the budget is computed
+# against, and the agent cannot make the downloader import it.
+CacheAdmission = Callable[[Path, int], None]
+_cache_admission: CacheAdmission | None = None
+
+
+def set_cache_admission(fn: CacheAdmission | None) -> None:
+    global _cache_admission
+    _cache_admission = fn
+
+
 async def download_file_in_chunks(url: str, tmp_path: Path, *, max_bytes: int | None = None) -> None:
     # No total timeout: a 500+ MiB image over a slow gateway is a legitimate multi-minute
     # download. sock_read makes the request fail fast only if the transfer truly stalls.
@@ -95,6 +110,12 @@ async def download_file_in_chunks(url: str, tmp_path: Path, *, max_bytes: int | 
         if max_bytes is not None and resp.content_length is not None and resp.content_length > max_bytes:
             msg = f"{url} is {resp.content_length} bytes, above the {max_bytes} byte limit"
             raise FileTooLargeError(msg)
+
+        if _cache_admission is not None and resp.content_length is not None:
+            # Before the open: a refused download must leave nothing behind,
+            # and it may evict, so the room it is admitted against is the
+            # room it will actually find.
+            _cache_admission(tmp_path.parent, resp.content_length)
 
         with open(tmp_path, "wb") as cache_file:
             counter = 0
@@ -117,24 +138,33 @@ async def download_file_in_chunks(url: str, tmp_path: Path, *, max_bytes: int | 
         sys.stdout.flush()
 
 
-def _touch_cache_hit(local_path: Path) -> None:
-    """Bump the mtime of a cache hit for the LRU signal.
+def _touch_cache_hit(local_path: Path) -> bool:
+    """Bump the mtime of a cache hit for the LRU signal; False if it is gone.
 
     A cache hit served by a user without ownership or write access
     (chown_to_jailman ran on the original download) must still be returned:
-    the mtime touch is an LRU nicety, not a precondition.
+    the mtime touch is an LRU nicety, not a precondition. A file that
+    vanished is the opposite case and the caller has to know: the cache pass
+    evicts entries, and it can take this one between the is_file() check and
+    this touch.
     """
     try:
         os.utime(local_path, None)
+    except FileNotFoundError:
+        return False
     except OSError as error:
         logger.warning(f"Could not update mtime of cached file {local_path}: {error}")
+    return True
 
 
 async def download_file(url: str, local_path: Path, *, max_bytes: int | None = None) -> None:
     if local_path.is_file():
-        logger.debug(f"File already exists: {local_path}")
-        _touch_cache_hit(local_path)
-        return
+        if _touch_cache_hit(local_path) and local_path.is_file():
+            logger.debug(f"File already exists: {local_path}")
+            return
+        # Evicted while it was being served: fall through and fetch it again
+        # rather than hand back a path that is no longer there.
+        logger.info(f"Cached file {local_path} vanished while it was being read; downloading it again")
 
     # Avoid partial downloads and incomplete files by only moving the file when it's complete.
     tmp_path = Path(f"{local_path}.part")

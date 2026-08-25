@@ -43,6 +43,7 @@ from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash
 
 from aleph.vm.agent.vm.backup import sweep_expired_backups
+from aleph.vm.agent.vm.cache import evict_caches, parent_refs_of, remove_parent_device
 from aleph.vm.agent.vm.purge import _ITEM_HASH_PATTERN, purge_vm_storage
 from aleph.vm.agent.vm.reclaimable import (
     ReclaimableMarker,
@@ -73,6 +74,7 @@ class ReconcileReport:
     purged_orphans: list[str] = field(default_factory=list)
     marked_orphans: list[str] = field(default_factory=list)
     evicted: list[str] = field(default_factory=list)
+    cache_evicted: list[Path] = field(default_factory=list)
     parts_removed: int = 0
     side_dirs_removed: int = 0
     backups_removed: int = 0
@@ -82,6 +84,7 @@ class ReconcileReport:
         return (
             f"orphans purged={len(self.purged_orphans)} marked={len(self.marked_orphans)}, "
             f"evicted={len(self.evicted)}, parts={self.parts_removed}, side dirs={self.side_dirs_removed}, "
+            f"cache entries={len(self.cache_evicted)}, "
             f"backups={self.backups_removed}, freed={self.bytes_freed} bytes"
         )
 
@@ -247,7 +250,7 @@ def reconcile_storage(
     is_live: Callable[[str], bool] | None = None,
 ) -> ReconcileReport:
     """One reconciliation pass: namespaces, .part files, side directories,
-    the retention budget, then the backups.
+    the retention budget, the download caches, then the backups.
 
     ``live`` is the set of hashes a live VM owns. Pass it when the caller
     runs this off the event loop (see ``live_hashes``); it defaults to
@@ -268,6 +271,7 @@ def reconcile_storage(
     _sweep_parts(now, guard, report, dry_run=dry_run)
     _sweep_side_dirs(live, now, guard, report, dry_run=dry_run)
     _enforce_retention_budget(report, dry_run=dry_run, is_live=is_live)
+    _enforce_cache_budget(registry, live, report, dry_run=dry_run, is_live=is_live)
     if not dry_run:
         report.backups_removed = sweep_expired_backups(now)
     logger.info("Storage reconcile%s: %s", " (dry run)" if dry_run else "", report.summary())
@@ -557,6 +561,36 @@ def _enforce_retention_budget(
             _evict(directory.name, report, dry_run=dry_run, is_live=is_live)
 
 
+def _enforce_cache_budget(
+    registry: AgentVmRegistry,
+    live: Collection[str],
+    report: ReconcileReport,
+    *,
+    dry_run: bool,
+    is_live: Callable[[str], bool],
+) -> None:
+    """Bring the download caches under CACHE_BUDGET.
+
+    Which cache entries are in use is read from the registry's messages, and
+    from there alone: a hash is not enough, the message is what names the
+    runtime, the code and the parent images. So a live VM the registry does
+    not know makes the referenced set incomplete, and this pass refuses to
+    run rather than evict the runtime of a VM that is running on it. That is
+    the same fail-closed rule the startup pass applies to purging, for the
+    same reason: the registry is rehydrated from the agent DB and can be
+    empty or partial while the supervisor still runs VMs.
+    """
+    unknown = sorted(namespace for namespace in live if namespace not in registry)
+    if unknown:
+        logger.warning(
+            "Skipping the cache pass: %d live VM(s) have no registry record (%s), so what they reference is unknown",
+            len(unknown),
+            ", ".join(unknown[:3]),
+        )
+        return
+    report.cache_evicted = evict_caches(registry, dry_run=dry_run, is_live=is_live)
+
+
 def make_room(pool: StoragePool, needed_bytes: int, *, live: Collection[str] | None = None) -> int:
     """Evict reclaimable directories on ``pool``, oldest first, until a
     ``needed_bytes`` create fits on it. Returns the bytes freed on ``pool``.
@@ -623,7 +657,23 @@ async def reconcile_now(app: web.Application, *, dry_run: bool = False) -> Recon
     registry = app["vm_registry"]
     async with _pass_lock(app):
         live, _running = await _live_set(app)
-        return await _pass(registry, live, dry_run=dry_run)
+        report = await _pass(registry, live, dry_run=dry_run)
+    await _remove_evicted_parent_devices(report)
+    return report
+
+
+async def _remove_evicted_parent_devices(report: ReconcileReport) -> None:
+    """Tear down the shared devices of the parent images the pass evicted.
+
+    The pass itself runs in a worker thread and dmsetup has to be awaited, so
+    this is the loop side of the cache pass: nothing else will pick these up,
+    since the cache entry they belong to is already gone.
+    """
+    for ref in parent_refs_of(report.cache_evicted):
+        try:
+            await remove_parent_device(ref)
+        except Exception:
+            logger.exception("Removing the device of the evicted parent image %s failed", ref)
 
 
 async def _pass(registry: AgentVmRegistry, live: set[str], *, dry_run: bool) -> ReconcileReport:
@@ -703,8 +753,10 @@ async def reconcile_at_startup(app: web.Application) -> None:
         live, running = await _live_set(app)
         refusal = _startup_refusal(registry, running)
         _log_startup_preview(await _pass(registry, live, dry_run=True), refusal=refusal)
-        if refusal is None:
-            await _pass(registry, live, dry_run=False)
+        if refusal is not None:
+            return
+        report = await _pass(registry, live, dry_run=False)
+    await _remove_evicted_parent_devices(report)
 
 
 async def periodic_reconcile(app: web.Application) -> None:

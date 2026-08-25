@@ -534,3 +534,42 @@ async def test_two_reconcile_passes_do_not_overlap(pools, registry, monkeypatch)
     await asyncio.gather(reconcile_now(app), reconcile_now(app))
 
     assert order == ["enter", "exit", "enter", "exit"]
+
+
+def test_reconcile_runs_the_cache_pass(pools, registry, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
+    stale = pools["runtime"] / "stale"
+    stale.write_bytes(b"x" * 4096)
+
+    report = reconcile_storage(registry, now=NOW)
+
+    assert report.cache_evicted == [stale]
+    assert not stale.exists()
+
+
+def test_the_cache_pass_is_skipped_when_a_live_vm_has_no_record(pools, registry, monkeypatch, caplog):  # noqa: F811
+    """Cache references are read from the registry's messages alone, so a VM
+    the supervisor runs but the registry does not know makes the referenced
+    set incomplete. Fail closed rather than evict a running VM's runtime."""
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
+    stale = pools["runtime"] / "stale"
+    stale.write_bytes(b"x" * 4096)
+
+    report = reconcile_storage(registry, now=NOW, live={LIVE, VM_HASH})
+
+    assert report.cache_evicted == []
+    assert stale.exists()
+    assert "cache pass" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_reconcile_now_removes_the_devices_of_evicted_parents(pools, registry, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
+    (pools["runtime"] / "stale").write_bytes(b"x" * 4096)
+    removed = []
+    monkeypatch.setattr(reconciler_module, "remove_parent_device", AsyncMock(side_effect=removed.append))
+
+    report = await reconcile_now(_app(registry))
+
+    assert [path.name for path in report.cache_evicted] == ["stale"]
+    assert removed == ["stale"]
