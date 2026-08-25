@@ -915,7 +915,7 @@ async def operate_backup_download(request: web.Request) -> web.StreamResponse:
             response.headers["X-Source-Size"] = str(total_source_size)
 
         await response.prepare(request)
-        async for chunk in backups.download_backup(str(vm_hash), BackupId(backup_id)):
+        async for chunk in await backups.download_backup(str(vm_hash), BackupId(backup_id)):
             await response.write(chunk)
         await response.write_eof()
         return response

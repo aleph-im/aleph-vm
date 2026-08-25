@@ -17,6 +17,7 @@ disk is the record; only in-flight and failed runs live in memory.
 from __future__ import annotations
 
 import asyncio
+from typing import BinaryIO
 import logging
 import shutil
 import subprocess
@@ -308,16 +309,16 @@ class BackupManager:
         return infos
 
     async def download_backup(self, vm_hash: str, backup_id: BackupId) -> AsyncIterator[bytes]:
+        """Open the archive and return its chunk stream. The lookup happens
+        here, at call time, so a missing archive raises before the caller
+        has committed a response; the generator only reads."""
         validate_backup_id(vm_hash, backup_id)
         tar_path = get_backup_directory() / f"{backup_id}.tar"
-        if not tar_path.exists():
-            raise BackupNotFoundError(backup_id)
-        with tar_path.open("rb") as tar_file:
-            while True:
-                data = await asyncio.to_thread(tar_file.read, DOWNLOAD_CHUNK_BYTES)
-                if not data:
-                    return
-                yield data
+        try:
+            tar_file = tar_path.open("rb")
+        except FileNotFoundError:
+            raise BackupNotFoundError(backup_id) from None
+        return _stream_file(tar_file)
 
     def delete_backup(self, vm_hash: str, backup_id: BackupId) -> None:
         validate_backup_id(vm_hash, backup_id)
@@ -400,3 +401,12 @@ class BackupManager:
             await self._supervisor.stop_vm(vm_id)
         await restore_rootfs(new_rootfs, current_rootfs)
         await self._supervisor.start_vm(vm_id)
+
+
+async def _stream_file(tar_file: BinaryIO) -> AsyncIterator[bytes]:
+    with tar_file:
+        while True:
+            data = await asyncio.to_thread(tar_file.read, DOWNLOAD_CHUNK_BYTES)
+            if not data:
+                return
+            yield data

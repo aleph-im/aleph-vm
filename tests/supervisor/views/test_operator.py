@@ -2437,13 +2437,16 @@ async def test_operator_restore_unauthorized_reads_registry(aiohttp_client, mock
 
 
 def _backup_stream(chunks):
-    """download_backup is a callable returning an async iterator of bytes."""
+    """download_backup is a coroutine returning an async iterator of bytes."""
 
-    async def _gen(vm_hash, backup_id):
+    async def _gen():
         for data in chunks:
             yield data
 
-    return _gen
+    async def _open(vm_hash, backup_id):
+        return _gen()
+
+    return _open
 
 
 async def _seed_authorized_backup_app(aiohttp_client, mocker, **backup_overrides):

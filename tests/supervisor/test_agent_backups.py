@@ -424,7 +424,7 @@ async def test_download_backup_streams_the_archive(backup_dir):
     backup_dir.mkdir(parents=True)
     (backup_dir / f"{backup_id}.tar").write_bytes(content)
 
-    chunks = [chunk async for chunk in manager.download_backup(VM_HASH, BackupId(backup_id))]
+    chunks = [chunk async for chunk in await manager.download_backup(VM_HASH, BackupId(backup_id))]
 
     assert [len(c) for c in chunks] == [1024 * 1024, 1024 * 1024, 4]
     assert b"".join(chunks) == content
@@ -434,8 +434,9 @@ async def test_download_backup_streams_the_archive(backup_dir):
 async def test_download_backup_unknown_id_raises(backup_dir):
     manager = BackupManager(_supervisor())
     with pytest.raises(BackupNotFoundError):
-        async for _ in manager.download_backup(VM_HASH, BackupId(f"{VM_HASH}-20990101T000000Z")):
-            pass
+        # Raised at call time, before any chunk is consumed: the view has
+        # not sent headers yet when this fires.
+        await manager.download_backup(VM_HASH, BackupId(f"{VM_HASH}-20990101T000000Z"))
 
 
 def test_delete_backup_removes_archive_and_sidecars(backup_dir):
