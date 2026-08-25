@@ -119,9 +119,12 @@ pub fn freeze_guest(state: &DaemonState, vm_id: &str) -> Result<FreezeOutcome, R
 /// `LocalSupervisor.thaw_guest`: thaw a guest frozen by [`freeze_guest`]; a
 /// no-op when nothing is frozen (including after the auto-thaw fired).
 pub fn thaw_guest(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
+    // Drop the record before looking the VM up: a VM gone between freeze
+    // and thaw must not keep its record (the auto-thaw would then fire
+    // against a dead guest agent).
+    let frozen = state.frozen_guests.lock().remove(vm_id);
     crate::lifecycle::entry_snapshot(state, vm_id)
         .ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
-    let frozen = state.frozen_guests.lock().remove(vm_id);
     if let Some(frozen) = frozen {
         try_fsthaw(&frozen.qga_socket, vm_id);
     }
@@ -288,6 +291,19 @@ mod tests {
         // A thaw of an unfrozen guest is a no-op, not a second QGA thaw.
         thaw_guest(&state, VM).unwrap();
         assert_eq!(commands(&requests).len(), 2);
+    }
+
+    #[test]
+    fn thaw_of_a_vanished_vm_drops_the_record_before_failing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (socket, _requests) = fake_qga_server(dir.path());
+        let state = state_with(entry_with_qga(Some(&socket)), true);
+        assert!(freeze_guest(&state, VM).unwrap().frozen());
+
+        state.world.blocking_write().entries.remove(VM);
+
+        assert!(matches!(thaw_guest(&state, VM), Err(RpcError::NotFound(_))));
+        assert!(!state.frozen_guests.is_frozen(VM));
     }
 
     #[test]
