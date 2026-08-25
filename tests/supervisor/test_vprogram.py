@@ -155,8 +155,10 @@ async def test_update_allocations_starts_v_programs(aiohttp_client, mocker, sche
 @pytest.mark.asyncio
 async def test_update_allocations_stops_descheduled_vprogram(aiohttp_client, mocker, scheduler_auth):
     """The scheduler is the single source of truth for v-programs: absence from
-    the allocation stops them, despite being credit-paid and confidential
-    (both of which spare other VM types)."""
+    the allocation retires them as GONE, despite being credit-paid and
+    confidential (both of which spare other VM types)."""
+    from aleph.vm.agent.vm.retire import RetireReason
+
     message = load_vprogram_message()
     vm_hash = str(message.item_hash)
 
@@ -167,17 +169,17 @@ async def test_update_allocations_stops_descheduled_vprogram(aiohttp_client, moc
     fake_supervisor = MagicMock(delete_vm=AsyncMock(), list_vms=AsyncMock(return_value=[_running_vm_info(vm_hash)]))
     app["supervisor"] = fake_supervisor
 
-    mock_delete_records = mocker.patch("aleph.vm.agent.views.delete_records_for_vm", new_callable=AsyncMock)
+    retire = mocker.patch("aleph.vm.agent.views.retire_vm", new_callable=AsyncMock)
     client = await aiohttp_client(app)
 
     body, headers = scheduler_auth({"persistent_vms": []})
     response = await client.post("/control/allocations", data=body, headers=headers)
     assert response.status == 200
-    resp_json = await response.json()
-    assert vm_hash in resp_json["stopped"]
-    fake_supervisor.delete_vm.assert_awaited_once_with(VmId(vm_hash))
-    mock_delete_records.assert_awaited_once_with(vm_hash)
-    assert ItemHash(vm_hash) not in app["vm_registry"]
+    assert vm_hash in (await response.json())["stopped"]
+    retire.assert_awaited_once_with(
+        ItemHash(vm_hash), RetireReason.GONE, supervisor=fake_supervisor, registry=app["vm_registry"]
+    )
+    fake_supervisor.delete_vm.assert_not_awaited()
 
 
 @pytest.mark.asyncio
