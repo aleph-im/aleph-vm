@@ -48,6 +48,7 @@ from aleph.vm.agent.vm.reclaimable import (
 from aleph.vm.agent.vm.reconciler import (
     _release_cache_devices,
     _still_on_disk,
+    _teardown_orphan_devices,
     live_hashes,
     reconcile_storage,
     supervisor_hashes,
@@ -262,6 +263,14 @@ def _reconcile(registry: AgentVmRegistry, out: TextIO, *, dry_run: bool, trust_r
             "Warning: supervisor unreachable; showing what a registry-only pass would purge; "
             "pass --trust-registry to purge using the registry alone\n"
         )
+    # Mirrors reconcile_now: the devices of every namespace nothing owns go
+    # before the walk, or the purge that follows refuses those directories
+    # (a dm target still holds their volume files) exactly as the daemon's
+    # passes used to. Only when the supervisor answered, since removing the
+    # device of a VM that is merely unlisted takes that VM's disk with it:
+    # --trust-registry buys a purge on the registry's word, not a teardown.
+    if not effective_dry_run and reachable:
+        asyncio.run(_teardown_orphan_devices(live))
     report = reconcile_storage(registry, dry_run=effective_dry_run, live=live, live_known=reachable)
     prefix = "Dry run: " if effective_dry_run else "Reconciled: "
     out.write(prefix + report.summary() + "\n")

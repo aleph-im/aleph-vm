@@ -551,12 +551,19 @@ process*:
   applies), reclaim reports that and exits non-zero rather than claiming
   success.
 - `storage reconcile [--dry-run] [--trust-registry]`: run one
-  `reconcile_storage()` pass, printing what it removed (or, under
-  `--dry-run`, what it would remove), then tears down the devices of any
-  evicted runtime cache parent the same way `reconcile_now` /
-  `reconcile_at_startup` do (`remove_parent_device` per evicted ref, then
-  `sweep_leaked_cache_loops`), so an evicted entry never leaves
-  `/dev/mapper/<ref>` and its loop device pinning the deleted inode.
+  `reconcile_storage()` pass with the daemon's two device steps around it,
+  or the CLI would keep refusing what the daemon reclaims. Before the pass,
+  `_teardown_orphan_devices` removes the dm devices of every namespace no
+  live VM owns, so the purge that follows is not refused on a volume file a
+  target still holds; that step needs the supervisor's answer and is skipped
+  under `--dry-run` and when the supervisor is unreachable, `--trust-registry`
+  included (it buys a purge on the registry's word, not a teardown). After
+  the pass, and printing what it removed (or, under `--dry-run`, what it
+  would remove), it tears down the devices of any evicted runtime cache
+  parent the same way `reconcile_now` / `reconcile_at_startup` do
+  (`remove_parent_device` per evicted ref, then `sweep_leaked_cache_loops`),
+  so an evicted entry never leaves `/dev/mapper/<ref>` and its loop device
+  pinning the deleted inode.
 
 `reconcile` and `reclaim` can purge, so they apply the same fail-closed rule
 `reconciler._startup_refusal` applies to the daemon's own startup pass: a

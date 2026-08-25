@@ -35,6 +35,24 @@ def _no_backups(mocker):
     mocker.patch("aleph.vm.agent.vm.reconciler.sweep_expired_backups", return_value=0)
 
 
+@pytest.fixture(autouse=True)
+def _no_device_mapper(tmp_path, monkeypatch):
+    """Never let a test read the host's real /dev/mapper: the reconcile the
+    CLI runs tears down the devices of every namespace nothing owns."""
+    empty = tmp_path / "empty-mapper"
+    empty.mkdir()
+    monkeypatch.setattr(reconciler_module, "DEVICE_MAPPER_DIRECTORY", str(empty))
+
+
+def _fake_mapper(monkeypatch, tmp_path, *names: str) -> Path:
+    mapper = tmp_path / "mapper"
+    mapper.mkdir(exist_ok=True)
+    for name in names:
+        (mapper / name).touch()
+    monkeypatch.setattr(reconciler_module, "DEVICE_MAPPER_DIRECTORY", str(mapper))
+    return mapper
+
+
 def _fake_supervisor(*vm_ids: str, fails: bool = False):
     """A supervisor handle that lists ``vm_ids``, or cannot be asked at all
     (an unreachable daemon: a connection error, a timeout, any of it)."""
@@ -316,3 +334,42 @@ def test_cli_main_dispatches_storage_subcommand(mocker):
         agent_cli.main()
     assert exit_info.value.code == 7
     storage_main.assert_called_once_with(["status"])
+
+
+def test_reconcile_tears_down_the_devices_of_an_orphan_namespace(pools, registry, monkeypatch, tmp_path):  # noqa: F811
+    """Same parity as the cache devices: without this the CLI keeps refusing
+    the dm-held directories the daemon's own pass now reclaims."""
+    _fake_mapper(monkeypatch, tmp_path, f"{VM_HASH}_rootfs", f"{LIVE}_rootfs")
+    torn = []
+    monkeypatch.setattr(reconciler_module, "teardown_namespace_devices", AsyncMock(side_effect=torn.append))
+
+    code, _out = _run(["reconcile"], registry)
+
+    assert code == 0
+    assert torn == [VM_HASH]
+
+
+def test_reconcile_dry_run_never_touches_orphan_devices(pools, registry, monkeypatch, tmp_path):  # noqa: F811
+    _fake_mapper(monkeypatch, tmp_path, f"{VM_HASH}_rootfs")
+    torn = []
+    monkeypatch.setattr(reconciler_module, "teardown_namespace_devices", AsyncMock(side_effect=torn.append))
+
+    code, _out = _run(["reconcile", "--dry-run"], registry)
+
+    assert code == 0
+    assert torn == []
+
+
+def test_reconcile_leaves_orphan_devices_when_the_supervisor_is_unreachable(pools, registry, monkeypatch, tmp_path):  # noqa: F811
+    """--trust-registry buys a purge on the registry's word, not a teardown:
+    a VM the registry has forgotten but the daemon still runs would lose its
+    disk with its device."""
+    _fake_mapper(monkeypatch, tmp_path, f"{VM_HASH}_rootfs")
+    torn = []
+    monkeypatch.setattr(reconciler_module, "teardown_namespace_devices", AsyncMock(side_effect=torn.append))
+    monkeypatch.setattr(cli, "_open_supervisor", lambda: _fake_supervisor(fails=True))
+
+    code, _out = _run(["reconcile", "--trust-registry"], registry)
+
+    assert code == 0
+    assert torn == []
