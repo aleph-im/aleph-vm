@@ -62,8 +62,7 @@ up repeatedly in the RPC surface:
 - No request carries a storage-erase flag. The agent allocates a VM's
   volumes and hands the supervisor resolved paths, so the agent owns their
   deletion; `DeleteVm` releases the supervisor's handles on the disks and
-  leaves the bytes alone (`DeleteVmRequest` field 2, the former `wipe`, is
-  reserved), and reinstall is agent orchestration over `StopVm`/`StartVm`
+  leaves the bytes alone, and reinstall is agent orchestration over `StopVm`/`StartVm`
   or `DeleteVm`/`CreateVm` rather than an RPC.
 - `CreateVm` is idempotent on `vm_id`: resending the same spec for a live VM
   returns its current `VmInfo`; a different spec, or a collision, fails

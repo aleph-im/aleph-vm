@@ -353,8 +353,7 @@ supervisor also never deletes: it cannot tell a per-VM volume from a shared
 cache entry (a program's `rootfs_path` *is* `RUNTIME_CACHE/<runtime_ref>`,
 shared by every program on that runtime), and a spec-only view misses the
 namespace directory itself, volumes on other pools and the staging
-directories. `DeleteVm` therefore takes no erase flag at all
-(`DeleteVmRequest` field 2, the former `wipe`, is reserved).
+directories. `DeleteVm` therefore takes no erase flag at all.
 
 Deletion lives in `src/aleph/vm/agent/vm/purge.py`, keyed by `vm_hash` and
 scoped to directories the agent created, so a shared cache entry is not

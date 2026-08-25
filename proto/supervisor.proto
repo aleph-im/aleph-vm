@@ -341,9 +341,7 @@ message ListVmsRequest    {}
 message ListVmsResponse   { repeated VmInfo vms = 1; }
 message DeleteVmRequest {
   string vm_id = 1;
-  reserved 2;                        // was `wipe`: storage is the agent's to delete, never the supervisor's
-  reserved "wipe";
-  bool keep_port_mappings = 3;       // the delete is part of a delete+recreate cycle: preserve persisted
+  bool keep_port_mappings = 2;       // the delete is part of a delete+recreate cycle: preserve persisted
                                      // host-port forwards
 }
 message DeleteVmResponse  {}
