@@ -71,6 +71,37 @@ async def test_existing_file_is_touched_on_hit(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_existing_file_touch_failure_does_not_fail_the_cache_hit(tmp_path):
+    """A cache hit served by a non-owning, non-jailman user can't utime the
+    cached file (chown_to_jailman ran after the original download); that must
+    not turn a perfectly usable cache hit into a failure."""
+    target = tmp_path / "f"
+    target.write_bytes(b"cached")
+
+    with patch("aleph.vm.storage.os.utime", side_effect=PermissionError("no permission")):
+        await download_file("http://x/f", target)
+
+    assert target.is_file()
+    assert target.read_bytes() == b"cached"
+
+
+@pytest.mark.asyncio
+async def test_get_existing_file_passes_the_data_cap(mocker, tmp_path):
+    import aleph.vm.storage as storage_module
+    from aleph.vm.conf import settings
+
+    mocker.patch.object(settings, "DATA_CACHE", tmp_path / "data")
+    mocker.patch.object(settings, "FAKE_DATA_PROGRAM", None)
+    mocker.patch.object(storage_module, "_get_content_url", AsyncMock(return_value="http://x/f"))
+    mocker.patch.object(storage_module, "chown_to_jailman", AsyncMock())
+    download = mocker.patch.object(storage_module, "download_file", AsyncMock())
+
+    await storage_module.get_existing_file("ref")
+
+    download.assert_awaited_once_with("http://x/f", tmp_path / "data" / "ref", max_bytes=settings.MAX_DATA_ARCHIVE_SIZE)
+
+
+@pytest.mark.asyncio
 async def test_getters_pass_their_caps(mocker, tmp_path):
     import aleph.vm.storage as storage_module
     from aleph.vm.conf import settings

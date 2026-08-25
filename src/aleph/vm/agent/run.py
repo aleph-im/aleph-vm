@@ -672,7 +672,8 @@ async def create_vm_execution_or_raise_http_error(
             text="This CRN cannot host the requested workload at this time.",
         ) from error
     except FileTooLargeError as error:
-        raise HTTPInternalServerError(reason=error.args[0]) from error
+        # An oversized resource is the message's fault, not the node's.
+        raise HTTPBadRequest(reason=error.args[0]) from error
     except VmStartupError as error:
         # Created but never reached RUNNING (terminal status or start timeout):
         # a distinct, expected outcome, not the generic "unhandled error".
@@ -722,7 +723,8 @@ def _raise_http_for_program_error(error: Exception, vm_hash: ItemHash) -> None:
             text="This CRN cannot host the requested workload at this time.",
         ) from error
     if isinstance(error, FileTooLargeError):
-        raise HTTPInternalServerError(reason=str(error) or "File too large") from error
+        # An oversized resource is the message's fault, not the node's.
+        raise HTTPBadRequest(reason=str(error) or "File too large") from error
     if isinstance(error, VmStartupError):
         # Created but never reached RUNNING (terminal status or start timeout):
         # a distinct, expected outcome, not the generic "unhandled error".

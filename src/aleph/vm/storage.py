@@ -117,10 +117,23 @@ async def download_file_in_chunks(url: str, tmp_path: Path, *, max_bytes: int | 
         sys.stdout.flush()
 
 
+def _touch_cache_hit(local_path: Path) -> None:
+    """Bump the mtime of a cache hit for the LRU signal.
+
+    A cache hit served by a user without ownership or write access
+    (chown_to_jailman ran on the original download) must still be returned:
+    the mtime touch is an LRU nicety, not a precondition.
+    """
+    try:
+        os.utime(local_path, None)
+    except OSError as error:
+        logger.warning(f"Could not update mtime of cached file {local_path}: {error}")
+
+
 async def download_file(url: str, local_path: Path, *, max_bytes: int | None = None) -> None:
     if local_path.is_file():
         logger.debug(f"File already exists: {local_path}")
-        os.utime(local_path, None)
+        _touch_cache_hit(local_path)
         return
 
     # Avoid partial downloads and incomplete files by only moving the file when it's complete.
@@ -583,7 +596,7 @@ async def get_existing_file(ref: str) -> Path:
 
     cache_path = Path(settings.DATA_CACHE) / ref
     url = await _get_content_url(ref)
-    await download_file(url, cache_path)
+    await download_file(url, cache_path, max_bytes=settings.MAX_DATA_ARCHIVE_SIZE)
     await chown_to_jailman(cache_path)
     return cache_path
 

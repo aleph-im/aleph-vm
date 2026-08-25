@@ -34,5 +34,5 @@ async def download_volume_by_ref(
 
     dest_path = destination / f"{item_hash}.qcow2"
     url = await _get_content_url(item_hash)
-    await download_file(url, dest_path)
+    await download_file(url, dest_path, max_bytes=settings.MAX_RUNTIME_ARCHIVE_SIZE)
     return dest_path
