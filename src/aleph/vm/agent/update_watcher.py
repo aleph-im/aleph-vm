@@ -10,9 +10,9 @@ from aleph_message.models import (
 )
 
 from aleph.vm.agent.pubsub import PubSub
+from aleph.vm.agent.vm.retire import RetireReason, retire_vm
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.supervisor_interface.abc import Supervisor
-from aleph.vm.supervisor_interface.errors import VmNotFoundError
 from aleph.vm.supervisor_interface.types import VmId
 
 logger = logging.getLogger(__name__)
@@ -88,12 +88,9 @@ class UpdateWatcher:
             await pubsub.msubscribe(*refs)
             logger.info("Update received for %s, reaping", vm_id)
             # An update reap is a delete+recreate cycle, not a dealloc: the VM
-            # is redeployed with the updated message, so keep the persisted
-            # host-port forwards for the recreated VM to reload.
-            await self.supervisor.delete_vm(vm_id, keep_port_mappings=True)
-            reaped = True
-        except VmNotFoundError:
-            logger.debug("Update-watch: VM %s already gone", vm_id)
+            # is redeployed with the updated message, so RECREATE keeps the
+            # persisted host-port forwards for the recreated VM to reload.
+            await retire_vm(str(vm_id), RetireReason.RECREATE, supervisor=self.supervisor)
             reaped = True
         except asyncio.CancelledError:
             raise
