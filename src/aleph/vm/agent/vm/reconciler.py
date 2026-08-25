@@ -520,10 +520,17 @@ def _evict(
         logger.debug("Not evicting %s: its directories are already gone", namespace)
         return 0
     size = _dir_bytes(namespace)
-    report.evicted.append(namespace)
-    report.bytes_freed += size
     if not dry_run:
         purge_vm_storage(namespace)
+        if _still_on_disk(namespace):
+            # Same rule as the namespace pass: a directory the purge refuses
+            # (a device-mapper target still holds its volumes) is not space
+            # anyone got back, so make_room must not count it towards the
+            # create it is trying to fit.
+            logger.warning("Eviction of %s left directories behind; not counting them as reclaimed", namespace)
+            return 0
+    report.evicted.append(namespace)
+    report.bytes_freed += size
     return size
 
 
