@@ -305,14 +305,21 @@ A namespace directory with no marker belongs to a live VM. Under
   "reclaimable_since": "<iso timestamp>",
   "reason": "gone | orphan",
   "size_bytes": 12345,
-  "depends_on": ["<parent image ref>", "..."]
+  "depends_on": ["<parent image ref>", "..."],
+  "owner": "<owner address>"
 }
 ```
 
 One marker per pool the VM spans, so each pool's budget is computed from its
 own tree. `depends_on` names the cache entries (parent images) the volumes
 still need, so the cache pass cannot evict a parent from under a retained
-overlay. Under `reap` no marker is ever written: the purge is immediate.
+overlay. `owner` is the address from the VM's message, copied in at `GONE`
+because the marker outlives every other record of it (the registry record is
+forgotten and the DB rows are deleted), and it is what lets the node
+authorize the owner's own erase of retained data; it is optional, so markers
+written before the field and orphan markers for a VM whose message the node
+never held simply have none. Under `reap` no marker is ever written: the
+purge is immediate.
 A create for the same hash adopts the directory (the marker is unlinked and
 the volumes are reused through the existing sticky placement in
 `volume_path_for`), which is what `reconciler.creating()` does on entry.
