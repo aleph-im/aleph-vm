@@ -391,7 +391,11 @@ rehydrated empty while the supervisor still runs VMs.
 a registry record, or a retained directory left by a `GONE` under `keep`.
 The supervisor's own knowledge of the VM is not a precondition (it forgets
 a VM on restart, while the disks stay), so `operate_erase` 404s only when
-neither the registry nor a marker knows the hash.
+neither the registry nor a marker knows the hash. Ownership is always
+proven: against the message when the registry or the agent DB still holds
+one, and otherwise against the `owner` address in the marker, which is why
+`GONE` writes it there. A marker with no owner is refused (403), never
+wiped on request.
 
 The deletion primitives live in `src/aleph/vm/agent/vm/purge.py`, keyed by
 `vm_hash` and scoped to directories the agent created, so a shared cache
