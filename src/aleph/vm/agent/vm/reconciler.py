@@ -60,9 +60,11 @@ from aleph.vm.agent.vm.reclaimable import (
     mark_reclaimable,
     read_marker,
 )
+from aleph.vm.agent.vm.retire import teardown_namespace_devices
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
 from aleph.vm.storage import MOUNT_ROOT  # /mnt/{namespace}_{volume name}
+from aleph.vm.storage import DEVICE_MAPPER_DIRECTORY
 from aleph.vm.storage_budget import parse_budget
 from aleph.vm.storage_pools import StoragePool, get_pools, iter_namespace_dirs
 from aleph.vm.supervisor_interface.abc import Supervisor
@@ -696,9 +698,58 @@ async def reconcile_now(app: web.Application, *, dry_run: bool = False) -> Recon
     registry = app["vm_registry"]
     async with _pass_lock(app):
         live, running = await _live_set(app)
+        if not dry_run and running is not None:
+            await _teardown_orphan_devices(live)
         report = await _pass(registry, live, dry_run=dry_run, live_known=running is not None)
     await _release_cache_devices(report, dry_run=dry_run)
     return report
+
+
+def orphan_device_namespaces(live: Collection[str]) -> list[str]:
+    """The VM hashes device-mapper still holds devices for and nothing owns.
+
+    The inverse of the naming ``create_devmapper`` uses,
+    ``<namespace>_<volume name>``, read straight out of /dev/mapper. Anything
+    that is not a plausible item hash is not a VM device and is not this
+    pass's business.
+    """
+    namespaces: set[str] = set()
+    try:
+        devices = list(Path(DEVICE_MAPPER_DIRECTORY).glob("*_*"))
+    except OSError:
+        logger.warning("Could not list %s", DEVICE_MAPPER_DIRECTORY, exc_info=True)
+        return []
+    for device in devices:
+        namespace = device.name.split("_", 1)[0]
+        if not _plausible(namespace) or namespace in live or is_creating(namespace):
+            continue
+        namespaces.add(namespace)
+    return sorted(namespaces)
+
+
+async def _teardown_orphan_devices(live: Collection[str]) -> list[str]:
+    """Tear down the devices of the VMs the walk is about to find unowned.
+
+    ``retire_vm`` is the normal inverse of ``create_devmapper``, and it reads
+    the volumes to remove from the VM's message. Two paths have no message: a
+    create that failed before its registry commit, and a GONE for a VM the
+    registry never knew. What they leave is a dm target holding a volume file,
+    which ``purge_vm_storage`` then refuses to unlink on every pass, forever.
+
+    So it runs before the walk, not inside it: the purge that follows can only
+    reclaim a directory whose devices are already gone. On the event loop for
+    the same reason the cache pass's teardown is, dmsetup has to be awaited,
+    and only when the live set is trustworthy: removing the device of a VM
+    that is merely unlisted takes that VM's disk with it.
+    """
+    namespaces = orphan_device_namespaces(live)
+    for namespace in namespaces:
+        logger.warning("Tearing down the device-mapper devices of %s: no live VM owns them", namespace)
+        try:
+            await teardown_namespace_devices(namespace)
+        except Exception:
+            logger.exception("Device teardown of the orphan %s failed", namespace)
+    return namespaces
 
 
 async def _release_cache_devices(report: ReconcileReport, *, dry_run: bool) -> None:
@@ -805,6 +856,7 @@ async def reconcile_at_startup(app: web.Application) -> None:
         _log_startup_preview(await _pass(registry, live, dry_run=True, live_known=live_known), refusal=refusal)
         if refusal is not None:
             return
+        await _teardown_orphan_devices(live)
         report = await _pass(registry, live, dry_run=False, live_known=live_known)
     await _release_cache_devices(report, dry_run=False)
 

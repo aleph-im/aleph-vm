@@ -25,6 +25,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from enum import Enum
+from pathlib import Path
 
 from aleph_message.models import ItemHash
 
@@ -38,7 +39,7 @@ from aleph.vm.agent.vm.purge import (
 from aleph.vm.agent.vm.reclaimable import depends_on_from_content, mark_reclaimable
 from aleph.vm.agent.vm_registry import AgentVmRecord, AgentVmRegistry
 from aleph.vm.conf import settings
-from aleph.vm.storage import remove_devmapper
+from aleph.vm.storage import DEVICE_MAPPER_DIRECTORY, remove_devmapper
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
 from aleph.vm.supervisor_interface.types import VmId
@@ -70,6 +71,39 @@ def set_after_gone_hook(hook: AfterGoneHook | None) -> None:
     _after_gone = hook
 
 
+async def teardown_namespace_devices(namespace: str) -> None:
+    """Remove a VM's device-mapper snapshots without knowing its volumes.
+
+    The inverse of ``storage.device_name_for``: ``create_devmapper`` names a
+    snapshot ``<namespace>_<volume name>``, so when no message is left to
+    enumerate the volumes from, /dev/mapper is the only thing that still
+    remembers what this VM built. Two paths arrive here with no record: a
+    create that failed before the registry commit (FAILED_CREATE is raised
+    from the create path, where the record is written only after ``create_vm``
+    returns) and a GONE for a VM the registry never knew. Without this their
+    volume files stay held by a dm target, and ``purge_vm_storage`` refuses
+    such a directory on every pass, forever.
+
+    ``<namespace>_base`` is skipped: ``remove_devmapper`` removes it itself,
+    after the last snapshot of this VM is gone.
+    """
+    namespace = _checked_namespace(namespace)
+    mapper = Path(DEVICE_MAPPER_DIRECTORY)
+    try:
+        devices = sorted(mapper.glob(f"{namespace}_*"))
+    except OSError:
+        logger.warning("Could not list the device-mapper devices of %s", namespace, exc_info=True)
+        return
+    for device in devices:
+        volume_name = device.name[len(namespace) + 1 :]
+        if not volume_name or volume_name == "base":
+            continue
+        try:
+            await remove_devmapper(namespace, volume_name)
+        except Exception:
+            logger.exception("Device teardown of %s/%s failed", namespace, volume_name)
+
+
 async def teardown_vm_devices(namespace: str, record: AgentVmRecord | None) -> None:
     """Remove the device-mapper snapshots and loop devices of a VM's
     parent-backed volumes.
@@ -81,6 +115,8 @@ async def teardown_vm_devices(namespace: str, record: AgentVmRecord | None) -> N
     still pins.
     """
     if record is None:
+        # No message to read the volumes from: ask device-mapper instead.
+        await teardown_namespace_devices(namespace)
         return
     namespace = _checked_namespace(namespace)
     for volume in getattr(record.message, "volumes", None) or []:

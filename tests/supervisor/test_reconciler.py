@@ -89,6 +89,14 @@ def _mount_root(tmp_path, monkeypatch):
     monkeypatch.setattr(reconciler_module, "MOUNT_ROOT", tmp_path / "unused-mnt")
 
 
+@pytest.fixture(autouse=True)
+def _no_device_mapper(tmp_path, monkeypatch):
+    """Nor its real /dev/mapper: the orphan device pass reads it."""
+    empty = tmp_path / "empty-mapper"
+    empty.mkdir()
+    monkeypatch.setattr(reconciler_module, "DEVICE_MAPPER_DIRECTORY", str(empty))
+
+
 def test_live_dirs_are_left_alone(pools, registry):  # noqa: F811
     live = volume(pools["pool0"], LIVE, "rootfs.qcow2")
     _age(live.parent, 10_000)
@@ -662,3 +670,81 @@ async def test_a_dry_run_never_touches_a_device(pools, registry, monkeypatch):  
     assert stale.exists()
     assert removed == []
     swept.assert_not_awaited()
+
+
+def _fake_mapper(monkeypatch, tmp_path, *names: str) -> Path:
+    """A /dev/mapper holding ``names``, for the pass to read."""
+    mapper = tmp_path / "mapper"
+    mapper.mkdir(exist_ok=True)
+    for name in names:
+        (mapper / name).touch()
+    monkeypatch.setattr(reconciler_module, "DEVICE_MAPPER_DIRECTORY", str(mapper))
+    return mapper
+
+
+@pytest.mark.asyncio
+async def test_the_pass_tears_down_the_devices_of_a_vm_nothing_owns(pools, registry, monkeypatch, tmp_path):  # noqa: F811
+    """A create that failed before its registry commit leaves a dm snapshot
+    holding the volume file. purge_vm_storage refuses such a directory, so
+    without a teardown the orphan is refused on every pass, forever."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    _age(volume(pools["pool0"], VM_HASH, "rootfs.btrfs").parent, 10_000)
+    _fake_mapper(monkeypatch, tmp_path, f"{VM_HASH}_rootfs", f"{LIVE}_rootfs", "control", "lost+found_1")
+    torn: list[str] = []
+    monkeypatch.setattr(reconciler_module, "teardown_namespace_devices", AsyncMock(side_effect=torn.append))
+
+    await reconcile_now(_app(registry, _supervisor()))
+
+    assert torn == [VM_HASH]
+
+
+@pytest.mark.asyncio
+async def test_a_create_in_flight_keeps_its_devices(pools, registry, monkeypatch, tmp_path):  # noqa: F811
+    _fake_mapper(monkeypatch, tmp_path, f"{VM_HASH}_rootfs")
+    torn: list[str] = []
+    monkeypatch.setattr(reconciler_module, "teardown_namespace_devices", AsyncMock(side_effect=torn.append))
+
+    with creating(VM_HASH):
+        await reconcile_now(_app(registry, _supervisor()))
+
+    assert torn == []
+
+
+@pytest.mark.asyncio
+async def test_no_device_is_torn_down_when_the_supervisor_cannot_be_listed(pools, registry, monkeypatch, tmp_path):  # noqa: F811
+    """A VM the supervisor would have listed is live; removing its dm device
+    takes its disk with it."""
+    _fake_mapper(monkeypatch, tmp_path, f"{VM_HASH}_rootfs")
+    torn: list[str] = []
+    monkeypatch.setattr(reconciler_module, "teardown_namespace_devices", AsyncMock(side_effect=torn.append))
+
+    await reconcile_now(_app(registry, _supervisor(fails=True)))
+    await reconcile_at_startup(_app(registry, _supervisor(fails=True)))
+
+    assert torn == []
+
+
+@pytest.mark.asyncio
+async def test_a_dry_run_tears_down_no_device(pools, registry, monkeypatch, tmp_path):  # noqa: F811
+    _fake_mapper(monkeypatch, tmp_path, f"{VM_HASH}_rootfs")
+    torn: list[str] = []
+    monkeypatch.setattr(reconciler_module, "teardown_namespace_devices", AsyncMock(side_effect=torn.append))
+
+    await reconcile_now(_app(registry, _supervisor()), dry_run=True)
+
+    assert torn == []
+
+
+@pytest.mark.asyncio
+async def test_a_failing_device_teardown_does_not_stop_the_pass(pools, registry, monkeypatch, tmp_path):  # noqa: F811
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    old = volume(pools["pool0"], OTHER_HASH, "rootfs.qcow2")
+    _age(old.parent, 10_000)
+    _fake_mapper(monkeypatch, tmp_path, f"{VM_HASH}_rootfs")
+    monkeypatch.setattr(
+        reconciler_module, "teardown_namespace_devices", AsyncMock(side_effect=RuntimeError("device busy"))
+    )
+
+    report = await reconcile_now(_app(registry, _supervisor()))
+
+    assert report.purged_orphans == [OTHER_HASH]

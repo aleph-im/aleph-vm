@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+from fnmatch import fnmatch
 from pathlib import Path
 
 import pytest
-from reclaim_fixtures import VM_HASH, pools, volume  # noqa: F401
+from reclaim_fixtures import OTHER_HASH, VM_HASH, pools, volume  # noqa: F401
 
 import aleph.vm.storage as storage_module
-from aleph.vm.storage import detach_loop_devices, remove_devmapper
+from aleph.vm.agent.vm.retire import teardown_namespace_devices
+from aleph.vm.storage import (
+    DEVICE_MAPPER_DIRECTORY,
+    detach_loop_devices,
+    remove_devmapper,
+)
 
 real_glob = Path.glob
 
@@ -161,3 +167,93 @@ async def test_remove_devmapper_refuses_a_name_dmsetup_could_not_have_created(
     await remove_devmapper(namespace, volume_name)
 
     assert commands == []
+
+
+@pytest.fixture
+def live_mapper(mocker, monkeypatch):
+    """A /dev/mapper whose contents `dmsetup remove` actually changes.
+
+    The teardown decides what to remove from what is there and
+    ``remove_devmapper`` decides whether the base device may go from what is
+    left, so a static listing would not exercise either.
+    """
+    present: set[str] = set()
+    commands: list[list[str]] = []
+    mapper = Path(DEVICE_MAPPER_DIRECTORY)
+
+    async def fake_run(command, check=True, stdin_input=None):
+        command = [str(argument) for argument in command]
+        commands.append(command)
+        if command[:3] == ["dmsetup", "remove", "--retry"]:
+            present.discard(command[3])
+        return b""
+
+    real_is_block_device = Path.is_block_device
+    monkeypatch.setattr(storage_module, "run_in_subprocess", fake_run)
+    monkeypatch.setattr(
+        Path,
+        "is_block_device",
+        lambda self: self.name in present if self.parent == mapper else real_is_block_device(self),
+    )
+    monkeypatch.setattr(
+        Path,
+        "glob",
+        lambda self, pattern: (
+            iter([mapper / name for name in sorted(present) if fnmatch(name, pattern)])
+            if self == mapper
+            else real_glob(self, pattern)
+        ),
+    )
+    return {"present": present, "commands": commands}
+
+
+@pytest.mark.asyncio
+async def test_teardown_namespace_devices_removes_every_snapshot_then_the_base(pools, live_mapper):  # noqa: F811
+    """The record-less inverse: a create that failed before its registry
+    commit leaves these behind and no message names the volumes any more."""
+    volume(pools["pool0"], VM_HASH, "rootfs.btrfs")
+    volume(pools["pool0"], VM_HASH, "data.btrfs")
+    live_mapper["present"].update({f"{VM_HASH}_rootfs", f"{VM_HASH}_data", f"{VM_HASH}_base"})
+
+    await teardown_namespace_devices(VM_HASH)
+
+    removed = [command[3] for command in live_mapper["commands"] if command[:2] == ["dmsetup", "remove"]]
+    assert removed == [f"{VM_HASH}_data", f"{VM_HASH}_rootfs", f"{VM_HASH}_base"]
+    assert live_mapper["present"] == set()
+
+
+@pytest.mark.asyncio
+async def test_teardown_namespace_devices_never_touches_another_vm(pools, live_mapper):  # noqa: F811
+    live_mapper["present"].update({f"{VM_HASH}_rootfs", f"{OTHER_HASH}_rootfs", f"{OTHER_HASH}_base"})
+
+    await teardown_namespace_devices(VM_HASH)
+
+    assert live_mapper["present"] == {f"{OTHER_HASH}_rootfs", f"{OTHER_HASH}_base"}
+
+
+@pytest.mark.asyncio
+async def test_teardown_namespace_devices_refuses_an_implausible_namespace(live_mapper):
+    with pytest.raises(ValueError):
+        await teardown_namespace_devices("../../etc")
+
+    assert live_mapper["commands"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_failing_snapshot_removal_does_not_stop_the_others(pools, live_mapper, mocker):  # noqa: F811
+    """Best effort, one volume at a time: a dm target that refuses to go must
+    not strand the volumes that would have."""
+    live_mapper["present"].update({f"{VM_HASH}_data", f"{VM_HASH}_rootfs"})
+    calls: list[str] = []
+
+    async def refuse_one(namespace, volume_name):
+        calls.append(volume_name)
+        if volume_name == "data":
+            msg = "device busy"
+            raise RuntimeError(msg)
+
+    mocker.patch("aleph.vm.agent.vm.retire.remove_devmapper", side_effect=refuse_one)
+
+    await teardown_namespace_devices(VM_HASH)
+
+    assert calls == ["data", "rootfs"]
