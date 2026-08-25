@@ -85,14 +85,38 @@ async def file_downloaded_by_another_task(final_path: Path) -> None:
 # the download caches are budgeted, and a download that cannot fit is refused
 # before a byte is written rather than after the disk is full. A module hook
 # because storage.py knows nothing of the VM registry the budget is computed
-# against, and the agent cannot make the downloader import it.
+# against, and the agent cannot make the downloader import it. It is handed
+# the ``.part`` path, not its directory: the room a download was admitted for
+# is charged to that path until the download ends.
 CacheAdmission = Callable[[Path, int], None]
 _cache_admission: CacheAdmission | None = None
+
+# Downloads that have been admitted and are still being written, by ``.part``
+# path. Nothing on disk says how big one is going to be, so an in-flight
+# download would otherwise be invisible to the next admission, and two
+# concurrent creates would both be told there is room only one of them can
+# have. Kept here rather than in the agent's cache module because this is
+# where the download ends, in ``download_file``'s finally.
+_reserved_downloads: dict[Path, int] = {}
 
 
 def set_cache_admission(fn: CacheAdmission | None) -> None:
     global _cache_admission
     _cache_admission = fn
+
+
+def reserve_download(tmp_path: Path, size_bytes: int) -> None:
+    """Charge ``size_bytes`` to ``tmp_path`` until the download ends."""
+    _reserved_downloads[Path(tmp_path)] = size_bytes
+
+
+def release_download(tmp_path: Path) -> None:
+    _reserved_downloads.pop(Path(tmp_path), None)
+
+
+def reserved_downloads() -> dict[Path, int]:
+    """What admission has charged for and not yet seen written."""
+    return dict(_reserved_downloads)
 
 
 async def download_file_in_chunks(url: str, tmp_path: Path, *, max_bytes: int | None = None) -> None:
@@ -111,11 +135,17 @@ async def download_file_in_chunks(url: str, tmp_path: Path, *, max_bytes: int | 
             msg = f"{url} is {resp.content_length} bytes, above the {max_bytes} byte limit"
             raise FileTooLargeError(msg)
 
-        if _cache_admission is not None and resp.content_length is not None:
+        # A response without a Content-Length is admitted for the worst case
+        # it is allowed to send: the cap it is being downloaded under. The
+        # alternative is a download that writes an unbounded number of bytes
+        # into a budget nobody ever charged.
+        admitted = resp.content_length if resp.content_length is not None else max_bytes
+        if _cache_admission is not None and admitted is not None:
             # Before the open: a refused download must leave nothing behind,
             # and it may evict, so the room it is admitted against is the
-            # room it will actually find.
-            _cache_admission(tmp_path.parent, resp.content_length)
+            # room it will actually find. What it was admitted for stays
+            # charged to the .part until download_file releases it.
+            _cache_admission(tmp_path, admitted)
 
         with open(tmp_path, "wb") as cache_file:
             counter = 0
@@ -212,8 +242,11 @@ async def download_file(url: str, local_path: Path, *, max_bytes: int | None = N
                 logger.warning(f"Download of {url} failed, aborting...")
                 raise error
         finally:
-            # Only clean up the .part file if this task created it
+            # Only clean up the .part file if this task created it, and with
+            # it the room admission charged to that path: the bytes are either
+            # a cache entry now or gone.
             if owns_tmp:
+                release_download(tmp_path)
                 tmp_path.unlink(missing_ok=True)
 
 

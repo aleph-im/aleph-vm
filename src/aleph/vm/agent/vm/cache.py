@@ -54,7 +54,12 @@ from aleph.vm.agent.vm.reclaimable import (
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
 from aleph.vm.resources import InsufficientResourcesError
-from aleph.vm.storage import DEVICE_MAPPER_DIRECTORY, DEVICE_NAME_MAX_BYTES
+from aleph.vm.storage import (
+    DEVICE_MAPPER_DIRECTORY,
+    DEVICE_NAME_MAX_BYTES,
+    reserve_download,
+    reserved_downloads,
+)
 from aleph.vm.storage_budget import parse_budget
 from aleph.vm.storage_pools import iter_namespace_dirs
 from aleph.vm.utils import create_task_log_exceptions, run_in_subprocess
@@ -143,6 +148,40 @@ def cache_entries(root: Path) -> list[CacheEntry]:
         entries.append(CacheEntry(path=path, size_bytes=size, mtime=mtime))
     entries.sort(key=lambda entry: entry.mtime)
     return entries
+
+
+def in_flight_bytes(root: Path) -> int:
+    """What ``root`` owes to downloads that have not finished.
+
+    Two overlapping things, counted once. A ``.part`` or ``.tmp`` file holds
+    real blocks the moment it is written, and it is not a cache entry, so
+    ``cache_entries`` skips it and nothing else would charge for it. And a
+    download admission has already approved holds room that does not exist on
+    disk yet: without it two creates arriving together are both told there is
+    space only one of them can have. For a reservation still being written the
+    bigger of the two is the honest figure, never their sum.
+    """
+    reserved = reserved_downloads()
+    total = 0
+    counted: set[Path] = set()
+    for path, size_bytes in reserved.items():
+        if path.parent != root:
+            continue
+        total += max(size_bytes, file_size_bytes(path))
+        counted.add(path)
+    try:
+        children = list(root.iterdir())
+    except OSError:
+        return total
+    for path in children:
+        if path.suffix not in IN_FLIGHT_SUFFIXES or path in counted:
+            continue
+        total += file_size_bytes(path)
+    return total
+
+
+def _root_usage(root: Path, entries: list[CacheEntry]) -> int:
+    return sum(entry.size_bytes for entry in entries) + in_flight_bytes(root)
 
 
 def _entry_refs(path: Path) -> set[str]:
@@ -461,7 +500,7 @@ def evict_caches(
         state = _RootBudget(
             root=root,
             budget=budget,
-            usage=sum(entry.size_bytes for entry in entries) + needed.get(root, 0),
+            usage=_root_usage(root, entries) + needed.get(root, 0),
             evicted=evicted,
             live_only=live_only,
             is_live=is_live,
@@ -625,14 +664,19 @@ def _may_evict_for_admission(registry: AgentVmRegistry) -> bool:
     return True
 
 
-def admit_download(registry: AgentVmRegistry, root: Path, size_bytes: int) -> None:
+def admit_download(registry: AgentVmRegistry, tmp_path: Path, size_bytes: int) -> None:
     """Refuse, before a byte is written, a download the cache cannot hold.
 
     Registered on ``storage.set_cache_admission`` so it runs inside
-    ``download_file_in_chunks`` once ``Content-Length`` is known. Evicting
-    first is the point: the budget is a cap on what is kept, not on what may
-    be fetched, and only a load that stays over the budget with nothing safely
-    evictable left is refused (spec section 4).
+    ``download_file_in_chunks`` once ``Content-Length`` is known (or, when the
+    server does not say, once its cap is). Evicting first is the point: the
+    budget is a cap on what is kept, not on what may be fetched, and only a
+    load that stays over the budget with nothing safely evictable left is
+    refused (spec section 4).
+
+    An admitted download is then charged to its ``.part`` path until
+    ``download_file`` releases it, so the next admission sees the room this
+    one was promised and not just the bytes it has managed to write.
 
     Two things it deliberately does not do. It does not reclaim retained VM
     directories (``reclaim_retained=False``): that is an rmtree, and this runs
@@ -644,7 +688,8 @@ def admit_download(registry: AgentVmRegistry, root: Path, size_bytes: int) -> No
     downloader also streams per-VM volumes in place, and those are admitted by
     the capacity checks and the pool budget.
     """
-    root = Path(root)
+    tmp_path = Path(tmp_path)
+    root = tmp_path.parent
     if root not in cache_roots():
         logger.debug("Not a download cache, so not subject to CACHE_BUDGET: %s", root)
         return
@@ -656,9 +701,11 @@ def admit_download(registry: AgentVmRegistry, root: Path, size_bytes: int) -> No
         budget = cache_budget_bytes(root)
     except OSError:
         logger.warning("Cache directory %s is not accessible; admitting the download", root, exc_info=True)
+        reserve_download(tmp_path, size_bytes)
         return
-    usage = sum(entry.size_bytes for entry in cache_entries(root)) + size_bytes
+    usage = _root_usage(root, cache_entries(root)) + size_bytes
     if usage <= budget:
+        reserve_download(tmp_path, size_bytes)
         return
     free = max(budget - (usage - size_bytes), 0)
     msg = f"Cache {root} cannot hold a {size_bytes} byte download within CACHE_BUDGET"
