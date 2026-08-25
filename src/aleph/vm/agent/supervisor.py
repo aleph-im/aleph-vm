@@ -15,6 +15,7 @@ from aiohttp import hdrs, web
 from aiohttp.web_exceptions import HTTPException
 from aiohttp_cors import ResourceOptions, setup
 
+from aleph.vm import storage_pools
 from aleph.vm.agent.capacity import CapacityManager
 from aleph.vm.agent.expiry import ExpiryManager
 from aleph.vm.agent.migration.reaper import reap_orphan_migration_files
@@ -22,6 +23,15 @@ from aleph.vm.agent.update_watcher import UpdateWatcher
 from aleph.vm.agent.vcpu_probe import get_snp_launch_capability
 from aleph.vm.agent.vm.backup import BackupManager
 from aleph.vm.agent.vm.program_client import ProgramGuestClient
+from aleph.vm.agent.vm.reconciler import (
+    live_hashes,
+    make_room,
+    reconcile_at_startup,
+    reconcile_now,
+    start_storage_reconcile_task,
+    stop_storage_reconcile_task,
+)
+from aleph.vm.agent.vm.retire import set_after_gone_hook
 from aleph.vm.agent.vm_registry import AgentVmRegistry, rehydrate_registry
 from aleph.vm.conf import settings
 from aleph.vm.sevclient import SevClient
@@ -491,6 +501,21 @@ def run():
     app.on_startup.append(_run_migration_reaper)
     app.on_startup.append(_rehydrate_vm_registry)
     app.on_startup.append(log_snp_launch_capability)
+    # After _rehydrate_vm_registry, which fills the live set the reconciler
+    # judges orphans against (on_startup hooks run in append order): a pass on
+    # an empty registry would treat every running VM's volumes as unowned.
+    app.on_startup.append(reconcile_at_startup)
+    app.on_startup.append(start_storage_reconcile_task)
+    app.on_cleanup.append(stop_storage_reconcile_task)
+    # Placement asks the reconciler to evict retained volumes when a create
+    # does not fit, and a GONE under keep enforces the retention budget right
+    # away instead of waiting for the next periodic pass. Both are module
+    # hooks: aleph.vm.storage_pools and retire.py cannot import the
+    # reconciler, so the app is what wires them together.
+    storage_pools.set_room_maker(
+        lambda pool, needed: make_room(pool, needed, live=live_hashes(app["vm_registry"])),
+    )
+    set_after_gone_hook(lambda: reconcile_now(app))
     app.on_startup.append(start_node_hash_discovery)
     app.on_cleanup.append(stop_node_hash_discovery)
 

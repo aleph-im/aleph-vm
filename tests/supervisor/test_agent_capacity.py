@@ -471,4 +471,14 @@ def test_available_disk_bytes_is_the_pooled_aggregate(mocker):
         "aleph.vm.agent.capacity.storage_pools.pools_disk_usage",
         return_value=(2 * 1024**4, 3 * 1024**3),
     )
+    mocker.patch("aleph.vm.agent.capacity.reclaimable_bytes", return_value=0)
     assert CapacityManager._available_disk_bytes() == 3 * 1024**3
+
+
+def test_available_disk_counts_reclaimable_bytes_as_free(mocker):
+    """Retained volumes are a cache, not usage: they are advertised as free
+    because the reconciler evicts them when a placement needs the room
+    (spec section 1)."""
+    mocker.patch("aleph.vm.agent.capacity.storage_pools.pools_disk_usage", return_value=(100, 10))
+    mocker.patch("aleph.vm.agent.capacity.reclaimable_bytes", return_value=5)
+    assert CapacityManager._available_disk_bytes() == 15

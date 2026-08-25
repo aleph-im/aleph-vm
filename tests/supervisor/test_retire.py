@@ -133,3 +133,46 @@ async def test_retire_is_idempotent(env, monkeypatch):
     await retire_vm(VM_HASH, RetireReason.GONE, supervisor=env["supervisor"], registry=env["registry"])
     await retire_vm(VM_HASH, RetireReason.GONE, supervisor=env["supervisor"], registry=env["registry"])
     assert env["supervisor"].delete_vm.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_gone_under_keep_runs_the_after_gone_hook(env, monkeypatch):
+    """Retention is a budget, so it is enforced the moment a VM becomes
+    reclaimable, not only at the next periodic pass (spec section 1)."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    hook = AsyncMock()
+    retire_module.set_after_gone_hook(hook)
+    try:
+        await retire_vm(VM_HASH, RetireReason.GONE, supervisor=env["supervisor"], registry=env["registry"])
+    finally:
+        retire_module.set_after_gone_hook(None)
+
+    hook.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_gone_under_reap_does_not_run_the_after_gone_hook(env, monkeypatch):
+    """Nothing is retained under reap: the disks are already gone, so there is
+    no budget to enforce."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    hook = AsyncMock()
+    retire_module.set_after_gone_hook(hook)
+    try:
+        await retire_vm(VM_HASH, RetireReason.GONE, supervisor=env["supervisor"], registry=env["registry"])
+    finally:
+        retire_module.set_after_gone_hook(None)
+
+    hook.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_erase_does_not_run_the_after_gone_hook(env, monkeypatch):
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    hook = AsyncMock()
+    retire_module.set_after_gone_hook(hook)
+    try:
+        await retire_vm(VM_HASH, RetireReason.ERASE, supervisor=env["supervisor"], registry=env["registry"])
+    finally:
+        retire_module.set_after_gone_hook(None)
+
+    hook.assert_not_awaited()

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from enum import Enum
 
 from aleph_message.models import ItemHash
@@ -45,6 +46,23 @@ class RetireReason(Enum):
     GONE = "gone"  # positive knowledge it will not return: forgotten, unpaid, deallocated, migrated away
     ERASE = "erase"  # the owner asked for a wipe
     FAILED_CREATE = "failed_create"  # a create that never committed and allocated nothing pre-existing
+
+
+AfterGoneHook = Callable[[], Awaitable[None]]
+_after_gone: AfterGoneHook | None = None
+
+
+def set_after_gone_hook(hook: AfterGoneHook | None) -> None:
+    """The app registers a reconcile pass here; it runs after every GONE
+    under VOLUME_RETENTION=keep so the budget is enforced right away.
+
+    This module cannot import the reconciler (the reconciler purges through
+    the same helpers and the agent wires both at startup), and a retention
+    budget that is only enforced once an hour is a budget an attacker can
+    burst through: create, forget, repeat.
+    """
+    global _after_gone  # noqa: PLW0603
+    _after_gone = hook
 
 
 async def retire_vm(
@@ -83,6 +101,10 @@ async def retire_vm(
     await asyncio.to_thread(_release_storage, str(vm_hash), reason, record)
     await asyncio.to_thread(purge_vm_backups, str(vm_hash))
     logger.info("Retired %s (%s)", vm_hash, reason.value)
+    if reason is RetireReason.GONE and settings.VOLUME_RETENTION == "keep" and _after_gone is not None:
+        # This VM's volumes just became reclaimable: bring the pool back under
+        # its retention budget now rather than at the next periodic pass.
+        await _after_gone()
 
 
 def _release_storage(namespace: str, reason: RetireReason, record: AgentVmRecord | None) -> None:

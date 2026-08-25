@@ -18,7 +18,7 @@ import json
 import logging
 import os
 import shutil
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -286,12 +286,32 @@ def _pool_free_bytes(pool: StoragePool) -> int | None:
         return None
 
 
+RoomMaker = Callable[["StoragePool", int], int]
+_room_maker: RoomMaker | None = None
+
+
+def set_room_maker(fn: RoomMaker | None) -> None:
+    """Register the agent's evictor: called with (pool, needed_bytes) when no
+    pool fits a placement, before the placement is refused.
+
+    Retained volumes are advertised as free capacity (spec section 1), so a
+    placement that does not fit has to be given the chance to take that space
+    back before it fails. This module cannot import the reconciler (it is
+    agent-side and imports this one), so the agent registers the hook at
+    startup; a node that never registers one keeps the old behaviour.
+    """
+    global _room_maker  # noqa: PLW0603
+    _room_maker = fn
+
+
 def _select_from(candidates: list[StoragePool], size_mib: int) -> StoragePool:
     """The eligible candidate with the most free bytes that fits ``size_mib``.
 
     Ties break on the lowest pool index (candidates are scanned in index
     order, so the first max wins). Unreachable pools are skipped: a dead disk
-    stops receiving placements without failing the agent.
+    stops receiving placements without failing the agent. When nothing fits,
+    the registered room maker (if any) gets one chance to evict reclaimable
+    volumes off the best target before the placement is refused.
     """
     required_bytes = size_mib * 1024 * 1024
     best: StoragePool | None = None
@@ -304,6 +324,14 @@ def _select_from(candidates: list[StoragePool], size_mib: int) -> StoragePool:
             continue
         if free > best_free:
             best, best_free = pool, free
+    if (best is None or best_free < required_bytes) and _room_maker is not None:
+        # No pool reported free space at all: fall back to the first eligible
+        # candidate, which is still where this placement would land.
+        target = best or next((pool for pool in candidates if pool.vm_eligible), None)
+        if target is not None and _room_maker(target, required_bytes) > 0:
+            free = _pool_free_bytes(target)
+            if free is not None and free >= required_bytes:
+                return target
     if best is None or best_free < required_bytes:
         msg = f"No volume pool has {size_mib} MiB free"
         raise InsufficientResourcesError(

@@ -23,6 +23,7 @@ from aleph_message.models import ExecutableContent, ItemHash, VerifiableProgramC
 from aleph_message.models.execution.instance import InstanceContent
 
 from aleph.vm import storage_pools
+from aleph.vm.agent.vm.reclaimable import reclaimable_bytes
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
 from aleph.vm.resources import GpuDevice, InsufficientResourcesError
@@ -251,8 +252,11 @@ class CapacityManager:
         reserved-but-unused delta it adds per execution is 0 for every
         spec-built VM (spec disks carry no size). Unreachable pools (missing
         dir, dead disk) contribute 0 rather than failing admission outright.
+
+        Reclaimable (retained) bytes count as free: the reconciler evicts them
+        on demand when a placement needs the room.
         """
-        return max(storage_pools.pools_disk_usage()[1], 0)
+        return max(storage_pools.pools_disk_usage()[1], 0) + reclaimable_bytes()
 
     async def _available_gpus(self) -> list[GpuDevice]:
         """Host cards not attached to any VM, per the supervisor's HostInfo."""

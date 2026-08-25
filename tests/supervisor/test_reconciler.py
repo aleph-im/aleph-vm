@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -16,7 +17,10 @@ from aleph.vm.agent.vm.reconciler import (
     creating,
     is_creating,
     make_room,
+    reconcile_at_startup,
     reconcile_storage,
+    start_storage_reconcile_task,
+    stop_storage_reconcile_task,
 )
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
@@ -293,3 +297,47 @@ def test_make_room_never_evicts_a_live_namespace(pools, monkeypatch):  # noqa: F
 
     assert freed == 0
     assert running.exists()
+
+
+@pytest.mark.asyncio
+async def test_startup_hook_logs_a_preview_then_reconciles(pools, registry, monkeypatch, caplog):  # noqa: F811
+    """The one-shot cleanup on an upgraded node is announced before it runs:
+    an operator reading the log must be able to explain why free space jumped
+    (spec section 6, migration)."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    old = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    _age(old.parent, 10_000)
+
+    with caplog.at_level("WARNING"):
+        await reconcile_at_startup({"vm_registry": registry})
+
+    assert "will purge 1 orphan" in caplog.text
+    # A line per pool, so the operator sees which disk gives the space back.
+    assert f"pool 0 ({pools['pool0']})" in caplog.text
+    assert not old.parent.exists()
+
+
+@pytest.mark.asyncio
+async def test_startup_hook_is_quiet_when_there_is_nothing_to_reclaim(pools, registry, caplog):  # noqa: F811
+    live = volume(pools["pool0"], LIVE, "rootfs.qcow2")
+    _age(live.parent, 10_000)
+
+    with caplog.at_level("WARNING"):
+        await reconcile_at_startup({"vm_registry": registry})
+
+    assert "Startup storage reconcile" not in caplog.text
+    assert live.exists()
+
+
+@pytest.mark.asyncio
+async def test_the_periodic_task_starts_and_is_cancelled_on_shutdown(pools, registry, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(settings, "VOLUME_RECONCILE_INTERVAL", 3600)
+    app = {"vm_registry": registry}
+
+    await start_storage_reconcile_task(app)
+    task = app["storage_reconcile"]
+    await asyncio.sleep(0)  # let the task reach its first (long) sleep
+    assert not task.done()
+    await stop_storage_reconcile_task(app)
+
+    assert task.done()
