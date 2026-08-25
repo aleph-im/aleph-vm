@@ -169,6 +169,10 @@ class BackupManager:
         self._jobs: dict[BackupId, BackupInfo] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        # Serializes start_backup's check-and-register: the disk-space check
+        # awaits, and two callers racing past the running-task check would
+        # otherwise both spawn a run.
+        self._admission = asyncio.Lock()
 
     def _lock(self, vm_hash: str) -> asyncio.Lock:
         return self._locks.setdefault(vm_hash, asyncio.Lock())
@@ -179,6 +183,10 @@ class BackupManager:
     ) -> BackupInfo:
         """Start (or return) a backup of the VM's rootfs. Idempotent: a run
         already in progress, or a non-expired archive, is the answer."""
+        async with self._admission:
+            return await self._admit_backup(vm_hash, quiesce_guest=quiesce_guest, include_volumes=include_volumes)
+
+    async def _admit_backup(self, vm_hash: str, *, quiesce_guest: bool, include_volumes: bool) -> BackupInfo:
         disks = vm_disks(vm_hash, include_volumes=include_volumes)
         backup_dir = get_backup_directory()
         cleanup_expired_backups(backup_dir)

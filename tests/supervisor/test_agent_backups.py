@@ -267,6 +267,25 @@ async def test_start_backup_is_idempotent_while_running(pools, backup_dir, quiet
 
 
 @pytest.mark.asyncio
+async def test_concurrent_start_backups_spawn_one_run(pools, backup_dir, quiet_qemu_img, monkeypatch):
+    """The disk-space check awaits; two callers racing past the running-task
+    check must still end up with a single run."""
+    _rootfs(pools)
+    manager = BackupManager(_supervisor())
+
+    async def slow_space_check(disk_paths, destination_dir):
+        await asyncio.sleep(0.01)
+
+    monkeypatch.setattr(backup_module, "check_disk_space_for_multiple", slow_space_check)
+
+    first, second = await asyncio.gather(manager.start_backup(VM_HASH), manager.start_backup(VM_HASH))
+
+    assert first.backup_id == second.backup_id
+    await _finished(manager)
+    assert len(manager.list_backups(VM_HASH)) == 1
+
+
+@pytest.mark.asyncio
 async def test_start_backup_returns_existing_fresh_archive(pools, backup_dir, quiet_qemu_img):
     _rootfs(pools)
     manager = BackupManager(_supervisor())
