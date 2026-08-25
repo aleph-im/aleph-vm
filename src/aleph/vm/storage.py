@@ -389,7 +389,12 @@ async def get_runtime_path(ref: str) -> Path:
 
     cache_path = Path(settings.RUNTIME_CACHE) / ref
 
-    if not cache_path.is_file():
+    # The touch is what makes the runtime cache's LRU a use signal rather than
+    # download order (download_file does it for a hit it serves itself, but a
+    # hit never reaches it: asking for the URL of an image already on disk is
+    # a message lookup for nothing). A touch that finds the entry gone means
+    # the cache pass took it between the two calls: download it again.
+    if not cache_path.is_file() or not _touch_cache_hit(cache_path):
         url = await _get_content_url(ref)
         await download_file(url, cache_path, max_bytes=settings.MAX_RUNTIME_ARCHIVE_SIZE)
 
@@ -405,7 +410,9 @@ async def get_rootfs_base_path(ref: ItemHash) -> Path:
         return Path(settings.FAKE_INSTANCE_BASE)
 
     cache_path = Path(settings.RUNTIME_CACHE) / ref
-    if not cache_path.is_file():
+    # Same as get_runtime_path: a cache hit is touched here, since it never
+    # reaches download_file's own touch.
+    if not cache_path.is_file() or not _touch_cache_hit(cache_path):
         url = await _get_content_url(ref)
         await download_file(url, cache_path, max_bytes=settings.MAX_RUNTIME_ARCHIVE_SIZE)
     await chown_to_jailman(cache_path)
