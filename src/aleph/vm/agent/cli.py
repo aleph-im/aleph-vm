@@ -22,7 +22,11 @@ logger = logging.getLogger(__name__)
 
 
 def parse_args(args):
-    parser = argparse.ArgumentParser(prog="aleph-vm", description="Aleph.im compute node agent")
+    parser = argparse.ArgumentParser(
+        prog="aleph-vm",
+        description="Aleph.im compute node agent",
+        epilog="Run 'aleph-vm storage --help' for VM storage reclamation (status, list, reclaim, reconcile).",
+    )
     parser.add_argument(
         "--system-logs",
         action="store_true",

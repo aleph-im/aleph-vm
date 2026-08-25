@@ -10,9 +10,19 @@ exactly that state, so ``reconcile`` and ``reclaim`` ask the supervisor
 daemon over the same gRPC socket the agent dials (``GrpcSupervisor``,
 ``settings.SUPERVISOR_GRPC_SOCKET``), with a short timeout, and union its
 answer into the live set. When the daemon cannot be reached, both commands
-fail closed: ``reconcile`` runs dry and warns, ``reclaim`` refuses, unless
-``--trust-registry`` says to proceed on the registry alone. ``status`` and
-``list`` are read-only and never touch the supervisor.
+fail closed: ``reconcile`` runs dry, warns on stderr and exits non-zero,
+``reclaim`` refuses, unless ``--trust-registry`` says to proceed on the
+registry alone. ``status`` and ``list`` are read-only and never touch the
+supervisor.
+
+What this process still cannot see, even with the supervisor reachable: a
+create the daemon is in the middle of. ``reconciler.is_creating()`` is an
+in-process set the running agent populates for the duration of a create; a
+CLI invocation is a separate process and never sees it, so a create that has
+outlived ``VOLUME_CREATE_GUARD`` and has not yet landed in the registry or
+in ``list_vms`` looks exactly like an orphan to a real ``reconcile`` here.
+The daemon's own pass (startup, periodic, at-GONE) is always preferred when
+the daemon is up; this command exists mainly for when it is not.
 """
 
 from __future__ import annotations
@@ -36,6 +46,8 @@ from aleph.vm.agent.vm.reclaimable import (
     reclaimable_bytes,
 )
 from aleph.vm.agent.vm.reconciler import (
+    _release_cache_devices,
+    _still_on_disk,
     live_hashes,
     reconcile_storage,
     supervisor_hashes,
@@ -51,11 +63,20 @@ from aleph.vm.supervisor_interface.abc import Supervisor
 # sit through a 30 second RPC deadline just to learn the daemon is down.
 SUPERVISOR_CONNECT_TIMEOUT_SECS = 3.0
 
+# Exit code for a reconcile that silently downgraded to a dry run because the
+# supervisor could not be asked and --trust-registry was not given. Distinct
+# from an explicit --dry-run, which is a success (exit 0): nothing was
+# downgraded, the caller asked for a preview and got one.
+DEGRADED_EXIT_CODE = 2
+
 logger = logging.getLogger(__name__)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="aleph-vm storage", description="VM storage reclamation")
+    parser = argparse.ArgumentParser(
+        prog="aleph-vm storage",
+        description="VM storage reclamation: status, list, reclaim, reconcile.",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("status", help="per-pool and per-cache usage against the budgets")
     list_parser = sub.add_parser("list", help="VM directories on every pool")
@@ -67,7 +88,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="purge using the registry alone when the supervisor cannot be asked whether the hash is running",
     )
-    reconcile_parser = sub.add_parser("reconcile", help="run one reconciler pass")
+    reconcile_parser = sub.add_parser(
+        "reconcile",
+        help="run one reconciler pass",
+        description=(
+            "Run one reconciler pass against the agent registry (unioned with the supervisor's "
+            "list_vms() when it can be reached). This process cannot see a create the daemon is "
+            "currently in the middle of: is_creating() is in-process state of the running agent, "
+            "so a create that has outlived VOLUME_CREATE_GUARD and is not yet in the registry or "
+            "list_vms looks like an orphan here and a real pass can remove it. Prefer the daemon's "
+            "own pass (it runs at startup, periodically, and after every GONE) when the daemon is "
+            "up; use this command mainly when it is not."
+        ),
+    )
     reconcile_parser.add_argument("--dry-run", action="store_true")
     reconcile_parser.add_argument(
         "--trust-registry",
@@ -86,7 +119,8 @@ def _human(size: int) -> str:
         if value < _UNIT_STEP or unit == "TiB":
             return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
         value /= _UNIT_STEP
-    return f"{value:.1f} TiB"
+    msg = "unreachable: the loop above always returns on its last unit (TiB)"
+    raise AssertionError(msg)
 
 
 def _age(since: datetime) -> str:
@@ -185,6 +219,15 @@ def _list(out: TextIO, *, reclaimable_only: bool) -> int:
 
 
 def _reclaim(registry: AgentVmRegistry, vm_hash: str, out: TextIO, *, trust_registry: bool) -> int:
+    # Cheapest, purely local check first: a typo or an unrelated hash fails
+    # instantly instead of waiting out a supervisor dial that can only ever
+    # confirm what this check already knows.
+    marked = [directory for directory, _marker in iter_reclaimable() if directory.name == vm_hash]
+    if not marked:
+        out.write(
+            f"{vm_hash} is not reclaimable (no .reclaimable marker); refusing to purge a directory a VM may own\n"
+        )
+        return 1
     if vm_hash in live_hashes(registry):
         out.write(f"{vm_hash} is a live VM in the agent registry; refusing to purge it\n")
         return 1
@@ -199,24 +242,24 @@ def _reclaim(registry: AgentVmRegistry, vm_hash: str, out: TextIO, *, trust_regi
             "Pass --trust-registry to purge using the registry alone\n"
         )
         return 1
-    marked = [directory for directory, _marker in iter_reclaimable() if directory.name == vm_hash]
-    if not marked:
+    deleted = purge_vm_storage(vm_hash)
+    if _still_on_disk(vm_hash):
         out.write(
-            f"{vm_hash} is not reclaimable (no .reclaimable marker); refusing to purge a directory a VM may own\n"
+            f"Purge of {vm_hash} left directories behind: a device-mapper target still holds its volumes; "
+            "retry once it is torn down\n"
         )
         return 1
-    deleted = purge_vm_storage(vm_hash)
     out.write(f"Purged {vm_hash}: {deleted} volume file(s)\n")
     return 0
 
 
 def _reconcile(registry: AgentVmRegistry, out: TextIO, *, dry_run: bool, trust_registry: bool) -> int:
     live, reachable = _cli_live_set(registry)
-    effective_dry_run = dry_run
-    if not reachable and not trust_registry:
-        effective_dry_run = True
-        out.write(
-            "Warning: supervisor unreachable; showing what a trusted pass would purge; "
+    downgraded = not reachable and not trust_registry
+    effective_dry_run = dry_run or downgraded
+    if downgraded:
+        sys.stderr.write(
+            "Warning: supervisor unreachable; showing what a registry-only pass would purge; "
             "pass --trust-registry to purge using the registry alone\n"
         )
     report = reconcile_storage(registry, dry_run=effective_dry_run, live=live)
@@ -226,7 +269,12 @@ def _reconcile(registry: AgentVmRegistry, out: TextIO, *, dry_run: bool, trust_r
         out.write(f"  {'would purge' if effective_dry_run else 'purged'} {name}\n")
     for name in report.marked_orphans:
         out.write(f"  {'would mark' if effective_dry_run else 'marked'} {name}\n")
-    return 0
+    # Mirrors reconcile_now/reconcile_at_startup: tear down the devices of
+    # evicted parent images, then sweep whatever an earlier teardown left
+    # behind. _release_cache_devices no-ops under a dry run on its own, so
+    # calling it unconditionally here matches the daemon's own passes.
+    asyncio.run(_release_cache_devices(report, dry_run=effective_dry_run))
+    return DEGRADED_EXIT_CODE if downgraded and not dry_run else 0
 
 
 def run(args: argparse.Namespace, registry: AgentVmRegistry, out: TextIO) -> int:
