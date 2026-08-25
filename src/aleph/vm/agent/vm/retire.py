@@ -6,6 +6,17 @@ goes through ``retire_vm`` with a reason. The reason has no default: a call
 site must say what it means, which is what was missing when disks leaked
 (spec S1). The supervisor's DeleteVm is quiescence only; storage policy is
 decided here, agent-side, and never crosses the wire.
+
+FAILED_CREATE is only for a create that allocated nothing pre-existing: the
+create paths in ``run.py`` are also the re-create paths for a
+host-persistent VM whose volumes already exist (``downloader``'s
+``_make_writable_volume`` returns early when the destination is already
+there), so a transient failure there (a boot timeout, an admission refusal
+on node restart, a base-image download error) must not retire FAILED_CREATE
+and purge the owner's disks. Those call sites snapshot whether the VM's
+volumes existed before the attempt and retire RECREATE instead when they
+did, keeping the record and the disks so the next create attempt lands on
+the same storage.
 """
 
 from __future__ import annotations
@@ -33,7 +44,7 @@ class RetireReason(Enum):
     RECREATE = "recreate"  # the same VM comes back immediately: amend, crash recovery, idle reap, reboot
     GONE = "gone"  # positive knowledge it will not return: forgotten, unpaid, deallocated, migrated away
     ERASE = "erase"  # the owner asked for a wipe
-    FAILED_CREATE = "failed_create"  # a create that never committed
+    FAILED_CREATE = "failed_create"  # a create that never committed and allocated nothing pre-existing
 
 
 async def retire_vm(

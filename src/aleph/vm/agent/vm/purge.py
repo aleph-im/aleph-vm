@@ -86,6 +86,17 @@ def iter_volume_files(
             yield entry
 
 
+def vm_has_volumes(vm_hash: ItemHash | str) -> bool:
+    """True when the VM already owns at least one volume file on disk.
+
+    Used by the create paths to tell a re-create (the VM's volumes already
+    exist, e.g. host-persistent storage that a failed create must not wipe)
+    apart from a fresh create (nothing allocated yet, safe to purge on
+    failure).
+    """
+    return any(iter_volume_files(vm_hash))
+
+
 def _held_by_device_mapper(namespace: str, volume: Path) -> bool:
     """True when ``volume`` is the backing file of a live dm target."""
     if volume.suffix != ".btrfs":

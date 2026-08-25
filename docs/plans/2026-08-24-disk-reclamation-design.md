@@ -100,7 +100,11 @@ what was missing in S1. Call sites and their reasons:
 - Message forgotten or removed, payment stopped, scheduler deallocation,
   migration hand-off completed: `GONE`.
 - `operate_erase`: `ERASE`.
-- Any exception between allocation and the registry commit: `FAILED_CREATE`.
+- Any exception between allocation and the registry commit: `FAILED_CREATE`,
+  unless the VM's volumes already existed before the attempt started (the
+  create paths are also the re-create paths for a host-persistent VM), in
+  which case the call site retires `RECREATE` instead so a transient
+  failure never wipes an owner's existing disks.
 
 `ERASE` ignores `keep` on purpose: retention protects against
 administrative deletion, not against the owner's own request.

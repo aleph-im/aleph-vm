@@ -34,6 +34,7 @@ from aleph.vm.agent.snp_instance_launch import build_snp_instance_spec, is_snp_i
 from aleph.vm.agent.translate import build_create_vm_spec, build_program_create_vm_spec
 from aleph.vm.agent.update_watcher import UpdateWatcher
 from aleph.vm.agent.vm.program_client import ProgramGuestClient
+from aleph.vm.agent.vm.purge import vm_has_volumes
 from aleph.vm.agent.vm.retire import RetireReason, retire_vm
 from aleph.vm.agent.vm_registry import AgentVmRegistry, persist_record
 from aleph.vm.agent.vprogram_launch import (
@@ -407,6 +408,38 @@ def _admit(capacity: CapacityManager, content: ExecutableContent, vm_hash: ItemH
     )
 
 
+async def _retire_after_create_failure(
+    vm_hash: ItemHash,
+    *,
+    supervisor: Supervisor,
+    registry: AgentVmRegistry,
+    had_volumes: bool,
+    what: str,
+) -> None:
+    """Retire a VM whose create attempt failed.
+
+    The reason depends on whether its volumes already existed before this
+    attempt started (``had_volumes``, snapshotted before any allocation, e.g.
+    before build_*_spec runs). A create that allocated fresh disks retires
+    FAILED_CREATE: nothing worth keeping, purge everything. A create that
+    failed against volumes that already existed is the re-create path for a
+    host-persistent VM (downloader._make_writable_volume returns early when
+    the destination already exists), and must not wipe them: it retires
+    RECREATE instead, which keeps the record and the disks. Dropping the
+    record while keeping the disks would make the reconciler treat the
+    directory as an orphan and purge it after VOLUME_CREATE_GUARD, which is
+    why this is RECREATE and not a records-only teardown.
+
+    Never lets a teardown error mask the original failure: logs and
+    swallows.
+    """
+    reason = RetireReason.RECREATE if had_volumes else RetireReason.FAILED_CREATE
+    try:
+        await retire_vm(vm_hash, reason, supervisor=supervisor, registry=registry)
+    except Exception:
+        logger.exception("Teardown of half-started %s %s failed", what, vm_hash)
+
+
 async def create_vm_execution(
     vm_hash: ItemHash,
     *,
@@ -439,6 +472,10 @@ async def create_vm_execution(
         # are created and configured per request there too, so this branch only
         # does eager work for the persistent (scheduled) case.
         _admit(capacity, content, vm_hash, is_instance=False)
+        # Snapshot before any allocation: a persistent program's volumes may
+        # already exist (host persistence), and a failed create must not
+        # wipe them (see _retire_after_create_failure).
+        had_volumes = await asyncio.to_thread(vm_has_volumes, vm_hash)
         spec, _resources = await build_program_create_vm_spec(vm_hash, content)
         capacity.check_capacity(
             memory_mib=content.resources.memory,
@@ -454,13 +491,11 @@ async def create_vm_execution(
         try:
             await _wait_until_running(supervisor, info.vm_id)
         except Exception:
-            # Readiness failed: retire the half-started VM (nothing worth
-            # keeping from a VM that never ran), but never let a teardown
-            # error mask the original failure.
-            try:
-                await retire_vm(vm_hash, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)
-            except Exception:
-                logger.exception("Teardown of half-started program VM %s failed", vm_hash)
+            # Readiness failed: retire the half-started VM, but never let a
+            # teardown error mask the original failure.
+            await _retire_after_create_failure(
+                vm_hash, supervisor=supervisor, registry=registry, had_volumes=had_volumes, what="program VM"
+            )
             raise
         await persist_record(vm_hash, record)
         return None
@@ -480,6 +515,12 @@ async def create_vm_execution(
         record = registry.record(vm_hash, message=content, original=original_message.content, persistent=True)
         snp_instance = is_snp_instance(content)
         attest_port: int | None = None
+        # Snapshot before any allocation: a persistent instance's volumes may
+        # already exist (host persistence, e.g. a crash-recovery re-create),
+        # and a failed create must not wipe them (see
+        # _retire_after_create_failure). Reused by both except blocks below:
+        # they cover the same create attempt.
+        had_volumes = await asyncio.to_thread(vm_has_volumes, vm_hash)
         try:
             _admit(capacity, content, vm_hash, is_instance=True)
             if snp_instance:
@@ -521,9 +562,10 @@ async def create_vm_execution(
             # create never leaves a dangling owner-identity entry behind (a
             # record with no VM the supervisor knows about), and drop any
             # runtime bundle build_snp_instance_spec may have already
-            # extracted before the failure. Nothing is persisted yet, so
-            # this only touches in-memory and staging state.
-            await retire_vm(vm_hash, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)
+            # extracted before the failure.
+            await _retire_after_create_failure(
+                vm_hash, supervisor=supervisor, registry=registry, had_volumes=had_volumes, what="instance"
+            )
             raise
         if info.awaiting_confidential_init:
             # A confidential VM is created but not started: only the owner can
@@ -552,13 +594,10 @@ async def create_vm_execution(
                 await _wait_until_attest_endpoint_listens(supervisor, info.vm_id, attest_port)
         except Exception:
             # Readiness or port-forward setup failed: retire the half-started
-            # VM (records, staging and volumes go: nothing worth keeping from
-            # a VM that never ran), but never let a teardown error mask the
-            # original failure.
-            try:
-                await retire_vm(vm_hash, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)
-            except Exception:
-                logger.exception("Teardown of half-started VM %s failed", vm_hash)
+            # VM, but never let a teardown error mask the original failure.
+            await _retire_after_create_failure(
+                vm_hash, supervisor=supervisor, registry=registry, had_volumes=had_volumes, what="VM"
+            )
             raise
         # Agent persists its own knowledge; the hypervisor object is not
         # touched. Registry rehydration and past-logs owner-auth read the
@@ -576,6 +615,10 @@ async def create_vm_execution(
         # boots an SNP VM immediately (awaiting_confidential_init is never
         # set), so the plain readiness wait applies.
         record = registry.record(vm_hash, message=content, original=original_message.content, persistent=True)
+        # Snapshot before any allocation, same reasoning as the instance path
+        # above; reused by both except blocks below, which cover the same
+        # create attempt.
+        had_volumes = await asyncio.to_thread(vm_has_volumes, vm_hash)
         try:
             _admit(capacity, content, vm_hash, is_instance=True)
             spec, attest_port = await build_vprogram_spec(vm_hash, content)
@@ -593,7 +636,9 @@ async def create_vm_execution(
             # build or create failed: retire the early record, and drop any
             # bundle build_vprogram_spec may have already extracted before
             # the failure (e.g. capacity admission fails after staging).
-            await retire_vm(vm_hash, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)
+            await _retire_after_create_failure(
+                vm_hash, supervisor=supervisor, registry=registry, had_volumes=had_volumes, what="V-PROGRAM"
+            )
             raise
         try:
             await _wait_until_running(supervisor, info.vm_id)
@@ -612,12 +657,11 @@ async def create_vm_execution(
                 await _wait_until_attest_endpoint_listens(supervisor, info.vm_id, attest_port)
         except Exception:
             # Readiness or port-forward setup failed: retire the half-started
-            # V-PROGRAM (records, staging and volumes go), but never let a
-            # teardown error mask the original failure.
-            try:
-                await retire_vm(vm_hash, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)
-            except Exception:
-                logger.exception("Teardown of half-started V-PROGRAM %s failed", vm_hash)
+            # V-PROGRAM, but never let a teardown error mask the original
+            # failure.
+            await _retire_after_create_failure(
+                vm_hash, supervisor=supervisor, registry=registry, had_volumes=had_volumes, what="V-PROGRAM"
+            )
             raise
         await persist_record(vm_hash, record)
         return None
@@ -769,6 +813,10 @@ async def _ensure_program_vm(
             await _wait_until_gone(supervisor, vm_id)
 
         try:
+            # Snapshot before any allocation: a persistent program's volumes
+            # may already exist (host persistence, or the recreate just
+            # above), and a failed create must not wipe them.
+            had_volumes = await asyncio.to_thread(vm_has_volumes, vm_hash)
             spec, resources = await build_program_create_vm_spec(vm_hash, content)
             capacity.check_capacity(
                 memory_mib=content.resources.memory,
@@ -786,10 +834,9 @@ async def _ensure_program_vm(
                 await program_client.setup_program(info, content, resources)
             except Exception:
                 await program_client.forget(vm_id)
-                try:
-                    await retire_vm(vm_hash, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)
-                except Exception:
-                    logger.exception("Teardown of half-started program VM %s failed", vm_hash)
+                await _retire_after_create_failure(
+                    vm_hash, supervisor=supervisor, registry=registry, had_volumes=had_volumes, what="program VM"
+                )
                 raise
             await persist_record(vm_hash, record)
             return info

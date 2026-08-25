@@ -19,6 +19,7 @@ from test_supervisor_translate import _make_qemu_instance_message
 
 from aleph.vm.agent import run as run_module
 from aleph.vm.agent.vm_registry import AgentVmRegistry
+from aleph.vm.conf import settings
 from aleph.vm.supervisor_interface.errors import InvalidBackendError, VmNotFoundError
 from aleph.vm.supervisor_interface.types import (
     Backend,
@@ -239,6 +240,105 @@ async def test_eligible_instance_port_forward_failure_retires_as_failed_create(m
 
     retire.assert_awaited_once_with(_HASH, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)
     supervisor.delete_vm.assert_not_awaited()
+
+
+@pytest.fixture
+def _persistent_pool(tmp_path, monkeypatch):
+    """A single real volume pool (the PERSISTENT_VOLUMES_DIR fallback
+    get_pools() uses when setup_pools() has not run), so vm_has_volumes can
+    see actual files on disk."""
+    pool0 = tmp_path / "pool0"
+    pool0.mkdir()
+    monkeypatch.setattr(settings, "PERSISTENT_VOLUMES_DIR", pool0)
+    return pool0
+
+
+@pytest.mark.asyncio
+async def test_eligible_instance_failure_with_existing_volumes_retires_as_recreate(monkeypatch, _persistent_pool):
+    """A failed create against volumes that already existed before the
+    attempt (the re-create path for a host-persistent VM whose disks
+    downloader._make_writable_volume left alone) must not wipe them: it
+    retires RECREATE, which keeps the record and the disks -- not
+    FAILED_CREATE, which would purge them."""
+    volume_dir = _persistent_pool / str(_HASH)
+    volume_dir.mkdir()
+    rootfs = volume_dir / "rootfs.qcow2"
+    rootfs.write_bytes(b"pre-existing-owner-data")
+
+    content = _make_qemu_instance_message(hypervisor=HypervisorType.qemu)
+    message = MagicMock(content=content)
+    monkeypatch.setattr(
+        run_module, "load_updated_message", AsyncMock(return_value=(message, MagicMock(content=content)))
+    )
+    monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock(return_value=_spec()))
+    monkeypatch.setattr(run_module, "get_user_settings", AsyncMock(return_value={}))
+    monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
+
+    supervisor = _fake_supervisor()  # get_vm reports RUNNING immediately
+    supervisor.add_port_forward = AsyncMock(side_effect=RuntimeError("nftables boom"))
+    registry = AgentVmRegistry()
+
+    with pytest.raises(RuntimeError, match="nftables boom"):
+        await run_module.create_vm_execution(
+            _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
+        )
+
+    # RECREATE: the record and the pre-existing volume both survive.
+    assert registry.get(_HASH) is not None
+    assert rootfs.exists()
+    assert rootfs.read_bytes() == b"pre-existing-owner-data"
+    supervisor.delete_vm.assert_awaited_once_with(VmId(str(_HASH)), keep_port_mappings=True)
+
+
+@pytest.mark.asyncio
+async def test_eligible_instance_failure_without_existing_volumes_retires_as_failed_create(
+    monkeypatch, _persistent_pool
+):
+    """A failed create that allocated fresh disks (nothing existed before
+    the attempt) retires FAILED_CREATE, which purges what it just
+    allocated and drops the record."""
+    from aleph.vm.agent.vm import retire as retire_module
+
+    # retire_vm(FAILED_CREATE) writes a DB record deletion; stub it out, this
+    # test only cares about the volume/registry outcome.
+    monkeypatch.setattr(retire_module, "delete_records_for_vm", AsyncMock())
+
+    volume_dir = _persistent_pool / str(_HASH)
+    rootfs = volume_dir / "rootfs.qcow2"
+
+    async def _build_create_vm_spec(vm_hash, content):
+        # Simulate the real build_create_vm_spec: it allocates the volume
+        # file before create_vm_execution's had_volumes snapshot has a
+        # chance to see it (the snapshot runs before this call).
+        volume_dir.mkdir(parents=True, exist_ok=True)
+        rootfs.write_bytes(b"freshly-allocated")
+        return _spec()
+
+    content = _make_qemu_instance_message(hypervisor=HypervisorType.qemu)
+    message = MagicMock(content=content)
+    monkeypatch.setattr(
+        run_module, "load_updated_message", AsyncMock(return_value=(message, MagicMock(content=content)))
+    )
+    monkeypatch.setattr(run_module, "build_create_vm_spec", _build_create_vm_spec)
+    monkeypatch.setattr(run_module, "get_user_settings", AsyncMock(return_value={}))
+    monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
+
+    supervisor = _fake_supervisor()  # get_vm reports RUNNING immediately
+    supervisor.add_port_forward = AsyncMock(side_effect=RuntimeError("nftables boom"))
+    registry = AgentVmRegistry()
+
+    assert not rootfs.exists()  # nothing allocated yet: had_volumes will be False
+
+    with pytest.raises(RuntimeError, match="nftables boom"):
+        await run_module.create_vm_execution(
+            _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
+        )
+
+    # FAILED_CREATE: the record is dropped and the freshly-allocated volume
+    # is purged.
+    assert registry.get(_HASH) is None
+    assert not rootfs.exists()
+    supervisor.delete_vm.assert_awaited_once_with(VmId(str(_HASH)), keep_port_mappings=False)
 
 
 @pytest.mark.asyncio
