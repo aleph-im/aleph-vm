@@ -19,6 +19,7 @@ from aleph.vm.agent.vm.purge import (
     iter_volume_files,
     purge_vm_storage,
     purge_vm_volumes,
+    vm_has_volumes,
 )
 from aleph.vm.conf import settings
 from aleph.vm.storage_pools import (
@@ -156,6 +157,32 @@ def test_only_regular_files_directly_in_the_directory_are_volumes(pools):
     (nested / "not-a-volume").write_bytes(b"x")
 
     assert [path.name for path in iter_volume_files(VM_HASH)] == ["rootfs.qcow2"]
+
+
+def test_vm_has_volumes_false_for_an_empty_namespace(pools):
+    """Used by the create paths to tell a fresh create (nothing on disk yet,
+    safe to purge on failure) apart from a re-create of an existing
+    host-persistent VM (must not wipe it)."""
+    assert vm_has_volumes(VM_HASH) is False
+
+
+def test_vm_has_volumes_true_once_any_volume_exists(pools):
+    _volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+
+    assert vm_has_volumes(VM_HASH) is True
+
+
+def test_vm_has_volumes_true_for_a_data_volume_on_another_pool(pools):
+    """Any volume on any pool counts, not just the rootfs on pool 0."""
+    _volume(pools["pool1"], VM_HASH, "data.ext4")
+
+    assert vm_has_volumes(VM_HASH) is True
+
+
+def test_vm_has_volumes_does_not_see_another_vm(pools):
+    _volume(pools["pool0"], OTHER_HASH, "rootfs.qcow2")
+
+    assert vm_has_volumes(VM_HASH) is False
 
 
 def test_purged_volumes_are_rebuilt_on_the_pools_they_came_from(pools):
