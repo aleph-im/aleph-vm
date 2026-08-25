@@ -245,6 +245,18 @@ def live_refs(registry: AgentVmRegistry) -> set[str]:
     return refs
 
 
+def _is_creating(namespace: str) -> bool:
+    """Whether a create currently holds this namespace.
+
+    Imported late on purpose: the reconciler imports this module, so this
+    module cannot import it back at load time. The set is asked at call time
+    anyway, which is the only moment its answer is worth anything.
+    """
+    from aleph.vm.agent.vm.reconciler import is_creating
+
+    return is_creating(namespace)
+
+
 def _markers() -> list[tuple[Path, ReclaimableMarker]]:
     """The reclaimable directories, oldest marker first, implausibly named
     ones dropped (they can never be handed to ``purge_vm_storage``)."""
@@ -597,6 +609,12 @@ def _reclaim_for_parents(
         return False
     if state.is_live(namespace):
         logger.warning("Not reclaiming %s for its parent images: a live VM owns it", namespace)
+        return False
+    if _is_creating(namespace):
+        # A re-create adopted the directory after the markers were listed:
+        # ``creating`` clears the marker, but this list is older than that,
+        # and the VM has no registry record yet for ``is_live`` to find.
+        logger.warning("Not reclaiming %s for its parent images: a create is using it", namespace)
         return False
     if not state.dry_run:
         purge_vm_storage(namespace)

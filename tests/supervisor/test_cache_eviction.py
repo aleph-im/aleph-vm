@@ -12,6 +12,7 @@ from aleph_message.models import ItemHash
 from reclaim_fixtures import OTHER_HASH, VM_HASH, pools, volume  # noqa: F401
 
 import aleph.vm.agent.vm.cache as cache_module
+import aleph.vm.agent.vm.reconciler as reconciler_module
 import aleph.vm.storage as storage_module
 from aleph.vm.agent.vm.cache import (
     admit_download,
@@ -537,3 +538,17 @@ async def test_the_sweep_ignores_deleted_files_outside_the_caches(pools, monkeyp
 
     assert await cache_module.sweep_leaked_cache_loops() == []
     assert commands == []
+
+
+def test_a_retained_dir_a_create_is_using_is_not_reclaimed_for_its_parent(pools, monkeypatch):
+    """Same race as the retention budget's: the markers were listed before the
+    create adopted the directory, and the VM has no registry record yet."""
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
+    registry = AgentVmRegistry()
+    parent = _entry(pools["runtime"], "parent", size=4096)
+    adopted = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    mark_reclaimable(VM_HASH, "gone", ("parent",), now=NOW)
+    monkeypatch.setattr(reconciler_module, "_creating", {VM_HASH})
+
+    assert evict_caches(registry) == []
+    assert parent.exists() and adopted.exists()

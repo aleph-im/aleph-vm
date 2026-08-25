@@ -748,3 +748,31 @@ async def test_a_failing_device_teardown_does_not_stop_the_pass(pools, registry,
     report = await reconcile_now(_app(registry, _supervisor()))
 
     assert report.purged_orphans == [OTHER_HASH]
+
+
+def test_evict_never_touches_a_directory_a_create_is_using(pools, caplog):  # noqa: F811
+    """A re-create adopts a retained directory and clears its marker, but a
+    pass that listed the markers first still carries it, and the VM has no
+    registry record yet for the live check to find."""
+    retained = volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=8192)
+    report = reconciler_module.ReconcileReport()
+
+    with creating(VM_HASH):
+        freed = reconciler_module._evict(VM_HASH, report, dry_run=False)
+
+    assert freed == 0
+    assert retained.exists()
+    assert report.evicted == []
+
+
+def test_make_room_never_evicts_a_directory_a_create_is_using(pools, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    retained = volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=8192)
+    mark_reclaimable(VM_HASH, "gone", now=NOW - timedelta(days=2))
+    monkeypatch.setattr(reconciler_module, "_creating", {VM_HASH})
+    _fake_disk_usage(monkeypatch, 0)
+
+    freed = make_room(get_pools()[0], needed_bytes=8192)
+
+    assert freed == 0
+    assert retained.exists()
