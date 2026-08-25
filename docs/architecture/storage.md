@@ -526,6 +526,29 @@ and an attacker does not need to stop paying to create them (create, forget,
 repeat). It means "kept as long as the budget and live demand allow, oldest
 goes first", which is the only promise a node can honestly sell.
 
+### CLI
+
+Storage is agent-side and readable from the filesystem plus the agent DB, so
+`aleph-vm storage ...` (`src/aleph/vm/agent/storage_cli.py`, dispatched by
+`agent/cli.py` before its own argument parser) needs no running daemon:
+
+- `storage status`: per pool, live / reclaimable / cache / free bytes
+  against the budgets.
+- `storage list [--reclaimable]`: hash, pool, size, reason, age.
+- `storage reclaim <hash>`: purge one reclaimable directory now. Refuses a
+  directory with no `.reclaimable` marker (it may belong to a live VM) and,
+  since it only ever matches a directory that already exists on disk, an
+  implausible or unrelated hash simply matches nothing.
+- `storage reconcile [--dry-run]`: run one `reconcile_storage()` pass,
+  printing what it removed (or, under `--dry-run`, what it would remove).
+
+The live set these commands act against is the agent registry alone
+(rehydrated from the agent DB on startup, `rehydrate_registry`): there is no
+daemon to ask `list_vms`, so this cannot cross-check against a supervisor's
+answer the way the startup pass does (`reconciler._startup_refusal`). An
+operator invoking this by hand already knows what is running; the CLI does
+not add a `--trust-registry` gate on top of the registry it already trusts.
+
 ### First start on an existing node
 
 The first pass on an upgraded node finds every directory leaked by the bugs

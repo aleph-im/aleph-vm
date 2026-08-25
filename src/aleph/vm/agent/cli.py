@@ -151,6 +151,11 @@ async def run_async_db_migrations():
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "storage":
+        from aleph.vm.agent import storage_cli
+
+        sys.exit(storage_cli.main(sys.argv[2:]))
+
     args = parse_args(sys.argv[1:])
 
     log_format = (
