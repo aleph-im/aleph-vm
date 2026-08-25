@@ -151,3 +151,30 @@ class TestVProgramPath:
             await _create(capacity)
 
         assert [c.kwargs["is_instance"] for c in capacity.check_capacity.call_args_list] == [True]
+
+
+class TestBothChecksOnTheHappyPath:
+    """The two checks are a contract, not a duplicate: the pre-build one owns
+    disk, the post-build one re-checks memory and vCPUs (and is where GPU holds
+    are resolved) without re-requiring space this VM has already taken."""
+
+    @pytest.mark.asyncio
+    async def test_disk_is_required_once_before_the_build_and_never_again(self, monkeypatch):
+        from test_supervisor_run_routing import _info, _spec
+
+        _patch_message(monkeypatch, _make_qemu_instance_message(hypervisor=HypervisorType.qemu))
+        monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock(return_value=_spec()))
+        monkeypatch.setattr(run_module, "get_user_settings", AsyncMock(return_value={}))
+        monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
+        monkeypatch.setattr(run_module, "persist_record", AsyncMock())
+        capacity = _capacity()
+        supervisor = SimpleNamespace(
+            create_vm=AsyncMock(return_value=_info()),
+            get_vm=AsyncMock(return_value=_info()),
+            add_port_forward=AsyncMock(),
+            delete_vm=AsyncMock(),
+        )
+
+        await _create(capacity, supervisor)
+
+        assert _disk_args(capacity) == [(INSTANCE_ROOTFS_MIB, INSTANCE_ROOTFS_MIB), (0, 0)]
