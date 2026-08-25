@@ -272,3 +272,62 @@ async def test_a_cache_hit_evicted_mid_touch_falls_through_to_the_download(tmp_p
             await download_file("http://x/f", target)
 
     assert target.read_bytes() == b"fresh"
+
+
+def _runtime_cache_env(mocker, tmp_path):
+    import aleph.vm.storage as storage_module
+    from aleph.vm.conf import settings
+
+    cache = tmp_path / "runtime"
+    cache.mkdir()
+    entry = cache / "ref"
+    entry.write_bytes(b"image")
+    old = time.time() - 100_000
+    os.utime(entry, (old, old))
+    mocker.patch.object(settings, "RUNTIME_CACHE", cache)
+    mocker.patch.object(settings, "FAKE_DATA_PROGRAM", None)
+    mocker.patch.object(settings, "USE_FAKE_INSTANCE_BASE", False)
+    mocker.patch.object(storage_module, "check_squashfs_integrity", AsyncMock())
+    mocker.patch.object(storage_module, "chown_to_jailman", AsyncMock())
+    return entry, old, mocker.patch.object(storage_module, "_get_content_url", AsyncMock())
+
+
+@pytest.mark.asyncio
+async def test_a_runtime_cache_hit_is_touched(mocker, tmp_path):
+    """The runtime cache is the largest one, and its entries are the ones a
+    hundred VMs boot from: without the touch its LRU is download order, and
+    the entry every VM on the node uses looks like the oldest thing there."""
+    import aleph.vm.storage as storage_module
+
+    entry, old, url = _runtime_cache_env(mocker, tmp_path)
+
+    assert await storage_module.get_runtime_path("ref") == entry
+
+    assert entry.stat().st_mtime > old + 50_000
+    # A hit is a hit: no message lookup, no download.
+    url.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_instance_base_cache_hit_is_touched(mocker, tmp_path):
+    import aleph.vm.storage as storage_module
+
+    entry, old, url = _runtime_cache_env(mocker, tmp_path)
+
+    assert await storage_module.get_rootfs_base_path("ref") == entry
+
+    assert entry.stat().st_mtime > old + 50_000
+    url.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_runtime_entry_evicted_mid_touch_is_downloaded_again(mocker, tmp_path):
+    import aleph.vm.storage as storage_module
+
+    entry, _old, url = _runtime_cache_env(mocker, tmp_path)
+    url.return_value = "http://x/f"
+    download = mocker.patch.object(storage_module, "download_file", AsyncMock())
+    with patch("aleph.vm.storage.os.utime", side_effect=FileNotFoundError("gone")):
+        await storage_module.get_runtime_path("ref")
+
+    download.assert_awaited_once()
