@@ -530,24 +530,38 @@ goes first", which is the only promise a node can honestly sell.
 
 Storage is agent-side and readable from the filesystem plus the agent DB, so
 `aleph-vm storage ...` (`src/aleph/vm/agent/storage_cli.py`, dispatched by
-`agent/cli.py` before its own argument parser) needs no running daemon:
+`agent/cli.py` before its own argument parser) needs no running *agent
+process*:
 
 - `storage status`: per pool, live / reclaimable / cache / free bytes
-  against the budgets.
-- `storage list [--reclaimable]`: hash, pool, size, reason, age.
-- `storage reclaim <hash>`: purge one reclaimable directory now. Refuses a
-  directory with no `.reclaimable` marker (it may belong to a live VM) and,
-  since it only ever matches a directory that already exists on disk, an
-  implausible or unrelated hash simply matches nothing.
-- `storage reconcile [--dry-run]`: run one `reconcile_storage()` pass,
-  printing what it removed (or, under `--dry-run`, what it would remove).
+  against the budgets. Read-only, registry live set only.
+- `storage list [--reclaimable]`: hash, pool, size, reason, age. Read-only,
+  registry live set only.
+- `storage reclaim <hash> [--trust-registry]`: purge one reclaimable
+  directory now. Refuses a directory with no `.reclaimable` marker (it may
+  belong to a live VM); an implausible or unrelated hash simply matches
+  nothing on disk, so it is refused the same way. Also refuses a hash the
+  agent registry or the supervisor considers live (see below), and refuses
+  outright, without `--trust-registry`, when the supervisor cannot be asked.
+- `storage reconcile [--dry-run] [--trust-registry]`: run one
+  `reconcile_storage()` pass, printing what it removed (or, under
+  `--dry-run`, what it would remove).
 
-The live set these commands act against is the agent registry alone
-(rehydrated from the agent DB on startup, `rehydrate_registry`): there is no
-daemon to ask `list_vms`, so this cannot cross-check against a supervisor's
-answer the way the startup pass does (`reconciler._startup_refusal`). An
-operator invoking this by hand already knows what is running; the CLI does
-not add a `--trust-registry` gate on top of the registry it already trusts.
+`reconcile` and `reclaim` can purge, so they apply the same fail-closed rule
+`reconciler._startup_refusal` applies to the daemon's own startup pass: a
+live set built from the registry alone purges the disks of VMs the
+supervisor still runs, since a fresh or partly-lost agent DB rehydrates into
+an incomplete registry (this was PR A's Critical 1). A CLI process holding
+only the registry is exactly that state, so both commands dial the
+supervisor over the same gRPC socket the agent uses
+(`settings.SUPERVISOR_GRPC_SOCKET`, a few seconds' timeout) and union its
+`list_vms()` answer into the live set (`reconciler.supervisor_hashes`, the
+same id-to-hash mapping the daemon pass uses). When the supervisor cannot be
+reached: `reconcile` runs as a dry run and prints a warning explaining why,
+unless `--trust-registry` says to purge on the registry alone (`--dry-run`
+always wins, with or without the flag); `reclaim` refuses outright unless
+`--trust-registry` is given. `status` and `list` are read-only and never
+dial the supervisor.
 
 ### First start on an existing node
 
