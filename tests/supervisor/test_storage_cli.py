@@ -255,6 +255,30 @@ def test_reconcile_trust_registry_purges_when_supervisor_unreachable(pools, regi
     assert other.exists()
 
 
+def test_reconcile_passes_live_known_false_when_supervisor_unreachable(pools, registry, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(cli, "_open_supervisor", lambda: _fake_supervisor(fails=True))
+    fake_report = reconciler_module.ReconcileReport()
+    spy = MagicMock(return_value=fake_report)
+    monkeypatch.setattr(cli, "reconcile_storage", spy)
+
+    code, out = _run(["reconcile", "--trust-registry"], registry)
+
+    assert code == 0
+    assert spy.call_args.kwargs["live_known"] is False
+
+
+def test_reconcile_passes_live_known_true_when_supervisor_reachable(pools, registry, monkeypatch):  # noqa: F811
+    # The autouse fixture already installs a reachable fake supervisor.
+    fake_report = reconciler_module.ReconcileReport()
+    spy = MagicMock(return_value=fake_report)
+    monkeypatch.setattr(cli, "reconcile_storage", spy)
+
+    code, out = _run(["reconcile"], registry)
+
+    assert code == 0
+    assert spy.call_args.kwargs["live_known"] is True
+
+
 def test_reconcile_tears_down_devices_of_evicted_cache_parents(pools, registry, monkeypatch):  # noqa: F811
     monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
     stale = pools["runtime"] / "stale"
