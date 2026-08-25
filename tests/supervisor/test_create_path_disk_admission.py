@@ -30,6 +30,19 @@ from aleph.vm.utils import get_message_executable_content
 
 _HASH = ItemHash("deadbeef" * 8)
 
+
+@pytest.fixture(autouse=True)
+def _stub_retire_db_write(monkeypatch):
+    """A refused admission now retires the never-created VM as
+    FAILED_CREATE, which writes a DB record deletion; stub it out, since
+    these tests only care about admission ordering, not retire_vm's DB
+    write, which needs an app-level session this unit test does not set up.
+    """
+    from aleph.vm.agent.vm import retire as retire_module
+
+    monkeypatch.setattr(retire_module, "delete_records_for_vm", AsyncMock())
+
+
 # _make_qemu_instance_message declares a single 10000 MiB rootfs and no extra
 # volumes, so both the total and the largest single volume are 10000.
 INSTANCE_ROOTFS_MIB = 10000
