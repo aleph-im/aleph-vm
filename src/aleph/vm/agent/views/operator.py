@@ -28,7 +28,8 @@ from aleph.vm.agent.views.authentication import (
 )
 from aleph.vm.agent.vm.backup import BackupManager
 from aleph.vm.agent.vm.downloader import recreate_vm_volumes
-from aleph.vm.agent.vm.purge import purge_vm_staging, purge_vm_storage, purge_vm_volumes
+from aleph.vm.agent.vm.purge import purge_vm_staging, purge_vm_volumes
+from aleph.vm.agent.vm.retire import RetireReason, retire_vm
 from aleph.vm.agent.vm_registry import AgentVmRecord
 from aleph.vm.backup.archive import InsufficientDiskSpaceError
 from aleph.vm.backup.staging import download_volume_by_ref, get_backup_directory
@@ -504,7 +505,10 @@ async def operate_stop(request: web.Request, authenticated_sender: str) -> web.R
                 if record.persistent:
                     await supervisor.stop_vm(vm_id)
                 else:
-                    await supervisor.delete_vm(vm_id)
+                    # Ephemeral VMs have no stop state: the stop cycle is a
+                    # delete + recreate, so RECREATE keeps its port forwards
+                    # and disks for the VM that comes back.
+                    await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
                 request.app["expiry"].cancel(vm_id)
                 request.app["update_watcher"].cancel(vm_id)
                 return web.Response(status=200, body=f"Stopped VM with ref {vm_hash}")
@@ -534,7 +538,9 @@ async def operate_reboot(request: web.Request, authenticated_sender: str) -> web
                 if record.persistent:
                     await supervisor.reboot_vm(vm_id)
                 else:
-                    await supervisor.delete_vm(vm_id)
+                    # Ephemeral reboot is also a delete + recreate cycle:
+                    # RECREATE keeps its port forwards and disks.
+                    await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
                     request.app["expiry"].cancel(vm_id)
                     request.app["update_watcher"].cancel(vm_id)
                     await create_vm_execution_or_raise_http_error(
@@ -657,19 +663,15 @@ async def operate_erase(request: web.Request, authenticated_sender: str) -> web.
 
         logger.info(f"Erasing {vm_hash}")
         supervisor: Supervisor = request.app["supervisor"]
+        vm_id = VmId(str(vm_hash))
         try:
-            await supervisor.delete_vm(VmId(str(vm_hash)))
-            request.app["expiry"].cancel(VmId(str(vm_hash)))
-            request.app["update_watcher"].cancel(VmId(str(vm_hash)))
+            await supervisor.get_vm(vm_id)
         except VmNotFoundError:
             raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
-        request.app["vm_registry"].forget(vm_hash)
-        await metrics.delete_records_for_vm(str(vm_hash))
-        # DeleteVm has released the supervisor's handles on the disks; the
-        # bytes are the agent's to delete, since the agent allocated them.
-        # This erases the rootfs too: an owner asking to erase their VM's data
-        # means all of it, and the rootfs is where most of it lives.
-        await asyncio.to_thread(purge_vm_storage, vm_hash)
+        request.app["expiry"].cancel(vm_id)
+        request.app["update_watcher"].cancel(vm_id)
+        # The owner asked for a wipe: ERASE purges regardless of VOLUME_RETENTION.
+        await retire_vm(vm_hash, RetireReason.ERASE, supervisor=supervisor, registry=request.app["vm_registry"])
         request.app["backups"].forget(str(vm_hash))
         return web.Response(status=200, body=f"Erased VM with ref {vm_hash}")
 
@@ -749,9 +751,11 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
                 # Ephemeral and confidential VMs are rebuilt from scratch: a
                 # confidential rootfs is measured and staged, so its bundle
                 # must be re-staged and its owner must re-attest anyway. This
-                # is a delete+recreate cycle, so the persisted host ports are
-                # kept for the recreated VM to reload.
-                await supervisor.delete_vm(vm_id, keep_port_mappings=True)
+                # is a delete+recreate cycle: RECREATE keeps the persisted
+                # host ports for the recreated VM to reload. The volume and
+                # staging purge below is a deliberate partial purge on top,
+                # with the registry record kept for the rebuild.
+                await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
                 await asyncio.to_thread(purge_vm_volumes, vm_hash, include_data_volumes=include_data_volumes)
                 purge_vm_staging(vm_hash)
                 # The registry record is deliberately left in place: the create
