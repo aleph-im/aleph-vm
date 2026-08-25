@@ -321,8 +321,16 @@ async def test_quiesce_guest_freezes_and_thaws_around_the_copy(pools, backup_dir
     supervisor = _supervisor(frozen=True)
     manager = BackupManager(supervisor)
     order: list[str] = []
-    supervisor.freeze_guest.side_effect = lambda vm_id: order.append("freeze") or True
-    supervisor.thaw_guest.side_effect = lambda vm_id: order.append("thaw")
+
+    async def record_freeze(vm_id):
+        order.append("freeze")
+        return True
+
+    async def record_thaw(vm_id):
+        order.append("thaw")
+
+    supervisor.freeze_guest.side_effect = record_freeze
+    supervisor.thaw_guest.side_effect = record_thaw
 
     async def recording_disk_backup(vm_hash, source_disk_path, destination_dir):
         order.append("copy")
