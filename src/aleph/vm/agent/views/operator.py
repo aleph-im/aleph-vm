@@ -29,6 +29,7 @@ from aleph.vm.agent.views.authentication import (
 from aleph.vm.agent.vm.backup import BackupManager
 from aleph.vm.agent.vm.downloader import recreate_vm_volumes
 from aleph.vm.agent.vm.purge import purge_vm_staging, purge_vm_volumes
+from aleph.vm.agent.vm.reclaimable import is_reclaimable
 from aleph.vm.agent.vm.retire import RetireReason, retire_vm
 from aleph.vm.agent.vm_registry import AgentVmRecord
 from aleph.vm.backup.archive import InsufficientDiskSpaceError
@@ -251,10 +252,14 @@ async def is_sender_authorized(authenticated_sender: str, message: BaseExecutabl
     return False
 
 
-async def _logs_auth_message(request: web.Request, vm_hash: ItemHash):
-    """Message for owner-auth on the logs endpoints: registry first, then the
-    agent DB. Past executions keep their DB record: nothing deletes it today
-    (a follow-up adds explicit deletion on permanent dealloc)."""
+async def _owner_auth_message(request: web.Request, vm_hash: ItemHash):
+    """The message owner-auth is checked against: the agent registry first,
+    then the agent DB.
+
+    Used by the logs endpoints, whose past executions keep their DB record,
+    and by the erase endpoint, which must still answer for a VM the registry
+    has already dropped. Returns None when the node holds no message for the
+    hash, which is not the same as "no data on disk" (see operate_erase)."""
     record = request.app["vm_registry"].get(vm_hash)
     if record is not None:
         return record.message
@@ -276,7 +281,7 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
     """
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        message = await _logs_auth_message(request, vm_hash)
+        message = await _owner_auth_message(request, vm_hash)
         if message is None:
             raise web.HTTPNotFound(body=f"No execution found for VM {vm_hash}")
 
@@ -344,7 +349,7 @@ async def operate_logs_json(request: web.Request, authenticated_sender: str) -> 
     """Logs of a VM (not streaming) as json"""
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        message = await _logs_auth_message(request, vm_hash)
+        message = await _owner_auth_message(request, vm_hash)
         if message is None:
             raise aiohttp.web_exceptions.HTTPNotFound(body="No execution found for this VM")
         if not await is_sender_authorized(authenticated_sender, message):
@@ -654,20 +659,33 @@ async def operate_confidential_inject_secret(request: web.Request, authenticated
 async def operate_erase(request: web.Request, authenticated_sender: str) -> web.Response:
     """Delete all data stored by a virtual machine.
     Stop the virtual machine first if needed.
+
+    An erase is answered as long as the node still holds something for the
+    hash: a registry record, or a retained (``.reclaimable``) directory the
+    owner is entitled to wipe. The supervisor is not asked whether it knows
+    the VM: it forgets a VM on restart or after a delete, while the disks
+    stay, and a 404 there would leave the owner's data on the node with no
+    way to remove it (retire_vm swallows the supervisor's VmNotFoundError).
     """
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        record = get_agent_record_or_404(request, vm_hash)
-        if not await is_sender_authorized(authenticated_sender, record.message):
+        record = request.app["vm_registry"].get(vm_hash)
+        retained = record is None and await asyncio.to_thread(is_reclaimable, str(vm_hash))
+        if record is None and not retained:
+            raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}")
+        message = record.message if record is not None else await _owner_auth_message(request, vm_hash)
+        if message is None:
+            # Retained disks, but nothing left that says who owns them:
+            # ownership is proven against the message, and this endpoint will
+            # not wipe on anybody's word. The node operator reclaims those
+            # through the agent's own storage CLI.
+            raise web.HTTPForbidden(body=f"No owner record for {vm_hash}: its retained data cannot be erased here")
+        if not await is_sender_authorized(authenticated_sender, message):
             return web.Response(status=403, body="Unauthorized sender")
 
         logger.info(f"Erasing {vm_hash}")
         supervisor: Supervisor = request.app["supervisor"]
         vm_id = VmId(str(vm_hash))
-        try:
-            await supervisor.get_vm(vm_id)
-        except VmNotFoundError:
-            raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
         request.app["expiry"].cancel(vm_id)
         request.app["update_watcher"].cancel(vm_id)
         # The owner asked for a wipe: ERASE purges regardless of VOLUME_RETENTION.

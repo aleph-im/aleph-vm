@@ -157,6 +157,17 @@ def adopt(namespace: str) -> int:
     return cleared
 
 
+def is_reclaimable(namespace: str) -> bool:
+    """True when at least one of the VM's directories carries a marker.
+
+    The only record a retained VM has left: its registry record and its DB
+    records were dropped at GONE, so this is how a caller asks whether the
+    node still holds anything for a hash it otherwise knows nothing about.
+    """
+    namespace = _checked_namespace(namespace)
+    return any(read_marker(directory) is not None for directory in iter_namespace_dirs(namespace))
+
+
 def iter_reclaimable() -> Iterator[tuple[Path, ReclaimableMarker]]:
     for directory in iter_namespace_dirs():
         marker = read_marker(directory)
