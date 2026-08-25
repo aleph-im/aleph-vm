@@ -167,7 +167,9 @@ async def test_update_allocations_stops_descheduled_vprogram(aiohttp_client, moc
     fake_supervisor = MagicMock(delete_vm=AsyncMock(), list_vms=AsyncMock(return_value=[_running_vm_info(vm_hash)]))
     app["supervisor"] = fake_supervisor
 
-    mock_delete_records = mocker.patch("aleph.vm.agent.views.delete_records_for_vm", new_callable=AsyncMock)
+    mock_delete_records = mocker.patch(
+        "aleph.vm.agent.allocation.teardown.delete_records_for_vm", new_callable=AsyncMock
+    )
     client = await aiohttp_client(app)
 
     body, headers = scheduler_auth({"persistent_vms": []})
