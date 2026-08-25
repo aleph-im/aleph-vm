@@ -529,10 +529,6 @@ enum ErrorCode {
   ERROR_CODE_PORT_UNAVAILABLE = 10;
   ERROR_CODE_HOST_NOT_FOUND = 11;
 
-  // was ERROR_CODE_BACKUP_NOT_FOUND: backups moved to the agent
-  reserved 12;
-  reserved "ERROR_CODE_BACKUP_NOT_FOUND";
-
   // Catch-all
   ERROR_CODE_INTERNAL = 99;
 }
