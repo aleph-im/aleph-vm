@@ -4,7 +4,8 @@ import io
 import os
 import time
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aleph_message.models import ItemHash
@@ -30,6 +31,22 @@ def registry():
 @pytest.fixture(autouse=True)
 def _no_backups(mocker):
     mocker.patch("aleph.vm.agent.vm.reconciler.sweep_expired_backups", return_value=0)
+
+
+def _fake_supervisor(*vm_ids: str, fails: bool = False):
+    """A supervisor handle that lists ``vm_ids``, or cannot be asked at all
+    (an unreachable daemon: a connection error, a timeout, any of it)."""
+    if fails:
+        return SimpleNamespace(list_vms=AsyncMock(side_effect=RuntimeError("no answer")))
+    return SimpleNamespace(list_vms=AsyncMock(return_value=[SimpleNamespace(vm_id=vm_id) for vm_id in vm_ids]))
+
+
+@pytest.fixture(autouse=True)
+def _supervisor_reachable(monkeypatch):
+    """By default the supervisor is reachable and lists nothing running: the
+    tests that care about a different answer override ``_open_supervisor``
+    themselves."""
+    monkeypatch.setattr(cli, "_open_supervisor", lambda: _fake_supervisor())
 
 
 def _run(argv: list[str], registry) -> tuple[int, str]:
@@ -65,17 +82,54 @@ def test_list_shows_every_vm_dir_and_reclaimable_filters(pools, registry):  # no
 
 
 def test_reclaim_purges_a_reclaimable_dir_only(pools, registry):  # noqa: F811
-    live = volume(pools["pool0"], LIVE, "rootfs.qcow2")
     gone = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    unmarked = volume(pools["pool0"], OTHER_HASH, "rootfs.qcow2")
     mark_reclaimable(VM_HASH, "gone", now=NOW)
 
     code, out = _run(["reclaim", VM_HASH], registry)
     assert code == 0 and "Purged" in out
     assert not gone.exists()
 
-    code, out = _run(["reclaim", LIVE], registry)
+    # OTHER_HASH is on disk, unmarked, unknown to the registry and to the
+    # (fake, reachable) supervisor: reclaim refuses it for lack of a marker,
+    # not because anything claims to own it.
+    code, out = _run(["reclaim", OTHER_HASH], registry)
     assert code == 1 and "not reclaimable" in out
+    assert unmarked.exists()
+
+
+def test_reclaim_refuses_a_live_registry_hash(pools, registry):  # noqa: F811
+    live = volume(pools["pool0"], LIVE, "rootfs.qcow2")
+
+    code, out = _run(["reclaim", LIVE], registry)
+
+    assert code == 1 and "live" in out
     assert live.exists()
+
+
+def test_reclaim_refuses_a_hash_the_supervisor_lists_as_running(pools, registry, monkeypatch):  # noqa: F811
+    gone = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    mark_reclaimable(VM_HASH, "gone", now=NOW)
+    monkeypatch.setattr(cli, "_open_supervisor", lambda: _fake_supervisor(VM_HASH))
+
+    code, out = _run(["reclaim", VM_HASH], registry)
+
+    assert code == 1 and "running" in out
+    assert gone.exists()
+
+
+def test_reclaim_refuses_unless_trust_registry_when_supervisor_unreachable(pools, registry, monkeypatch):  # noqa: F811
+    gone = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    mark_reclaimable(VM_HASH, "gone", now=NOW)
+    monkeypatch.setattr(cli, "_open_supervisor", lambda: _fake_supervisor(fails=True))
+
+    code, out = _run(["reclaim", VM_HASH], registry)
+    assert code == 1 and "unreachable" in out
+    assert gone.exists()
+
+    code, out = _run(["reclaim", "--trust-registry", VM_HASH], registry)
+    assert code == 0 and "Purged" in out
+    assert not gone.exists()
 
 
 def test_reconcile_dry_run_reports_without_changing(pools, registry, monkeypatch):  # noqa: F811
@@ -89,8 +143,55 @@ def test_reconcile_dry_run_reports_without_changing(pools, registry, monkeypatch
     assert code == 0 and "Dry run" in out and "purged=1" in out
     assert orphan.exists()
 
+    # The fake supervisor (installed by the autouse fixture) is reachable and
+    # lists nothing running, so a real pass is allowed to purge.
     code, out = _run(["reconcile"], registry)
     assert code == 0 and not orphan.exists()
+
+
+def test_reconcile_leaves_a_supervisor_known_vm_the_registry_does_not(pools, registry, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    unknown = volume(pools["pool0"], OTHER_HASH, "rootfs.qcow2")
+    stamp = time.time() - 10_000
+    os.utime(unknown.parent, (stamp, stamp))
+    monkeypatch.setattr(cli, "_open_supervisor", lambda: _fake_supervisor(OTHER_HASH))
+
+    code, out = _run(["reconcile"], registry)
+
+    assert code == 0
+    assert unknown.exists()
+
+
+def test_reconcile_dry_runs_and_warns_when_supervisor_unreachable(pools, registry, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    orphan = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    stamp = time.time() - 10_000
+    os.utime(orphan.parent, (stamp, stamp))
+    monkeypatch.setattr(cli, "_open_supervisor", lambda: _fake_supervisor(fails=True))
+
+    code, out = _run(["reconcile"], registry)
+
+    assert code == 0 and "unreachable" in out and "Dry run" in out
+    assert orphan.exists()
+
+
+def test_reconcile_trust_registry_purges_when_supervisor_unreachable(pools, registry, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    orphan = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    stamp = time.time() - 10_000
+    os.utime(orphan.parent, (stamp, stamp))
+    monkeypatch.setattr(cli, "_open_supervisor", lambda: _fake_supervisor(fails=True))
+
+    code, out = _run(["reconcile", "--trust-registry"], registry)
+
+    assert code == 0 and not orphan.exists()
+
+    # --dry-run still wins even with --trust-registry.
+    other = volume(pools["pool0"], OTHER_HASH, "rootfs.qcow2")
+    os.utime(other.parent, (time.time() - 10_000, time.time() - 10_000))
+    code, out = _run(["reconcile", "--dry-run", "--trust-registry"], registry)
+    assert code == 0 and "Dry run" in out
+    assert other.exists()
 
 
 def test_cli_main_dispatches_storage_subcommand(mocker):

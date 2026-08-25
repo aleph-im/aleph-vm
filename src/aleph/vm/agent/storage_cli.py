@@ -1,22 +1,25 @@
 """``aleph-vm storage``: show and drive reclamation from the node shell.
 
 Storage is agent-side and, by design, readable from the filesystem plus the
-agent DB, so these commands need no running daemon. They run the same code
-the reconciler runs.
-
-The live set these commands act against is the agent registry alone
-(rehydrated from the agent DB, ``rehydrate_registry``): there is no daemon to
-ask ``list_vms``, so unlike the startup pass (``reconciler._startup_refusal``)
-this cannot cross-check against a supervisor's answer. An operator invoking
-this by hand already knows whether the daemon is up; running it against a
-stopped daemon (the normal case, since the daemon holds no lock these
-commands need) is exactly the documented use.
+agent DB, so these commands need no *agent process* running. They run the
+same code the reconciler runs, including the same safety rule: a live set
+built from the registry alone purges the disks of VMs the supervisor still
+runs (that was PR A's Critical 1, guarded on the daemon side by
+``reconciler._startup_refusal``). A CLI process holding only the registry is
+exactly that state, so ``reconcile`` and ``reclaim`` ask the supervisor
+daemon over the same gRPC socket the agent dials (``GrpcSupervisor``,
+``settings.SUPERVISOR_GRPC_SOCKET``), with a short timeout, and union its
+answer into the live set. When the daemon cannot be reached, both commands
+fail closed: ``reconcile`` runs dry and warns, ``reclaim`` refuses, unless
+``--trust-registry`` says to proceed on the registry alone. ``status`` and
+``list`` are read-only and never touch the supervisor.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import shutil
 import sys
 from datetime import datetime, timezone
@@ -32,11 +35,23 @@ from aleph.vm.agent.vm.reclaimable import (
     read_marker,
     reclaimable_bytes,
 )
-from aleph.vm.agent.vm.reconciler import live_hashes, reconcile_storage
+from aleph.vm.agent.vm.reconciler import (
+    live_hashes,
+    reconcile_storage,
+    supervisor_hashes,
+)
 from aleph.vm.agent.vm_registry import AgentVmRegistry, rehydrate_registry
 from aleph.vm.conf import settings
 from aleph.vm.storage_budget import parse_budget
 from aleph.vm.storage_pools import iter_namespace_dirs
+from aleph.vm.supervisor_interface.abc import Supervisor
+
+# How long to wait for the supervisor to answer before treating it as
+# unreachable. Short on purpose: an operator running this by hand should not
+# sit through a 30 second RPC deadline just to learn the daemon is down.
+SUPERVISOR_CONNECT_TIMEOUT_SECS = 3.0
+
+logger = logging.getLogger(__name__)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -47,8 +62,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     list_parser.add_argument("--reclaimable", action="store_true", help="only directories no VM owns")
     reclaim_parser = sub.add_parser("reclaim", help="purge one reclaimable VM directory now")
     reclaim_parser.add_argument("vm_hash")
+    reclaim_parser.add_argument(
+        "--trust-registry",
+        action="store_true",
+        help="purge using the registry alone when the supervisor cannot be asked whether the hash is running",
+    )
     reconcile_parser = sub.add_parser("reconcile", help="run one reconciler pass")
     reconcile_parser.add_argument("--dry-run", action="store_true")
+    reconcile_parser.add_argument(
+        "--trust-registry",
+        action="store_true",
+        help="purge using the registry alone when the supervisor cannot be asked which VMs it runs",
+    )
     return parser.parse_args(argv)
 
 
@@ -69,6 +94,52 @@ def _age(since: datetime) -> str:
     days, rem = divmod(int(delta.total_seconds()), 86400)
     hours = rem // 3600
     return f"{days}d {hours}h"
+
+
+def _open_supervisor() -> Supervisor:
+    """The agent's handle on the supervisor daemon, over the same gRPC socket
+    the web app dials. A thin wrapper so tests can substitute a fake handle
+    instead of a real gRPC channel."""
+    from aleph.vm.supervisor_interface.client import GrpcSupervisor
+
+    return GrpcSupervisor(settings.SUPERVISOR_GRPC_SOCKET)
+
+
+async def _supervisor_running_hashes(timeout: float = SUPERVISOR_CONNECT_TIMEOUT_SECS) -> set[str] | None:
+    """The item hashes the supervisor lists as running, or None when it could
+    not be asked (unreachable, timed out, or answered with an error).
+
+    Reuses ``reconciler.supervisor_hashes`` for the id-to-hash mapping, so a
+    CLI pass and a daemon pass never disagree on what counts as a plausible
+    VM id.
+    """
+    supervisor = _open_supervisor()
+    try:
+        return await asyncio.wait_for(supervisor_hashes(supervisor), timeout=timeout)
+    except Exception:
+        return None
+    finally:
+        close = getattr(supervisor, "close", None)
+        if close is not None:
+            try:
+                await close()
+            except Exception:
+                logger.debug("Failed to close the supervisor handle", exc_info=True)
+
+
+def _cli_live_set(registry: AgentVmRegistry) -> tuple[set[str], bool]:
+    """(live hashes, whether the supervisor could be asked).
+
+    The registry alone is never enough here: it is the same fail-closed
+    reasoning ``reconciler._startup_refusal`` applies to the daemon's own
+    startup pass, applied to a CLI process that by construction never has
+    more than the registry unless it asks the daemon itself.
+    """
+    running = asyncio.run(_supervisor_running_hashes())
+    live = live_hashes(registry)
+    if running is None:
+        return live, False
+    return live | running, True
 
 
 def _status(registry: AgentVmRegistry, out: TextIO) -> int:
@@ -113,7 +184,21 @@ def _list(out: TextIO, *, reclaimable_only: bool) -> int:
     return 0
 
 
-def _reclaim(vm_hash: str, out: TextIO) -> int:
+def _reclaim(registry: AgentVmRegistry, vm_hash: str, out: TextIO, *, trust_registry: bool) -> int:
+    if vm_hash in live_hashes(registry):
+        out.write(f"{vm_hash} is a live VM in the agent registry; refusing to purge it\n")
+        return 1
+    running = asyncio.run(_supervisor_running_hashes())
+    if running is not None:
+        if vm_hash in running:
+            out.write(f"{vm_hash} is running (the supervisor lists it); refusing to purge it\n")
+            return 1
+    elif not trust_registry:
+        out.write(
+            f"Supervisor unreachable; cannot confirm {vm_hash} is not running. "
+            "Pass --trust-registry to purge using the registry alone\n"
+        )
+        return 1
     marked = [directory for directory, _marker in iter_reclaimable() if directory.name == vm_hash]
     if not marked:
         out.write(
@@ -125,14 +210,22 @@ def _reclaim(vm_hash: str, out: TextIO) -> int:
     return 0
 
 
-def _reconcile(registry: AgentVmRegistry, out: TextIO, *, dry_run: bool) -> int:
-    report = reconcile_storage(registry, dry_run=dry_run)
-    prefix = "Dry run: " if dry_run else "Reconciled: "
+def _reconcile(registry: AgentVmRegistry, out: TextIO, *, dry_run: bool, trust_registry: bool) -> int:
+    live, reachable = _cli_live_set(registry)
+    effective_dry_run = dry_run
+    if not reachable and not trust_registry:
+        effective_dry_run = True
+        out.write(
+            "Warning: supervisor unreachable; showing what a trusted pass would purge; "
+            "pass --trust-registry to purge using the registry alone\n"
+        )
+    report = reconcile_storage(registry, dry_run=effective_dry_run, live=live)
+    prefix = "Dry run: " if effective_dry_run else "Reconciled: "
     out.write(prefix + report.summary() + "\n")
     for name in report.purged_orphans + report.evicted:
-        out.write(f"  {'would purge' if dry_run else 'purged'} {name}\n")
+        out.write(f"  {'would purge' if effective_dry_run else 'purged'} {name}\n")
     for name in report.marked_orphans:
-        out.write(f"  {'would mark' if dry_run else 'marked'} {name}\n")
+        out.write(f"  {'would mark' if effective_dry_run else 'marked'} {name}\n")
     return 0
 
 
@@ -142,9 +235,9 @@ def run(args: argparse.Namespace, registry: AgentVmRegistry, out: TextIO) -> int
     if args.command == "list":
         return _list(out, reclaimable_only=args.reclaimable)
     if args.command == "reclaim":
-        return _reclaim(args.vm_hash, out)
+        return _reclaim(registry, args.vm_hash, out, trust_registry=args.trust_registry)
     if args.command == "reconcile":
-        return _reconcile(registry, out, dry_run=args.dry_run)
+        return _reconcile(registry, out, dry_run=args.dry_run, trust_registry=args.trust_registry)
     return 2
 
 
