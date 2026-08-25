@@ -29,7 +29,7 @@ from aleph.vm.agent.views.authentication import (
 from aleph.vm.agent.vm.backup import BackupManager
 from aleph.vm.agent.vm.downloader import recreate_vm_volumes
 from aleph.vm.agent.vm.purge import purge_vm_staging, purge_vm_volumes
-from aleph.vm.agent.vm.reclaimable import is_reclaimable
+from aleph.vm.agent.vm.reclaimable import retained_marker
 from aleph.vm.agent.vm.retire import RetireReason, retire_vm
 from aleph.vm.agent.vm_registry import AgentVmRecord
 from aleph.vm.backup.archive import InsufficientDiskSpaceError
@@ -225,6 +225,18 @@ async def check_owner_permissions(authenticated_sender: str, message: BaseExecut
     return False
 
 
+def is_owner_address(authenticated_sender: str, address: str) -> bool:
+    """The owner half of ``is_sender_authorized``: does the address the
+    signature resolved to (``require_jwk_authentication`` did the
+    cryptography) match the VM's owner address?
+
+    Split out so the erase endpoint can apply the same rule to the owner
+    address carried by a ``.reclaimable`` marker, where there is no message
+    left to check (and therefore no delegation aggregate to consult either).
+    """
+    return bool(address) and authenticated_sender.lower() == address.lower()
+
+
 async def is_sender_authorized(authenticated_sender: str, message: BaseExecutableContent) -> bool:
     """
     Check if the authenticated sender is authorized to access the message resources.
@@ -241,7 +253,7 @@ async def is_sender_authorized(authenticated_sender: str, message: BaseExecutabl
         True if authorized, False otherwise
     """
     # Check if sender is the owner
-    if authenticated_sender.lower() == message.address.lower():
+    if is_owner_address(authenticated_sender, message.address):
         return True
 
     # Check if sender has delegation permissions
@@ -670,18 +682,27 @@ async def operate_erase(request: web.Request, authenticated_sender: str) -> web.
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
         record = request.app["vm_registry"].get(vm_hash)
-        retained = record is None and await asyncio.to_thread(is_reclaimable, str(vm_hash))
-        if record is None and not retained:
+        marker = None if record is not None else await asyncio.to_thread(retained_marker, str(vm_hash))
+        if record is None and marker is None:
             raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}")
         message = record.message if record is not None else await _owner_auth_message(request, vm_hash)
-        if message is None:
-            # Retained disks, but nothing left that says who owns them:
-            # ownership is proven against the message, and this endpoint will
-            # not wipe on anybody's word. The node operator reclaims those
-            # through the agent's own storage CLI.
-            raise web.HTTPForbidden(body=f"No owner record for {vm_hash}: its retained data cannot be erased here")
-        if not await is_sender_authorized(authenticated_sender, message):
-            return web.Response(status=403, body="Unauthorized sender")
+        if message is not None:
+            if not await is_sender_authorized(authenticated_sender, message):
+                return web.Response(status=403, body="Unauthorized sender")
+        elif marker is not None and marker.owner:
+            # Retained disks and no message anywhere: GONE forgot the registry
+            # record and deleted the DB rows, which is the normal state of a
+            # retained VM. The marker's owner address is what is left, and the
+            # signature has already been resolved to an address by
+            # require_jwk_authentication, so the same owner rule applies.
+            if not is_owner_address(authenticated_sender, marker.owner):
+                return web.Response(status=403, body="Unauthorized sender")
+        else:
+            # A marker with no owner (written before the field existed, or an
+            # orphan directory for a VM whose message this node never held):
+            # nothing can prove ownership, so nothing is wiped on request. The
+            # operator reclaims those through the agent's own storage CLI.
+            raise web.HTTPForbidden(body=f"No owner recorded for {vm_hash}: its retained data cannot be erased here")
 
         logger.info(f"Erasing {vm_hash}")
         supervisor: Supervisor = request.app["supervisor"]

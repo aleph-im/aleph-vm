@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -9,12 +10,14 @@ from aleph_message.models import InstanceContent, ItemHash
 from reclaim_fixtures import VM_HASH, pools, volume  # noqa: F401
 
 import aleph.vm.agent.vm.retire as retire_module
-from aleph.vm.agent.vm.reclaimable import read_marker
+from aleph.vm.agent.vm.reclaimable import MARKER_NAME, read_marker
 from aleph.vm.agent.vm.retire import RetireReason, retire_vm
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
 from aleph.vm.supervisor_interface.types import VmId
+
+OWNER = "0x1234567890123456789012345678901234567890"
 
 
 @pytest.fixture
@@ -25,6 +28,7 @@ def env(pools, mocker):  # noqa: F811
     rootfs = MagicMock()
     rootfs.parent.ref = "parent-ref"
     content = MagicMock(spec=InstanceContent, volumes=[], rootfs=rootfs)
+    content.address = OWNER
     registry.record(ItemHash(VM_HASH), message=content, original=content, persistent=True)
     rootfs = volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=4096)
     data = volume(pools["pool1"], VM_HASH, "data.ext4", size=4096)
@@ -97,6 +101,22 @@ async def test_gone_under_keep_marks_volumes_and_removes_the_rest(env, monkeypat
     assert not env["staging"].exists()
     assert ItemHash(VM_HASH) not in env["registry"]
     env["purge_backups"].assert_called_once_with(VM_HASH)
+
+
+@pytest.mark.asyncio
+async def test_gone_under_keep_records_the_owner_in_the_marker(env, monkeypatch, pools):  # noqa: F811
+    """The marker is the only thing left that says whose disks these are: the
+    registry record is forgotten and delete_records_for_vm drops the DB rows
+    at GONE. Without the owner in the marker, nobody can ever be authorized
+    to ask for the retained data to be erased."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+
+    await retire_vm(VM_HASH, RetireReason.GONE, supervisor=env["supervisor"], registry=env["registry"])
+
+    written = json.loads((pools["pool0"] / VM_HASH / MARKER_NAME).read_text())
+    assert written["owner"] == OWNER
+    assert written["version"] == 1
+    assert read_marker(pools["pool1"] / VM_HASH).owner == OWNER
 
 
 @pytest.mark.asyncio

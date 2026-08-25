@@ -117,7 +117,11 @@ async def retire_vm(
 def _release_storage(namespace: str, reason: RetireReason, record: AgentVmRecord | None) -> None:
     if reason is RetireReason.GONE and settings.VOLUME_RETENTION == "keep":
         depends_on = depends_on_from_content(record.message) if record is not None else ()
-        mark_reclaimable(namespace, "gone", depends_on)
+        # The record is about to be the last thing that knew who owns these
+        # disks (this runs after registry.forget and delete_records_for_vm),
+        # so the owner address goes into the marker with it.
+        owner = str(record.message.address) if record is not None and record.message.address else None
+        mark_reclaimable(namespace, "gone", depends_on, owner=owner)
         purge_vm_side_dirs(namespace)
         return
     purge_vm_storage(namespace)
