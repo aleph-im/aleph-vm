@@ -104,7 +104,14 @@ async def retire_vm(
     if reason is RetireReason.GONE and settings.VOLUME_RETENTION == "keep" and _after_gone is not None:
         # This VM's volumes just became reclaimable: bring the pool back under
         # its retention budget now rather than at the next periodic pass.
-        await _after_gone()
+        # Best effort: the GONE call sites sweep in a loop (terminal messages,
+        # unpaid VMs) with no local try, and this VM is already retired, so a
+        # failing pass must not take the rest of the sweep down with it. The
+        # periodic pass will retry.
+        try:
+            await _after_gone()
+        except Exception:
+            logger.exception("Storage reconcile after retiring %s failed", vm_hash)
 
 
 def _release_storage(namespace: str, reason: RetireReason, record: AgentVmRecord | None) -> None:

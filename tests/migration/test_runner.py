@@ -16,6 +16,7 @@ from aleph.vm.agent.migration.jobs import (
     _reset_migration_semaphore_for_tests,
 )
 from aleph.vm.agent.migration.runner import run_export
+from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
 
@@ -25,6 +26,14 @@ def _fake_capacity():
     from types import SimpleNamespace
 
     return SimpleNamespace(check_capacity=MagicMock(), resolve_gpus=AsyncMock(return_value=[]))
+
+
+@pytest.fixture(autouse=True)
+def _stub_persist_record(monkeypatch):
+    """The import now records the migrated VM in the agent registry and its
+    DB; the DB write needs an app-level session these unit tests do not set
+    up."""
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.persist_record", AsyncMock())
 
 
 @pytest.fixture(autouse=True)
@@ -220,7 +229,14 @@ async def testrun_import_success(tmp_path, monkeypatch, stub_finish_instance_cre
         )
     ]
 
-    await run_import(job, supervisor, capacity=_fake_capacity(), disk_files=disk_files, export_token="t0k3n")
+    await run_import(
+        job,
+        supervisor,
+        capacity=_fake_capacity(),
+        registry=AgentVmRegistry(),
+        disk_files=disk_files,
+        export_token="t0k3n",
+    )
 
     assert job.state == MigrationState.IMPORTED
     assert job.error is None
@@ -311,7 +327,14 @@ async def testrun_import_accepts_message_without_explicit_hypervisor(tmp_path, m
         )
     ]
 
-    await run_import(job, supervisor, capacity=_fake_capacity(), disk_files=disk_files, export_token="t0k3n")
+    await run_import(
+        job,
+        supervisor,
+        capacity=_fake_capacity(),
+        registry=AgentVmRegistry(),
+        disk_files=disk_files,
+        export_token="t0k3n",
+    )
 
     assert job.state == MigrationState.IMPORTED
     assert job.error is None
@@ -348,6 +371,7 @@ async def testrun_import_aborts_when_message_not_instance(tmp_path, monkeypatch)
         job,
         supervisor,
         capacity=_fake_capacity(),
+        registry=AgentVmRegistry(),
         disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=1, sha256="0" * 64, download_path="/x")],
         export_token="t",
     )
@@ -402,6 +426,7 @@ async def testrun_import_cleans_dest_dir_on_download_failure(tmp_path, monkeypat
         job,
         supervisor,
         capacity=_fake_capacity(),
+        registry=AgentVmRegistry(),
         disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=1, sha256="0" * 64, download_path="/x")],
         export_token="t",
     )
@@ -466,6 +491,7 @@ async def testrun_import_cleans_dest_dir_on_create_vm_failure(tmp_path, monkeypa
         job,
         supervisor,
         capacity=_fake_capacity(),
+        registry=AgentVmRegistry(),
         disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=1, sha256="0" * 64, download_path="/x")],
         export_token="t",
     )
@@ -529,6 +555,7 @@ async def testrun_import_keeps_dest_dir_when_supervisor_already_has_vm(tmp_path,
         job,
         supervisor,
         capacity=_fake_capacity(),
+        registry=AgentVmRegistry(),
         disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=1, sha256="0" * 64, download_path="/x")],
         export_token="t",
     )
@@ -725,3 +752,75 @@ async def test_import_spec_build_reuses_staged_overlay(tmp_path, monkeypatch):
     assert result == staged
     assert result.read_bytes() == b"staged-overlay"  # untouched
     assert create_calls == []  # no qemu-img create: the staged overlay was adopted
+
+
+@pytest.mark.asyncio
+async def test_import_holds_the_create_guard_and_records_the_vm(tmp_path, monkeypatch, stub_finish_instance_create):
+    """The import stages disks into a namespace nothing owns yet.
+
+    Until the registry record exists, only the create guard stands between a
+    multi-GB transfer and the storage reconciler, which would otherwise see an
+    unowned directory older than VOLUME_CREATE_GUARD and reap it. And once the
+    guard is released, the record is what keeps the disks: a migrated VM with
+    no registry entry is an orphan on the next pass.
+    """
+    from aleph.vm.agent.migration.jobs import DiskFileInfo, ImportJob
+    from aleph.vm.agent.migration.runner import run_import
+    from aleph.vm.agent.vm.reconciler import is_creating
+
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    monkeypatch.setattr(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
+    monkeypatch.setattr(settings, "INSTANCE_DEFAULT_HYPERVISOR", HypervisorType.qemu)
+
+    parent_path = tmp_path / "parent.qcow2"
+    parent_path.write_bytes(b"parent")
+
+    fake_message = MagicMock()
+    fake_message.type = MessageType.instance
+    fake_message.content.environment.hypervisor = HypervisorType.qemu
+    fake_message.content.environment.trusted_execution = None
+    fake_message.content.rootfs.parent.ref = "parentref"
+    fake_message.content.requirements = None
+
+    guard_while_downloading = []
+
+    async def fake_download(session, url, dest_path, token, *, expected_sha256, on_chunk=None):
+        guard_while_downloading.append(is_creating(str(vm_hash)))
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest_path.write_bytes(b"downloaded")
+        return 10
+
+    monkeypatch.setattr(
+        "aleph.vm.agent.migration.runner.load_updated_message",
+        AsyncMock(return_value=(fake_message, fake_message)),
+    )
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.get_rootfs_base_path", AsyncMock(return_value=parent_path))
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.detect_parent_format", AsyncMock(return_value="qcow2"))
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.download_disk_from_source", fake_download)
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.rebase_overlay", AsyncMock())
+    monkeypatch.setattr(
+        "aleph.vm.agent.migration.runner.build_create_vm_spec",
+        AsyncMock(return_value=MagicMock(vm_id=vm_hash)),
+    )
+
+    registry = AgentVmRegistry()
+    job = ImportJob(
+        vm_hash=vm_hash,
+        state=MigrationState.IMPORTING,
+        started_at=datetime.now(timezone.utc),
+        source_host="src",
+        source_port=443,
+    )
+    await run_import(
+        job,
+        _import_supervisor(),
+        capacity=_fake_capacity(),
+        registry=registry,
+        disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=10, sha256="0" * 64, download_path="/x")],
+        export_token="t",
+    )
+
+    assert job.state == MigrationState.IMPORTED
+    assert guard_while_downloading == [True]
+    assert registry.get(vm_hash) is not None
+    assert not is_creating(str(vm_hash))

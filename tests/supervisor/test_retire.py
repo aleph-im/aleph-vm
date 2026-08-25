@@ -176,3 +176,21 @@ async def test_erase_does_not_run_the_after_gone_hook(env, monkeypatch):
         retire_module.set_after_gone_hook(None)
 
     hook.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_failing_after_gone_hook_does_not_break_the_retire(env, monkeypatch, caplog):
+    """The GONE call sites sweep in a loop (terminal messages, unpaid VMs)
+    without a local try: a reconcile pass that raises must not take the rest
+    of the sweep down with it."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    retire_module.set_after_gone_hook(AsyncMock(side_effect=RuntimeError("pool on fire")))
+    try:
+        with caplog.at_level("WARNING"):
+            await retire_vm(VM_HASH, RetireReason.GONE, supervisor=env["supervisor"], registry=env["registry"])
+    finally:
+        retire_module.set_after_gone_hook(None)
+
+    # The retire itself completed: the volumes are marked, not lost.
+    assert read_marker(env["rootfs"].parent) is not None
+    assert "pool on fire" in caplog.text
