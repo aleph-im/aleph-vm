@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aleph_message.models import ItemHash
@@ -27,6 +27,7 @@ from aleph.vm.agent.vm.reconciler import (
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
 from aleph.vm.storage_pools import get_pools
+from aleph.vm.supervisor_interface.errors import SupervisorError
 
 LIVE = "dead" * 16
 NOW = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
@@ -57,6 +58,17 @@ def registry():
     content = MagicMock(volumes=[], rootfs=None)
     reg.record(ItemHash(LIVE), message=content, original=content, persistent=True)
     return reg
+
+
+def _supervisor(*vm_ids: str, fails: bool = False):
+    """A supervisor handle that lists ``vm_ids``, or refuses to answer."""
+    if fails:
+        return SimpleNamespace(list_vms=AsyncMock(side_effect=SupervisorError("no answer")))
+    return SimpleNamespace(list_vms=AsyncMock(return_value=[SimpleNamespace(vm_id=vm_id) for vm_id in vm_ids]))
+
+
+def _app(registry, supervisor=None):
+    return {"vm_registry": registry, "supervisor": supervisor if supervisor is not None else _supervisor()}
 
 
 @pytest.fixture(autouse=True)
@@ -229,6 +241,33 @@ def test_a_non_empty_mnt_directory_is_never_removed(pools, registry):  # noqa: F
     assert report.side_dirs_removed == 1
 
 
+def test_a_hash_claimed_mid_pass_is_not_purged(pools, registry, monkeypatch):  # noqa: F811
+    """The live set is snapshotted on the loop and the walk runs in a thread:
+    a create that commits in between must not be purged. The directory's mtime
+    is no help, it does not move while a file inside it grows."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    content = MagicMock(volumes=[], rootfs=None)
+    for namespace in (VM_HASH, OTHER_HASH):
+        _age(volume(pools["pool0"], namespace, "rootfs.qcow2").parent, 10_000)
+    real_purge = reconciler_module.purge_vm_storage
+
+    def purge_and_commit_the_other(namespace):
+        # The create for the namespace this pass has not reached yet commits
+        # while the pass is busy with the first one.
+        other = OTHER_HASH if namespace == VM_HASH else VM_HASH
+        registry.record(ItemHash(other), message=content, original=content, persistent=True)
+        return real_purge(namespace)
+
+    monkeypatch.setattr(reconciler_module, "purge_vm_storage", purge_and_commit_the_other)
+    live = reconciler_module.live_hashes(registry)
+
+    report = reconcile_storage(registry, now=NOW, live=live, is_live=reconciler_module.registry_is_live(registry, live))
+
+    assert len(report.purged_orphans) == 1
+    survivor = OTHER_HASH if report.purged_orphans == [VM_HASH] else VM_HASH
+    assert (pools["pool0"] / survivor).is_dir()
+
+
 def test_young_side_dirs_are_inside_the_create_guard(pools, registry):  # noqa: F811
     young = pools["sessions"] / VM_HASH
     young.mkdir()
@@ -324,6 +363,53 @@ def test_make_room_never_evicts_a_live_namespace(pools, monkeypatch):  # noqa: F
 
 
 @pytest.mark.asyncio
+async def test_a_vm_the_supervisor_runs_is_live_even_without_a_record(pools, registry, monkeypatch):  # noqa: F811
+    """The registry is refilled at boot from the agent DB alone, and that
+    rehydration skips records with an empty or unparseable message. A VM the
+    supervisor is still running is live whatever the registry remembers."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    running = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    _age(running.parent, 10_000)
+
+    report = await reconcile_now(_app(registry, _supervisor(VM_HASH)))
+
+    assert running.exists()
+    assert report.purged_orphans == []
+
+
+@pytest.mark.asyncio
+async def test_startup_purges_nothing_when_the_supervisor_cannot_be_listed(pools, registry, monkeypatch, caplog):  # noqa: F811
+    """No answer from the supervisor is not "it runs nothing": without the
+    second opinion the live set is unknown, so the startup pass runs dry."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    old = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    _age(old.parent, 10_000)
+
+    with caplog.at_level("WARNING"):
+        await reconcile_at_startup(_app(registry, _supervisor(fails=True)))
+
+    assert old.exists()
+    assert "running dry" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_startup_purges_nothing_when_the_registry_is_empty_but_vms_run(pools, monkeypatch, caplog):  # noqa: F811
+    """A fresh or lost agent DB rehydrates zero records while the supervisor
+    still runs VMs: every directory would look like an orphan."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    old = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    _age(old.parent, 10_000)
+    other = volume(pools["pool0"], OTHER_HASH, "rootfs.qcow2")
+    _age(other.parent, 10_000)
+
+    with caplog.at_level("WARNING"):
+        await reconcile_at_startup(_app(AgentVmRegistry(), _supervisor(LIVE)))
+
+    assert old.exists() and other.exists()
+    assert "registry is empty" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_startup_hook_logs_a_preview_then_reconciles(pools, registry, monkeypatch, caplog):  # noqa: F811
     """The one-shot cleanup on an upgraded node is announced before it runs:
     an operator reading the log must be able to explain why free space jumped
@@ -333,7 +419,7 @@ async def test_startup_hook_logs_a_preview_then_reconciles(pools, registry, monk
     _age(old.parent, 10_000)
 
     with caplog.at_level("WARNING"):
-        await reconcile_at_startup({"vm_registry": registry})
+        await reconcile_at_startup(_app(registry))
 
     assert "will purge 1 orphan" in caplog.text
     # A line per pool, so the operator sees which disk gives the space back.
@@ -347,7 +433,7 @@ async def test_startup_hook_is_quiet_when_there_is_nothing_to_reclaim(pools, reg
     _age(live.parent, 10_000)
 
     with caplog.at_level("WARNING"):
-        await reconcile_at_startup({"vm_registry": registry})
+        await reconcile_at_startup(_app(registry))
 
     assert "Startup storage reconcile" not in caplog.text
     assert live.exists()
@@ -356,7 +442,7 @@ async def test_startup_hook_is_quiet_when_there_is_nothing_to_reclaim(pools, reg
 @pytest.mark.asyncio
 async def test_the_periodic_task_starts_and_is_cancelled_on_shutdown(pools, registry, monkeypatch):  # noqa: F811
     monkeypatch.setattr(settings, "VOLUME_RECONCILE_INTERVAL", 3600)
-    app = {"vm_registry": registry}
+    app = _app(registry)
 
     await start_storage_reconcile_task(app)
     task = app["storage_reconcile"]
@@ -409,7 +495,7 @@ async def test_two_reconcile_passes_do_not_overlap(pools, registry, monkeypatch)
         return reconciler_module.ReconcileReport()
 
     monkeypatch.setattr(reconciler_module, "reconcile_storage", slow_pass)
-    app = {"vm_registry": registry}
+    app = _app(registry)
 
     await asyncio.gather(reconcile_now(app), reconcile_now(app))
 

@@ -501,9 +501,11 @@ def run():
     app.on_startup.append(_run_migration_reaper)
     app.on_startup.append(_rehydrate_vm_registry)
     app.on_startup.append(log_snp_launch_capability)
-    # After _rehydrate_vm_registry, which fills the live set the reconciler
-    # judges orphans against (on_startup hooks run in append order): a pass on
-    # an empty registry would treat every running VM's volumes as unowned.
+    # After _rehydrate_vm_registry, which fills half of the live set the
+    # reconciler judges orphans against (on_startup hooks run in append
+    # order); the other half is what the supervisor lists, so a VM whose DB
+    # record was lost or is unparseable is still live. The startup pass
+    # refuses to purge at all when neither half can be trusted.
     app.on_startup.append(reconcile_at_startup)
     app.on_startup.append(start_storage_reconcile_task)
     app.on_cleanup.append(stop_storage_reconcile_task)
