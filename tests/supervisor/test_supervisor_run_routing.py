@@ -184,7 +184,9 @@ async def test_owner_record_recorded_before_resource_download(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_eligible_instance_timeout_tears_down(monkeypatch):
+async def test_eligible_instance_timeout_retires_as_failed_create(monkeypatch):
+    from aleph.vm.agent.vm.retire import RetireReason
+
     content = _make_qemu_instance_message(hypervisor=HypervisorType.qemu)
     message = MagicMock(content=content)
     monkeypatch.setattr(
@@ -194,6 +196,8 @@ async def test_eligible_instance_timeout_tears_down(monkeypatch):
     monkeypatch.setattr(run_module, "get_user_settings", AsyncMock(return_value={}))
     monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
     monkeypatch.setattr(run_module, "_START_POLL_TIMEOUT_SECONDS", 0)
+    retire = AsyncMock()
+    monkeypatch.setattr(run_module, "retire_vm", retire)
 
     supervisor = _fake_supervisor(get_status=VmStatus.BOOTING)  # never RUNNING
     registry = AgentVmRegistry()
@@ -203,14 +207,16 @@ async def test_eligible_instance_timeout_tears_down(monkeypatch):
             _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
         )
 
-    supervisor.delete_vm.assert_awaited_once_with(VmId(str(_HASH)))
-    assert registry.get(_HASH) is None  # forgotten on failure
+    retire.assert_awaited_once_with(_HASH, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)
+    supervisor.delete_vm.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_eligible_instance_port_forward_failure_tears_down(monkeypatch):
+async def test_eligible_instance_port_forward_failure_retires_as_failed_create(monkeypatch):
     # Readiness succeeds but applying a port forward fails: the other failure
     # source in the same try block must trigger the same teardown.
+    from aleph.vm.agent.vm.retire import RetireReason
+
     content = _make_qemu_instance_message(hypervisor=HypervisorType.qemu)
     message = MagicMock(content=content)
     monkeypatch.setattr(
@@ -223,14 +229,16 @@ async def test_eligible_instance_port_forward_failure_tears_down(monkeypatch):
     supervisor = _fake_supervisor()  # get_vm reports RUNNING immediately
     supervisor.add_port_forward = AsyncMock(side_effect=RuntimeError("nftables boom"))
     registry = AgentVmRegistry()
+    retire = AsyncMock()
+    monkeypatch.setattr(run_module, "retire_vm", retire)
 
     with pytest.raises(RuntimeError, match="nftables boom"):
         await run_module.create_vm_execution(
             _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
         )
 
-    supervisor.delete_vm.assert_awaited_once_with(VmId(str(_HASH)))
-    assert registry.get(_HASH) is None  # forgotten on failure
+    retire.assert_awaited_once_with(_HASH, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)
+    supervisor.delete_vm.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -249,6 +257,12 @@ async def test_firecracker_instance_rejected_via_spec_path(monkeypatch):
         "build_create_vm_spec",
         AsyncMock(side_effect=InvalidBackendError("instances are QEMU-only")),
     )
+    # The rejection retires the never-created VM as FAILED_CREATE for real
+    # (not mocked): stub out its DB write, which needs an app-level session
+    # this unit test does not set up.
+    from aleph.vm.agent.vm import retire as retire_module
+
+    monkeypatch.setattr(retire_module, "delete_records_for_vm", AsyncMock())
 
     supervisor = _fake_supervisor()
     registry = AgentVmRegistry()
@@ -628,10 +642,14 @@ async def test_reconcile_adopted_program_content_is_a_noop():
 
 @pytest.mark.asyncio
 async def test_start_persistent_recreates_after_failed(monkeypatch):
+    from aleph.vm.agent.vm.retire import RetireReason
+
     sup = _fake_supervisor(get_status=VmStatus.FAILED)
     created = AsyncMock()
     monkeypatch.setattr(run_module, "create_vm_execution", created)
     monkeypatch.setattr(run_module, "_wait_until_running", AsyncMock())
+    retire = AsyncMock()
+    monkeypatch.setattr(run_module, "retire_vm", retire)
 
     await run_module.start_persistent_vm(
         ItemHash(_HASH),
@@ -642,9 +660,10 @@ async def test_start_persistent_recreates_after_failed(monkeypatch):
         expiry=MagicMock(),
         update_watcher=MagicMock(),
     )
-    # FAILED -> delete then recreate: a recovery cycle, so the persisted
-    # host-port forwards must survive the delete.
-    sup.delete_vm.assert_awaited_once_with(VmId(_HASH), keep_port_mappings=True)
+    # FAILED -> delete then recreate: a recovery cycle, so RECREATE keeps the
+    # persisted host-port forwards.
+    retire.assert_awaited_once_with(ItemHash(_HASH), RetireReason.RECREATE, supervisor=sup)
+    sup.delete_vm.assert_not_awaited()
     created.assert_awaited_once()
     sup.start_vm.assert_not_awaited()
 

@@ -274,8 +274,9 @@ def _failed_vm_info(vm_hash: str) -> VmInfo:
 @pytest.mark.asyncio
 async def test_create_vm_execution_vprogram_wait_failure_tears_down(mocker):
     """create_vm succeeds but the VM never reaches RUNNING: the launch path
-    must tear the half-started VM down (supervisor.delete_vm) and forget its
-    registry record, without persisting."""
+    must retire the half-started VM as FAILED_CREATE, without persisting."""
+    from aleph.vm.agent.vm.retire import RetireReason
+
     message = load_vprogram_message()
     vm_hash = message.item_hash
     mocker.patch("aleph.vm.agent.run.load_updated_message", new_callable=AsyncMock, return_value=(message, message))
@@ -292,6 +293,7 @@ async def test_create_vm_execution_vprogram_wait_failure_tears_down(mocker):
         delete_vm=AsyncMock(),
     )
     registry = AgentVmRegistry()
+    retire = mocker.patch("aleph.vm.agent.run.retire_vm", new_callable=AsyncMock)
 
     with pytest.raises(VmStartupError):
         await create_vm_execution(
@@ -302,8 +304,8 @@ async def test_create_vm_execution_vprogram_wait_failure_tears_down(mocker):
             persistent=True,
         )
 
-    supervisor.delete_vm.assert_awaited_once_with(info.vm_id)
-    assert vm_hash not in registry
+    retire.assert_awaited_once_with(vm_hash, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)
+    supervisor.delete_vm.assert_not_awaited()
     mock_persist.assert_not_awaited()
 
 
@@ -312,6 +314,8 @@ async def test_create_vm_execution_vprogram_build_failure_forgets_record(mocker)
     """A failed bundle fetch/verify must surface the create-path vocabulary
     (VmSetupError, reported per-VM by update_allocations) and leave no
     dangling registry record behind."""
+    from aleph.vm.agent.vm.retire import RetireReason
+
     message = load_vprogram_message()
     mocker.patch("aleph.vm.agent.run.load_updated_message", new_callable=AsyncMock, return_value=(message, message))
     mocker.patch(
@@ -322,6 +326,7 @@ async def test_create_vm_execution_vprogram_build_failure_forgets_record(mocker)
 
     supervisor = MagicMock(create_vm=AsyncMock())
     registry = AgentVmRegistry()
+    retire = mocker.patch("aleph.vm.agent.run.retire_vm", new_callable=AsyncMock)
 
     with pytest.raises(VmSetupError, match="sha256 mismatch"):
         await create_vm_execution(
@@ -333,7 +338,9 @@ async def test_create_vm_execution_vprogram_build_failure_forgets_record(mocker)
         )
 
     supervisor.create_vm.assert_not_awaited()
-    assert message.item_hash not in registry
+    retire.assert_awaited_once_with(
+        message.item_hash, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry
+    )
 
 
 @pytest.mark.asyncio
@@ -347,7 +354,9 @@ async def test_create_vm_execution_vprogram_capacity_failure_forgets_record(mock
 
     capacity = MagicMock()
     capacity.check_capacity.side_effect = InsufficientResourcesError("no room", required={}, available={})
-    supervisor = MagicMock(create_vm=AsyncMock())
+    # retire_vm(FAILED_CREATE) always quiesces through the supervisor first
+    # (swallowing VmNotFoundError), even though no VM was ever created here.
+    supervisor = MagicMock(create_vm=AsyncMock(), delete_vm=AsyncMock())
     registry = AgentVmRegistry()
 
     with pytest.raises(InsufficientResourcesError):
