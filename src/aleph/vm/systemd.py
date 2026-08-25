@@ -283,11 +283,51 @@ class SystemDManager:
             _log_dbus_lookup_error(service, error)
             return False
 
+    def get_services_states(self, services: list[str]) -> dict[str, str]:
+        """Get the ActiveState of multiple services in a single D-Bus call.
+
+        Much more efficient than calling get_service_active_state() per
+        service, as it uses ListUnits(), which returns all loaded units in one
+        call.
+
+        Values are the raw systemd strings ("active", "activating",
+        "deactivating", "inactive", "failed"), plus the same two synthetic ones
+        get_service_active_state uses: "not-loaded" for a unit systemd does not
+        list (never started, or garbage-collected after a clean stop) and
+        "unknown" when the call itself fails.
+
+        Args:
+            services: List of service names to check (e.g., ["aleph-vm-controller@hash.service"])
+
+        Returns:
+            Dictionary mapping service name to its ActiveState.
+        """
+        if not services:
+            return {}
+
+        try:
+            units = self._call_with_reconnect(lambda: self._get_manager().ListUnits())
+        except DBusException as error:
+            logger.error(f"Failed to get services active states: {error}")
+            return {service: "unknown" for service in services}
+
+        # ListUnits returns: (name, description, load_state, active_state, sub_state,
+        #                     following, unit_path, job_id, job_type, job_path)
+        service_set = set(services)
+        listed: dict[str, str] = {}
+        for unit in units:
+            name = str(unit[0])
+            if name in service_set:
+                listed[name] = str(unit[3])
+
+        return {service: listed.get(service, "not-loaded") for service in services}
+
     def get_services_active_states(self, services: list[str]) -> dict[str, bool]:
         """Get active state of multiple services in a single D-Bus call.
 
-        This is much more efficient than calling is_service_active() for each service,
-        as it uses ListUnits() which returns all loaded units in one call.
+        The boolean reduction of get_services_states, for callers that only ask
+        "is it up". Callers that must tell a crashed unit from one that never
+        started need the state string instead.
 
         Args:
             services: List of service names to check (e.g., ["aleph-vm-controller@hash.service"])
@@ -295,34 +335,7 @@ class SystemDManager:
         Returns:
             Dictionary mapping service name to active state (True if active, False otherwise)
         """
-        if not services:
-            return {}
-
-        try:
-            units = self._call_with_reconnect(lambda: self._get_manager().ListUnits())
-
-            # Build lookup from ListUnits() result
-            # ListUnits returns: (name, description, load_state, active_state, sub_state,
-            #                     following, unit_path, job_id, job_type, job_path)
-            active_states: dict[str, bool] = {}
-            service_set = set(services)
-
-            for unit in units:
-                name = str(unit[0])
-                if name in service_set:
-                    active_state = str(unit[3])
-                    active_states[name] = active_state == "active"
-
-            # Services not in ListUnits() output are not loaded (treat as inactive)
-            for service in services:
-                if service not in active_states:
-                    active_states[service] = False
-
-            return active_states
-        except DBusException as error:
-            logger.error(f"Failed to get services active states: {error}")
-            # Return all as inactive on error
-            return {service: False for service in services}
+        return {service: state == "active" for service, state in self.get_services_states(services).items()}
 
     def get_services_enabled_states(self, services: list[str]) -> dict[str, bool]:
         """Get enabled state of multiple services via individual GetUnitFileState calls.

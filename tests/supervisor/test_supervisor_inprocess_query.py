@@ -59,11 +59,17 @@ def make_execution(
 
 
 class FakeSystemd:
-    def __init__(self, active: dict[str, bool] | None = None):
-        self._active = active or {}
+    """Mirrors the real manager: the state string is the source of truth and
+    the boolean helper is derived from it."""
+
+    def __init__(self, active: dict[str, bool] | None = None, states: dict[str, str] | None = None):
+        self._states = states or {service: "active" for service, up in (active or {}).items() if up}
+
+    def get_services_states(self, services):
+        return {s: self._states.get(s, "inactive") for s in services}
 
     def get_services_active_states(self, services):
-        return {s: self._active.get(s, False) for s in services}
+        return {s: state == "active" for s, state in self.get_services_states(services).items()}
 
 
 class FakePool:
@@ -192,9 +198,9 @@ async def test_list_vms_batches_the_systemd_query():
     calls: list[list[str]] = []
 
     class CountingSystemd(FakeSystemd):
-        def get_services_active_states(self, services):
+        def get_services_states(self, services):
             calls.append(list(services))
-            return super().get_services_active_states(services)
+            return super().get_services_states(services)
 
     pool = FakePool(
         executions={"hash-a": make_execution(vm_id="hash-a"), "hash-b": make_execution(vm_id="hash-b")},
