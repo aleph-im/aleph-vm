@@ -89,7 +89,7 @@ def _fake_capacity(resolved: list[GpuSpec] | None = None):
     """Agent-side admission stub: capacity always passes, GPU resolution
     returns the given resolved cards."""
     return SimpleNamespace(
-        check_capacity=MagicMock(),
+        check_message=MagicMock(),
         resolve_gpus=AsyncMock(return_value=list(resolved or [])),
     )
 

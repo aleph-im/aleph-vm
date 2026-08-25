@@ -14,7 +14,6 @@ from aiohttp.web_exceptions import (
     HTTPServiceUnavailable,
 )
 from aleph_message.models import (
-    ExecutableContent,
     InstanceContent,
     ItemHash,
     ProgramContent,
@@ -24,11 +23,7 @@ from msgpack import UnpackValueError
 from multidict import CIMultiDict
 
 from aleph.vm.agent.aggregate import get_user_settings
-from aleph.vm.agent.capacity import (
-    CapacityManager,
-    requested_gpu_ids,
-    requirements_from_message,
-)
+from aleph.vm.agent.capacity import CapacityManager, requested_gpu_ids
 from aleph.vm.agent.expiry import ExpiryManager
 from aleph.vm.agent.snp_instance_launch import build_snp_instance_spec, is_snp_instance
 from aleph.vm.agent.translate import build_create_vm_spec, build_program_create_vm_spec
@@ -386,29 +381,6 @@ async def _wait_until_gone(
         await asyncio.sleep(interval)
 
 
-def _admit(capacity: CapacityManager, content: ExecutableContent, vm_hash: ItemHash, *, is_instance: bool) -> None:
-    """Agent-side admission, ahead of any download.
-
-    Disk is judged here and only here: build_*_spec downloads the resources and
-    creates the volume files, so a disk check after it would measure space this
-    VM has already taken. Refusing here also means a host with no room never
-    pays for the download.
-
-    ``is_instance`` is passed explicitly rather than taken from the message:
-    a V-PROGRAM is an SNP VM and belongs in the instance memory bucket, but it
-    is not an InstanceContent, which is all requirements_from_message can see.
-    """
-    requirements = requirements_from_message(content)
-    capacity.check_capacity(
-        memory_mib=requirements.memory_mib,
-        vcpus=requirements.vcpus,
-        disk_mib=requirements.disk_mib,
-        max_volume_mib=requirements.max_volume_mib,
-        is_instance=is_instance,
-        exclude_vm_hash=vm_hash,
-    )
-
-
 async def _retire_after_create_failure(
     vm_hash: ItemHash,
     *,
@@ -435,8 +407,8 @@ async def _retire_after_create_failure(
     running, and it counts in CapacityManager's committed memory and vCPU
     sums (see ``_committed_resources``) until the next allocation cycle
     replaces or retires it. It never blocks the retry of its own create,
-    which admits through ``_admit`` with ``exclude_vm_hash`` set, but it does
-    hold capacity against other VMs in the meantime. Straightening that out
+    which admits through ``check_message`` with ``exclude_vm_hash`` set, but
+    it does hold capacity against other VMs in the meantime. Straightening that out
     means a record lifecycle that separates "allocated" from "running",
     which is not this work.
 
@@ -485,19 +457,12 @@ async def create_vm_execution(
         # create guard: it adopts any retained volumes for this hash and keeps
         # the storage reconciler off a VM that is still being built.
         with creating(str(vm_hash)):
-            _admit(capacity, content, vm_hash, is_instance=False)
+            capacity.check_message(content, exclude_vm_hash=vm_hash)
             # Snapshot before any allocation: a persistent program's volumes may
             # already exist (host persistence), and a failed create must not
             # wipe them (see _retire_after_create_failure).
             had_volumes = await asyncio.to_thread(vm_has_volumes, vm_hash)
             spec, _resources = await build_program_create_vm_spec(vm_hash, content)
-            capacity.check_capacity(
-                memory_mib=content.resources.memory,
-                vcpus=content.resources.vcpus,
-                disk_mib=0,
-                is_instance=False,
-                exclude_vm_hash=vm_hash,
-            )
             info = await supervisor.create_vm(spec)
             record = registry.record(
                 vm_hash, message=content, original=original_message.content, persistent=bool(content.on.persistent)
@@ -540,7 +505,7 @@ async def create_vm_execution(
             # they cover the same create attempt.
             had_volumes = await asyncio.to_thread(vm_has_volumes, vm_hash)
             try:
-                _admit(capacity, content, vm_hash, is_instance=True)
+                capacity.check_message(content, exclude_vm_hash=vm_hash)
                 if snp_instance:
                     # SEV-SNP confidential instances build through the dedicated
                     # LUKS-rootfs SNP launch path, not build_create_vm_spec (which
@@ -554,19 +519,11 @@ async def create_vm_execution(
                     spec, attest_port = await build_snp_instance_spec(vm_hash, content)
                 else:
                     spec = await build_create_vm_spec(vm_hash, content)
-                # Agent-side admission, after the download so a failed download
-                # never consumes a GPU hold: bucket from the message type, then
-                # resolve the requested device_ids to concrete host cards (owner =
-                # message.address, consuming this owner's own holds). This VM's
-                # own registry record (the early owner record above) is excluded
-                # from the committed sums.
-                capacity.check_capacity(
-                    memory_mib=content.resources.memory,
-                    vcpus=content.resources.vcpus,
-                    disk_mib=0,
-                    is_instance=True,
-                    exclude_vm_hash=vm_hash,
-                )
+                # GPU holds are still taken after the download, so a failed
+                # download never consumes one: the requested device_ids are
+                # resolved to concrete host cards here (owner = message.address,
+                # consuming this owner's own holds). Disk, memory and vCPUs were
+                # judged before the download, by check_message above.
                 if not snp_instance:
                     # GPU resolution only applies to the legacy spec path: SNP
                     # instances are rejected above before reaching here.
@@ -642,17 +599,8 @@ async def create_vm_execution(
             # create attempt.
             had_volumes = await asyncio.to_thread(vm_has_volumes, vm_hash)
             try:
-                _admit(capacity, content, vm_hash, is_instance=True)
+                capacity.check_message(content, exclude_vm_hash=vm_hash)
                 spec, attest_port = await build_vprogram_spec(vm_hash, content)
-                # Agent-side admission after the download, like the instance path:
-                # a failed bundle fetch never consumes capacity.
-                capacity.check_capacity(
-                    memory_mib=content.resources.memory,
-                    vcpus=content.resources.vcpus,
-                    disk_mib=0,
-                    is_instance=True,
-                    exclude_vm_hash=vm_hash,
-                )
                 info = await supervisor.create_vm(spec)
             except Exception:
                 # build or create failed: retire the early record, and drop any
@@ -839,18 +787,12 @@ async def _ensure_program_vm(
             # the create guard: it adopts any retained volumes for this hash
             # and keeps the storage reconciler off a VM still being built.
             with creating(str(vm_hash)):
+                capacity.check_message(content, exclude_vm_hash=vm_hash)
                 # Snapshot before any allocation: a persistent program's volumes
                 # may already exist (host persistence, or the recreate just
                 # above), and a failed create must not wipe them.
                 had_volumes = await asyncio.to_thread(vm_has_volumes, vm_hash)
                 spec, resources = await build_program_create_vm_spec(vm_hash, content)
-                capacity.check_capacity(
-                    memory_mib=content.resources.memory,
-                    vcpus=content.resources.vcpus,
-                    disk_mib=0,
-                    is_instance=False,
-                    exclude_vm_hash=vm_hash,
-                )
                 await supervisor.create_vm(spec)
                 record = registry.record(
                     vm_hash, message=content, original=original, persistent=bool(content.on.persistent)

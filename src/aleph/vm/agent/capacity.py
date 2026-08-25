@@ -23,7 +23,7 @@ from aleph_message.models import ExecutableContent, ItemHash, VerifiableProgramC
 from aleph_message.models.execution.instance import InstanceContent
 
 from aleph.vm import storage_pools
-from aleph.vm.agent.vm.reclaimable import reclaimable_bytes
+from aleph.vm.agent.vm.reclaimable import directory_size_bytes, reclaimable_bytes
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
 from aleph.vm.resources import GpuDevice, InsufficientResourcesError
@@ -51,8 +51,16 @@ class ResourceRequirements:
 
 
 def requirements_from_message(content: ExecutableContent) -> ResourceRequirements:
-    """Extract the resources a message requests into a message-free DTO."""
-    is_instance = isinstance(content, InstanceContent)
+    """Extract the resources a message requests into a message-free DTO.
+
+    A V-PROGRAM is a full SEV-SNP VM, not a Firecracker program, so it is
+    bucketed as an instance even though it is not an InstanceContent. That
+    matches ``CapacityManager._committed_resources``, which already counts it
+    against the instance bucket: bucketing it as a program here would both
+    starve the small program bucket and hide its memory from instance
+    admission (silent over-commit).
+    """
+    is_instance = isinstance(content, (InstanceContent, VerifiableProgramContent))
     volume_sizes_mib: list[int] = []
     if isinstance(content, InstanceContent) and content.rootfs:
         volume_sizes_mib.append(content.rootfs.size_mib)
@@ -66,6 +74,11 @@ def requirements_from_message(content: ExecutableContent) -> ResourceRequirement
         is_instance=is_instance,
         gpu_device_ids=requested_gpu_ids(content),
     )
+
+
+def allocated_bytes_for(vm_hash: ItemHash | str) -> int:
+    """Bytes already sitting under this VM's directories on every pool."""
+    return sum(directory_size_bytes(directory) for directory in storage_pools.iter_namespace_dirs(str(vm_hash)))
 
 
 def requested_gpu_ids(content: ExecutableContent) -> list[str]:
@@ -101,6 +114,41 @@ class CapacityManager:
         self.holds: dict[str, GpuHold] = {}
         self._lock = asyncio.Lock()
 
+    def check_message(self, content: ExecutableContent, *, exclude_vm_hash: ItemHash | None = None) -> None:
+        """Admission from the message alone, before a byte is allocated.
+
+        The single admission path of every create path: the sizes come from
+        the message (rootfs and volume ``size_mib``), so a host with no room
+        refuses before the downloader runs rather than after it has already
+        written the volumes. Judging disk after the build would measure space
+        this very VM has just taken, which is why there is no second check.
+
+        What the VM already holds on disk is subtracted, so an existing VM is
+        never refused for space it already occupies. This matters for a
+        RECREATE and for an adoption: ``creating()`` adopts the retained
+        directory on entry, which drops its ``.reclaimable`` marker, so those
+        bytes stop counting as free in ``_available_disk_bytes`` at the very
+        moment the VM asks for them again.
+        """
+        requirements = requirements_from_message(content)
+        held_mib = allocated_bytes_for(exclude_vm_hash) // (1024 * 1024) if exclude_vm_hash is not None else 0
+        disk_mib = max(requirements.disk_mib - held_mib, 0)
+        # The largest-single-volume check is per pool, and it needs the same
+        # discount: a volume the VM already holds is already placed, so no
+        # pool has to find room for it. Capping the figure at what is still to
+        # be allocated is the discount that needs no per-volume bookkeeping,
+        # and it is exact in the two cases that matter: nothing held (the cap
+        # never binds) and everything held (nothing left to place).
+        max_volume_mib = min(requirements.max_volume_mib, disk_mib)
+        self.check_capacity(
+            memory_mib=requirements.memory_mib,
+            vcpus=requirements.vcpus,
+            disk_mib=disk_mib,
+            max_volume_mib=max_volume_mib,
+            is_instance=requirements.is_instance,
+            exclude_vm_hash=exclude_vm_hash,
+        )
+
     def check_capacity(
         self,
         *,
@@ -117,7 +165,12 @@ class CapacityManager:
         physical - HOST_MEMORY_RESERVED_MIB - PROGRAM_MEMORY_RESERVED_MIB,
         programs share PROGRAM_MEMORY_RESERVED_MIB. vCPUs are capped at
         physical cores times VCPU_OVERCOMMIT_FACTOR. Disk is only checked for
-        disk_mib > 0 (the reserve path; the create path passes 0).
+        disk_mib > 0, so a caller with nothing left to allocate (a recreate
+        whose volumes are all on disk already) skips it.
+
+        Callers that hold a message should go through ``check_message``, which
+        derives every figure here from it; the scalars are the seam for the
+        paths that build a request themselves (the migration import).
 
         ``exclude_vm_hash`` skips that VM's own registry record from the
         committed sums: the create paths record the VM before admission (the

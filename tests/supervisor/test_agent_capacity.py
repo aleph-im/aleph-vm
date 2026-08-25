@@ -13,6 +13,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aleph_message.models import ItemHash
+from aleph_message.models.execution.instance import InstanceContent
 from test_supervisor_translate import _make_qemu_instance_message
 
 from aleph.vm.agent.capacity import (
@@ -21,7 +23,6 @@ from aleph.vm.agent.capacity import (
     GpuHold,
     requirements_from_message,
 )
-from aleph.vm.agent.run import _admit
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
 from aleph.vm.resources import GpuDevice, GpuDeviceClass, InsufficientResourcesError
@@ -521,12 +522,13 @@ def test_a_phantom_record_never_blocks_the_retry_of_its_own_create(mocker):
     orphan. The record then describes a VM that is not running and counts in
     the committed sums until the next allocation cycle. The one thing that
     must not happen is the retry being refused by its own phantom, and it is
-    not: the create path admits through _admit, which excludes the VM's own
-    record."""
+    not: the create path admits through check_message, which excludes the VM's
+    own record."""
     _patch_host(mocker, memory_bytes=16 * 1024 * 1024 * 1024, cores=16)
     mocker.patch.object(settings, "HOST_MEMORY_RESERVED_MIB", 2048)
     mocker.patch.object(settings, "PROGRAM_MEMORY_RESERVED_MIB", 4096)
     mocker.patch.object(CapacityManager, "_check_max_volume", return_value=None)
+    mocker.patch("aleph.vm.agent.capacity.allocated_bytes_for", return_value=0)
 
     vm_hash = "i" * 64
     message = _make_qemu_instance_message(vcpus=2, memory=8192)
@@ -535,9 +537,149 @@ def test_a_phantom_record_never_blocks_the_retry_of_its_own_create(mocker):
     registry.record(vm_hash, message=message, original=message, persistent=True)
     manager = _manager(registry=registry)
 
-    assert _admit(manager, message, vm_hash, is_instance=True) is None
+    assert manager.check_message(message, exclude_vm_hash=vm_hash) is None
 
     # The phantom is not free: it still counts against every *other* VM until
     # the next allocation cycle drops it.
     with pytest.raises(InsufficientResourcesError):
-        _admit(manager, message, "j" * 64, is_instance=True)
+        manager.check_message(message, exclude_vm_hash="j" * 64)
+
+
+# ── check_message: one admission path, ahead of any allocation ─────────────
+
+
+def _instance_content(*, rootfs_mib: int = 20_000, volumes_mib: tuple[int, ...] = ()) -> MagicMock:
+    """An InstanceContent stand-in with the sizes admission reads."""
+    content = MagicMock(spec=InstanceContent)
+    content.resources = MagicMock(vcpus=2, memory=2048)
+    content.rootfs = MagicMock(size_mib=rootfs_mib)
+    content.volumes = [MagicMock(size_mib=size) for size in volumes_mib]
+    content.requirements = None
+    return content
+
+
+def test_check_message_admits_disk_from_the_message(mocker):
+    manager = _manager()
+    check = mocker.patch.object(manager, "check_capacity")
+    mocker.patch("aleph.vm.agent.capacity.allocated_bytes_for", return_value=0)
+    content = _instance_content(rootfs_mib=20_000, volumes_mib=(5_000,))
+
+    manager.check_message(content, exclude_vm_hash=ItemHash("ab" * 32))
+
+    kwargs = check.call_args.kwargs
+    assert kwargs["disk_mib"] == 25_000
+    assert kwargs["max_volume_mib"] == 20_000
+    assert kwargs["is_instance"] is True
+    assert kwargs["memory_mib"] == 2048
+    assert kwargs["vcpus"] == 2
+    assert kwargs["exclude_vm_hash"] == ItemHash("ab" * 32)
+
+
+def test_check_message_discounts_bytes_the_vm_already_holds(mocker):
+    """A RECREATE of a VM whose disks are still on the host must not be
+    refused for space it already occupies: creating() adopted the directory,
+    so those bytes are neither free nor reclaimable any more."""
+    manager = _manager()
+    check = mocker.patch.object(manager, "check_capacity")
+    mocker.patch("aleph.vm.agent.capacity.allocated_bytes_for", return_value=20_000 * 1024 * 1024)
+    content = _instance_content(rootfs_mib=20_000)
+
+    manager.check_message(content, exclude_vm_hash=ItemHash("ab" * 32))
+
+    assert check.call_args.kwargs["disk_mib"] == 0
+
+
+def test_check_message_never_asks_for_negative_disk(mocker):
+    """A VM holding more than the message declares (an extra staged file)
+    floors the requirement at 0 rather than crediting the difference."""
+    manager = _manager()
+    check = mocker.patch.object(manager, "check_capacity")
+    mocker.patch("aleph.vm.agent.capacity.allocated_bytes_for", return_value=90_000 * 1024 * 1024)
+    content = _instance_content(rootfs_mib=20_000)
+
+    manager.check_message(content, exclude_vm_hash=ItemHash("ab" * 32))
+
+    assert check.call_args.kwargs["disk_mib"] == 0
+
+
+def test_check_message_without_a_hash_discounts_nothing(mocker):
+    """The reserve endpoint admits a message no VM owns yet: there is no
+    directory to discount, and none is looked for."""
+    manager = _manager()
+    check = mocker.patch.object(manager, "check_capacity")
+    allocated = mocker.patch("aleph.vm.agent.capacity.allocated_bytes_for")
+    content = _instance_content(rootfs_mib=20_000)
+
+    manager.check_message(content)
+
+    allocated.assert_not_called()
+    assert check.call_args.kwargs["disk_mib"] == 20_000
+    assert check.call_args.kwargs["exclude_vm_hash"] is None
+
+
+def test_check_message_buckets_a_vprogram_as_an_instance(mocker):
+    """A V-PROGRAM is a full SNP VM: it belongs in the instance memory
+    bucket, which is where _committed_resources already counts it. Bucketing
+    it as a program would both starve the small program bucket and hide its
+    memory from instance admission."""
+    from aleph_message.models import VerifiableProgramContent
+
+    manager = _manager()
+    check = mocker.patch.object(manager, "check_capacity")
+    mocker.patch("aleph.vm.agent.capacity.allocated_bytes_for", return_value=0)
+    content = MagicMock(spec=VerifiableProgramContent)
+    content.resources = MagicMock(vcpus=2, memory=4096)
+    content.volumes = []
+    content.requirements = None
+
+    manager.check_message(content, exclude_vm_hash=ItemHash("ab" * 32))
+
+    assert check.call_args.kwargs["is_instance"] is True
+
+
+def test_allocated_bytes_for_sums_the_vms_dirs_on_every_pool(mocker, tmp_path):
+    """The discount is measured from the real directories, one per pool."""
+    from aleph.vm.agent.capacity import allocated_bytes_for
+
+    vm_hash = "ab" * 32
+    dirs = []
+    for pool in ("pool0", "pool1"):
+        directory = tmp_path / pool / vm_hash
+        directory.mkdir(parents=True)
+        (directory / "rootfs.qcow2").write_bytes(b"x" * 8192)
+        dirs.append(directory)
+    mocker.patch("aleph.vm.agent.capacity.storage_pools.iter_namespace_dirs", return_value=iter(dirs))
+
+    # st_blocks rounds to the filesystem block size, so assert the shape
+    # (both pools counted) rather than an exact byte count.
+    assert allocated_bytes_for(vm_hash) >= 2 * 8192
+
+
+def test_allocated_bytes_for_looks_up_the_hash_as_a_namespace(mocker):
+    """ItemHash goes to iter_namespace_dirs as a plain string."""
+    from aleph.vm.agent.capacity import allocated_bytes_for
+
+    iter_dirs = mocker.patch("aleph.vm.agent.capacity.storage_pools.iter_namespace_dirs", return_value=iter(()))
+
+    assert allocated_bytes_for(ItemHash("ab" * 32)) == 0
+    iter_dirs.assert_called_once_with("ab" * 32)
+
+
+def test_check_message_caps_the_single_volume_figure_at_what_is_left_to_place(mocker):
+    """The per-pool largest-volume check gets the same discount as the total.
+
+    A recreate whose 20 GiB rootfs is already on a pool must not require a
+    pool with 20 GiB free: creating() adopted the directory, so those bytes
+    stopped counting as reclaimable, and no pool has to place that volume
+    again."""
+    manager = _manager()
+    check = mocker.patch.object(manager, "check_capacity")
+    mocker.patch("aleph.vm.agent.capacity.allocated_bytes_for", return_value=20_000 * 1024 * 1024)
+    content = _instance_content(rootfs_mib=20_000, volumes_mib=(5_000,))
+
+    manager.check_message(content, exclude_vm_hash=ItemHash("ab" * 32))
+
+    kwargs = check.call_args.kwargs
+    # 25 000 declared, 20 000 already held: 5 000 left to allocate, and no
+    # single volume larger than that still needs placing.
+    assert (kwargs["disk_mib"], kwargs["max_volume_mib"]) == (5_000, 5_000)

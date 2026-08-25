@@ -22,7 +22,7 @@ from pydantic import ValidationError
 from aleph.vm import haproxy
 from aleph.vm.agent import payment, status
 from aleph.vm.agent.aggregate import update_aggregate_settings
-from aleph.vm.agent.capacity import CapacityManager, requirements_from_message
+from aleph.vm.agent.capacity import CapacityManager, requested_gpu_ids
 from aleph.vm.agent.custom_logs import set_vm_for_logging
 from aleph.vm.agent.haproxy_sync import sync_domain_mappings
 from aleph.vm.agent.messages import try_get_message
@@ -1024,16 +1024,11 @@ async def operate_reserve_resources(request: web.Request, authenticated_sender: 
     # (refuse here rather than let the client pay and be rejected at create),
     # then the agent's own ledger holds the requested GPUs. The supervisor is
     # only consulted for its GPU inventory.
-    requirements = requirements_from_message(message)
     try:
-        capacity.check_capacity(
-            memory_mib=requirements.memory_mib,
-            vcpus=requirements.vcpus,
-            disk_mib=requirements.disk_mib,
-            max_volume_mib=requirements.max_volume_mib,
-            is_instance=requirements.is_instance,
-        )
-        expiration_date = await capacity.reserve_gpus(requirements.gpu_device_ids, authenticated_sender)
+        # The same message-driven admission the create paths run, with no VM
+        # hash to discount: nothing is allocated for this message yet.
+        capacity.check_message(message)
+        expiration_date = await capacity.reserve_gpus(requested_gpu_ids(message), authenticated_sender)
     except InsufficientResourcesError as error:
         logger.warning("Refusing resource reservation: %s", error)
         return web.HTTPServiceUnavailable(
