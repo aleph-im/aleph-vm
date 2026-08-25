@@ -4,6 +4,7 @@ import io
 import os
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -12,6 +13,7 @@ from aleph_message.models import ItemHash
 from reclaim_fixtures import OTHER_HASH, VM_HASH, pools, volume  # noqa: F401
 
 import aleph.vm.agent.storage_cli as cli
+import aleph.vm.agent.vm.reconciler as reconciler_module
 from aleph.vm.agent.vm.reclaimable import mark_reclaimable
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
@@ -98,12 +100,39 @@ def test_reclaim_purges_a_reclaimable_dir_only(pools, registry):  # noqa: F811
     assert unmarked.exists()
 
 
-def test_reclaim_refuses_a_live_registry_hash(pools, registry):  # noqa: F811
+def test_reclaim_checks_the_marker_before_dialing_the_supervisor(pools, registry, monkeypatch):  # noqa: F811, ARG001
+    """A typo'd or unrelated hash is refused by the purely local marker check
+    alone: nothing here should wait out a supervisor dial first."""
+    dialed = []
+    monkeypatch.setattr(cli, "_open_supervisor", lambda: dialed.append(True) or _fake_supervisor())
+
+    code, out = _run(["reclaim", "not-a-real-hash"], registry)
+
+    assert code == 1 and "not reclaimable" in out
+    assert dialed == []
+
+
+def test_reclaim_refuses_an_unmarked_live_directory(pools, registry):  # noqa: F811
+    """A live VM's directory ordinarily carries no marker, so the marker
+    check alone already refuses it."""
     live = volume(pools["pool0"], LIVE, "rootfs.qcow2")
 
     code, out = _run(["reclaim", LIVE], registry)
 
-    assert code == 1 and "live" in out
+    assert code == 1 and "not reclaimable" in out
+    assert live.exists()
+
+
+def test_reclaim_refuses_a_marked_but_still_live_registry_hash(pools, registry):  # noqa: F811
+    """A stale marker on a directory the registry still calls live (not yet
+    cleared by a reconcile pass): the registry check catches it once the
+    marker check has passed."""
+    live = volume(pools["pool0"], LIVE, "rootfs.qcow2")
+    mark_reclaimable(LIVE, "orphan", now=NOW)
+
+    code, out = _run(["reclaim", LIVE], registry)
+
+    assert code == 1 and "live VM in the agent registry" in out
     assert live.exists()
 
 
@@ -130,6 +159,20 @@ def test_reclaim_refuses_unless_trust_registry_when_supervisor_unreachable(pools
     code, out = _run(["reclaim", "--trust-registry", VM_HASH], registry)
     assert code == 0 and "Purged" in out
     assert not gone.exists()
+
+
+def test_reclaim_refuses_when_the_purge_leaves_a_dm_held_directory(pools, registry, monkeypatch):  # noqa: F811
+    held = volume(pools["pool0"], VM_HASH, "data.btrfs")
+    mark_reclaimable(VM_HASH, "gone", now=NOW)
+    dm_path = Path("/dev/mapper") / f"{VM_HASH}_data"
+    real_is_block_device = Path.is_block_device
+    monkeypatch.setattr(Path, "is_block_device", lambda self: self == dm_path or real_is_block_device(self))
+
+    code, out = _run(["reclaim", VM_HASH], registry)
+
+    assert code == 1
+    assert "device-mapper" in out
+    assert held.exists()
 
 
 def test_reconcile_dry_run_reports_without_changing(pools, registry, monkeypatch):  # noqa: F811
@@ -162,7 +205,7 @@ def test_reconcile_leaves_a_supervisor_known_vm_the_registry_does_not(pools, reg
     assert unknown.exists()
 
 
-def test_reconcile_dry_runs_and_warns_when_supervisor_unreachable(pools, registry, monkeypatch):  # noqa: F811
+def test_reconcile_unreachable_exits_nonzero_and_warns_on_stderr(pools, registry, monkeypatch, capsys):  # noqa: F811
     monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
     orphan = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
     stamp = time.time() - 10_000
@@ -171,7 +214,25 @@ def test_reconcile_dry_runs_and_warns_when_supervisor_unreachable(pools, registr
 
     code, out = _run(["reconcile"], registry)
 
-    assert code == 0 and "unreachable" in out and "Dry run" in out
+    assert code == cli.DEGRADED_EXIT_CODE
+    assert "Dry run" in out
+    assert "unreachable" not in out  # the warning must not land in the parseable report
+    err = capsys.readouterr().err
+    assert "unreachable" in err and "registry-only" in err
+    assert orphan.exists()
+
+
+def test_reconcile_explicit_dry_run_stays_exit_zero_when_unreachable(pools, registry, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    orphan = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    stamp = time.time() - 10_000
+    os.utime(orphan.parent, (stamp, stamp))
+    monkeypatch.setattr(cli, "_open_supervisor", lambda: _fake_supervisor(fails=True))
+
+    code, out = _run(["reconcile", "--dry-run"], registry)
+
+    assert code == 0
+    assert "Dry run" in out
     assert orphan.exists()
 
 
@@ -192,6 +253,34 @@ def test_reconcile_trust_registry_purges_when_supervisor_unreachable(pools, regi
     code, out = _run(["reconcile", "--dry-run", "--trust-registry"], registry)
     assert code == 0 and "Dry run" in out
     assert other.exists()
+
+
+def test_reconcile_tears_down_devices_of_evicted_cache_parents(pools, registry, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
+    stale = pools["runtime"] / "stale"
+    stale.write_bytes(b"x" * 4096)
+    removed = []
+    monkeypatch.setattr(reconciler_module, "remove_parent_device", AsyncMock(side_effect=removed.append))
+
+    code, out = _run(["reconcile"], registry)
+
+    assert code == 0
+    assert not stale.exists()
+    assert removed == ["stale"]
+
+
+def test_reconcile_dry_run_never_touches_cache_parent_devices(pools, registry, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
+    stale = pools["runtime"] / "stale"
+    stale.write_bytes(b"x" * 4096)
+    removed = []
+    monkeypatch.setattr(reconciler_module, "remove_parent_device", AsyncMock(side_effect=removed.append))
+
+    code, out = _run(["reconcile", "--dry-run"], registry)
+
+    assert code == 0
+    assert stale.exists()
+    assert removed == []
 
 
 def test_cli_main_dispatches_storage_subcommand(mocker):
