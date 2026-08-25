@@ -30,18 +30,14 @@ from aleph.vm.agent.capacity import (
     requirements_from_message,
 )
 from aleph.vm.agent.expiry import ExpiryManager
-from aleph.vm.agent.snp_instance_launch import (
-    build_snp_instance_spec,
-    is_snp_instance,
-    remove_snp_instance_staging,
-)
+from aleph.vm.agent.snp_instance_launch import build_snp_instance_spec, is_snp_instance
 from aleph.vm.agent.translate import build_create_vm_spec, build_program_create_vm_spec
 from aleph.vm.agent.update_watcher import UpdateWatcher
 from aleph.vm.agent.vm.program_client import ProgramGuestClient
+from aleph.vm.agent.vm.retire import RetireReason, retire_vm
 from aleph.vm.agent.vm_registry import AgentVmRegistry, persist_record
 from aleph.vm.agent.vprogram_launch import (
     build_vprogram_spec,
-    remove_vprogram_staging,
     resolve_vprogram_attestation_port,
 )
 from aleph.vm.conf import settings
@@ -458,9 +454,11 @@ async def create_vm_execution(
         try:
             await _wait_until_running(supervisor, info.vm_id)
         except Exception:
-            registry.forget(vm_hash)
+            # Readiness failed: retire the half-started VM (nothing worth
+            # keeping from a VM that never ran), but never let a teardown
+            # error mask the original failure.
             try:
-                await supervisor.delete_vm(info.vm_id)
+                await retire_vm(vm_hash, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)
             except Exception:
                 logger.exception("Teardown of half-started program VM %s failed", vm_hash)
             raise
@@ -519,16 +517,13 @@ async def create_vm_execution(
                     spec = replace(spec, gpus=resolved_gpus)
             info = await supervisor.create_vm(spec)
         except Exception:
-            # build or create failed: drop the early record so a failed create
-            # never leaves a dangling owner-identity entry behind (a record with no
-            # VM the supervisor knows about). Nothing is persisted yet, so
-            # forgetting the in-memory entry is sufficient.
-            registry.forget(vm_hash)
-            if snp_instance:
-                # build_snp_instance_spec may have already extracted the
-                # runtime bundle (e.g. capacity admission fails after
-                # staging): do not leak it.
-                remove_snp_instance_staging(vm_hash)
+            # build or create failed: retire the early record so a failed
+            # create never leaves a dangling owner-identity entry behind (a
+            # record with no VM the supervisor knows about), and drop any
+            # runtime bundle build_snp_instance_spec may have already
+            # extracted before the failure. Nothing is persisted yet, so
+            # this only touches in-memory and staging state.
+            await retire_vm(vm_hash, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)
             raise
         if info.awaiting_confidential_init:
             # A confidential VM is created but not started: only the owner can
@@ -556,15 +551,14 @@ async def create_vm_execution(
                 )
                 await _wait_until_attest_endpoint_listens(supervisor, info.vm_id, attest_port)
         except Exception:
-            # Readiness or port-forward setup failed: tear the half-started VM
-            # down, but never let a teardown error mask the original failure.
-            registry.forget(vm_hash)
+            # Readiness or port-forward setup failed: retire the half-started
+            # VM (records, staging and volumes go: nothing worth keeping from
+            # a VM that never ran), but never let a teardown error mask the
+            # original failure.
             try:
-                await supervisor.delete_vm(info.vm_id)
+                await retire_vm(vm_hash, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)
             except Exception:
                 logger.exception("Teardown of half-started VM %s failed", vm_hash)
-            if snp_instance:
-                remove_snp_instance_staging(vm_hash)
             raise
         # Agent persists its own knowledge; the hypervisor object is not
         # touched. Registry rehydration and past-logs owner-auth read the
@@ -596,10 +590,10 @@ async def create_vm_execution(
             )
             info = await supervisor.create_vm(spec)
         except Exception:
-            registry.forget(vm_hash)
-            # build_vprogram_spec may have already extracted the bundle (e.g.
-            # capacity admission fails after staging): do not leak it.
-            remove_vprogram_staging(vm_hash)
+            # build or create failed: retire the early record, and drop any
+            # bundle build_vprogram_spec may have already extracted before
+            # the failure (e.g. capacity admission fails after staging).
+            await retire_vm(vm_hash, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)
             raise
         try:
             await _wait_until_running(supervisor, info.vm_id)
@@ -617,12 +611,13 @@ async def create_vm_execution(
             if attest_port is not None:
                 await _wait_until_attest_endpoint_listens(supervisor, info.vm_id, attest_port)
         except Exception:
-            registry.forget(vm_hash)
+            # Readiness or port-forward setup failed: retire the half-started
+            # V-PROGRAM (records, staging and volumes go), but never let a
+            # teardown error mask the original failure.
             try:
-                await supervisor.delete_vm(info.vm_id)
+                await retire_vm(vm_hash, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)
             except Exception:
                 logger.exception("Teardown of half-started V-PROGRAM %s failed", vm_hash)
-            remove_vprogram_staging(vm_hash)
             raise
         await persist_record(vm_hash, record)
         return None
@@ -644,10 +639,9 @@ async def create_vm_execution_or_raise_http_error(
     capacity: CapacityManager,
     persistent: bool = False,
 ) -> None:
-    # The spec path tears down and forgets a half-started VM inside
-    # create_vm_execution (registry.forget + supervisor.delete_vm), so this
-    # wrapper only translates failures to HTTP responses. The agent holds no
-    # pool to clean up.
+    # The spec path retires a half-started VM as FAILED_CREATE inside
+    # create_vm_execution, so this wrapper only translates failures to HTTP
+    # responses. The agent holds no pool to clean up.
     try:
         return await create_vm_execution(
             vm_hash=vm_hash, supervisor=supervisor, registry=registry, capacity=capacity, persistent=persistent
@@ -771,10 +765,7 @@ async def _ensure_program_vm(
                 return info
             logger.info("Program VM %s is %s/unconfigured; recreating", vm_hash, info.status.value)
             await program_client.forget(vm_id)
-            try:
-                await supervisor.delete_vm(vm_id)
-            except VmNotFoundError:
-                pass
+            await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
             await _wait_until_gone(supervisor, vm_id)
 
         try:
@@ -794,10 +785,9 @@ async def _ensure_program_vm(
                 info = await _wait_until_running(supervisor, vm_id)
                 await program_client.setup_program(info, content, resources)
             except Exception:
-                registry.forget(vm_hash)
                 await program_client.forget(vm_id)
                 try:
-                    await supervisor.delete_vm(vm_id)
+                    await retire_vm(vm_hash, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)
                 except Exception:
                     logger.exception("Teardown of half-started program VM %s failed", vm_hash)
                 raise
@@ -908,7 +898,9 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, request: web.Request
             # on-demand VM down (it is recreated on a future request); a
             # persistent VM is left for the scheduler to restart.
             if not persistent:
-                await supervisor.delete_vm(vm_id)
+                # An on-demand VM comes back on the next request: RECREATE
+                # keeps its host-port forwards and disks.
+                await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
                 await program_client.forget(vm_id)
 
             return web.Response(
@@ -933,7 +925,10 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, request: web.Request
                 expiry.schedule(vm_id, settings.REUSE_TIMEOUT)
         elif not persistent:
             update_watcher.cancel(vm_id)
-            await supervisor.delete_vm(vm_id)
+            # REUSE_TIMEOUT == 0: tear down after every request, but the same
+            # VM comes back on the next one, so RECREATE keeps its forwards
+            # and disks.
+            await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
             await program_client.forget(vm_id)
 
 
@@ -1012,7 +1007,10 @@ async def run_code_on_event(
                 expiry.schedule(vm_id, settings.REUSE_TIMEOUT)
         elif not persistent:
             update_watcher.cancel(vm_id)
-            await supervisor.delete_vm(vm_id)
+            # REUSE_TIMEOUT == 0: tear down after every event, but the same
+            # VM comes back on the next one, so RECREATE keeps its forwards
+            # and disks.
+            await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
             await program_client.forget(vm_id)
 
 
@@ -1056,10 +1054,10 @@ async def start_persistent_vm(
             await _wait_until_running(supervisor, vm_id)
         else:  # FAILED
             logger.info(f"{vm_hash} in terminal state {info.status}, recreating")
-            # Crash recovery is a delete+recreate cycle, not a dealloc: keep
-            # the persisted host-port forwards (the owner's SSH forward among
-            # them) so the recreated VM reloads the same host ports.
-            await supervisor.delete_vm(vm_id, keep_port_mappings=True)
+            # Crash recovery is a delete+recreate cycle, not a dealloc:
+            # RECREATE keeps the persisted host-port forwards (the owner's
+            # SSH forward among them) and the disks.
+            await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
             info = None
         if info is not None and not info.awaiting_confidential_init:
             # Every branch that kept `info` ends with a RUNNING VM this agent
