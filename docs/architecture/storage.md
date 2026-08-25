@@ -320,18 +320,27 @@ the volumes are reused through the existing sticky placement in
 ### The reconciler
 
 `reconcile_storage()` (`src/aleph/vm/agent/vm/reconciler.py`) treats the
-filesystem as the truth and the agent's registry as the list of owners. One
-pass does, in order:
+filesystem as the truth and asks two sources who the owners are: the agent
+registry, and the VMs the supervisor lists. The union is the live set. The
+registry alone is not enough, because it is refilled at boot from the agent
+DB and that rehydration skips any record with an empty or unparseable
+message. One pass does, in order:
 
-1. Walk `{pool}/*/`. Each directory is live (a registry record exists),
-   reclaimable (a marker is present) or an orphan (neither). Orphans are
-   purged under `reap` and marked `reason: orphan` under `keep`.
+1. Walk `{pool}/*/`. Each directory is live (the registry or the supervisor
+   knows its hash), reclaimable (a marker is present) or an orphan
+   (neither). Orphans are purged under `reap` and marked `reason: orphan`
+   under `keep`. Liveness is asked again immediately before anything is
+   marked, purged or evicted, so a create that commits while the pass walks
+   is not mistaken for an orphan.
 2. Delete `*.part` files older than the guard, in the four download caches
    and in the pools (the downloader streams volumes in place).
 3. Sweep the side directories keyed by VM hash: the confidential session
    directory, the SNP and V-PROGRAM staging directories, and
    `/mnt/{namespace}_{volume}` mount points. A directory that is still a
-   mount point is logged and left alone.
+   mount point is logged and left alone, and under `/mnt` only empty
+   mount-point directories are removed (with `rmdir`, never `rmtree`): `/mnt`
+   is the operator's directory, and an unmounted agent mount point is empty
+   by construction.
 4. Enforce the retention budget per pool: sum the markers' `size_bytes` and
    evict oldest-first (by `reclaimable_since`) until under
    `VOLUME_RETENTION_BUDGET`. Under `reap` everything marked is given back,
@@ -347,6 +356,12 @@ somehow escaped the context manager is still protected by the second.
 Everything a pass touches is under a directory the agent created and is
 keyed by a hash validated by `purge._checked_namespace`.
 
+The startup pass is stricter than the rest: it refuses to purge anything
+(it runs dry and logs why) when the supervisor did not answer `list_vms`,
+or when rehydration left the registry empty while the supervisor still runs
+at least one VM. Both states mean the live set cannot be trusted, and the
+first pass on a node is the one acting on the biggest backlog.
+
 Passes run at startup, every `VOLUME_RECONCILE_INTERVAL` (jittered, so a
 fleet of nodes does not sweep in lockstep), after every `GONE` under `keep`
 (`retire.set_after_gone_hook`, best effort: a failing pass never breaks the
@@ -354,7 +369,9 @@ sweep that retired the VM), and on admission pressure (`make_room`, through
 `storage_pools.set_room_maker`). A pass runs in a worker thread, so the
 live-VM set is snapshotted on the event loop first (`live_hashes`) and handed
 over; `make_room` never evicts a hash in it, even if a stale marker says it
-could. Loop-triggered passes serialize on a lock (`reconcile_now`), and
+could. Loop-triggered passes serialize on a lock (`reconcile_now`); they are
+serialized, not coalesced, so a sweep that retires N VMs `GONE` queues N
+passes. And
 placement runs `make_room` through `asyncio.to_thread`, so it can still
 overlap a pass: every removal therefore tolerates a directory that another
 pass took first, and counts only what it actually removed.
@@ -422,8 +439,9 @@ pass against an empty registry would call every running VM an orphan.
 - Every agent-side deletion goes through `retire_vm` with an explicit
   reason; nothing else under `src/aleph/vm/agent/` calls
   `supervisor.delete_vm` (`src/aleph/vm/agent/vm/retire.py`).
-- The reconciler never removes a directory whose hash is live, is in the
-  in-process creating set, or whose mtime is inside `VOLUME_CREATE_GUARD`
+- The reconciler never removes a directory whose hash is live in the agent
+  registry or listed by the supervisor, is in the in-process creating set,
+  or whose mtime is inside `VOLUME_CREATE_GUARD`
   (`src/aleph/vm/agent/vm/reconciler.py`).
 - The Rust supervisor daemon never selects, adopts, or writes to a pool; it
   only re-validates `VOLUME_POOLS` and sums free bytes for host-info

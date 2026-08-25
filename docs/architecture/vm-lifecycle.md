@@ -381,7 +381,17 @@ create that fails on a VM whose volumes already existed retires `RECREATE`
 instead, so a transient failure never wipes a host-persistent owner's disks.
 See "Reclamation" in `docs/architecture/storage.md` for the retention
 policy, the `.reclaimable` marker and the reconciler that enforces the
-budget.
+budget. The reconciler never removes a directory whose hash is live in the
+agent registry or listed by the supervisor; under `/mnt` it removes empty
+mount-point directories only; and its startup pass refuses to purge
+anything at all when the supervisor cannot be listed, or when the registry
+rehydrated empty while the supervisor still runs VMs.
+
+`ERASE` is answered whenever the node still holds something for the hash:
+a registry record, or a retained directory left by a `GONE` under `keep`.
+The supervisor's own knowledge of the VM is not a precondition (it forgets
+a VM on restart, while the disks stay), so `operate_erase` 404s only when
+neither the registry nor a marker knows the hash.
 
 The deletion primitives live in `src/aleph/vm/agent/vm/purge.py`, keyed by
 `vm_hash` and scoped to directories the agent created, so a shared cache
