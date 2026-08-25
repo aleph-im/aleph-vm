@@ -21,6 +21,7 @@ from aleph.vm.agent.capacity import (
     GpuHold,
     requirements_from_message,
 )
+from aleph.vm.agent.run import _admit
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
 from aleph.vm.resources import GpuDevice, GpuDeviceClass, InsufficientResourcesError
@@ -511,3 +512,32 @@ def test_max_volume_check_still_refuses_what_no_pool_can_hold_even_after_evictio
         manager.check_capacity(
             memory_mib=1024, vcpus=1, disk_mib=400 * 1024, max_volume_mib=400 * 1024, is_instance=True
         )
+
+
+def test_a_phantom_record_never_blocks_the_retry_of_its_own_create(mocker):
+    """A create that fails against volumes that already existed retires
+    RECREATE, which keeps the registry record on purpose: dropping it while
+    keeping the disks would make the reconciler treat the directory as an
+    orphan. The record then describes a VM that is not running and counts in
+    the committed sums until the next allocation cycle. The one thing that
+    must not happen is the retry being refused by its own phantom, and it is
+    not: the create path admits through _admit, which excludes the VM's own
+    record."""
+    _patch_host(mocker, memory_bytes=16 * 1024 * 1024 * 1024, cores=16)
+    mocker.patch.object(settings, "HOST_MEMORY_RESERVED_MIB", 2048)
+    mocker.patch.object(settings, "PROGRAM_MEMORY_RESERVED_MIB", 4096)
+    mocker.patch.object(CapacityManager, "_check_max_volume", return_value=None)
+
+    vm_hash = "i" * 64
+    message = _make_qemu_instance_message(vcpus=2, memory=8192)
+    registry = AgentVmRegistry()
+    # The record _retire_after_create_failure leaves behind on a RECREATE.
+    registry.record(vm_hash, message=message, original=message, persistent=True)
+    manager = _manager(registry=registry)
+
+    assert _admit(manager, message, vm_hash, is_instance=True) is None
+
+    # The phantom is not free: it still counts against every *other* VM until
+    # the next allocation cycle drops it.
+    with pytest.raises(InsufficientResourcesError):
+        _admit(manager, message, "j" * 64, is_instance=True)

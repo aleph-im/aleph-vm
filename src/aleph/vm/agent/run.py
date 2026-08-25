@@ -431,6 +431,15 @@ async def _retire_after_create_failure(
     directory as an orphan and purge it after VOLUME_CREATE_GUARD, which is
     why this is RECREATE and not a records-only teardown.
 
+    The kept record is a known phantom: it describes a VM that is not
+    running, and it counts in CapacityManager's committed memory and vCPU
+    sums (see ``_committed_resources``) until the next allocation cycle
+    replaces or retires it. It never blocks the retry of its own create,
+    which admits through ``_admit`` with ``exclude_vm_hash`` set, but it does
+    hold capacity against other VMs in the meantime. Straightening that out
+    means a record lifecycle that separates "allocated" from "running",
+    which is not this work.
+
     Never lets a teardown error mask the original failure: logs and
     swallows.
     """
