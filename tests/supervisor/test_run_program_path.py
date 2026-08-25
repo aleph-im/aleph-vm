@@ -37,9 +37,18 @@ def _content() -> MagicMock:
     return content
 
 
-def _fake_capacity() -> SimpleNamespace:
-    """Agent-side admission stub: capacity always passes."""
-    return SimpleNamespace(check_capacity=MagicMock(), resolve_gpus=AsyncMock(return_value=[]))
+def _fake_capacity(*, refuse: bool = False) -> SimpleNamespace:
+    """Agent-side admission stub: capacity passes unless ``refuse``.
+
+    Only ``check_message`` is exposed: run.py must reach capacity through the
+    single message-driven admission path, so a stray ``check_capacity`` call
+    would AttributeError here rather than pass silently.
+    """
+    error = InsufficientResourcesError("full")
+    return SimpleNamespace(
+        check_message=MagicMock(side_effect=error if refuse else None),
+        resolve_gpus=AsyncMock(return_value=[]),
+    )
 
 
 def _info(status: VmStatus) -> VmInfo:
@@ -282,3 +291,32 @@ async def test_insufficient_resources_maps_to_503(patched_build):
             capacity=_fake_capacity(),
             program_client=FakeProgramClient(),
         )
+
+
+@pytest.mark.asyncio
+async def test_admission_runs_before_the_download(patched_build):
+    """The on-demand program path admits from the message too: a host with no
+    room refuses before build_program_create_vm_spec fetches the runtime and
+    the code, and before create_vm."""
+    supervisor = SimpleNamespace(
+        get_vm=AsyncMock(side_effect=VmNotFoundError(VM_ID)),
+        create_vm=AsyncMock(),
+        delete_vm=AsyncMock(),
+    )
+    content = _content()
+    capacity = _fake_capacity(refuse=True)
+
+    with pytest.raises(web.HTTPServiceUnavailable):
+        await run_module._ensure_program_vm(
+            VM_HASH,
+            content,
+            _content(),
+            supervisor=supervisor,
+            registry=AgentVmRegistry(),
+            capacity=capacity,
+            program_client=FakeProgramClient(),
+        )
+
+    capacity.check_message.assert_called_once_with(content, exclude_vm_hash=VM_HASH)
+    patched_build.assert_not_awaited()
+    supervisor.create_vm.assert_not_awaited()
