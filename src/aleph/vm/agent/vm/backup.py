@@ -17,7 +17,6 @@ disk is the record; only in-flight and failed runs live in memory.
 from __future__ import annotations
 
 import asyncio
-from typing import BinaryIO
 import logging
 import shutil
 import subprocess
@@ -27,6 +26,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import BinaryIO
 
 from aleph.vm.agent.vm.purge import ROOTFS_STEM, iter_volume_files
 from aleph.vm.backup.archive import (
