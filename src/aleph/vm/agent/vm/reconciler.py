@@ -6,6 +6,16 @@ per-VM side directories and applies VOLUME_RETENTION to anything no live VM
 owns. It only ever touches directories the agent created, keyed by a
 plausible item hash.
 
+"Alive" is the union of the agent registry and the VMs the supervisor lists:
+the registry is refilled at boot from the agent DB alone, so it can be empty
+or incomplete while VMs are running, and the startup pass refuses to purge
+anything when that union cannot be established (see ``_startup_refusal``).
+
+Loop-triggered passes are serialized, not coalesced: a sweep that retires N
+VMs GONE under ``keep`` queues N passes behind the lock, each re-reading the
+filesystem when it starts. That is correctness at the cost of work; a
+coalescing pass is a later optimisation, not a bug fix.
+
 Nothing a create is still building is touched: every pass (namespaces and
 side directories alike) skips a hash registered through ``creating`` and
 anything whose mtime is younger than VOLUME_CREATE_GUARD. The two are
@@ -22,13 +32,15 @@ import logging
 import os
 import random
 import shutil
-from collections.abc import Collection, Iterator
+from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from aiohttp import web
+from aleph_message.exceptions import UnknownHashError
+from aleph_message.models import ItemHash
 
 from aleph.vm.agent.vm.backup import sweep_expired_backups
 from aleph.vm.agent.vm.purge import _ITEM_HASH_PATTERN, purge_vm_storage
@@ -45,6 +57,7 @@ from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
 from aleph.vm.storage_budget import parse_budget
 from aleph.vm.storage_pools import StoragePool, get_pools, iter_namespace_dirs
+from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.utils import create_task_log_exceptions
 
 logger = logging.getLogger(__name__)
@@ -85,6 +98,13 @@ def creating(namespace: str) -> Iterator[None]:
     (spec section 3). A create that stages files, allocates volumes or
     writes a session directory outside this context can have them removed
     from under it by the next pass.
+
+    Adoption happens on entry, before the create is known to succeed, so a
+    create that is then refused leaves the directory unmarked: the next pass
+    re-marks it as an orphan with a fresh ``reclaimable_since``, which moves
+    it to the back of the eviction queue. Retention is a budgeted cache, not
+    a promise, so a reset order is acceptable; adopting later would mean a
+    create racing the eviction of the very disks it is about to reuse.
     """
     adopt(namespace)
     _creating.add(namespace)
@@ -126,12 +146,98 @@ def _still_on_disk(namespace: str) -> bool:
 def live_hashes(registry: AgentVmRegistry) -> set[str]:
     """Snapshot of the VMs the registry knows are alive.
 
-    A pass runs in a worker thread while the event loop keeps creating and
-    retiring VMs, so the set is taken once, on the loop, and handed over;
-    iterating the registry from the thread would read it mid-mutation.
-    ``list()`` first, so the snapshot itself is one atomic step.
+    Thread-safe by construction, and it has to be: the room maker wired in
+    ``supervisor.py`` calls this from inside ``asyncio.to_thread`` (through
+    ``volume_path_for``), while the event loop keeps creating and retiring
+    VMs. ``list()`` on the underlying dict's items is a single step under the
+    GIL, so the snapshot can never be a half-read of a mutating dict; without
+    it the comprehension would iterate the live dict and could raise.
     """
     return {str(vm_hash) for vm_hash, _ in list(registry.items())}
+
+
+async def supervisor_hashes(supervisor: Supervisor) -> set[str]:
+    """The item hashes of the VMs the supervisor is running.
+
+    A supervisor VM id is the VM's item hash, mapped the same way
+    ``update_allocations`` maps it (``views/__init__.py``). An id that is not
+    a plausible hash is dropped rather than raised on: it cannot name a
+    directory this pass would touch anyway.
+    """
+    hashes: set[str] = set()
+    for info in await supervisor.list_vms():
+        try:
+            hashes.add(str(ItemHash(str(info.vm_id))))
+        except (UnknownHashError, ValueError):
+            logger.warning("The supervisor lists a VM whose id is not an item hash: %r", info.vm_id)
+    return hashes
+
+
+async def _live_set(app: web.Application) -> tuple[set[str], int | None]:
+    """The hashes no pass may touch, and how many VMs the supervisor listed.
+
+    The registry alone is not a safe live set. It is refilled at boot from the
+    agent DB (``rehydrate_registry``), which skips any record with an empty or
+    unparseable message, so a fresh, lost or partly damaged DB would leave a
+    running VM's directory looking like an orphan. The supervisor is the
+    second opinion: what it runs is live, what the registry remembers is live,
+    and a pass acts on the union of the two.
+
+    The returned count is ``None`` when the supervisor could not be asked,
+    which is not the same answer as "it runs nothing" (see
+    ``_startup_refusal``).
+    """
+    registry_live = live_hashes(app["vm_registry"])
+    supervisor = app.get("supervisor")
+    if supervisor is None:
+        logger.warning("No supervisor handle on the app; the live set is the agent registry alone")
+        return registry_live, None
+    try:
+        running = await supervisor_hashes(supervisor)
+    except Exception as error:
+        logger.warning("Could not list the supervisor's VMs (%s); the live set is the agent registry alone", error)
+        return registry_live, None
+    return registry_live | running, len(running)
+
+
+def _startup_refusal(registry: AgentVmRegistry, running: int | None) -> str | None:
+    """Why the startup pass must not purge anything, or None.
+
+    The first pass on a node is the one that acts on the biggest backlog (an
+    upgraded node's leaked directories) and the one running when the agent
+    knows the least. Two states mean its live set cannot be trusted, and a
+    wrong answer there deletes the disks of VMs that are still running.
+    """
+    if running is None:
+        return "the supervisor did not answer list_vms, so the VMs it runs are unknown"
+    if running and not len(registry):
+        return (
+            f"the agent registry is empty while the supervisor runs {running} VM(s), "
+            "so the agent DB was lost or could not be read"
+        )
+    return None
+
+
+def _snapshot_is_live(live: Collection[str]) -> Callable[[str], bool]:
+    return frozenset(live).__contains__
+
+
+def registry_is_live(registry: AgentVmRegistry, snapshot: Collection[str]) -> Callable[[str], bool]:
+    """Liveness as of the removal, not as of the start of the pass.
+
+    ``live`` is snapshotted on the event loop and the walk that follows can
+    take minutes; a create that commits in between would look like an orphan,
+    since a directory's mtime only moves when an entry is added or renamed and
+    not when a file inside it grows. Asking the registry again just before
+    acting closes that window. The registry is a plain dict and ``in`` on one
+    is a single lookup under the GIL, so a worker thread may ask it.
+    """
+    frozen = frozenset(snapshot)
+
+    def is_live(namespace: str) -> bool:
+        return namespace in frozen or namespace in registry
+
+    return is_live
 
 
 def reconcile_storage(
@@ -140,6 +246,7 @@ def reconcile_storage(
     now: datetime | None = None,
     dry_run: bool = False,
     live: Collection[str] | None = None,
+    is_live: Callable[[str], bool] | None = None,
 ) -> ReconcileReport:
     """One reconciliation pass: namespaces, .part files, side directories,
     the retention budget, then the backups.
@@ -147,22 +254,31 @@ def reconcile_storage(
     ``live`` is the set of hashes a live VM owns. Pass it when the caller
     runs this off the event loop (see ``live_hashes``); it defaults to
     reading ``registry`` directly, which is only safe on the loop itself.
+
+    ``is_live`` is asked again immediately before anything is marked or
+    removed, so a create that commits while this pass walks is not treated as
+    an orphan (see ``registry_is_live``). It defaults to the ``live``
+    snapshot alone, which is what a caller holding no loop reference can
+    offer.
     """
     now = now or datetime.now(tz=timezone.utc)
     guard = timedelta(seconds=settings.VOLUME_CREATE_GUARD)
     live = set(live) if live is not None else live_hashes(registry)
+    is_live = is_live or _snapshot_is_live(live)
     report = ReconcileReport()
-    _reconcile_namespaces(live, now, guard, report, dry_run=dry_run)
+    _reconcile_namespaces(now, guard, report, dry_run=dry_run, is_live=is_live)
     _sweep_parts(now, guard, report, dry_run=dry_run)
     _sweep_side_dirs(live, now, guard, report, dry_run=dry_run)
-    _enforce_retention_budget(report, dry_run=dry_run)
+    _enforce_retention_budget(report, dry_run=dry_run, is_live=is_live)
     if not dry_run:
         report.backups_removed = sweep_expired_backups(now)
     logger.info("Storage reconcile%s: %s", " (dry run)" if dry_run else "", report.summary())
     return report
 
 
-def _is_orphan(directory: Path, live: Collection[str], now: datetime, guard: timedelta, *, dry_run: bool) -> bool:
+def _is_orphan(
+    directory: Path, is_live: Callable[[str], bool], now: datetime, guard: timedelta, *, dry_run: bool
+) -> bool:
     """True when nothing owns ``directory`` and the reconciler may act on it.
 
     A live VM's directory is owned; a stale marker on one (a VM re-created
@@ -172,7 +288,7 @@ def _is_orphan(directory: Path, live: Collection[str], now: datetime, guard: tim
     left is unowned, unless it is young enough to be a create in flight.
     """
     namespace = directory.name
-    if namespace in live or is_creating(namespace):
+    if is_live(namespace) or is_creating(namespace):
         if read_marker(directory) is not None and not dry_run:
             clear_marker(directory)
         return False
@@ -185,12 +301,12 @@ def _is_orphan(directory: Path, live: Collection[str], now: datetime, guard: tim
 
 
 def _reconcile_namespaces(
-    live: Collection[str],
     now: datetime,
     guard: timedelta,
     report: ReconcileReport,
     *,
     dry_run: bool,
+    is_live: Callable[[str], bool],
 ) -> None:
     seen: set[str] = set()
     for directory in list(iter_namespace_dirs()):
@@ -202,9 +318,13 @@ def _reconcile_namespaces(
             continue
         # A VM spanning two pools is handled once: purging or marking covers
         # every pool it is on.
-        if namespace in seen or not _is_orphan(directory, live, now, guard, dry_run=dry_run):
+        if namespace in seen or not _is_orphan(directory, is_live, now, guard, dry_run=dry_run):
             continue
         seen.add(namespace)
+        if is_live(namespace):
+            # A create that committed between the live snapshot and this walk.
+            logger.info("Skipping %s: a VM claimed it while this pass was walking", namespace)
+            continue
         if not dry_run and not _still_on_disk(namespace):
             logger.debug("Skipping %s: another pass got there first", namespace)
             continue
@@ -370,7 +490,18 @@ def _reclaimable_on(pool: StoragePool) -> list[tuple[Path, ReclaimableMarker]]:
     return entries
 
 
-def _evict(namespace: str, report: ReconcileReport, *, dry_run: bool) -> int:
+def _evict(
+    namespace: str,
+    report: ReconcileReport,
+    *,
+    dry_run: bool,
+    is_live: Callable[[str], bool] | None = None,
+) -> int:
+    if is_live is not None and is_live(namespace):
+        # A stale marker on a live VM, or a create that adopted the directory
+        # since this pass started listing it.
+        logger.warning("Not evicting %s: a live VM owns it despite its reclaimable marker", namespace)
+        return 0
     if not _still_on_disk(namespace):
         logger.debug("Not evicting %s: its directories are already gone", namespace)
         return 0
@@ -382,7 +513,12 @@ def _evict(namespace: str, report: ReconcileReport, *, dry_run: bool) -> int:
     return size
 
 
-def _enforce_retention_budget(report: ReconcileReport, *, dry_run: bool) -> None:
+def _enforce_retention_budget(
+    report: ReconcileReport,
+    *,
+    dry_run: bool,
+    is_live: Callable[[str], bool] | None = None,
+) -> None:
     reap = settings.VOLUME_RETENTION == "reap"
     for pool in get_pools():
         entries = _reclaimable_on(pool)
@@ -399,7 +535,7 @@ def _enforce_retention_budget(report: ReconcileReport, *, dry_run: bool) -> None
             if directory.name in report.evicted:
                 # A VM spanning two pools is purged whole on the first one.
                 continue
-            _evict(directory.name, report, dry_run=dry_run)
+            _evict(directory.name, report, dry_run=dry_run, is_live=is_live)
 
 
 def make_room(pool: StoragePool, needed_bytes: int, *, live: Collection[str] | None = None) -> int:
@@ -422,22 +558,20 @@ def make_room(pool: StoragePool, needed_bytes: int, *, live: Collection[str] | N
     loop. It can therefore overlap a pass running in another thread, which is
     why every removal here tolerates a directory that vanished first.
     """
-    protected = set(live or ())
+    protected = _snapshot_is_live(live or ())
     freed = 0
     report = ReconcileReport()
     for directory, _marker in _reclaimable_on(pool):
         if _pool_free(pool) >= needed_bytes or freed >= needed_bytes:
             break
-        if directory.name in protected:
-            logger.warning("Not evicting %s: a live VM owns it despite its reclaimable marker", directory)
-            continue
         if not directory.is_dir():
             # A concurrent pass took it between the listing and now.
             continue
         # Only what this pool gets back: _evict purges the VM on every pool
         # it spans, and the other pools' bytes do not help this create.
         on_this_pool = directory_size_bytes(directory)
-        _evict(directory.name, report, dry_run=False)
+        if not _evict(directory.name, report, dry_run=False, is_live=protected):
+            continue
         freed += on_this_pool
     if freed:
         logger.info("Made room on %s: evicted %s (%d bytes)", pool.path, ", ".join(report.evicted), freed)
@@ -459,18 +593,32 @@ def _pass_lock(app: web.Application) -> asyncio.Lock:
     return cached[1]
 
 
-async def reconcile_now(app: web.Application, *, dry_run: bool = False) -> ReconcileReport:
+async def reconcile_now(app: web.Application, *, dry_run: bool = False, strict: bool = False) -> ReconcileReport:
     """One pass, off the event loop, serialized against the other passes.
 
     A GONE fires a pass while the periodic one may still be running: two
     threads walking the same pools would evict the same directories twice,
     double-counting the bytes freed and logging each removal twice. The
     waiting pass is not redundant, it re-reads the filesystem when it starts.
+
+    ``strict`` is for the startup pass: it downgrades the pass to a dry run
+    when the live set cannot be trusted (``_startup_refusal``).
     """
     registry = app["vm_registry"]
     async with _pass_lock(app):
-        live = live_hashes(registry)
-        return await asyncio.to_thread(reconcile_storage, registry, dry_run=dry_run, live=live)
+        live, running = await _live_set(app)
+        if strict and not dry_run:
+            refusal = _startup_refusal(registry, running)
+            if refusal is not None:
+                logger.warning("Startup storage reconcile is running dry and will purge nothing: %s", refusal)
+                dry_run = True
+        return await asyncio.to_thread(
+            reconcile_storage,
+            registry,
+            dry_run=dry_run,
+            live=live,
+            is_live=registry_is_live(registry, live),
+        )
 
 
 def _log_startup_preview(preview: ReconcileReport) -> None:
@@ -510,10 +658,15 @@ def _log_startup_preview(preview: ReconcileReport) -> None:
 async def reconcile_at_startup(app: web.Application) -> None:
     """on_startup hook: one pass, preceded by a summary of what the pass will
     remove, so an operator reading the log knows why free space jumped after
-    an upgrade."""
+    an upgrade.
+
+    The pass is strict: it refuses to purge anything when the supervisor
+    cannot be listed, or when rehydration left the registry empty while the
+    supervisor still runs VMs.
+    """
     preview = await reconcile_now(app, dry_run=True)
     _log_startup_preview(preview)
-    await reconcile_now(app)
+    await reconcile_now(app, strict=True)
 
 
 async def periodic_reconcile(app: web.Application) -> None:
