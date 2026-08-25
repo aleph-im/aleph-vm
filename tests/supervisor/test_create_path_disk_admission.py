@@ -108,7 +108,7 @@ def _real_capacity(mocker, *, refuse: bool = False):
     manager = CapacityManager(supervisor=MagicMock(), registry=AgentVmRegistry())
     error = InsufficientResourcesError("no room", required={}, available={})
     mocker.patch.object(manager, "check_capacity", side_effect=error if refuse else None)
-    mocker.patch("aleph.vm.agent.capacity.allocated_bytes_for", return_value=0)
+    mocker.patch("aleph.vm.agent.capacity.existing_volume_files", return_value={})
     return manager
 
 
