@@ -282,10 +282,31 @@ def _is_stale_side_dir(child: Path, mode: str, live: Collection[str], now: datet
             return False
     except OSError:
         return False
+    return _side_dir_is_removable(child, mode)
+
+
+def _side_dir_is_removable(child: Path, mode: str) -> bool:
+    """The last two questions, about the directory rather than its owner."""
     if os.path.ismount(child):
         logger.warning("Not removing %s: it is a mount point", child)
         return False
+    if mode == "prefix" and not _is_empty(child):
+        # /mnt belongs to the operator, not to the agent: the only thing the
+        # agent puts there is a mount point (storage.create_devmapper mkdirs
+        # it and unmounts after the resize), which is empty by construction
+        # once unmounted. A name that merely looks like one but holds data
+        # (/mnt/externalstoragedisk_1) is the operator's, and an rmtree of it
+        # would be a disaster.
+        logger.debug("Not removing %s: it is not an empty mount point", child)
+        return False
     return True
+
+
+def _is_empty(directory: Path) -> bool:
+    try:
+        return not any(directory.iterdir())
+    except OSError:
+        return False
 
 
 def _sweep_side_dirs(
@@ -304,7 +325,11 @@ def _sweep_side_dirs(
                 continue
             if not dry_run:
                 try:
-                    shutil.rmtree(child)
+                    if mode == "exact":
+                        shutil.rmtree(child)
+                    else:
+                        # Never an rmtree here: see _is_stale_side_dir.
+                        os.rmdir(child)
                 except OSError:
                     logger.warning("Failed to remove %s", child, exc_info=True)
                     continue
