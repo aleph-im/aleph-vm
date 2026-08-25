@@ -195,7 +195,46 @@ async def test_cache_admission_hook_runs_before_writing(tmp_path):
             await download_file_in_chunks("http://x/f", tmp_path / "f.part")
     finally:
         storage_module.set_cache_admission(None)
-    assert seen == [(tmp_path, 4)]
+    assert seen == [(tmp_path / "f.part", 4)]
+
+
+@pytest.mark.asyncio
+async def test_a_download_without_a_content_length_is_admitted_against_its_cap(tmp_path):
+    """A server that does not say how big the body is gets admitted for the
+    worst case it is allowed to send: the alternative is a download that
+    writes an unbounded number of bytes into a budget nobody charged."""
+    import aleph.vm.storage as storage_module
+
+    seen = []
+    storage_module.set_cache_admission(lambda path, size: seen.append((path, size)))
+    session, _ = _session([b"x" * 4], content_length=None)
+    try:
+        with patch("aleph.vm.storage.aiohttp.ClientSession", return_value=session):
+            await download_file_in_chunks("http://x/f", tmp_path / "f.part", max_bytes=999)
+    finally:
+        storage_module.set_cache_admission(None)
+        storage_module.release_download(tmp_path / "f.part")
+    assert seen == [(tmp_path / "f.part", 999)]
+
+
+@pytest.mark.asyncio
+async def test_an_admitted_download_is_reserved_until_the_part_is_gone(tmp_path):
+    """What admission promised has to stay charged while it is being written,
+    or the next create admits the same room a second time."""
+    import aleph.vm.storage as storage_module
+
+    reserved_mid_download = {}
+
+    async def fake_chunks(url, part, max_bytes=None):
+        # What download_file_in_chunks does once the admission hook returns.
+        storage_module.reserve_download(part, max_bytes)
+        reserved_mid_download.update(storage_module.reserved_downloads())
+
+    with patch("aleph.vm.storage.download_file_in_chunks", side_effect=fake_chunks):
+        await download_file("http://x/f", tmp_path / "f", max_bytes=999)
+
+    assert reserved_mid_download == {tmp_path / "f.part": 999}
+    assert storage_module.reserved_downloads() == {}
 
 
 @pytest.mark.asyncio

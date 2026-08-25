@@ -522,7 +522,7 @@ def run():
     # And the third hook of the same kind: a download about to start asks the
     # cache budget for room, so a create that would blow it is refused before
     # the bytes land rather than after (spec section 4).
-    storage.set_cache_admission(lambda root, size: admit_download(app["vm_registry"], root, size))
+    storage.set_cache_admission(lambda tmp_path, size: admit_download(app["vm_registry"], tmp_path, size))
     app.on_startup.append(start_node_hash_discovery)
     app.on_cleanup.append(stop_node_hash_discovery)
 

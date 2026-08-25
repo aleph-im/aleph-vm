@@ -12,6 +12,7 @@ from aleph_message.models import ItemHash
 from reclaim_fixtures import OTHER_HASH, VM_HASH, pools, volume  # noqa: F401
 
 import aleph.vm.agent.vm.cache as cache_module
+import aleph.vm.storage as storage_module
 from aleph.vm.agent.vm.cache import (
     admit_download,
     cache_entries,
@@ -33,6 +34,12 @@ def _no_live_snapshot(monkeypatch):
     """The reconciler's live-set snapshot is module state: no test inherits
     another's."""
     monkeypatch.setattr(cache_module, "_live_snapshot", None)
+
+
+@pytest.fixture(autouse=True)
+def _no_reserved_downloads(monkeypatch):
+    """So is the set of downloads admission has already charged for."""
+    monkeypatch.setattr(storage_module, "_reserved_downloads", {})
 
 
 def _entry(root, name, size=4096, age=0):
@@ -304,7 +311,7 @@ def test_admit_download_evicts_to_make_room(pools, monkeypatch):
     cache_module.record_live_snapshot(set())
     old = _entry(pools["code"], "old", size=4096, age=1000)
 
-    admit_download(registry, pools["code"], 8000)
+    admit_download(registry, pools["code"] / "new.part", 8000)
 
     assert not old.exists()
 
@@ -320,7 +327,7 @@ def test_admit_download_never_reclaims_retained_disks(pools, monkeypatch):
     mark_reclaimable(VM_HASH, "gone", ("parent",), now=NOW)
 
     with pytest.raises(InsufficientResourcesError):
-        admit_download(registry, pools["runtime"], 512)
+        admit_download(registry, pools["runtime"] / "new.part", 512)
 
     assert parent.exists() and retained.exists()
 
@@ -334,7 +341,7 @@ def test_admit_download_evicts_nothing_when_a_live_vm_has_no_record(pools, monke
     old = _entry(pools["code"], "old", size=4096, age=1000)
 
     with pytest.raises(InsufficientResourcesError):
-        admit_download(registry, pools["code"], 8000)
+        admit_download(registry, pools["code"] / "new.part", 8000)
 
     assert old.exists()
     assert "no registry record" in caplog.text
@@ -346,7 +353,7 @@ def test_admit_download_evicts_nothing_before_the_first_pass(pools, monkeypatch)
     old = _entry(pools["code"], "old", size=4096, age=1000)
 
     with pytest.raises(InsufficientResourcesError):
-        admit_download(registry, pools["code"], 8000)
+        admit_download(registry, pools["code"] / "new.part", 8000)
 
     assert old.exists()
 
@@ -356,7 +363,66 @@ def test_admit_download_refuses_what_the_budget_cannot_hold(pools, monkeypatch):
     registry = AgentVmRegistry()
 
     with pytest.raises(InsufficientResourcesError):
-        admit_download(registry, pools["code"], 9000)
+        admit_download(registry, pools["code"] / "a.part", 9000)
+
+
+def test_two_concurrent_downloads_cannot_both_fit_in_room_for_one(pools, monkeypatch):
+    """Admission used to see only what was already on disk, and a ``.part`` is
+    not a cache entry: two creates arriving together were both told there was
+    room for a download only one of them could have."""
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "8192")
+    registry = AgentVmRegistry()
+    cache_module.record_live_snapshot(set())
+    first = pools["code"] / "a.part"
+    first.touch()
+
+    admit_download(registry, first, 8000)
+
+    second = pools["code"] / "b.part"
+    second.touch()
+    with pytest.raises(InsufficientResourcesError):
+        admit_download(registry, second, 8000)
+
+
+def test_a_finished_download_releases_the_room_it_held(pools, monkeypatch):
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "8192")
+    registry = AgentVmRegistry()
+    cache_module.record_live_snapshot(set())
+    first = pools["code"] / "a.part"
+    first.touch()
+    admit_download(registry, first, 8000)
+
+    storage_module.release_download(first)
+    first.unlink()
+
+    admit_download(registry, pools["code"] / "b.part", 8000)
+
+
+def test_the_bytes_of_an_unadmitted_part_file_are_counted_too(pools, monkeypatch):
+    """A ``.part`` from a crashed download holds real blocks until the
+    reconciler's guard expires; admission may not hand the same blocks out."""
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "8192")
+    registry = AgentVmRegistry()
+    cache_module.record_live_snapshot(set())
+    orphan = pools["code"] / "crashed.part"
+    orphan.write_bytes(b"x" * 8000)
+
+    with pytest.raises(InsufficientResourcesError):
+        admit_download(registry, pools["code"] / "b.part", 4096)
+
+
+def test_a_reservation_is_not_counted_twice_while_its_part_grows(pools, monkeypatch):
+    """The reservation and the bytes already written are the same room."""
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "16384")
+    registry = AgentVmRegistry()
+    cache_module.record_live_snapshot(set())
+    part = pools["code"] / "a.part"
+    part.touch()
+    admit_download(registry, part, 8192)
+    part.write_bytes(b"x" * 8192)
+
+    # 8 KiB reserved, 8 KiB of it written: 8 KiB of the 16 KiB budget is left.
+    admit_download(registry, pools["code"] / "b.part", 4096)
 
 
 def test_admit_download_ignores_a_directory_that_is_not_a_cache(pools, monkeypatch, caplog):
@@ -368,7 +434,7 @@ def test_admit_download_ignores_a_directory_that_is_not_a_cache(pools, monkeypat
     directory = pools["pool0"] / VM_HASH
     directory.mkdir()
 
-    admit_download(registry, directory, 10 * 1024**3)
+    admit_download(registry, directory / "rootfs.qcow2.part", 10 * 1024**3)
 
     assert str(directory) in caplog.text
 
