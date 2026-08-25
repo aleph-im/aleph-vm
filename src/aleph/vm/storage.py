@@ -32,11 +32,17 @@ from aleph_message.models.execution.volume import (
 )
 
 from aleph.vm.conf import settings
-from aleph.vm.storage_pools import volume_path_for
+from aleph.vm.storage_pools import find_existing_volume, volume_path_for
 from aleph.vm.utils import fix_message_validation, run_in_subprocess
 
 logger = logging.getLogger(__name__)
 DEVICE_MAPPER_DIRECTORY = "/dev/mapper"
+# Where create_devmapper mounts a volume to resize its filesystem.
+MOUNT_ROOT = Path("/mnt")
+# What may be composed into a dmsetup device name. create_devmapper builds
+# names out of a VM hash and a volume name straight from the message, so a
+# name outside this set is one dmsetup would have refused to create.
+DEVICE_NAME_PATTERN = re.compile(r"^[\w\-]+$")
 
 # Runtimes and base images can be several hundred MiB and are sometimes served by slow
 # gateways (e.g. IPFS). We must not cap the *total* transfer time, or large-but-steady
@@ -460,13 +466,78 @@ async def create_devmapper(
     )
     await create_mapped_device(mapped_volume_name, snapshot_table_command)
 
-    mount_path = Path(f"/mnt/{mapped_volume_name}")
+    mount_path = MOUNT_ROOT / mapped_volume_name
     mount_path.mkdir(parents=True, exist_ok=True)
     await resize_and_tune_file_system(path_mapped_volume_name, mount_path)
     await chown_to_jailman(path_image_device_name)
     await chown_to_jailman(path_mapped_volume_name_base)
     await chown_to_jailman(path_mapped_volume_name)
     return path_mapped_volume_name
+
+
+async def detach_loop_devices(backing_file: Path) -> list[str]:
+    """Detach every loop device backed by ``backing_file``.
+
+    ``losetup -j`` lines look like ``/dev/loop3: [2049]:12 (/path/to/file)``.
+    A file can be attached more than once (a create that was interrupted
+    between the loop setup and the dmsetup create leaves one behind), so
+    every match is detached, not just the first.
+    """
+    stdout = await run_in_subprocess(["losetup", "-j", str(backing_file)])
+    detached: list[str] = []
+    for line in stdout.decode().splitlines():
+        device = line.split(":", 1)[0].strip()
+        if not device.startswith("/dev/loop"):
+            continue
+        await run_in_subprocess(["losetup", "-d", device])
+        logger.info("Detached loop device %s of %s", device, backing_file)
+        detached.append(device)
+    return detached
+
+
+async def remove_devmapper(namespace: str, volume_name: str) -> None:
+    """The inverse of ``create_devmapper`` for one volume.
+
+    Removes the snapshot device, detaches the loop devices of its backing
+    file, drops the resize mount point, and removes the per-VM base device
+    once no snapshot of this VM is left. The parent image's device and its
+    read-only loop are shared across VMs and are removed by the cache pass
+    when the image is evicted, never here.
+
+    Until this runs, the volume file is pinned by its loop device: unlinking
+    it would free no space and would not reset the volume either, since
+    ``create_devmapper`` returns early while the dm device exists (which is
+    what ``purge._held_by_device_mapper`` guards against).
+    """
+    mapped_name = f"{namespace}_{volume_name}"
+    if not DEVICE_NAME_PATTERN.match(namespace) or not DEVICE_NAME_PATTERN.match(volume_name):
+        logger.error("Refusing to remove an implausible device-mapper name: %r", mapped_name)
+        return
+
+    mapper = Path(DEVICE_MAPPER_DIRECTORY)
+    if (mapper / mapped_name).is_block_device():
+        await run_in_subprocess(["dmsetup", "remove", mapped_name])
+        logger.info("Removed device-mapper target %s", mapped_name)
+
+    backing_file = find_existing_volume(namespace, f"{volume_name}.btrfs")
+    if backing_file is not None:
+        await detach_loop_devices(backing_file)
+
+    mount_path = MOUNT_ROOT / mapped_name
+    if mount_path.is_dir() and not mount_path.is_mount():
+        try:
+            mount_path.rmdir()
+        except OSError:
+            logger.warning("Could not remove %s", mount_path, exc_info=True)
+
+    # The base device is per VM but shared by all of its parent-backed
+    # volumes (create_devmapper builds it once, from the first one), so it
+    # only goes once the last snapshot of this VM is gone.
+    base_name = f"{namespace}_base"
+    siblings = [path for path in mapper.glob(f"{namespace}_*") if path.name != base_name and path.is_block_device()]
+    if not siblings and (mapper / base_name).is_block_device():
+        await run_in_subprocess(["dmsetup", "remove", base_name])
+        logger.info("Removed device-mapper base %s", base_name)
 
 
 async def get_existing_file(ref: str) -> Path:

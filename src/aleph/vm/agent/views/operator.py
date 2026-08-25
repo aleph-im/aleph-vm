@@ -30,7 +30,7 @@ from aleph.vm.agent.vm.backup import BackupManager
 from aleph.vm.agent.vm.downloader import recreate_vm_volumes
 from aleph.vm.agent.vm.purge import purge_vm_staging, purge_vm_volumes
 from aleph.vm.agent.vm.reclaimable import retained_marker
-from aleph.vm.agent.vm.retire import RetireReason, retire_vm
+from aleph.vm.agent.vm.retire import RetireReason, retire_vm, teardown_vm_devices
 from aleph.vm.agent.vm_registry import AgentVmRecord
 from aleph.vm.backup.archive import InsufficientDiskSpaceError
 from aleph.vm.backup.staging import download_volume_by_ref, get_backup_directory
@@ -766,6 +766,11 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
                 # the agent's job because the agent created them; the
                 # supervisor is handed resolved paths and never allocates.
                 await supervisor.stop_vm(vm_id)
+                # A parent-backed volume is a loop device under a dm
+                # snapshot: the purge below refuses to unlink its file while
+                # those are live, and create_devmapper would return the old
+                # device instead of rebuilding it.
+                await teardown_vm_devices(str(vm_hash), record)
                 deleted = await asyncio.to_thread(purge_vm_volumes, vm_hash, include_data_volumes=include_data_volumes)
                 try:
                     # Rebuild each volume on the pool it was deleted from: the

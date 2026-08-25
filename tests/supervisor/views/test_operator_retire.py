@@ -443,3 +443,43 @@ async def test_operator_reinstall_non_persistent_recreates(aiohttp_client, mocke
         capacity=app["capacity"],
         persistent=False,
     )
+
+
+@pytest.mark.asyncio
+async def test_operator_reinstall_tears_down_devices_before_purging(aiohttp_client, mocker):
+    """A parent-backed volume's dm snapshot and loop device are torn down
+    right after the stop: the purge cannot unlink a file a loop device pins."""
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.setup()
+
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+
+    mocker.patch(
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
+        return_value=instance_message.sender,
+    )
+    order: list[str] = []
+    mocker.patch(
+        "aleph.vm.agent.views.operator.teardown_vm_devices",
+        new=AsyncMock(side_effect=lambda *args: order.append("teardown")),
+    )
+    mocker.patch(
+        "aleph.vm.agent.views.operator.purge_vm_volumes",
+        side_effect=lambda *args, **kwargs: order.append("purge") or [],
+    )
+    mocker.patch("aleph.vm.agent.views.operator.recreate_vm_volumes", new=AsyncMock())
+
+    app = setup_webapp(supervisor=_fake_supervisor())
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    app["supervisor"] = _fake_supervisor()
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(f"/control/machine/{vm_hash}/reinstall")
+
+    assert response.status == 200, await response.text()
+    assert order == ["teardown", "purge"]
