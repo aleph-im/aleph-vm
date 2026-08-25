@@ -5,8 +5,11 @@ and the supervisor reduced to quiescence (freeze/thaw) plus stop/start."""
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 import tarfile
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -14,7 +17,12 @@ import pytest
 
 import aleph.vm.storage_pools as storage_pools_module
 from aleph.vm.agent.vm import backup as backup_module
-from aleph.vm.agent.vm.backup import BackupManager, vm_disks
+from aleph.vm.agent.vm.backup import (
+    BackupManager,
+    purge_vm_backups,
+    sweep_expired_backups,
+    vm_disks,
+)
 from aleph.vm.backup import staging as staging_module
 from aleph.vm.backup.types import (
     BackupId,
@@ -662,3 +670,66 @@ async def test_restore_from_image_of_an_unknown_vm_propagates_not_found(pools, b
 
     with pytest.raises(VmNotFoundError):
         await manager.restore_from_image(VM_HASH, staged)
+
+
+# --- Sweeps ---
+
+
+def test_purge_vm_backups_removes_the_archive_and_its_sidecars(backup_dir):
+    """A VM that is gone leaves no archive behind, and no other VM's archive
+    is touched: the glob is scoped to the hash."""
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    archive = backup_dir / f"{VM_HASH}-20260824T120000Z.tar"
+    archive.write_bytes(b"tar")
+    sidecar = archive.with_suffix(".tar.sha256")
+    sidecar.write_text("abc\n")
+    meta = archive.with_suffix(".tar.meta.json")
+    meta.write_text("{}")
+    other = backup_dir / f"{OTHER_HASH}-20260824T120000Z.tar"
+    other.write_bytes(b"tar")
+
+    removed = purge_vm_backups(VM_HASH)
+
+    assert removed == 1
+    assert not archive.exists() and not sidecar.exists() and not meta.exists()
+    assert other.exists()
+
+
+def test_purge_vm_backups_refuses_an_implausible_hash(backup_dir):
+    """Every delete primitive is keyed by a validated hash; a glob is no
+    exception."""
+    with pytest.raises(ValueError, match="implausible"):
+        purge_vm_backups("../../etc")
+
+    # It refuses before it so much as resolves the backup directory.
+    assert not backup_dir.exists()
+
+
+def test_sweep_survives_a_backup_that_vanishes_mid_pass(backup_dir, monkeypatch):
+    """Another sweep, or purge_vm_backups for a retired VM, can remove a file
+    between the listing and the unlink. That is a race, not an error, and it
+    must not abort the rest of the pass."""
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    expired = []
+    for index in range(2):
+        archive = backup_dir / f"{VM_HASH}-2026010{index}T000000Z.tar"
+        archive.write_bytes(b"tar")
+        old = time.time() - 25 * 3600
+        os.utime(archive, (old, old))
+        expired.append(archive)
+    vanishing, survivor = sorted(expired)
+    real_stat = Path.stat
+
+    def stat_then_vanish(self, *args, **kwargs):
+        if self == vanishing and vanishing.exists():
+            vanishing.unlink()
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat_then_vanish)
+
+    removed = sweep_expired_backups(datetime.now(tz=timezone.utc))
+
+    monkeypatch.undo()
+    assert not vanishing.exists()
+    assert not survivor.exists()
+    assert removed == 1

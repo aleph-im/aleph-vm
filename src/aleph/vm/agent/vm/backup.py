@@ -30,9 +30,8 @@ from typing import BinaryIO
 
 from aleph_message.models import ItemHash
 
-from aleph.vm.agent.vm.purge import ROOTFS_STEM, iter_volume_files
+from aleph.vm.agent.vm.purge import ROOTFS_STEM, _checked_namespace, iter_volume_files
 from aleph.vm.backup.archive import (
-    BACKUP_TTL_HOURS,
     backup_metadata,
     check_disk_space_for_multiple,
     cleanup_expired_backups,
@@ -81,10 +80,15 @@ def purge_vm_backups(vm_hash: ItemHash | str) -> int:
 
     Called by retire_vm for every reason but RECREATE: a VM that is gone,
     erased or never committed has no owner left to hold its backups.
+
+    The hash goes through the same validation as every other delete
+    primitive: it is interpolated into a glob pattern here, and a delete path
+    never builds a pattern or a path out of an unchecked name.
     """
+    namespace = _checked_namespace(vm_hash)
     backup_dir = get_backup_directory()
     removed = 0
-    for archive in backup_dir.glob(f"{vm_hash}-*.tar"):
+    for archive in backup_dir.glob(f"{namespace}-*.tar"):
         archive.with_suffix(".tar.sha256").unlink(missing_ok=True)
         archive.with_suffix(".tar.meta.json").unlink(missing_ok=True)
         archive.unlink(missing_ok=True)
@@ -96,26 +100,11 @@ def sweep_expired_backups(now: datetime) -> int:
     """Remove every archive (of any VM) past the backup TTL, evaluated at
     ``now``.
 
-    Same TTL as ``cleanup_expired_backups``, but driven by an explicit
-    timestamp instead of the wall clock: the reconcile pass threads one
-    ``now`` through every sweep it runs, so a run is deterministic and does
-    not drift between the archives it looks at.
+    The reconciler's backup pass: the same sweep ``start_backup`` runs, on
+    the same TTL and through the same helper, but driven by the ``now`` the
+    pass threads through its other sweeps instead of by the wall clock.
     """
-    backup_dir = get_backup_directory()
-    cutoff = now.timestamp() - BACKUP_TTL_HOURS * 3600
-    removed = 0
-    for partial in backup_dir.glob("*.tar.partial"):
-        if partial.stat().st_mtime < cutoff:
-            partial.unlink()
-            logger.info("Deleted stale partial backup %s", partial.name)
-    for tar_file in backup_dir.glob("*.tar"):
-        if tar_file.stat().st_mtime < cutoff:
-            tar_file.with_suffix(".tar.sha256").unlink(missing_ok=True)
-            tar_file.with_suffix(".tar.meta.json").unlink(missing_ok=True)
-            tar_file.unlink()
-            logger.info("Deleted expired backup %s", tar_file.name)
-            removed += 1
-    return removed
+    return cleanup_expired_backups(get_backup_directory(), now=now.timestamp())
 
 
 @dataclass(frozen=True)
