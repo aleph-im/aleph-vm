@@ -95,7 +95,7 @@ git -C "$CLONE" filter-repo \
     --path src/aleph/vm/utils \
     --path src/aleph/vm/chains.py \
     --path src/aleph/vm/agent/chain.py \
-    --path src/aleph/vm/backup_staging.py \
+    --path src/aleph/vm/backup \
     --path src/aleph/vm/host_volumes.py \
     --path src/aleph/vm/guest_api \
     --path guest_api \

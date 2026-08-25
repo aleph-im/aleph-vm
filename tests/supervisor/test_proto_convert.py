@@ -4,10 +4,6 @@ from pathlib import Path
 
 from aleph.vm.supervisor_interface.types import (
     Backend,
-    BackupChunk,
-    BackupId,
-    BackupInfo,
-    BackupStatus,
     ConfidentialMode,
     CreateVmSpec,
     DirectoryPath,
@@ -218,38 +214,6 @@ def test_log_chunk_round_trip():
     assert conv.log_chunk_from_pb(conv.log_chunk_to_pb(chunk)) == chunk
 
 
-def test_backup_round_trip():
-    info = BackupInfo(
-        vm_id=VmId("dead" * 16),
-        backup_id=BackupId("backup-1"),
-        status=BackupStatus.COMPLETE,
-        size_bytes=42,
-        created_at_unix_secs=1_700_000_000,
-        error_message="",
-    )
-    assert conv.backup_info_from_pb(conv.backup_info_to_pb(info)) == info
-    chunk = BackupChunk(data=b"\x00\x01", offset=1024)
-    assert conv.backup_chunk_from_pb(conv.backup_chunk_to_pb(chunk)) == chunk
-
-
-def test_backup_info_carries_archive_metadata():
-    info = BackupInfo(
-        vm_id=VmId("vm1"),
-        backup_id=BackupId("b1"),
-        status=BackupStatus.COMPLETE,
-        size_bytes=10,
-        created_at_unix_secs=1,
-        error_message="",
-        checksum="sha256:abc",
-        volumes=["rootfs", "data"],
-        source_sizes={"rootfs": 100, "data": 50},
-    )
-    out = conv.backup_info_from_pb(conv.backup_info_to_pb(info))
-    assert out.checksum == "sha256:abc"
-    assert out.volumes == ["rootfs", "data"]
-    assert out.source_sizes == {"rootfs": 100, "data": 50}
-
-
 def test_measurement_round_trip():
     measurement = Measurement(vm_id=VmId("dead" * 16), measurement_bytes=b"\xaa\xbb", tee_backend=TeeBackend.SEV_SNP)
     assert conv.measurement_from_pb(conv.measurement_to_pb(measurement)) == measurement
@@ -340,7 +304,6 @@ def test_enum_tables_are_total():
     assert set(conv.DISK_FORMAT_TO_PB) == set(DiskFormat)
     assert set(conv.DISK_ROLE_TO_PB) == set(DiskRole)
     assert set(conv.LOG_SOURCE_TO_PB) == set(LogSource)
-    assert set(conv.BACKUP_STATUS_TO_PB) == set(BackupStatus)
 
 
 def test_measurement_carries_sev_info_and_launch_measure():

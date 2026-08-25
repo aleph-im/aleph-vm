@@ -51,10 +51,6 @@ pub enum RpcError {
     /// InvalidBackendError.
     #[error("{0}")]
     InvalidBackend(String),
-    /// BackupNotFoundError: message is the backup_id itself (NOT_FOUND,
-    /// trailer code BACKUP_NOT_FOUND).
-    #[error("{0}")]
-    BackupNotFound(String),
     /// MicroVMInitError: the guest never signalled ready (INTERNAL,
     /// trailer code MICROVM_INIT_FAILED; the Python exception text is
     /// empty).
@@ -179,11 +175,6 @@ impl From<controller_config::ConfigParseError> for RpcError {
         RpcError::Internal(error.to_string())
     }
 }
-impl From<crate::backup::BackupError> for RpcError {
-    fn from(error: crate::backup::BackupError) -> Self {
-        RpcError::Internal(error.to_string())
-    }
-}
 impl From<crate::qmp::QmpError> for RpcError {
     fn from(error: crate::qmp::QmpError) -> Self {
         RpcError::Internal(error.to_string())
@@ -261,7 +252,7 @@ fn vm_lock(state: &DaemonState, vm_id: &str) -> Arc<std::sync::Mutex<()>> {
         .clone()
 }
 
-fn entry_snapshot(state: &DaemonState, vm_id: &str) -> Option<VmEntry> {
+pub(crate) fn entry_snapshot(state: &DaemonState, vm_id: &str) -> Option<VmEntry> {
     state.world.blocking_read().entries.get(vm_id).cloned()
 }
 
@@ -1192,148 +1183,6 @@ pub fn reboot_vm(state: &DaemonState, vm_id: &str) -> Result<(VmEntry, bool), Rp
     Ok((entry, running))
 }
 
-/// `LocalSupervisor.restore_backup`: swap the rootfs for a verified backup
-/// archive's rootfs member, stopping and restarting the VM around the swap.
-/// Persistent QEMU VMs only (a program fails the rootfs-path resolution with
-/// InvalidBackend).
-pub fn restore_backup(
-    state: &DaemonState,
-    vm_id: &str,
-    backup_id: &str,
-) -> Result<(VmEntry, bool), RpcError> {
-    let lock = vm_lock(state, vm_id);
-    let _guard = lock
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
-    let rootfs_path = crate::backup::qemu_rootfs_path(&entry)?;
-    crate::backup::validate_backup_id(vm_id, backup_id)?;
-    let backup_dir = crate::backup::backup_directory(state)?;
-    let tar_path = backup_dir.join(format!("{backup_id}.tar"));
-    if !tar_path.exists() {
-        return Err(RpcError::BackupNotFound(backup_id.into()));
-    }
-
-    // The per-VM disk lock, shared with a running StartBackup: neither may
-    // touch the disks while the other converts or swaps them.
-    let disk_lock = state.backups.vm_lock(vm_id);
-    let _disk_guard = disk_lock
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let staging = backup_dir.join(format!("{backup_id}.restore.qcow2"));
-    let outcome = restore_rootfs_swap(state, vm_id, &entry, &tar_path, &staging, &rootfs_path);
-    let _ = std::fs::remove_file(&staging);
-    outcome?;
-
-    let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
-    let running = unit_active(state, &entry.unit_name());
-    let status = status_snapshot(state, &entry);
-    if status != pb::VmStatus::Stopped {
-        state.events.emit(vm_id, pb::VmStatus::Stopped, status);
-    }
-    Ok((entry, running))
-}
-
-/// The stop/restore/restart core shared by restore_backup: extract and
-/// verify the archived rootfs, stop the running VM, swap the disk, restart.
-fn restore_rootfs_swap(
-    state: &DaemonState,
-    vm_id: &str,
-    entry: &VmEntry,
-    tar_path: &std::path::Path,
-    staging: &std::path::Path,
-    rootfs_path: &std::path::Path,
-) -> Result<(), RpcError> {
-    crate::backup::extract_rootfs_member(tar_path, staging)?;
-    // verify_qemu_disk: a check failure here propagates as INTERNAL (Python's
-    // uncaught CalledProcessError -> translate).
-    if let Err(error) = state.disk_tools.check(staging) {
-        return Err(RpcError::Internal(match error {
-            crate::backup::QemuImgError::CheckFailed(message)
-            | crate::backup::QemuImgError::Unavailable(message) => message,
-        }));
-    }
-    let old_status = status_snapshot(state, entry);
-    if entry_running(state, entry) {
-        stop_vm_execution(state, vm_id)?;
-        state.events.emit(vm_id, old_status, pb::VmStatus::Stopped);
-    }
-    crate::backup::restore_rootfs(staging, rootfs_path)?;
-    start_vm_execution(state, vm_id)
-}
-
-/// `LocalSupervisor.restore_from_image`: swap the rootfs for a QCOW2 image
-/// already staged on a host path. Rejects a non-QCOW2 upload (InvalidBackend)
-/// and one larger than the declared rootfs (a restore must not grow the disk).
-pub fn restore_from_image(
-    state: &DaemonState,
-    vm_id: &str,
-    image_path: &str,
-    max_virtual_size_bytes: u64,
-) -> Result<(VmEntry, bool), RpcError> {
-    let lock = vm_lock(state, vm_id);
-    let _guard = lock
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
-    let rootfs_path = crate::backup::qemu_rootfs_path(&entry)?;
-
-    let image = std::path::Path::new(image_path);
-    if !image.exists() {
-        return Err(RpcError::Internal(format!(
-            "staged restore image {} does not exist",
-            image.display()
-        )));
-    }
-    // qemu-img rejects anything that is not a valid QCOW2 with a non-zero
-    // exit: a client error (a bad upload) -> InvalidBackendError (a 400). A
-    // spawn failure (qemu-img missing) stays INTERNAL, like Python.
-    match state.disk_tools.check(image) {
-        Ok(()) => {}
-        Err(crate::backup::QemuImgError::CheckFailed(_)) => {
-            let name = image
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default();
-            return Err(RpcError::InvalidBackend(format!(
-                "Restore image {name} is not a valid QCOW2 disk"
-            )));
-        }
-        Err(crate::backup::QemuImgError::Unavailable(message)) => {
-            return Err(RpcError::Internal(message));
-        }
-    }
-    if max_virtual_size_bytes != 0 {
-        let new_size = state.disk_tools.virtual_size(image)?;
-        if new_size > max_virtual_size_bytes {
-            return Err(RpcError::InvalidBackend(format!(
-                "New rootfs virtual size ({new_size} bytes) exceeds the declared rootfs size \
-                 ({max_virtual_size_bytes} bytes). Restore cannot increase disk size."
-            )));
-        }
-    }
-
-    let disk_lock = state.backups.vm_lock(vm_id);
-    let _disk_guard = disk_lock
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let old_status = status_snapshot(state, &entry);
-    if entry_running(state, &entry) {
-        stop_vm_execution(state, vm_id)?;
-        state.events.emit(vm_id, old_status, pb::VmStatus::Stopped);
-    }
-    crate::backup::restore_rootfs(image, &rootfs_path)?;
-    start_vm_execution(state, vm_id)?;
-
-    let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
-    let running = unit_active(state, &entry.unit_name());
-    let status = status_snapshot(state, &entry);
-    if status != pb::VmStatus::Stopped {
-        state.events.emit(vm_id, pb::VmStatus::Stopped, status);
-    }
-    Ok((entry, running))
-}
-
 pub fn delete_vm(
     state: &DaemonState,
     vm_id: &str,
@@ -1443,14 +1292,6 @@ fn delete_tracked_vm(
     }
     state.events.emit(vm_id, old_status, pb::VmStatus::Stopped);
 
-    // The per-VM backup disk lock, shared with a running StartBackup: the
-    // world-entry removal must not leave a backup run tracked for a VM that no
-    // longer exists. Lock order matches the restore paths: the lifecycle
-    // vm_lock (held by the caller) then this disk lock (ledger entry 51).
-    let disk_lock = state.backups.vm_lock(vm_id);
-    let _disk_guard = disk_lock
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     state.world.blocking_write().entries.remove(vm_id);
     // Release the NUMA reservation alongside the other teardown (increment
     // C1). No-op for an unpinned or program VM (numa_node is None).
@@ -1486,10 +1327,9 @@ fn delete_tracked_vm(
             &ports::sqlalchemy_utc_now(),
         )?;
     }
-    // Reap the backup registry entry (jobs, the in-flight task slot, the disk
-    // lock) for the now-deleted VM so a completed/failed run does not linger
-    // in ListBackups and a fresh create reuses no stale state (R1/R3).
-    state.backups.reap(vm_id);
+    // A guest frozen for a backup that is deleted mid-copy: nothing to thaw
+    // (the VM is gone), but its record must not outlive it.
+    state.frozen_guests.forget(vm_id);
     Ok(())
 }
 
@@ -5354,49 +5194,6 @@ mod tests {
         assert!(
             !state.world.blocking_read().reserved_vm_indices.contains(&3),
             "the hidden VM's index claim is released"
-        );
-    }
-
-    #[test]
-    fn delete_reaps_the_backup_registry_entry() {
-        // R1/R3: DeleteVm reaps the deleted VM's backup jobs (and its per-VM
-        // disk lock) so a completed/failed run no longer lingers in
-        // ListBackups after the VM is gone.
-        let harness = harness();
-        let state = &harness.state;
-        let root = state.host.settings.execution_root.clone();
-        let vm_id = hash('a');
-        create_vm(state, spec(&vm_id, &root)).unwrap();
-
-        // A FAILED backup job for this VM is registered, and its disk lock
-        // exists in the registry.
-        state.backups.insert_job_for_test(pb::BackupInfo {
-            vm_id: vm_id.clone(),
-            backup_id: format!("{vm_id}-20260101T000000000000Z"),
-            status: pb::BackupStatus::Failed as i32,
-            ..Default::default()
-        });
-        let _lock = state.backups.vm_lock(&vm_id);
-        assert_eq!(
-            crate::backup::list_backups(state, Some(&vm_id))
-                .unwrap()
-                .len(),
-            1,
-            "the FAILED job lists before the delete"
-        );
-
-        delete_vm(state, &vm_id, false).unwrap();
-
-        // The VM is gone and its backup registry entry with it.
-        assert!(
-            !state.world.blocking_read().entries.contains_key(&vm_id),
-            "the world entry was removed"
-        );
-        assert!(
-            crate::backup::list_backups(state, Some(&vm_id))
-                .unwrap()
-                .is_empty(),
-            "the backup job was reaped by the delete"
         );
     }
 

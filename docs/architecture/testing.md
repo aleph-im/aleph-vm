@@ -56,7 +56,7 @@ test gate).
    `ALEPH_VM_SUPERVISOR_IMPL=python` or `rust`
    (`tests/integration/conftest.py` reads this and fails collection on any
    other value, rather than silently defaulting to Python). It covers VM
-   creation, management, volumes, backup/restore, daemon restart, error
+   creation, management, volumes, guest quiescence, daemon restart, error
    paths, and resource release. Firecracker legs run unprivileged over the
    vsock guest channel; QEMU legs need root for TAP networking and systemd
    controller units. `tests/supervisor/conformance.py` is a separate,
@@ -235,7 +235,7 @@ tests.
 - `tests/integration/conftest.py`: the `ALEPH_VM_SUPERVISOR_IMPL`
   selector and per-backend requirements (Firecracker vs QEMU).
 - `tests/integration/`: `test_vm_creation.py`, `test_vm_management.py`,
-  `test_volumes.py`, `test_backup_restore.py`, `test_daemon_restart.py`,
+  `test_volumes.py`, `test_guest_quiesce.py`, `test_daemon_restart.py`,
   `test_error_paths.py`, `test_resource_release.py`.
 - `tests/supervisor/conformance.py`: the abstract `Supervisor` contract
   mixin.

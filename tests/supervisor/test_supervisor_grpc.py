@@ -90,7 +90,7 @@ async def test_is_a_supervisor(harness):
 
 @pytest.mark.asyncio
 async def test_streaming_methods_are_async_generators(harness):
-    for name in ("stream_logs", "download_backup", "watch_events"):
+    for name in ("stream_logs", "watch_events"):
         assert inspect.isasyncgenfunction(getattr(harness, name))
 
 
@@ -307,36 +307,10 @@ async def test_unary_calls_carry_a_deadline(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_backup_surface_round_trips_over_the_wire(tmp_path, monkeypatch):
-    """Status, listing, download stream and delete against a real archive on
-    disk, through the real server and client."""
-    from aleph.vm import backup_staging as backup_module
-    from aleph.vm.supervisor_interface.errors import BackupNotFoundError
-    from aleph.vm.supervisor_interface.types import BackupId, BackupStatus
-
-    backups = tmp_path / "backups"
-    backups.mkdir()
-    monkeypatch.setattr(backup_module.settings, "BACKUP_DIRECTORY", backups)
-    content = bytes(range(256)) * 4096 + b"tail"  # 1 MiB + 4 bytes: two chunks
-    tar = backups / "vmx-20260611T000000000000Z.tar"
-    tar.write_bytes(content)
-    vm_id = VmId("vmx")
-    backup_id = BackupId(tar.stem)
-
-    harness = _ServerHarness(LocalSupervisor(pool=FakePool()))
-    async with harness as client:
-        info = await client.get_backup_status(vm_id, backup_id)
-        assert info.status is BackupStatus.COMPLETE
-        assert info.size_bytes == len(content)
-        assert info.vm_id == vm_id
-
-        assert [b.backup_id for b in await client.list_backups(vm_id)] == [backup_id]
-
-        chunks = [c async for c in client.download_backup(vm_id, backup_id)]
-        assert [c.offset for c in chunks] == [0, 1024 * 1024]
-        assert b"".join(c.data for c in chunks) == content
-
-        await client.delete_backup(vm_id, backup_id)
-        assert not tar.exists()
-        with pytest.raises(BackupNotFoundError):
-            await client.get_backup_status(vm_id, backup_id)
+async def test_guest_quiescence_round_trips_over_the_wire(harness):
+    """FreezeGuest/ThawGuest against the real server and client: an unknown
+    VM is VmNotFoundError on both, class-exact."""
+    with pytest.raises(VmNotFoundError):
+        await harness.freeze_guest(VmId("nope"))
+    with pytest.raises(VmNotFoundError):
+        await harness.thaw_guest(VmId("nope"))

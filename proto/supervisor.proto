@@ -4,8 +4,8 @@
 //
 // This service is the infra-only boundary between the network-agent
 // (Aleph orchestration: HTTP CRN API, messages, payments, allocations)
-// and the supervisor (controllers, hypervisors, networking, systemd,
-// backups). Reference: docs/plans/2026-05-28-aleph-vm-architecture-
+// and the supervisor (controllers, hypervisors, networking, systemd).
+// Reference: docs/plans/2026-05-28-aleph-vm-architecture-
 // backport-design.md.
 //
 // SAME-HOST INVARIANT: this is a process boundary, not a network
@@ -45,7 +45,6 @@ service Supervisor {
   rpc StartVm(StartVmRequest) returns (VmInfo);
   rpc RebootVm(RebootVmRequest) returns (VmInfo);
   rpc RunProgramCode(RunProgramCodeRequest) returns (RunProgramCodeResponse);
-  rpc RestoreFromImage(RestoreFromImageRequest) returns (VmInfo);
 
   // ── Port forwarding ──
   rpc AddPortForward(AddPortForwardRequest) returns (PortForwardInfo);
@@ -65,13 +64,20 @@ service Supervisor {
   rpc GetLogs(GetLogsRequest) returns (GetLogsResponse);
   rpc StreamLogs(StreamLogsRequest) returns (stream LogChunk);
 
-  // ── Backups ──
-  rpc StartBackup(StartBackupRequest) returns (BackupInfo);
-  rpc GetBackupStatus(GetBackupStatusRequest) returns (BackupInfo);
-  rpc ListBackups(ListBackupsRequest) returns (ListBackupsResponse);
-  rpc DownloadBackup(DownloadBackupRequest) returns (stream BackupChunk);
-  rpc DeleteBackup(DeleteBackupRequest) returns (DeleteBackupResponse);
-  rpc RestoreBackup(RestoreBackupRequest) returns (VmInfo);
+  // ── Guest quiescence ──
+  // The supervisor's only part in a backup. The agent owns the archives
+  // (it created the disks, so it copies, stores, expires and restores
+  // them); what it cannot do from outside the VM is quiesce the guest, so
+  // it asks the supervisor to freeze the guest filesystems through the QEMU
+  // guest agent around its copy. Best effort: frozen=false when the guest
+  // agent is unavailable and the copy proceeds crash-consistent. A freeze
+  // is auto-thawed after GUEST_FREEZE_TIMEOUT so an agent that dies
+  // mid-copy cannot leave a guest frozen. ThawGuest on an unfrozen guest
+  // is a no-op. (The former StartBackup / GetBackupStatus / ListBackups /
+  // DownloadBackup / DeleteBackup / RestoreBackup / RestoreFromImage RPCs
+  // moved to the agent with the archives.)
+  rpc FreezeGuest(FreezeGuestRequest) returns (FreezeGuestResponse);
+  rpc ThawGuest(ThawGuestRequest) returns (ThawGuestResponse);
 
   // ── Confidential ──
   rpc InitializeConfidential(InitializeConfidentialRequest) returns (InitializeConfidentialResponse);
@@ -348,12 +354,6 @@ message RebootVmRequest {
   // VM and recreates it from the spec it holds. Firecracker has no reboot
   // API. Add a `hard` option when a real implementation lands.
 }
-message RestoreFromImageRequest {
-  string vm_id = 1;
-  string image_path = 2;             // host path to a staged QCOW2 image
-  uint64 max_virtual_size_bytes = 3; // 0 = no cap
-}
-
 message RunProgramCodeRequest {
   string vm_id = 1;
   bytes scope_msgpack = 2;           // ASGI scope dict, msgpack-encoded
@@ -443,49 +443,15 @@ message LogChunk {
   }
 }
 
-// ── Backups ──────────────────────────────────────────────────────────────
+// ── Guest quiescence ─────────────────────────────────────────────────────
 
-enum BackupStatus {
-  BACKUP_STATUS_UNSPECIFIED = 0;
-  BACKUP_STATUS_PENDING = 1;
-  BACKUP_STATUS_RUNNING = 2;
-  BACKUP_STATUS_COMPLETE = 3;
-  BACKUP_STATUS_FAILED = 4;
+message FreezeGuestRequest { string vm_id = 1; }
+message FreezeGuestResponse {
+  bool frozen = 1;                   // false: guest agent unavailable, nothing frozen
 }
 
-message BackupInfo {
-  string vm_id = 1;
-  string backup_id = 2;              // supervisor-issued
-  BackupStatus status = 3;
-  uint64 size_bytes = 4;             // 0 until COMPLETE
-  uint64 created_at_unix_secs = 5;
-  string error_message = 6;          // populated when status = FAILED
-  string checksum = 7;                  // archive checksum, populated when COMPLETE
-  repeated string volumes = 8;          // archived volume names
-  map<string, uint64> source_sizes = 9; // per-volume uncompressed source size
-}
-
-message StartBackupRequest {
-  string vm_id = 1;
-  bool quiesce_guest = 2;            // request guest fs-freeze if supported
-  bool include_volumes = 3;          // also archive non-read-only persistent volumes
-}
-
-message GetBackupStatusRequest { string vm_id = 1; string backup_id = 2; }
-
-message ListBackupsRequest { string vm_id = 1; }      // empty = all VMs
-message ListBackupsResponse { repeated BackupInfo backups = 1; }
-
-message DownloadBackupRequest { string vm_id = 1; string backup_id = 2; }
-message BackupChunk {
-  bytes data = 1;
-  uint64 offset = 2;                 // byte offset of `data` in the backup; lets the client detect gaps and resume after a transient stream failure.
-}
-
-message DeleteBackupRequest { string vm_id = 1; string backup_id = 2; }
-message DeleteBackupResponse {}
-
-message RestoreBackupRequest { string vm_id = 1; string backup_id = 2; }
+message ThawGuestRequest { string vm_id = 1; }
+message ThawGuestResponse {}
 
 // ── Confidential ─────────────────────────────────────────────────────────
 
@@ -563,8 +529,9 @@ enum ErrorCode {
   ERROR_CODE_PORT_UNAVAILABLE = 10;
   ERROR_CODE_HOST_NOT_FOUND = 11;
 
-  // Backup
-  ERROR_CODE_BACKUP_NOT_FOUND = 12;
+  // was ERROR_CODE_BACKUP_NOT_FOUND: backups moved to the agent
+  reserved 12;
+  reserved "ERROR_CODE_BACKUP_NOT_FOUND";
 
   // Catch-all
   ERROR_CODE_INTERNAL = 99;

@@ -71,8 +71,6 @@ pub struct Settings {
     /// accounting), but parses entries with _parse_pool_entry's validation
     /// so a config the agent would refuse to boot on fails here too.
     pub volume_pools: Vec<VolumePool>,
-    /// conf.py BACKUP_DIRECTORY, default {EXECUTION_ROOT}/backups (increment 5).
-    pub backup_directory: PathBuf,
     /// conf.py CONFIDENTIAL_SESSION_DIRECTORY, default {EXECUTION_ROOT}/sessions
     /// (increment 6): where InitializeConfidential writes the owner's session
     /// certificates and confidential CreateVm points the controller config.
@@ -126,6 +124,11 @@ pub struct Settings {
     /// conf.py INIT_TIMEOUT, default 20.0: how long the ephemeral boot waits
     /// for the guest's ready signal when the spec states no bound.
     pub init_timeout: f64,
+    /// conf.py GUEST_FREEZE_TIMEOUT, default 600 s: how long a guest stays
+    /// frozen (FreezeGuest) without a ThawGuest before the daemon thaws it
+    /// itself, so an agent that dies mid-backup cannot leave a guest with
+    /// its filesystems frozen.
+    pub guest_freeze_timeout: f64,
     /// conf.py PRINT_SYSTEM_LOGS, default true: wire the Firecracker process
     /// output to journald (vm-{hash}-stdout/-stderr) and enable the guest
     /// console.
@@ -250,13 +253,9 @@ impl Settings {
                     .collect::<Result<Vec<_>, _>>()?
             }
         };
-        // conf.py setup(): BACKUP_DIRECTORY defaults to EXECUTION_ROOT/backups,
-        // CONFIDENTIAL_SESSION_DIRECTORY to EXECUTION_ROOT/sessions, when unset
-        // (or emptied, matching the empty-string-is-unset family, entry 4).
-        let backup_directory = match env.get("BACKUP_DIRECTORY") {
-            Some(path) if !path.is_empty() => PathBuf::from(path),
-            _ => execution_root.join("backups"),
-        };
+        // conf.py setup(): CONFIDENTIAL_SESSION_DIRECTORY defaults to
+        // EXECUTION_ROOT/sessions when unset (or emptied, matching the
+        // empty-string-is-unset family, entry 4).
         let confidential_session_directory = match env.get("CONFIDENTIAL_SESSION_DIRECTORY") {
             Some(path) if !path.is_empty() => PathBuf::from(path),
             _ => execution_root.join("sessions"),
@@ -320,6 +319,7 @@ impl Settings {
         let enable_qemu_support = env.get_bool("ENABLE_QEMU_SUPPORT")?.unwrap_or(true);
         let use_jailer = env.get_bool("USE_JAILER")?.unwrap_or(true);
         let init_timeout = env.get_f64("INIT_TIMEOUT")?.unwrap_or(20.0);
+        let guest_freeze_timeout = env.get_f64("GUEST_FREEZE_TIMEOUT")?.unwrap_or(600.0);
         let print_system_logs = env.get_bool("PRINT_SYSTEM_LOGS")?.unwrap_or(true);
         let firecracker_path = env
             .get("FIRECRACKER_PATH")
@@ -393,7 +393,6 @@ impl Settings {
             supervisor_grpc_socket,
             persistent_volumes_dir,
             volume_pools,
-            backup_directory,
             confidential_session_directory,
             enable_confidential_computing,
             sev_ctl_path,
@@ -415,6 +414,7 @@ impl Settings {
             enable_qemu_support,
             use_jailer,
             init_timeout,
+            guest_freeze_timeout,
             print_system_logs,
             firecracker_path,
             jailer_path,

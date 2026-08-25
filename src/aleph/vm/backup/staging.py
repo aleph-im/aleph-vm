@@ -1,11 +1,8 @@
-"""Neutral backup staging helpers shared by the agent and the supervisor.
+"""The backup directory and the restore staging helpers.
 
-The agent stages restore bytes (an upload or a downloaded volume) to a host
-path, then hands the disk/VM work to the supervisor over the boundary; the
-supervisor stores its backup archives in the same directory. These two helpers
-are the shared, neutral surface (they touch only ``settings`` and
-``aleph.vm.storage``), kept out of the QEMU backup controller so the agent does
-not import ``aleph.vm.supervisor.controllers``.
+The agent stores its backup archives here and stages restore bytes (an upload
+or a downloaded volume) here before swapping them in. These helpers touch only
+``settings`` and ``aleph.vm.storage``.
 """
 
 from pathlib import Path

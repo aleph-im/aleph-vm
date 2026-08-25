@@ -2,9 +2,9 @@
 //! GetHostInfo), the read-only world (GetVm, GetVmSpec, ListVms,
 //! ListPortForwards, GetLogs), the persistent QEMU lifecycle and port-forward
 //! mutations, RecreateNetwork, the ephemeral Firecracker programs
-//! (RunProgramCode, WatchEvents, StreamLogs), the backup/restore surface
-//! (StartBackup, GetBackupStatus, ListBackups, DownloadBackup, DeleteBackup,
-//! RestoreBackup, RestoreFromImage) and the confidential surface
+//! (RunProgramCode, WatchEvents, StreamLogs), guest quiescence (FreezeGuest,
+//! ThawGuest: the daemon's only part in a backup, the archives being the
+//! agent's) and the confidential surface
 //! (InitializeConfidential, GetMeasurement, InjectSecret) plus confidential
 //! CreateVm. Persistent Firecracker programs are the only UNIMPLEMENTED
 //! surface (ledger entry 39; they belong with the controller port).
@@ -17,7 +17,6 @@
 //! Deliberate differences from the oracle live in
 //! docs/plans/rust-port-divergences.md.
 
-pub mod backup;
 pub mod checks;
 pub mod cloudinit;
 pub mod confidential;
@@ -39,6 +38,7 @@ pub mod nft;
 pub mod numa;
 pub mod ports;
 pub mod qmp;
+pub mod quiesce;
 pub mod server;
 pub mod service;
 pub mod tap;

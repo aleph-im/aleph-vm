@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import NewType
 
 VmId = NewType("VmId", str)
-BackupId = NewType("BackupId", str)
 PciAddress = NewType("PciAddress", str)
 HostPort = NewType("HostPort", int)
 GuestPort = NewType("GuestPort", int)
@@ -72,13 +71,6 @@ class LogSource(Enum):
     SYSTEMD = "systemd"
 
 
-class BackupStatus(Enum):
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETE = "complete"
-    FAILED = "failed"
-
-
 class ErrorCode(Enum):
     """Mirror of proto ErrorCode. Carried by SupervisorError."""
 
@@ -93,7 +85,6 @@ class ErrorCode(Enum):
     TEE_UNAVAILABLE = "tee_unavailable"
     PORT_UNAVAILABLE = "port_unavailable"
     HOST_NOT_FOUND = "host_not_found"
-    BACKUP_NOT_FOUND = "backup_not_found"
     INTERNAL = "internal"
 
 
@@ -329,29 +320,6 @@ class LogChunk:
     timestamp_ns: int
     line: str
     source: LogSource
-
-
-@dataclass(frozen=True)
-class BackupInfo:
-    vm_id: VmId
-    backup_id: BackupId
-    status: BackupStatus
-    size_bytes: int
-    created_at_unix_secs: int
-    error_message: str
-    # Archive metadata, populated for completed archives on disk. The agent
-    # turns these into the HTTP response body (checksum, volumes, source_sizes)
-    # and the download sidecar headers (X-Backup-Checksum, X-Source-Size). They
-    # default to empty so in-flight RUNNING/FAILED jobs construct cleanly.
-    checksum: str = ""
-    volumes: list[str] = field(default_factory=list)
-    source_sizes: dict[str, int] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class BackupChunk:
-    data: bytes
-    offset: int
 
 
 @dataclass(frozen=True)

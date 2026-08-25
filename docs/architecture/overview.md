@@ -49,7 +49,7 @@ described in full.
 | Path | Purpose |
 |---|---|
 | `src/` | The `aleph.vm` Python package: the agent, the Python supervisor daemon (still shipped), the `supervisor_interface` contract layer, and storage/network/vprogram support code. |
-| `rust/crates/supervisor-daemon` | The Rust supervisor daemon: gRPC server, lifecycle RPCs, world view/adoption, networking, storage-pool validation, backups. |
+| `rust/crates/supervisor-daemon` | The Rust supervisor daemon: gRPC server, lifecycle RPCs, world view/adoption, networking, storage-pool validation, guest quiescence. |
 | `rust/crates/supervisor-controller` | The Rust per-VM QEMU controller process, for persistent, confidential and SEV-SNP VMs. |
 | `rust/crates/supervisor-cli` | `alephctl`, a standalone debug CLI that speaks the gRPC contract directly. |
 | `rust/crates/supervisor-proto` | Protobuf/gRPC bindings, compiled fresh from `proto/supervisor.proto` on every build. |
@@ -72,7 +72,8 @@ described in full.
    `thiserror` enum to the `SupervisorError` subclass the agent catches.
 3. [`vm-lifecycle.md`](vm-lifecycle.md): the four create paths, admission
    and capacity checks, the lifecycle state machine, stop/start/reboot
-   semantics, reinstall/restore, backups, and what gets erased on delete.
+   semantics, reinstall/restore, backups (agent-owned), and what a delete
+   leaves on disk.
 4. [`networking.md`](networking.md): tap assignment and IPv4/IPv6
    derivation, the nftables ruleset the supervisor builds, port-forward
    persistence and healing, the NDP proxy, and per-VM DHCP for SEV-SNP

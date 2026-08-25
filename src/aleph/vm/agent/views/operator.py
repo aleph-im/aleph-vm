@@ -26,28 +26,26 @@ from aleph.vm.agent.views.authentication import (
     authenticate_websocket_message,
     require_jwk_authentication,
 )
+from aleph.vm.agent.vm.backup import BackupManager
 from aleph.vm.agent.vm.downloader import recreate_vm_volumes
 from aleph.vm.agent.vm.purge import purge_vm_staging, purge_vm_storage, purge_vm_volumes
 from aleph.vm.agent.vm_registry import AgentVmRecord
-from aleph.vm.backup_staging import download_volume_by_ref, get_backup_directory
+from aleph.vm.backup.archive import InsufficientDiskSpaceError
+from aleph.vm.backup.staging import download_volume_by_ref, get_backup_directory
+from aleph.vm.backup.types import (
+    BackupId,
+    BackupInfo,
+    BackupInProgressError,
+    BackupNotFoundError,
+    BackupNotSupportedError,
+    BackupStatus,
+    InvalidRestoreImageError,
+)
 from aleph.vm.conf import settings
 from aleph.vm.storage_pools import pin_layout
 from aleph.vm.supervisor_interface.abc import Supervisor
-from aleph.vm.supervisor_interface.errors import (
-    BackupNotFoundError,
-    InsufficientResourcesError,
-    InvalidBackendError,
-    ResourceDownloadError,
-    VmNotFoundError,
-)
-from aleph.vm.supervisor_interface.types import (
-    BackupId,
-    BackupInfo,
-    BackupStatus,
-    ConfidentialMode,
-    VmId,
-    VmStatus,
-)
+from aleph.vm.supervisor_interface.errors import ResourceDownloadError, VmNotFoundError
+from aleph.vm.supervisor_interface.types import ConfidentialMode, VmId, VmStatus
 from aleph.vm.utils import (
     cors_allow_all,
     dumps_for_json,
@@ -672,6 +670,7 @@ async def operate_erase(request: web.Request, authenticated_sender: str) -> web.
         # This erases the rootfs too: an owner asking to erase their VM's data
         # means all of it, and the rootfs is where most of it lives.
         await asyncio.to_thread(purge_vm_storage, vm_hash)
+        request.app["backups"].forget(str(vm_hash))
         return web.Response(status=200, body=f"Erased VM with ref {vm_hash}")
 
 
@@ -802,9 +801,10 @@ async def operate_backup(request: web.Request, authenticated_sender: str) -> web
     By default backs up only the rootfs.  Add ``?include_volumes=true``
     to also include non-read-only persistent volumes in the archive.
 
-    The supervisor freezes the guest filesystems during the copy (unless
-    ``?skip_fsfreeze=true``), verifies the archive, and tracks progress: a
-    backup still running returns 202; a completed one returns its metadata.
+    The agent copies the disks it created; the supervisor freezes the guest
+    filesystems during the copy (unless ``?skip_fsfreeze=true``). The copy is
+    verified and tracked: a backup still running returns 202; a completed
+    one returns its metadata.
 
     Query Parameters:
         include_volumes: Set to 'true' to include persistent volumes.
@@ -828,20 +828,18 @@ async def operate_backup(request: web.Request, authenticated_sender: str) -> web
         if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
 
-        supervisor: Supervisor = request.app["supervisor"]
+        backups: BackupManager = request.app["backups"]
         include_volumes = request.query.get("include_volumes") == "true"
         quiesce_guest = request.query.get("skip_fsfreeze") != "true"
         try:
-            info = await supervisor.start_backup(
-                VmId(vm_hash_str),
+            info = await backups.start_backup(
+                vm_hash_str,
                 quiesce_guest=quiesce_guest,
                 include_volumes=include_volumes,
             )
-        except VmNotFoundError:
-            raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
-        except InvalidBackendError as error:
+        except BackupNotSupportedError as error:
             return web.HTTPBadRequest(body=str(error) or "Backup only supported for QEMU VMs")
-        except InsufficientResourcesError as error:
+        except InsufficientDiskSpaceError as error:
             return web.Response(status=507, body=str(error))
 
         if info.status is BackupStatus.RUNNING:
@@ -867,13 +865,13 @@ async def operate_backup_status(request: web.Request, authenticated_sender: str)
         if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
 
-        supervisor: Supervisor = request.app["supervisor"]
-        backups = await supervisor.list_backups(VmId(vm_hash_str))
+        backups: BackupManager = request.app["backups"]
+        infos = backups.list_backups(vm_hash_str)
 
-        if any(b.status is BackupStatus.RUNNING for b in backups):
+        if any(b.status is BackupStatus.RUNNING for b in infos):
             return web.json_response({"status": "in_progress"}, status=202, dumps=dumps_for_json)
 
-        completed = [b for b in backups if b.status is BackupStatus.COMPLETE]
+        completed = [b for b in infos if b.status is BackupStatus.COMPLETE]
         if not completed:
             raise web.HTTPNotFound(body="No backup found for this VM")
 
@@ -892,18 +890,17 @@ async def operate_backup_download(request: web.Request) -> web.StreamResponse:
     Requires ``?signature=...&expires=...`` query parameters generated
     by the backup creation endpoint.  No JWK authentication needed.
 
-    The archive bytes stream from the supervisor; the sidecar headers
-    (Content-Length, X-Backup-Checksum, X-Source-Size) come from the backup
-    metadata the supervisor reports.
+    The sidecar headers (Content-Length, X-Backup-Checksum, X-Source-Size)
+    come from the archive's metadata.
     """
     vm_hash = get_itemhash_or_400(request.match_info)
     backup_id = _validate_backup_id(request.match_info.get("backup_id", ""), vm_hash)
     _verify_backup_download(request, str(vm_hash), backup_id)
 
     with set_vm_for_logging(vm_hash=vm_hash):
-        supervisor: Supervisor = request.app["supervisor"]
+        backups: BackupManager = request.app["backups"]
         try:
-            info = await supervisor.get_backup_status(VmId(str(vm_hash)), BackupId(backup_id))
+            info = backups.get_backup_status(str(vm_hash), BackupId(backup_id))
         except BackupNotFoundError:
             raise web.HTTPNotFound(body=f"Backup {backup_id} not found") from None
 
@@ -918,8 +915,8 @@ async def operate_backup_download(request: web.Request) -> web.StreamResponse:
             response.headers["X-Source-Size"] = str(total_source_size)
 
         await response.prepare(request)
-        async for chunk in supervisor.download_backup(VmId(str(vm_hash)), BackupId(backup_id)):
-            await response.write(chunk.data)
+        async for chunk in await backups.download_backup(str(vm_hash), BackupId(backup_id)):
+            await response.write(chunk)
         await response.write_eof()
         return response
 
@@ -939,11 +936,13 @@ async def operate_backup_delete(
         if not await is_sender_authorized(authenticated_sender, record.message):
             return web.Response(status=403, body="Unauthorized sender")
 
-        supervisor: Supervisor = request.app["supervisor"]
+        backups: BackupManager = request.app["backups"]
         try:
-            await supervisor.delete_backup(VmId(str(vm_hash)), BackupId(backup_id))
+            backups.delete_backup(str(vm_hash), BackupId(backup_id))
         except BackupNotFoundError:
             raise web.HTTPNotFound(body=f"Backup {backup_id} not found") from None
+        except BackupInProgressError as error:
+            raise web.HTTPConflict(body=str(error)) from None
 
         logger.info("Deleted backup %s for %s", backup_id, vm_hash)
         return web.Response(status=200, body=f"Deleted backup {backup_id}")
@@ -1006,8 +1005,9 @@ async def operate_restore(
     - Multipart upload with a ``rootfs`` file field (QCOW2).
     - JSON body with ``{"volume_ref": "<item_hash>"}``.
 
-    The agent stages the bytes to a host path and hands the disk/VM work
-    (validate, size-check, swap rootfs, restart) to the supervisor.
+    The agent stages the bytes to a host path, validates and size-checks
+    the image, then swaps it in for the rootfs it created, stopping and
+    restarting the VM through the supervisor around the swap.
     """
     vm_hash = get_itemhash_or_400(request.match_info)
     temp_file: Path | None = None
@@ -1019,7 +1019,7 @@ async def operate_restore(
             if not await is_sender_authorized(authenticated_sender, record.message):
                 return web.Response(status=403, body="Unauthorized sender")
 
-            supervisor: Supervisor = request.app["supervisor"]
+            backups: BackupManager = request.app["backups"]
             staging_dir = get_backup_directory()
 
             max_upload = record.message.rootfs.size_mib * 1024 * 1024
@@ -1036,14 +1036,14 @@ async def operate_restore(
                 temp_file = await _stage_restore_volume_ref(request, staging_dir)
 
             try:
-                await supervisor.restore_from_image(
-                    VmId(str(vm_hash)),
+                await backups.restore_from_image(
+                    str(vm_hash),
                     temp_file,
                     max_virtual_size_bytes=max_upload,
                 )
             except VmNotFoundError:
                 raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
-            except InvalidBackendError as error:
+            except (InvalidRestoreImageError, BackupNotSupportedError) as error:
                 # qemu-img rejecting the image, an oversized disk, or a
                 # non-QEMU VM are all client errors.
                 logger.info("Rejected restore for VM %s: %s", vm_hash, error)

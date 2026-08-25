@@ -168,13 +168,6 @@ impl Supervisor for FakeSupervisor {
         Err(Status::unimplemented("not faked"))
     }
 
-    async fn restore_from_image(
-        &self,
-        _request: Request<pb::RestoreFromImageRequest>,
-    ) -> Result<Response<pb::VmInfo>, Status> {
-        Err(Status::unimplemented("not faked"))
-    }
-
     async fn add_port_forward(
         &self,
         _request: Request<pb::AddPortForwardRequest>,
@@ -213,38 +206,17 @@ impl Supervisor for FakeSupervisor {
         }))
     }
 
-    async fn start_backup(
+    async fn freeze_guest(
         &self,
-        _request: Request<pb::StartBackupRequest>,
-    ) -> Result<Response<pb::BackupInfo>, Status> {
+        _request: Request<pb::FreezeGuestRequest>,
+    ) -> Result<Response<pb::FreezeGuestResponse>, Status> {
         Err(Status::unimplemented("not faked"))
     }
 
-    async fn get_backup_status(
+    async fn thaw_guest(
         &self,
-        _request: Request<pb::GetBackupStatusRequest>,
-    ) -> Result<Response<pb::BackupInfo>, Status> {
-        Err(Status::unimplemented("not faked"))
-    }
-
-    async fn list_backups(
-        &self,
-        _request: Request<pb::ListBackupsRequest>,
-    ) -> Result<Response<pb::ListBackupsResponse>, Status> {
-        Err(Status::unimplemented("not faked"))
-    }
-
-    async fn delete_backup(
-        &self,
-        _request: Request<pb::DeleteBackupRequest>,
-    ) -> Result<Response<pb::DeleteBackupResponse>, Status> {
-        Err(Status::unimplemented("not faked"))
-    }
-
-    async fn restore_backup(
-        &self,
-        _request: Request<pb::RestoreBackupRequest>,
-    ) -> Result<Response<pb::VmInfo>, Status> {
+        _request: Request<pb::ThawGuestRequest>,
+    ) -> Result<Response<pb::ThawGuestResponse>, Status> {
         Err(Status::unimplemented("not faked"))
     }
 
@@ -293,14 +265,6 @@ impl Supervisor for FakeSupervisor {
     ) -> Result<Response<Self::StreamLogsStream>, Status> {
         let chunks: Vec<Result<pb::LogChunk, Status>> = self.logs.iter().cloned().map(Ok).collect();
         Ok(Response::new(Box::pin(tokio_stream::iter(chunks))))
-    }
-
-    type DownloadBackupStream = BoxStream<pb::BackupChunk>;
-    async fn download_backup(
-        &self,
-        _request: Request<pb::DownloadBackupRequest>,
-    ) -> Result<Response<Self::DownloadBackupStream>, Status> {
-        Err(Status::unimplemented("not faked"))
     }
 }
 

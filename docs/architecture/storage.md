@@ -212,7 +212,7 @@ container, and they skip installing the QEMU guest agent.
 ### Cold migration: export and import artifacts
 
 Moving a running QEMU instance to another node is agent-side and disk-only,
-distinct from the supervisor-owned backup/restore mechanism in
+distinct from the agent's backup/restore mechanism in
 [`vm-lifecycle.md`](vm-lifecycle.md): it produces and consumes files
 directly under a pool's namespace directory, driven by
 `src/aleph/vm/agent/migration/runner.py`.

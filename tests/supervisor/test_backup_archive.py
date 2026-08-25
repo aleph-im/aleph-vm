@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from aleph.vm.supervisor.controllers.qemu.backup import (
+from aleph.vm.backup.archive import (
     InsufficientDiskSpaceError,
     _sha256_file,
     backup_metadata,
@@ -29,7 +29,7 @@ from aleph.vm.supervisor.controllers.qemu.backup import (
 def test_get_backup_directory_default(mocker, tmp_path):
     exec_root = tmp_path / "exec"
     exec_root.mkdir()
-    mock_settings = mocker.patch("aleph.vm.backup_staging.settings")
+    mock_settings = mocker.patch("aleph.vm.backup.staging.settings")
     mock_settings.BACKUP_DIRECTORY = None
     mock_settings.EXECUTION_ROOT = exec_root
 
@@ -41,7 +41,7 @@ def test_get_backup_directory_default(mocker, tmp_path):
 
 def test_get_backup_directory_custom(mocker, tmp_path):
     custom_dir = tmp_path / "my-backup-volume"
-    mock_settings = mocker.patch("aleph.vm.backup_staging.settings")
+    mock_settings = mocker.patch("aleph.vm.backup.staging.settings")
     mock_settings.BACKUP_DIRECTORY = custom_dir
 
     result = get_backup_directory()
@@ -54,7 +54,7 @@ def test_get_backup_directory_idempotent(mocker, tmp_path):
     """Calling twice doesn't raise even though the dir already exists."""
     exec_root = tmp_path / "exec"
     exec_root.mkdir()
-    mock_settings = mocker.patch("aleph.vm.backup_staging.settings")
+    mock_settings = mocker.patch("aleph.vm.backup.staging.settings")
     mock_settings.BACKUP_DIRECTORY = None
     mock_settings.EXECUTION_ROOT = exec_root
 
@@ -76,12 +76,12 @@ async def test_check_disk_space_multiple_sufficient(mocker, tmp_path):
     d2.write_bytes(b"\x00" * 512)
 
     mocker.patch(
-        "aleph.vm.supervisor.controllers.qemu.backup.get_qemu_disk_virtual_size",
+        "aleph.vm.backup.archive.get_qemu_disk_virtual_size",
         AsyncMock(return_value=1024),
     )
     fake_usage = mocker.MagicMock(free=1024 * 1024)
     mocker.patch(
-        "aleph.vm.supervisor.controllers.qemu.backup.shutil.disk_usage",
+        "aleph.vm.backup.archive.shutil.disk_usage",
         return_value=fake_usage,
     )
 
@@ -96,13 +96,13 @@ async def test_check_disk_space_multiple_insufficient(mocker, tmp_path):
     d2.write_bytes(b"\x00" * 512)
 
     mocker.patch(
-        "aleph.vm.supervisor.controllers.qemu.backup.get_qemu_disk_virtual_size",
+        "aleph.vm.backup.archive.get_qemu_disk_virtual_size",
         AsyncMock(return_value=1024),
     )
 
     fake_usage = mocker.MagicMock(free=500)
     mocker.patch(
-        "aleph.vm.supervisor.controllers.qemu.backup.shutil.disk_usage",
+        "aleph.vm.backup.archive.shutil.disk_usage",
         return_value=fake_usage,
     )
 
@@ -121,12 +121,12 @@ async def test_create_backup_success(mocker, tmp_path):
     dest_dir.mkdir()
 
     mocker.patch(
-        "aleph.vm.supervisor.controllers.qemu.backup.shutil.which",
+        "aleph.vm.backup.archive.shutil.which",
         return_value="/usr/bin/qemu-img",
     )
     mock_run = AsyncMock(return_value=b"")
     mocker.patch(
-        "aleph.vm.supervisor.controllers.qemu.backup.run_in_subprocess",
+        "aleph.vm.backup.archive.run_in_subprocess",
         mock_run,
     )
 
@@ -134,7 +134,7 @@ async def test_create_backup_success(mocker, tmp_path):
     result = await create_qemu_disk_backup(vm_hash, source, dest_dir)
 
     assert result.parent == dest_dir
-    assert result.name.startswith("abc123-")
+    assert result.name.startswith("abc123-disk-")
     assert result.name.endswith(".qcow2")
 
     mock_run.assert_called_once()
@@ -149,9 +149,26 @@ async def test_create_backup_success(mocker, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_disks_copied_within_the_same_second_get_distinct_paths(mocker, tmp_path):
+    """An include_volumes backup converts several disks back to back; the
+    intermediate copies must never overwrite one another."""
+    rootfs = tmp_path / "rootfs.qcow2"
+    data = tmp_path / "data.qcow2"
+    rootfs.write_bytes(b"\x00")
+    data.write_bytes(b"\x00")
+    mocker.patch("aleph.vm.backup.archive.shutil.which", return_value="/usr/bin/qemu-img")
+    mocker.patch("aleph.vm.backup.archive.run_in_subprocess", AsyncMock(return_value=b""))
+
+    first = await create_qemu_disk_backup("abc123", rootfs, tmp_path)
+    second = await create_qemu_disk_backup("abc123", data, tmp_path)
+
+    assert first != second
+
+
+@pytest.mark.asyncio
 async def test_create_backup_qemu_img_missing(mocker, tmp_path):
     mocker.patch(
-        "aleph.vm.supervisor.controllers.qemu.backup.shutil.which",
+        "aleph.vm.backup.archive.shutil.which",
         return_value=None,
     )
 
@@ -165,11 +182,11 @@ async def test_create_backup_subprocess_failure(mocker, tmp_path):
     source.write_bytes(b"\x00" * 64)
 
     mocker.patch(
-        "aleph.vm.supervisor.controllers.qemu.backup.shutil.which",
+        "aleph.vm.backup.archive.shutil.which",
         return_value="/usr/bin/qemu-img",
     )
     mocker.patch(
-        "aleph.vm.supervisor.controllers.qemu.backup.run_in_subprocess",
+        "aleph.vm.backup.archive.run_in_subprocess",
         AsyncMock(side_effect=subprocess.CalledProcessError(1, "qemu-img", "error")),
     )
 
@@ -186,12 +203,12 @@ async def test_verify_qemu_disk_success(mocker, tmp_path):
     disk.write_bytes(b"\x00" * 64)
 
     mocker.patch(
-        "aleph.vm.supervisor.controllers.qemu.backup.shutil.which",
+        "aleph.vm.backup.archive.shutil.which",
         return_value="/usr/bin/qemu-img",
     )
     mock_run = AsyncMock(return_value=b"No errors were found")
     mocker.patch(
-        "aleph.vm.supervisor.controllers.qemu.backup.run_in_subprocess",
+        "aleph.vm.backup.archive.run_in_subprocess",
         mock_run,
     )
 
@@ -205,7 +222,7 @@ async def test_verify_qemu_disk_success(mocker, tmp_path):
 @pytest.mark.asyncio
 async def test_verify_qemu_disk_missing_tool(mocker, tmp_path):
     mocker.patch(
-        "aleph.vm.supervisor.controllers.qemu.backup.shutil.which",
+        "aleph.vm.backup.archive.shutil.which",
         return_value=None,
     )
 
@@ -219,11 +236,11 @@ async def test_verify_qemu_disk_failure(mocker, tmp_path):
     disk.write_bytes(b"\x00" * 64)
 
     mocker.patch(
-        "aleph.vm.supervisor.controllers.qemu.backup.shutil.which",
+        "aleph.vm.backup.archive.shutil.which",
         return_value="/usr/bin/qemu-img",
     )
     mocker.patch(
-        "aleph.vm.supervisor.controllers.qemu.backup.run_in_subprocess",
+        "aleph.vm.backup.archive.run_in_subprocess",
         AsyncMock(side_effect=subprocess.CalledProcessError(1, "qemu-img", "corrupt")),
     )
 
@@ -240,12 +257,12 @@ async def test_get_qemu_disk_virtual_size(mocker, tmp_path):
     disk.write_bytes(b"\x00" * 64)
 
     mocker.patch(
-        "aleph.vm.supervisor.controllers.qemu.backup.shutil.which",
+        "aleph.vm.backup.archive.shutil.which",
         return_value="/usr/bin/qemu-img",
     )
     mock_run = AsyncMock(return_value=b'{"virtual-size": 10737418240, "format": "qcow2"}')
     mocker.patch(
-        "aleph.vm.supervisor.controllers.qemu.backup.run_in_subprocess",
+        "aleph.vm.backup.archive.run_in_subprocess",
         mock_run,
     )
 
@@ -265,7 +282,7 @@ async def test_get_qemu_disk_virtual_size(mocker, tmp_path):
 @pytest.mark.asyncio
 async def test_get_qemu_disk_virtual_size_missing_tool(mocker, tmp_path):
     mocker.patch(
-        "aleph.vm.supervisor.controllers.qemu.backup.shutil.which",
+        "aleph.vm.backup.archive.shutil.which",
         return_value=None,
     )
 
@@ -367,7 +384,7 @@ async def test_create_backup_archive_writes_via_staging(tmp_path, mocker):
         opened.append(Path(name).name)
         return real_open(name, *args, **kwargs)
 
-    mocker.patch("aleph.vm.supervisor.controllers.qemu.backup.tarfile.open", recording_open)
+    mocker.patch("aleph.vm.backup.archive.tarfile.open", recording_open)
 
     tar_path = await create_backup_archive(
         vm_hash="vm123",
@@ -599,7 +616,7 @@ async def test_restore_rootfs_rollback_on_copy_failure(mocker, tmp_path):
     new.write_bytes(b"new-data")
 
     mocker.patch(
-        "aleph.vm.supervisor.controllers.qemu.backup.shutil.copy2",
+        "aleph.vm.backup.archive.shutil.copy2",
         side_effect=OSError("disk full"),
     )
 

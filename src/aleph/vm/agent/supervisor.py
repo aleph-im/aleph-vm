@@ -19,6 +19,7 @@ from aleph.vm.agent.capacity import CapacityManager
 from aleph.vm.agent.expiry import ExpiryManager
 from aleph.vm.agent.migration.reaper import reap_orphan_migration_files
 from aleph.vm.agent.update_watcher import UpdateWatcher
+from aleph.vm.agent.vm.backup import BackupManager
 from aleph.vm.agent.vm.program_client import ProgramGuestClient
 from aleph.vm.agent.vm_registry import AgentVmRegistry, rehydrate_registry
 from aleph.vm.conf import settings
@@ -266,6 +267,9 @@ def setup_webapp(supervisor: Supervisor):
     app["capacity"] = CapacityManager(app["supervisor"], app["vm_registry"])
     app["update_watcher"] = UpdateWatcher(app["supervisor"], app["vm_registry"])
     app["program_client"] = ProgramGuestClient()
+    # Backups are agent work (the agent created the disks it copies); the
+    # supervisor only freezes and thaws the guest around the copy.
+    app["backups"] = BackupManager(app["supervisor"])
 
     # When a reaper tears a VM down: each idle-teardown facility cancels the
     # other's timer (an expired or updated VM never leaks the sibling's pending

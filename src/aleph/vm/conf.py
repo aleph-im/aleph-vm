@@ -262,6 +262,14 @@ class Settings(BaseSettings):
     )
 
     BACKUP_DIRECTORY: Path | None = Field(None, description="VM backup location. Default to EXECUTION_ROOT/backups/")
+    GUEST_FREEZE_TIMEOUT: float = Field(
+        default=600.0,
+        description=(
+            "Seconds a guest stays frozen (FreezeGuest) without a ThawGuest before the "
+            "supervisor thaws it itself, so an agent that dies mid-backup cannot leave a "
+            "guest with its filesystems frozen."
+        ),
+    )
     MAX_RESTORE_UPLOAD_BYTES: int = Field(
         default=100 * 1024 * 1024 * 1024,
         description="Maximum upload size in bytes for restore endpoint (default 100 GiB)",

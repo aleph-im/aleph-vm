@@ -16,10 +16,6 @@ from pathlib import Path
 
 from aleph.vm.supervisor_interface.types import (
     Backend,
-    BackupChunk,
-    BackupId,
-    BackupInfo,
-    BackupStatus,
     ConfidentialMode,
     CreateVmSpec,
     DirectoryPath,
@@ -123,14 +119,6 @@ LOG_SOURCE_TO_PB = {
 }
 LOG_SOURCE_FROM_PB = {v: k for k, v in LOG_SOURCE_TO_PB.items()}
 
-BACKUP_STATUS_TO_PB = {
-    BackupStatus.PENDING: pb.BACKUP_STATUS_PENDING,
-    BackupStatus.RUNNING: pb.BACKUP_STATUS_RUNNING,
-    BackupStatus.COMPLETE: pb.BACKUP_STATUS_COMPLETE,
-    BackupStatus.FAILED: pb.BACKUP_STATUS_FAILED,
-}
-BACKUP_STATUS_FROM_PB = {v: k for k, v in BACKUP_STATUS_TO_PB.items()}
-
 ERROR_CODE_TO_PB = {
     ErrorCode.VM_NOT_FOUND: pb.ERROR_CODE_VM_NOT_FOUND,
     ErrorCode.VM_ALREADY_EXISTS: pb.ERROR_CODE_VM_ALREADY_EXISTS,
@@ -143,7 +131,6 @@ ERROR_CODE_TO_PB = {
     ErrorCode.TEE_UNAVAILABLE: pb.ERROR_CODE_TEE_UNAVAILABLE,
     ErrorCode.PORT_UNAVAILABLE: pb.ERROR_CODE_PORT_UNAVAILABLE,
     ErrorCode.HOST_NOT_FOUND: pb.ERROR_CODE_HOST_NOT_FOUND,
-    ErrorCode.BACKUP_NOT_FOUND: pb.ERROR_CODE_BACKUP_NOT_FOUND,
     ErrorCode.INTERNAL: pb.ERROR_CODE_INTERNAL,
 }
 ERROR_CODE_FROM_PB = {v: k for k, v in ERROR_CODE_TO_PB.items()}
@@ -499,45 +486,6 @@ def log_chunk_from_pb(msg: pb.LogChunk) -> LogChunk:
         line=msg.line,
         source=LOG_SOURCE_FROM_PB[msg.source],
     )
-
-
-# ── Backups ──────────────────────────────────────────────────────────────────
-
-
-def backup_info_to_pb(info: BackupInfo) -> pb.BackupInfo:
-    return pb.BackupInfo(
-        vm_id=str(info.vm_id),
-        backup_id=str(info.backup_id),
-        status=BACKUP_STATUS_TO_PB[info.status],
-        size_bytes=info.size_bytes,
-        created_at_unix_secs=info.created_at_unix_secs,
-        error_message=info.error_message,
-        checksum=info.checksum,
-        volumes=list(info.volumes),
-        source_sizes=dict(info.source_sizes),
-    )
-
-
-def backup_info_from_pb(msg: pb.BackupInfo) -> BackupInfo:
-    return BackupInfo(
-        vm_id=VmId(msg.vm_id),
-        backup_id=BackupId(msg.backup_id),
-        status=BACKUP_STATUS_FROM_PB[msg.status],
-        size_bytes=msg.size_bytes,
-        created_at_unix_secs=msg.created_at_unix_secs,
-        error_message=msg.error_message,
-        checksum=msg.checksum,
-        volumes=list(msg.volumes),
-        source_sizes=dict(msg.source_sizes),
-    )
-
-
-def backup_chunk_to_pb(chunk: BackupChunk) -> pb.BackupChunk:
-    return pb.BackupChunk(data=chunk.data, offset=chunk.offset)
-
-
-def backup_chunk_from_pb(msg: pb.BackupChunk) -> BackupChunk:
-    return BackupChunk(data=msg.data, offset=msg.offset)
 
 
 # ── Confidential ─────────────────────────────────────────────────────────────

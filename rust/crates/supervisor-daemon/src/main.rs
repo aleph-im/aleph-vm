@@ -197,11 +197,7 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
         log_follows: Arc::new(tokio::sync::Semaphore::new(
             supervisor_daemon::service::MAX_CONCURRENT_LOG_FOLLOWS,
         )),
-        download_streams: Arc::new(tokio::sync::Semaphore::new(
-            supervisor_daemon::service::MAX_CONCURRENT_DOWNLOADS,
-        )),
-        disk_tools: Arc::new(supervisor_daemon::backup::QemuImgTools),
-        backups: supervisor_daemon::backup::BackupRegistry::default(),
+        frozen_guests: supervisor_daemon::quiesce::FrozenGuests::default(),
         numa,
         numa_ledger,
     });
