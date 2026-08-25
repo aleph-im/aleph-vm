@@ -341,9 +341,7 @@ message ListVmsRequest    {}
 message ListVmsResponse   { repeated VmInfo vms = 1; }
 message DeleteVmRequest {
   string vm_id = 1;
-  reserved 2;                        // was `wipe`: storage is the agent's to delete, never the supervisor's
-  reserved "wipe";
-  bool keep_port_mappings = 3;       // the delete is part of a delete+recreate cycle: preserve persisted
+  bool keep_port_mappings = 2;       // the delete is part of a delete+recreate cycle: preserve persisted
                                      // host-port forwards
 }
 message DeleteVmResponse  {}
@@ -528,10 +526,6 @@ enum ErrorCode {
   // Networking
   ERROR_CODE_PORT_UNAVAILABLE = 10;
   ERROR_CODE_HOST_NOT_FOUND = 11;
-
-  // was ERROR_CODE_BACKUP_NOT_FOUND: backups moved to the agent
-  reserved 12;
-  reserved "ERROR_CODE_BACKUP_NOT_FOUND";
 
   // Catch-all
   ERROR_CODE_INTERNAL = 99;

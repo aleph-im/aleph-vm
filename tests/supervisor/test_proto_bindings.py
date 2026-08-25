@@ -281,8 +281,8 @@ def test_error_detail_message_shape():
 
 
 def test_delete_vm_request_has_no_wipe_field():
-    """`wipe` is gone and its field number reserved: DeleteVm never deletes
-    storage, so no client may ask it to."""
+    """`wipe` is gone: DeleteVm never deletes storage, so no client may ask
+    it to."""
     from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
     fields = {f.name for f in supervisor_pb2.DeleteVmRequest.DESCRIPTOR.fields}
