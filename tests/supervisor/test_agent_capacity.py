@@ -12,12 +12,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aleph_message.models import ItemHash
 from test_supervisor_translate import _make_qemu_instance_message
 
 from aleph.vm.agent.capacity import (
     RESERVATION_TTL_SECONDS,
     CapacityManager,
     GpuHold,
+    ResourceRequirements,
     requirements_from_message,
 )
 from aleph.vm.agent.vm_registry import AgentVmRegistry
@@ -26,6 +28,9 @@ from aleph.vm.resources import GpuDevice, GpuDeviceClass, InsufficientResourcesE
 from aleph.vm.supervisor_interface.types import HostInfo
 
 _DEVICE_ID = "10de:2504"
+_HASH_A = ItemHash("a" * 64)
+_HASH_B = ItemHash("b" * 64)
+_HASH_C = ItemHash("c" * 64)
 
 
 def _gpu_device(pci_host: str = "0000:01:00.0", *, device_id: str = _DEVICE_ID) -> GpuDevice:
@@ -472,3 +477,77 @@ def test_available_disk_bytes_is_the_pooled_aggregate(mocker):
         return_value=(2 * 1024**4, 3 * 1024**3),
     )
     assert CapacityManager._available_disk_bytes() == 3 * 1024**3
+
+
+# ── simulate: batch admission for a whole plan ─────────────────────────────
+
+
+def _requirements(*, memory_mib: int, vcpus: int = 1, disk_mib: int = 0) -> ResourceRequirements:
+    return ResourceRequirements(
+        vcpus=vcpus, memory_mib=memory_mib, disk_mib=disk_mib, max_volume_mib=disk_mib, is_instance=True
+    )
+
+
+def test_simulate_is_cumulative(mocker):
+    """Three VMs that only fit twice get two yeses. Judging each candidate
+    independently against current commitments would say yes three times.
+
+    48 GiB physical, minus HOST_MEMORY_RESERVED_MIB (2048) and
+    PROGRAM_MEMORY_RESERVED_MIB (8192), leaves a 38912 MiB instance bucket:
+    room for two 16384 MiB instances and not a third.
+    """
+    _patch_host(mocker, memory_bytes=48 * 1024 * 1024 * 1024, cores=16)
+    candidates = [
+        (_HASH_A, _requirements(memory_mib=16384), True),
+        (_HASH_B, _requirements(memory_mib=16384), True),
+        (_HASH_C, _requirements(memory_mib=16384), True),
+    ]
+
+    verdicts = _manager().simulate(candidates)
+
+    assert [v.accepted for v in verdicts] == [True, True, False]
+    assert verdicts[2].code == "insufficient_capacity"
+    assert verdicts[2].vm_hash == _HASH_C
+
+
+def test_simulate_counts_a_released_vm_as_freed(mocker):
+    """'allocate C and delete B' must admit C against B's memory.
+
+    40 GiB gives a 30720 MiB bucket, so B (16384) plus C (16384) does not fit
+    but C alone does: the release is the whole difference.
+    """
+    _patch_host(mocker, memory_bytes=40 * 1024 * 1024 * 1024, cores=16)
+    registry = AgentVmRegistry()
+    content = _make_qemu_instance_message(memory=16384)
+    registry.record(_HASH_B, message=content, original=content, persistent=True)
+    manager = _manager(registry=registry)
+    candidate = (_HASH_C, _requirements(memory_mib=16384), True)
+
+    assert manager.simulate([candidate])[0].accepted is False
+    assert manager.simulate([candidate], releasing=frozenset({_HASH_B}))[0].accepted is True
+
+
+def test_simulate_judges_disk(mocker):
+    # _patch_host only stubs _available_disk_bytes; the per-pool check reads
+    # storage_pools directly, so stub it too or it hits the real filesystem.
+    mocker.patch("aleph.vm.agent.capacity.storage_pools.roomiest_pool_free_bytes", return_value=1024 * 1024 * 1024)
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16, disk_bytes=1024 * 1024 * 1024)
+
+    verdicts = _manager().simulate([(_HASH_A, _requirements(memory_mib=1024, disk_mib=100_000), True)])
+
+    assert verdicts[0].accepted is False
+    assert verdicts[0].code == "insufficient_capacity"
+
+
+def test_simulate_reserves_nothing(mocker):
+    """The capacity-check endpoint calls this speculatively against several
+    CRNs, so a call must leave no trace."""
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
+    manager = _manager()
+    candidate = (_HASH_A, _requirements(memory_mib=2048), True)
+
+    first = manager.simulate([candidate])
+    second = manager.simulate([candidate])
+
+    assert first[0].accepted is second[0].accepted is True
+    assert manager.holds == {}
