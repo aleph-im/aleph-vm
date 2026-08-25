@@ -389,7 +389,7 @@ class LocalSupervisor(Supervisor):
             if execution is None:
                 raise VmNotFoundError(vm_id)
             # Off the event loop, like list_vms: for a persistent VM,
-            # _is_running is a synchronous D-Bus round-trip, and the
+            # _controller_state is a synchronous D-Bus round-trip, and the
             # allocation reconcile calls get_vm once per pushed hash
             # (start_persistent_vm), so keeping it on the loop stalls
             # every other request for the whole sweep on busy CRNs (the
@@ -399,7 +399,7 @@ class LocalSupervisor(Supervisor):
 
     async def list_vms(self) -> list[VmInfo]:
         with translating_errors():
-            # Off the event loop: _running_states issues a single batched D-Bus
+            # Off the event loop: _controller_states issues a single batched D-Bus
             # ListUnits() call. Keeping it on the loop would stall every caller
             # (the payment sweep and every /about/executions/list request) for
             # the duration of that call. Mirrors main's monitor_payments fix
