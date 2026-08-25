@@ -138,3 +138,39 @@ async def test_thaw_cancels_the_timeout(monkeypatch):
 
     assert timer.cancelled()
     client.guest_fsfreeze_thaw.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_thaw_of_a_deleted_vm_drops_the_record_before_raising(monkeypatch):
+    """A VM deleted behind the agent's back must not leave a frozen record
+    (and its auto-thaw timer) behind just because thaw finds it gone."""
+    sup, execution = _supervisor()
+    _stub_guest_agent(monkeypatch, sup)
+
+    await sup.freeze_guest(VM_ID)
+    timer = sup._frozen_guests[VM_ID].timer
+    del sup.pool.executions[str(execution.vm_id)]
+
+    with pytest.raises(VmNotFoundError):
+        await sup.thaw_guest(VM_ID)
+    await asyncio.sleep(0)
+
+    assert VM_ID not in sup._frozen_guests
+    assert timer.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_delete_vm_cancels_a_pending_freeze_deadline(monkeypatch):
+    sup, _ = _supervisor()
+    _stub_guest_agent(monkeypatch, sup)
+    sup.pool.stop_vm = AsyncMock()
+    sup.pool.forget_vm = MagicMock()
+    monkeypatch.setattr("aleph.vm.supervisor.local.delete_port_mappings", AsyncMock())
+
+    await sup.freeze_guest(VM_ID)
+    timer = sup._frozen_guests[VM_ID].timer
+    await sup.delete_vm(VM_ID)
+    await asyncio.sleep(0)
+
+    assert VM_ID not in sup._frozen_guests
+    assert timer.cancelled()

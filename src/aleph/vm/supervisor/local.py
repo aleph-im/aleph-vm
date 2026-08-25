@@ -404,6 +404,7 @@ class LocalSupervisor(Supervisor):
                     return
                 raise VmNotFoundError(vm_id)
             old_status = self._status_snapshot(execution)
+            self._forget_frozen_guest(vm_id)
             await self.pool.stop_vm(vm_id)
             self._emit_event(vm_id, old_status, VmStatus.STOPPED)
             if execution.vm_id in self.pool.executions:
@@ -625,12 +626,21 @@ class LocalSupervisor(Supervisor):
         """Thaw a guest frozen by freeze_guest; a no-op when nothing is
         frozen (including after the auto-thaw timeout fired)."""
         with translating_errors():
-            self._require(vm_id)
+            # Drop the record before looking the VM up: a VM deleted between
+            # freeze and thaw must not leave its timer behind.
             frozen = self._frozen_guests.pop(vm_id, None)
+            if frozen is not None:
+                frozen.timer.cancel()
+            self._require(vm_id)
             if frozen is None:
                 return
-            frozen.timer.cancel()
             await self._try_fsthaw(frozen.client, vm_id)
+
+    def _forget_frozen_guest(self, vm_id: VmId) -> None:
+        """A deleted VM has nothing left to thaw; cancel its deadline."""
+        frozen = self._frozen_guests.pop(vm_id, None)
+        if frozen is not None:
+            frozen.timer.cancel()
 
     async def _auto_thaw(self, vm_id: VmId) -> None:
         """The freeze deadline: an agent that dies mid-copy must not leave a
