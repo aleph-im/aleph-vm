@@ -607,35 +607,32 @@ def _pass_lock(app: web.Application) -> asyncio.Lock:
     return cached[1]
 
 
-async def reconcile_now(app: web.Application, *, dry_run: bool = False, strict: bool = False) -> ReconcileReport:
+async def reconcile_now(app: web.Application, *, dry_run: bool = False) -> ReconcileReport:
     """One pass, off the event loop, serialized against the other passes.
 
     A GONE fires a pass while the periodic one may still be running: two
     threads walking the same pools would evict the same directories twice,
     double-counting the bytes freed and logging each removal twice. The
     waiting pass is not redundant, it re-reads the filesystem when it starts.
-
-    ``strict`` is for the startup pass: it downgrades the pass to a dry run
-    when the live set cannot be trusted (``_startup_refusal``).
     """
     registry = app["vm_registry"]
     async with _pass_lock(app):
-        live, running = await _live_set(app)
-        if strict and not dry_run:
-            refusal = _startup_refusal(registry, running)
-            if refusal is not None:
-                logger.warning("Startup storage reconcile is running dry and will purge nothing: %s", refusal)
-                dry_run = True
-        return await asyncio.to_thread(
-            reconcile_storage,
-            registry,
-            dry_run=dry_run,
-            live=live,
-            is_live=registry_is_live(registry, live),
-        )
+        live, _running = await _live_set(app)
+        return await _pass(registry, live, dry_run=dry_run)
 
 
-def _log_startup_preview(preview: ReconcileReport) -> None:
+async def _pass(registry: AgentVmRegistry, live: set[str], *, dry_run: bool) -> ReconcileReport:
+    """One walk in a worker thread, against a live set already established."""
+    return await asyncio.to_thread(
+        reconcile_storage,
+        registry,
+        dry_run=dry_run,
+        live=live,
+        is_live=registry_is_live(registry, live),
+    )
+
+
+def _log_startup_preview(preview: ReconcileReport, *, refusal: str | None = None) -> None:
     """Announce what the first pass is about to remove, per pool.
 
     On an upgraded node the first pass finds every directory leaked by the
@@ -643,8 +640,24 @@ def _log_startup_preview(preview: ReconcileReport) -> None:
     potentially a lot of data (spec section 6). The per-pool breakdown is
     what lets an operator match the log against the disk whose free space
     jumped.
+
+    ``refusal`` turns the announcement into its opposite: the same figures,
+    said as what a trusted pass *would* have reclaimed, so the log never
+    reads "will purge N" immediately above "purging nothing".
     """
     namespaces = [*preview.purged_orphans, *preview.marked_orphans, *preview.evicted]
+    if refusal is not None:
+        logger.warning(
+            "Startup storage reconcile is running dry and will purge nothing: %s. A trusted pass would have "
+            "purged %d orphan(s), marked %d, evicted %d, about %d bytes (VOLUME_RETENTION=%s)",
+            refusal,
+            len(preview.purged_orphans),
+            len(preview.marked_orphans),
+            len(preview.evicted),
+            preview.bytes_freed,
+            settings.VOLUME_RETENTION,
+        )
+        return
     if not namespaces:
         return
     logger.warning(
@@ -674,13 +687,19 @@ async def reconcile_at_startup(app: web.Application) -> None:
     remove, so an operator reading the log knows why free space jumped after
     an upgrade.
 
-    The pass is strict: it refuses to purge anything when the supervisor
-    cannot be listed, or when rehydration left the registry empty while the
-    supervisor still runs VMs.
+    The live set is established once and both passes share it: one
+    ``list_vms`` call, one refusal decision, and a preview that cannot
+    promise what the pass behind it then refuses to do. The pass is strict:
+    it purges nothing when the supervisor cannot be listed, or when
+    rehydration left the registry empty while the supervisor still runs VMs.
     """
-    preview = await reconcile_now(app, dry_run=True)
-    _log_startup_preview(preview)
-    await reconcile_now(app, strict=True)
+    registry = app["vm_registry"]
+    async with _pass_lock(app):
+        live, running = await _live_set(app)
+        refusal = _startup_refusal(registry, running)
+        _log_startup_preview(await _pass(registry, live, dry_run=True), refusal=refusal)
+        if refusal is None:
+            await _pass(registry, live, dry_run=False)
 
 
 async def periodic_reconcile(app: web.Application) -> None:

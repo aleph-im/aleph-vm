@@ -410,6 +410,25 @@ async def test_startup_purges_nothing_when_the_registry_is_empty_but_vms_run(poo
 
 
 @pytest.mark.asyncio
+async def test_a_refusing_startup_never_promises_a_purge(pools, registry, monkeypatch, caplog):  # noqa: F811
+    """The preview and the pass behind it share one live set and one refusal
+    decision, so the log cannot read "will purge N" above "purging nothing",
+    and the supervisor is asked once."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    old = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    _age(old.parent, 10_000)
+    supervisor = _supervisor(fails=True)
+
+    with caplog.at_level("WARNING"):
+        await reconcile_at_startup(_app(registry, supervisor))
+
+    assert "will purge 1 orphan" not in caplog.text
+    assert "would have purged 1" in caplog.text
+    assert supervisor.list_vms.await_count == 1
+    assert old.exists()
+
+
+@pytest.mark.asyncio
 async def test_startup_hook_logs_a_preview_then_reconciles(pools, registry, monkeypatch, caplog):  # noqa: F811
     """The one-shot cleanup on an upgraded node is announced before it runs:
     an operator reading the log must be able to explain why free space jumped
