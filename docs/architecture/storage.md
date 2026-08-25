@@ -333,6 +333,14 @@ registry alone is not enough, because it is refilled at boot from the agent
 DB and that rehydration skips any record with an empty or unparseable
 message. One pass does, in order:
 
+0. Tear down the device-mapper snapshots and loop devices of every namespace
+   `/dev/mapper` still names and no live VM owns
+   (`teardown_namespace_devices`). Before the walk, not inside it: a volume
+   file a dm target still holds cannot be unlinked usefully, so a directory
+   whose devices are still up is refused by step 1 and would be refused
+   again on every later pass. This runs on the event loop (dmsetup has to be
+   awaited) and only when the supervisor answered `list_vms`, since removing
+   the device of a VM that is merely unlisted takes that VM's disk with it.
 1. Walk `{pool}/*/`. Each directory is live (the registry or the supervisor
    knows its hash), reclaimable (a marker is present) or an orphan
    (neither). Orphans are purged under `reap` and marked `reason: orphan`
@@ -354,7 +362,11 @@ message. One pass does, in order:
    evict oldest-first (by `reclaimable_since`) until under
    `VOLUME_RETENTION_BUDGET`. Under `reap` everything marked is given back,
    which is how a node switched from `keep` to `reap` drains.
-5. Bring the four download caches under `CACHE_BUDGET` (see below).
+5. Bring the four download caches under `CACHE_BUDGET` (see below). Skipped
+   entirely, with an ERROR, when the supervisor could not be listed: what a
+   cache holds for a live VM is read from that VM's message, so a live set
+   that is the registry alone cannot answer the question, and evicting on it
+   would unlink a running VM's runtime.
 6. Sweep expired backups.
 
 Nothing a create is still building is touched. Two independent guards say
@@ -406,9 +418,19 @@ cache's `MAX_*_ARCHIVE_SIZE` before it opens the file, and aborts the moment
 the bytes written pass it, so a lying `Content-Length` cannot fill a disk.
 
 Per root: each cache gets `CACHE_BUDGET` (20% of the filesystem it sits on by
-default). The pass evicts least recently used first, mtime being a real
+default), the message cache included. The spec suggested a smaller budget for
+it; it does not have one, and does not need one: its entries are a few
+kilobytes of JSON each, so it never approaches a budget sized for runtime
+images, and one setting is one thing for an operator to reason about. A root's
+usage is its finished entries plus what it owes to downloads that have not
+finished (`in_flight_bytes`): the allocated blocks of `.part` and `.tmp`
+files, and the size any admitted download was promised.
+
+The pass evicts least recently used first, mtime being a real
 signal because the downloader touches an entry on every cache hit
-(`_touch_cache_hit`). What it may not touch is the point:
+(`_touch_cache_hit`, called by `download_file` for the caches it serves and
+by `get_runtime_path` / `get_rootfs_base_path`, which short-circuit a hit
+before reaching it). What it may not touch is the point:
 
 - Entries a **live VM** names. `reclaimable.iter_content_refs` is the single
   enumeration of those, so the two questions asked of a message (what a
@@ -455,10 +477,17 @@ left alone: its devices belong to that create now.
 
 Admission is the same question one download ahead: `storage`'s cache
 admission hook (registered by the agent on `set_cache_admission`) runs inside
-`download_file_in_chunks` once `Content-Length` is known and before the file
-is opened. It evicts what it can, and raises `InsufficientResourcesError`
+`download_file_in_chunks` once the size is known and before the file is
+opened. It evicts what it can, and raises `InsufficientResourcesError`
 (mapped to 503 on the create path) when the download still would not fit,
-rather than writing bytes that trigger an eviction storm. Directories that
+rather than writing bytes that trigger an eviction storm. A response with no
+`Content-Length` is admitted for the worst case it is allowed to send, its
+`MAX_*_ARCHIVE_SIZE` cap, and refused when that does not fit: the alternative
+is a download charged for nothing at all. What is admitted is then charged to
+the download's `.part` path (`reserve_download`) until `download_file`
+releases it, so a second create arriving while the first is still writing
+sees the room the first was promised rather than only the bytes it has
+managed to write. Directories that
 are not cache roots are none of its business: the downloader streams per-VM
 volumes in place, and those are admitted by the capacity checks and the pool
 budget.

@@ -126,10 +126,13 @@ def purge_vm_volumes(
     ):
         if _held_by_device_mapper(namespace, volume):
             # A parent-backed volume (create_devmapper) is a loop device
-            # under a dm snapshot, and nothing tears those down on stop yet.
-            # Unlinking the file would neither free its blocks (the loop
-            # device pins the inode) nor reset the volume (create_devmapper
-            # returns early while the dm device exists). Fail loud instead.
+            # under a dm snapshot. The teardown runs before this (retire_vm's
+            # teardown_vm_devices, or the reconciler's orphan device pass), so
+            # a target still standing here means that teardown failed or was
+            # skipped. Unlinking the file would then neither free its blocks
+            # (the loop device pins the inode) nor reset the volume
+            # (create_devmapper returns early while the dm device exists).
+            # Fail loud and leave it for the next pass instead.
             logger.error(
                 "Not deleting %s: its device-mapper target is still present; remove it first",
                 volume,
