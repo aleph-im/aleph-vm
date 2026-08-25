@@ -290,6 +290,10 @@ def _is_orphan(
     namespace = directory.name
     if is_live(namespace) or is_creating(namespace):
         if read_marker(directory) is not None and not dry_run:
+            # Not routine housekeeping: a live VM's disks were one budget pass
+            # away from being evicted under it, so say so loudly enough to be
+            # noticed in a log.
+            logger.warning("Clearing the reclaimable marker on %s: a live VM owns it", directory)
             clear_marker(directory)
         return False
     if read_marker(directory) is not None:
@@ -333,10 +337,20 @@ def _reconcile_namespaces(
             if not dry_run:
                 mark_reclaimable(namespace, "orphan", now=now)
         else:
+            freed = _dir_bytes(namespace)
+            if dry_run:
+                report.purged_orphans.append(namespace)
+                report.bytes_freed += freed
+                continue
+            purge_vm_storage(namespace)
+            if _still_on_disk(namespace):
+                # purge_vm_storage refuses a directory a device-mapper target
+                # still holds. Nothing was freed, so nothing may be reported
+                # as freed; the next pass tries again.
+                logger.warning("Purge of %s left directories behind; not counting them as reclaimed", namespace)
+                continue
             report.purged_orphans.append(namespace)
-            report.bytes_freed += _dir_bytes(namespace)
-            if not dry_run:
-                purge_vm_storage(namespace)
+            report.bytes_freed += freed
 
 
 def _part_roots() -> Iterator[Path]:
