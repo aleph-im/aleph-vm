@@ -570,6 +570,37 @@ def test_the_cache_pass_is_skipped_when_a_live_vm_has_no_record(pools, registry,
 
 
 @pytest.mark.asyncio
+async def test_the_cache_pass_is_skipped_when_the_supervisor_cannot_be_listed(pools, registry, monkeypatch, caplog):  # noqa: F811
+    """No answer from list_vms leaves the live set as the registry alone, and
+    the cache pass reads what is referenced from the registry's messages: a VM
+    the registry does not know would then look like nothing at all, and its
+    runtime would be evicted under it. Same doubt, same refusal as the startup
+    pass and the admission hook."""
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
+    stale = pools["runtime"] / "stale"
+    stale.write_bytes(b"x" * 4096)
+
+    report = await reconcile_now(_app(registry, _supervisor(fails=True)))
+
+    assert report.cache_evicted == []
+    assert stale.exists()
+    assert any(record.levelname == "ERROR" and "unbounded" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_the_rest_of_the_pass_still_runs_without_the_supervisor(pools, registry, monkeypatch):  # noqa: F811
+    """Only the cache pass depends on the messages of every live VM; the
+    namespace pass has the registry's own answer plus the create guard."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    old = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    _age(old.parent, 10_000)
+
+    report = await reconcile_now(_app(registry, _supervisor(fails=True)))
+
+    assert report.purged_orphans == [VM_HASH]
+
+
+@pytest.mark.asyncio
 async def test_reconcile_now_removes_the_devices_of_evicted_parents(pools, registry, monkeypatch):  # noqa: F811
     monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
     (pools["runtime"] / "stale").write_bytes(b"x" * 4096)

@@ -261,6 +261,7 @@ def reconcile_storage(
     dry_run: bool = False,
     live: Collection[str] | None = None,
     is_live: Callable[[str], bool] | None = None,
+    live_known: bool = True,
 ) -> ReconcileReport:
     """One reconciliation pass: namespaces, .part files, side directories,
     the retention budget, the download caches, then the backups.
@@ -274,6 +275,11 @@ def reconcile_storage(
     an orphan (see ``registry_is_live``). It defaults to the ``live``
     snapshot alone, which is what a caller holding no loop reference can
     offer.
+
+    ``live_known`` is False when ``live`` is the agent registry alone because
+    the supervisor could not be asked. The cache pass is skipped then (see
+    ``_enforce_cache_budget``); everything else still runs on the registry's
+    own answer plus the create guard.
     """
     now = now or datetime.now(tz=timezone.utc)
     guard = timedelta(seconds=settings.VOLUME_CREATE_GUARD)
@@ -284,7 +290,7 @@ def reconcile_storage(
     _sweep_parts(now, guard, report, dry_run=dry_run)
     _sweep_side_dirs(live, now, guard, report, dry_run=dry_run)
     _enforce_retention_budget(report, dry_run=dry_run, is_live=is_live)
-    _enforce_cache_budget(registry, live, report, dry_run=dry_run, is_live=is_live)
+    _enforce_cache_budget(registry, live, report, dry_run=dry_run, is_live=is_live, live_known=live_known)
     if not dry_run:
         report.backups_removed = sweep_expired_backups(now)
     logger.info("Storage reconcile%s: %s", " (dry run)" if dry_run else "", report.summary())
@@ -587,6 +593,7 @@ def _enforce_cache_budget(
     *,
     dry_run: bool,
     is_live: Callable[[str], bool],
+    live_known: bool = True,
 ) -> None:
     """Bring the download caches under CACHE_BUDGET.
 
@@ -598,7 +605,19 @@ def _enforce_cache_budget(
     the same fail-closed rule the startup pass applies to purging, for the
     same reason: the registry is rehydrated from the agent DB and can be
     empty or partial while the supervisor still runs VMs.
+
+    ``live_known`` is the harder version of the same doubt: the supervisor
+    could not be listed at all, so ``live`` is the registry alone and the
+    check below has nothing to compare against. Every VM the registry has
+    forgotten would then read as "not live and not referenced", which is
+    exactly the set this pass unlinks.
     """
+    if not live_known:
+        logger.error(
+            "Skipping the cache pass: the supervisor could not be listed, so the VMs it runs are unknown, "
+            "what they reference is unknown with them, and the caches are unbounded until this is resolved"
+        )
+        return
     unknown = sorted(namespace for namespace in live if namespace not in registry)
     if unknown:
         logger.error(
@@ -676,8 +695,8 @@ async def reconcile_now(app: web.Application, *, dry_run: bool = False) -> Recon
     """
     registry = app["vm_registry"]
     async with _pass_lock(app):
-        live, _running = await _live_set(app)
-        report = await _pass(registry, live, dry_run=dry_run)
+        live, running = await _live_set(app)
+        report = await _pass(registry, live, dry_run=dry_run, live_known=running is not None)
     await _release_cache_devices(report, dry_run=dry_run)
     return report
 
@@ -703,7 +722,9 @@ async def _release_cache_devices(report: ReconcileReport, *, dry_run: bool) -> N
         logger.exception("Sweeping the loop devices of evicted cache entries failed")
 
 
-async def _pass(registry: AgentVmRegistry, live: set[str], *, dry_run: bool) -> ReconcileReport:
+async def _pass(
+    registry: AgentVmRegistry, live: set[str], *, dry_run: bool, live_known: bool = True
+) -> ReconcileReport:
     """One walk in a worker thread, against a live set already established."""
     return await asyncio.to_thread(
         reconcile_storage,
@@ -711,6 +732,7 @@ async def _pass(registry: AgentVmRegistry, live: set[str], *, dry_run: bool) -> 
         dry_run=dry_run,
         live=live,
         is_live=registry_is_live(registry, live),
+        live_known=live_known,
     )
 
 
@@ -779,10 +801,11 @@ async def reconcile_at_startup(app: web.Application) -> None:
     async with _pass_lock(app):
         live, running = await _live_set(app)
         refusal = _startup_refusal(registry, running)
-        _log_startup_preview(await _pass(registry, live, dry_run=True), refusal=refusal)
+        live_known = running is not None
+        _log_startup_preview(await _pass(registry, live, dry_run=True, live_known=live_known), refusal=refusal)
         if refusal is not None:
             return
-        report = await _pass(registry, live, dry_run=False)
+        report = await _pass(registry, live, dry_run=False, live_known=live_known)
     await _release_cache_devices(report, dry_run=False)
 
 
