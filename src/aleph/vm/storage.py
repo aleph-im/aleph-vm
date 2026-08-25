@@ -8,6 +8,7 @@ In the future, it should connect to an Aleph node and retrieve the code from the
 import asyncio
 import json
 import logging
+import os
 import re
 import sys
 from pathlib import Path
@@ -33,6 +34,7 @@ from aleph_message.models.execution.volume import (
 
 from aleph.vm.conf import settings
 from aleph.vm.storage_pools import find_existing_volume, volume_path_for
+from aleph.vm.supervisor_interface.errors import FileTooLargeError
 from aleph.vm.utils import fix_message_validation, run_in_subprocess
 
 logger = logging.getLogger(__name__)
@@ -78,7 +80,7 @@ async def file_downloaded_by_another_task(final_path: Path) -> None:
         await asyncio.sleep(0.1)
 
 
-async def download_file_in_chunks(url: str, tmp_path: Path) -> None:
+async def download_file_in_chunks(url: str, tmp_path: Path, *, max_bytes: int | None = None) -> None:
     # No total timeout: a 500+ MiB image over a slow gateway is a legitimate multi-minute
     # download. sock_read makes the request fail fast only if the transfer truly stalls.
     timeout = aiohttp.ClientTimeout(
@@ -90,12 +92,21 @@ async def download_file_in_chunks(url: str, tmp_path: Path) -> None:
         resp = await session.get(url)
         resp.raise_for_status()
 
+        if max_bytes is not None and resp.content_length is not None and resp.content_length > max_bytes:
+            msg = f"{url} is {resp.content_length} bytes, above the {max_bytes} byte limit"
+            raise FileTooLargeError(msg)
+
         with open(tmp_path, "wb") as cache_file:
             counter = 0
+            written = 0
             while True:
                 chunk = await resp.content.read(65536)
                 if not chunk:
                     break
+                written += len(chunk)
+                if max_bytes is not None and written > max_bytes:
+                    msg = f"{url} exceeded the {max_bytes} byte limit while downloading"
+                    raise FileTooLargeError(msg)
                 cache_file.write(chunk)
                 counter += 1
                 if not (counter % 20):
@@ -106,10 +117,10 @@ async def download_file_in_chunks(url: str, tmp_path: Path) -> None:
         sys.stdout.flush()
 
 
-async def download_file(url: str, local_path: Path) -> None:
-    # TODO: Limit max size of download to the message specification
+async def download_file(url: str, local_path: Path, *, max_bytes: int | None = None) -> None:
     if local_path.is_file():
         logger.debug(f"File already exists: {local_path}")
+        os.utime(local_path, None)
         return
 
     # Avoid partial downloads and incomplete files by only moving the file when it's complete.
@@ -125,7 +136,7 @@ async def download_file(url: str, local_path: Path) -> None:
             tmp_path.touch(exist_ok=False)
             owns_tmp = True
 
-            await download_file_in_chunks(url, tmp_path)
+            await download_file_in_chunks(url, tmp_path, max_bytes=max_bytes)
             tmp_path.rename(local_path)
             logger.debug(f"Download complete, moved {tmp_path} -> {local_path}")
             return
@@ -269,7 +280,7 @@ async def get_code_path(ref: str) -> Path:
 
     cache_path = Path(settings.CODE_CACHE) / ref
     url = await _get_content_url(ref)
-    await download_file(url, cache_path)
+    await download_file(url, cache_path, max_bytes=settings.MAX_PROGRAM_ARCHIVE_SIZE)
     return cache_path
 
 
@@ -281,7 +292,7 @@ async def get_data_path(ref: str) -> Path:
 
     cache_path = Path(settings.DATA_CACHE) / ref
     url = await _get_content_url(ref)
-    await download_file(url, cache_path)
+    await download_file(url, cache_path, max_bytes=settings.MAX_DATA_ARCHIVE_SIZE)
     return cache_path
 
 
@@ -304,7 +315,7 @@ async def get_runtime_path(ref: str) -> Path:
 
     if not cache_path.is_file():
         url = await _get_content_url(ref)
-        await download_file(url, cache_path)
+        await download_file(url, cache_path, max_bytes=settings.MAX_RUNTIME_ARCHIVE_SIZE)
 
     await check_squashfs_integrity(cache_path)
     await chown_to_jailman(cache_path)
@@ -320,7 +331,7 @@ async def get_rootfs_base_path(ref: ItemHash) -> Path:
     cache_path = Path(settings.RUNTIME_CACHE) / ref
     if not cache_path.is_file():
         url = await _get_content_url(ref)
-        await download_file(url, cache_path)
+        await download_file(url, cache_path, max_bytes=settings.MAX_RUNTIME_ARCHIVE_SIZE)
     await chown_to_jailman(cache_path)
     return cache_path
 
