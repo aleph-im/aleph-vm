@@ -39,7 +39,11 @@ from aleph.vm.agent.vm.purge import (
 from aleph.vm.agent.vm.reclaimable import depends_on_from_content, mark_reclaimable
 from aleph.vm.agent.vm_registry import AgentVmRecord, AgentVmRegistry
 from aleph.vm.conf import settings
-from aleph.vm.storage import DEVICE_MAPPER_DIRECTORY, remove_devmapper
+from aleph.vm.storage import (
+    DEVICE_MAPPER_DIRECTORY,
+    remove_base_device,
+    remove_devmapper,
+)
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
 from aleph.vm.supervisor_interface.types import VmId
@@ -84,8 +88,10 @@ async def teardown_namespace_devices(namespace: str) -> None:
     volume files stay held by a dm target, and ``purge_vm_storage`` refuses
     such a directory on every pass, forever.
 
-    ``<namespace>_base`` is skipped: ``remove_devmapper`` removes it itself,
-    after the last snapshot of this VM is gone.
+    ``<namespace>_base`` is not removed in the loop: ``remove_devmapper``
+    removes it itself, after the last snapshot of this VM is gone. A base with
+    no snapshot at all (a create that died between the two ``dmsetup create``
+    calls) is the one case that never reaches, so it is removed at the end.
     """
     namespace = _checked_namespace(namespace)
     mapper = Path(DEVICE_MAPPER_DIRECTORY)
@@ -102,6 +108,10 @@ async def teardown_namespace_devices(namespace: str) -> None:
             await remove_devmapper(namespace, volume_name)
         except Exception:
             logger.exception("Device teardown of %s/%s failed", namespace, volume_name)
+    try:
+        await remove_base_device(namespace)
+    except Exception:
+        logger.exception("Device teardown of the base of %s failed", namespace)
 
 
 async def teardown_vm_devices(namespace: str, record: AgentVmRecord | None) -> None:
@@ -116,7 +126,14 @@ async def teardown_vm_devices(namespace: str, record: AgentVmRecord | None) -> N
     """
     if record is None:
         # No message to read the volumes from: ask device-mapper instead.
-        await teardown_namespace_devices(namespace)
+        # Best effort like the rest of this function, and here that includes
+        # the namespace check itself: an implausible hash raises, and a
+        # teardown that cannot run must not abort the retire that would have
+        # dropped the records and the rest of the storage.
+        try:
+            await teardown_namespace_devices(namespace)
+        except Exception:
+            logger.exception("Device teardown of %s failed", namespace)
         return
     namespace = _checked_namespace(namespace)
     for volume in getattr(record.message, "volumes", None) or []:

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from fnmatch import fnmatch
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from reclaim_fixtures import OTHER_HASH, VM_HASH, pools, volume  # noqa: F401
 
 import aleph.vm.storage as storage_module
-from aleph.vm.agent.vm.retire import teardown_namespace_devices
+from aleph.vm.agent.vm.retire import teardown_namespace_devices, teardown_vm_devices
 from aleph.vm.storage import (
     DEVICE_MAPPER_DIRECTORY,
     detach_loop_devices,
@@ -257,3 +258,38 @@ async def test_a_failing_snapshot_removal_does_not_stop_the_others(pools, live_m
     await teardown_namespace_devices(VM_HASH)
 
     assert calls == ["data", "rootfs"]
+
+
+@pytest.mark.asyncio
+async def test_teardown_namespace_devices_removes_a_lone_base(pools, live_mapper):  # noqa: F811
+    """create_devmapper builds the base before the snapshot on top of it, so a
+    create that died between the two leaves a base holding the parent image,
+    and with it the runtime cache entry, for good."""
+    live_mapper["present"].add(f"{VM_HASH}_base")
+
+    await teardown_namespace_devices(VM_HASH)
+
+    assert live_mapper["commands"] == [["dmsetup", "remove", "--retry", f"{VM_HASH}_base"]]
+    assert live_mapper["present"] == set()
+
+
+@pytest.mark.asyncio
+async def test_a_base_is_kept_while_a_snapshot_of_its_vm_survives(pools, live_mapper, mocker):  # noqa: F811
+    """A snapshot whose removal failed still needs its base."""
+    live_mapper["present"].update({f"{VM_HASH}_data", f"{VM_HASH}_base"})
+    mocker.patch("aleph.vm.agent.vm.retire.remove_devmapper", side_effect=AsyncMock())
+
+    await teardown_namespace_devices(VM_HASH)
+
+    assert live_mapper["present"] == {f"{VM_HASH}_data", f"{VM_HASH}_base"}
+
+
+@pytest.mark.asyncio
+async def test_teardown_vm_devices_without_a_record_never_raises(live_mapper, caplog):
+    """The record-less branch runs from retire_vm, which must still drop the
+    records and the storage when the teardown cannot even start."""
+    with caplog.at_level("ERROR"):
+        await teardown_vm_devices("../../etc", None)
+
+    assert live_mapper["commands"] == []
+    assert "Device teardown" in caplog.text
