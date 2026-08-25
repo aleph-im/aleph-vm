@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -22,6 +24,18 @@ from aleph.vm.storage_pools import get_pools
 
 LIVE = "dead" * 16
 NOW = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+GIB = 1024**3
+
+
+def _fake_disk_usage(monkeypatch, free_bytes):
+    """Pin the free space every pool reports. ``free_bytes`` is either a
+    number or a callable, so a test can let evictions give space back."""
+
+    def usage(path):
+        free = free_bytes(Path(path)) if callable(free_bytes) else free_bytes
+        return SimpleNamespace(total=10 * GIB, used=10 * GIB - free, free=free)
+
+    monkeypatch.setattr(reconciler_module.shutil, "disk_usage", usage)
 
 
 def _age(path, seconds: int) -> None:
@@ -173,6 +187,8 @@ def test_side_dirs_of_unknown_hashes_are_removed(pools, registry):  # noqa: F811
     stale_staging.mkdir(parents=True)
     stale_mount = pools["execution_root"] / "mnt" / f"{VM_HASH}_data"
     stale_mount.mkdir(parents=True)
+    for stale in (stale_session, stale_staging, stale_mount):
+        _age(stale, 10_000)
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(reconciler_module, "MOUNT_ROOT", pools["execution_root"] / "mnt")
@@ -183,6 +199,21 @@ def test_side_dirs_of_unknown_hashes_are_removed(pools, registry):  # noqa: F811
     assert not stale_staging.exists()
     assert not stale_mount.exists()
     assert report.side_dirs_removed == 3
+
+
+def test_young_side_dirs_are_inside_the_create_guard(pools, registry):  # noqa: F811
+    young = pools["sessions"] / VM_HASH
+    young.mkdir()
+    _age(young, 10)
+    old = pools["sessions"] / OTHER_HASH
+    old.mkdir()
+    _age(old, 10_000)
+
+    report = reconcile_storage(registry, now=NOW)
+
+    assert young.exists()
+    assert not old.exists()
+    assert report.side_dirs_removed == 1
 
 
 def test_budget_evicts_oldest_first(pools, registry, monkeypatch):  # noqa: F811
@@ -210,15 +241,55 @@ def test_switching_to_reap_evicts_everything_marked(pools, registry, monkeypatch
     assert not kept.exists()
 
 
-def test_make_room_frees_only_what_is_needed(pools, monkeypatch):  # noqa: F811
+def test_make_room_evicts_oldest_first_until_the_create_fits(pools, monkeypatch):  # noqa: F811
     monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
     oldest = volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=8192)
     newest = volume(pools["pool0"], OTHER_HASH, "rootfs.qcow2", size=8192)
     mark_reclaimable(VM_HASH, "gone", now=NOW - timedelta(days=2))
     mark_reclaimable(OTHER_HASH, "gone", now=NOW - timedelta(days=1))
+    # A full pool that gets 8 KiB back for every evicted VM.
+    _fake_disk_usage(monkeypatch, lambda path: 8192 * sum(not (path / h).exists() for h in (VM_HASH, OTHER_HASH)))
 
-    freed = make_room(get_pools()[0], needed_bytes=4096)
+    freed = make_room(get_pools()[0], needed_bytes=8192)
 
-    assert freed >= 4096
+    assert freed == 8192
     assert not oldest.exists()
     assert newest.exists()
+
+
+def test_make_room_evicts_nothing_when_the_pool_already_fits(pools, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    retained = volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=8192)
+    mark_reclaimable(VM_HASH, "gone", now=NOW - timedelta(days=2))
+    _fake_disk_usage(monkeypatch, 90 * GIB)
+
+    freed = make_room(get_pools()[0], needed_bytes=8192)
+
+    assert freed == 0
+    assert retained.exists()
+
+
+def test_make_room_counts_only_the_bytes_it_frees_on_that_pool(pools, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    on_pool0 = volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=8192)
+    on_pool1 = volume(pools["pool1"], VM_HASH, "data.ext4", size=8192)
+    mark_reclaimable(VM_HASH, "gone", now=NOW - timedelta(days=2))
+    _fake_disk_usage(monkeypatch, 0)
+
+    freed = make_room(get_pools()[0], needed_bytes=1024**2)
+
+    # The VM is purged whole, but only pool 0's 8 KiB help a pool 0 create.
+    assert freed == 8192
+    assert not on_pool0.exists() and not on_pool1.exists()
+
+
+def test_make_room_never_evicts_a_live_namespace(pools, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    running = volume(pools["pool0"], LIVE, "rootfs.qcow2", size=8192)
+    mark_reclaimable(LIVE, "gone", now=NOW - timedelta(days=2))
+    _fake_disk_usage(monkeypatch, 0)
+
+    freed = make_room(get_pools()[0], needed_bytes=8192, live={LIVE})
+
+    assert freed == 0
+    assert running.exists()

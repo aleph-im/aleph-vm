@@ -4,8 +4,15 @@ Runs at startup, every VOLUME_RECONCILE_INTERVAL, after every GONE retire,
 and on admission pressure (make_room). Each pass walks the pools and the
 per-VM side directories and applies VOLUME_RETENTION to anything no live VM
 owns. It only ever touches directories the agent created, keyed by a
-plausible item hash; a create in flight (``creating``) or younger than
-VOLUME_CREATE_GUARD is left alone.
+plausible item hash.
+
+Nothing a create is still building is touched: every pass (namespaces and
+side directories alike) skips a hash registered through ``creating`` and
+anything whose mtime is younger than VOLUME_CREATE_GUARD. The two are
+belt and braces, and both matter: a create that outlives the guard is only
+protected by ``creating``, which is why wrapping every create path in it is
+mandatory, and a create that somehow escaped ``creating`` still has the
+guard.
 """
 
 from __future__ import annotations
@@ -15,7 +22,7 @@ import logging
 import os
 import random
 import shutil
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -70,7 +77,15 @@ class ReconcileReport:
 
 @contextmanager
 def creating(namespace: str) -> Iterator[None]:
-    """Mark a create as in flight; adopt retained directories on entry."""
+    """Mark a create as in flight; adopt retained directories on entry.
+
+    Every create path must be wrapped in this: it is the only thing that
+    keeps a reconcile pass off a half-built VM once the create outlives
+    VOLUME_CREATE_GUARD, and the only place a retained directory is adopted
+    (spec section 3). A create that stages files, allocates volumes or
+    writes a session directory outside this context can have them removed
+    from under it by the next pass.
+    """
     adopt(namespace)
     _creating.add(namespace)
     try:
@@ -96,21 +111,37 @@ def _dir_bytes(namespace: str) -> int:
     return sum(directory_size_bytes(directory) for directory in iter_namespace_dirs(namespace))
 
 
+def live_hashes(registry: AgentVmRegistry) -> set[str]:
+    """Snapshot of the VMs the registry knows are alive.
+
+    A pass runs in a worker thread while the event loop keeps creating and
+    retiring VMs, so the set is taken once, on the loop, and handed over;
+    iterating the registry from the thread would read it mid-mutation.
+    """
+    return {str(vm_hash) for vm_hash, _ in registry.items()}
+
+
 def reconcile_storage(
     registry: AgentVmRegistry,
     *,
     now: datetime | None = None,
     dry_run: bool = False,
+    live: Collection[str] | None = None,
 ) -> ReconcileReport:
     """One reconciliation pass: namespaces, .part files, side directories,
-    the retention budget, then the backups."""
+    the retention budget, then the backups.
+
+    ``live`` is the set of hashes a live VM owns. Pass it when the caller
+    runs this off the event loop (see ``live_hashes``); it defaults to
+    reading ``registry`` directly, which is only safe on the loop itself.
+    """
     now = now or datetime.now(tz=timezone.utc)
     guard = timedelta(seconds=settings.VOLUME_CREATE_GUARD)
-    live = {str(vm_hash) for vm_hash, _ in registry.items()}
+    live = set(live) if live is not None else live_hashes(registry)
     report = ReconcileReport()
     _reconcile_namespaces(live, now, guard, report, dry_run=dry_run)
     _sweep_parts(now, guard, report, dry_run=dry_run)
-    _sweep_side_dirs(live, report, dry_run=dry_run)
+    _sweep_side_dirs(live, now, guard, report, dry_run=dry_run)
     _enforce_retention_budget(report, dry_run=dry_run)
     if not dry_run:
         report.backups_removed = sweep_expired_backups(now)
@@ -118,7 +149,7 @@ def reconcile_storage(
     return report
 
 
-def _is_orphan(directory: Path, live: set[str], now: datetime, guard: timedelta, *, dry_run: bool) -> bool:
+def _is_orphan(directory: Path, live: Collection[str], now: datetime, guard: timedelta, *, dry_run: bool) -> bool:
     """True when nothing owns ``directory`` and the reconciler may act on it.
 
     A live VM's directory is owned; a stale marker on one (a VM re-created
@@ -141,7 +172,7 @@ def _is_orphan(directory: Path, live: set[str], now: datetime, guard: timedelta,
 
 
 def _reconcile_namespaces(
-    live: set[str],
+    live: Collection[str],
     now: datetime,
     guard: timedelta,
     report: ReconcileReport,
@@ -210,18 +241,43 @@ def _side_dir_roots() -> Iterator[tuple[Path, str]]:
     yield MOUNT_ROOT, "prefix"  # /mnt/{namespace}_{volume name}
 
 
-def _sweep_side_dirs(live: set[str], report: ReconcileReport, *, dry_run: bool) -> None:
+def _is_stale_side_dir(child: Path, mode: str, live: Collection[str], now: datetime, guard: timedelta) -> bool:
+    """True when this side directory belongs to a VM that is not here any more.
+
+    Same three questions as the namespace pass, in the same order: is the
+    name a VM hash at all, does a live VM (or a create in flight) own it,
+    and is it old enough that no create can still be building it. A mount
+    point is left alone: unmounting is not this pass's job.
+    """
+    if not child.is_dir():
+        return False
+    namespace = child.name if mode == "exact" else child.name.split("_", 1)[0]
+    if not _plausible(namespace) or namespace in live or is_creating(namespace):
+        return False
+    try:
+        if now - _mtime(child) < guard:
+            return False
+    except OSError:
+        return False
+    if os.path.ismount(child):
+        logger.warning("Not removing %s: it is a mount point", child)
+        return False
+    return True
+
+
+def _sweep_side_dirs(
+    live: Collection[str],
+    now: datetime,
+    guard: timedelta,
+    report: ReconcileReport,
+    *,
+    dry_run: bool,
+) -> None:
     for root, mode in _side_dir_roots():
         if not root.is_dir():
             continue
         for child in list(root.iterdir()):
-            if not child.is_dir():
-                continue
-            namespace = child.name if mode == "exact" else child.name.split("_", 1)[0]
-            if not _plausible(namespace) or namespace in live or is_creating(namespace):
-                continue
-            if os.path.ismount(child):
-                logger.warning("Not removing %s: it is a mount point", child)
+            if not _is_stale_side_dir(child, mode, live, now, guard):
                 continue
             if not dry_run:
                 try:
@@ -237,6 +293,16 @@ def _pool_total(pool: StoragePool) -> int:
     try:
         return shutil.disk_usage(str(pool.path)).total
     except OSError:
+        return 0
+
+
+def _pool_free(pool: StoragePool) -> int:
+    try:
+        return shutil.disk_usage(str(pool.path)).free
+    except OSError:
+        # Unknown free space: report none, so make_room falls back to its
+        # "stop once needed_bytes have been freed" bound instead of looping.
+        logger.warning("Volume pool %s not accessible; freeing on the evicted bytes alone", pool.path)
         return 0
 
 
@@ -285,31 +351,51 @@ def _enforce_retention_budget(report: ReconcileReport, *, dry_run: bool) -> None
             _evict(directory.name, report, dry_run=dry_run)
 
 
-def make_room(pool: StoragePool, needed_bytes: int) -> int:
-    """Evict reclaimable directories on ``pool``, oldest first, until
-    ``needed_bytes`` have been freed or nothing reclaimable is left. Returns
-    the bytes freed."""
+def make_room(pool: StoragePool, needed_bytes: int, *, live: Collection[str] | None = None) -> int:
+    """Evict reclaimable directories on ``pool``, oldest first, until a
+    ``needed_bytes`` create fits on it. Returns the bytes freed on ``pool``.
+
+    Admission pressure, not a quota: the pool's own free space is what has
+    to reach ``needed_bytes``, so a pool that already fits the create loses
+    nothing. The second bound (``freed >= needed_bytes``) only exists so an
+    unreadable or lying filesystem cannot turn this into a loop over every
+    retained VM on the pool.
+
+    A marker on a directory a live VM owns is a bug (``_is_orphan`` clears
+    those on every pass), but this runs on its own, off the create path, so
+    callers should pass ``live`` (see ``live_hashes``) or have reconciled
+    first; a hash in ``live`` is never evicted.
+    """
+    protected = set(live or ())
     freed = 0
     report = ReconcileReport()
     for directory, _marker in _reclaimable_on(pool):
-        if freed >= needed_bytes:
+        if _pool_free(pool) >= needed_bytes or freed >= needed_bytes:
             break
-        freed += _evict(directory.name, report, dry_run=False)
+        if directory.name in protected:
+            logger.warning("Not evicting %s: a live VM owns it despite its reclaimable marker", directory)
+            continue
+        # Only what this pool gets back: _evict purges the VM on every pool
+        # it spans, and the other pools' bytes do not help this create.
+        on_this_pool = directory_size_bytes(directory)
+        _evict(directory.name, report, dry_run=False)
+        freed += on_this_pool
     if freed:
         logger.info("Made room on %s: evicted %s (%d bytes)", pool.path, ", ".join(report.evicted), freed)
     return freed
 
 
-async def reconcile_now(app: web.Application) -> ReconcileReport:
-    return await asyncio.to_thread(reconcile_storage, app["vm_registry"])
+async def reconcile_now(app: web.Application, *, dry_run: bool = False) -> ReconcileReport:
+    registry = app["vm_registry"]
+    live = live_hashes(registry)
+    return await asyncio.to_thread(reconcile_storage, registry, dry_run=dry_run, live=live)
 
 
 async def reconcile_at_startup(app: web.Application) -> None:
     """on_startup hook: one pass, preceded by a summary of what the pass will
     remove, so an operator reading the log knows why free space jumped after
     an upgrade."""
-    registry = app["vm_registry"]
-    preview = await asyncio.to_thread(reconcile_storage, registry, dry_run=True)
+    preview = await reconcile_now(app, dry_run=True)
     if preview.purged_orphans or preview.marked_orphans or preview.evicted:
         logger.warning(
             "Startup storage reconcile will purge %d orphan(s), mark %d, evict %d, freeing about %d bytes "
