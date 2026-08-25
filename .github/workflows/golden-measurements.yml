@@ -37,6 +37,7 @@ on:
       - "rust/Cargo.lock"
       - ".github/workflows/golden-measurements.yml"
 
+
 jobs:
   golden-measurements:
     name: "build measured boot chain, compare launch measurements"
@@ -61,7 +62,7 @@ jobs:
 
       # No nix store caching on purpose: the store for this build is several
       # GB and the repo's 10 GB Actions cache budget is already spent on the
-      # integration-test caches (PR #978); evicting those on a weekly job is
+      # integration-test caches (PR 978); evicting those on a weekly job is
       # a bad trade. Revisit with a real binary cache if this job's runtime
       # becomes a problem.
       - name: Check launch measurements against the golden file
