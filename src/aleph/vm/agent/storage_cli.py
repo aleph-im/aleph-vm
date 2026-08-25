@@ -262,7 +262,7 @@ def _reconcile(registry: AgentVmRegistry, out: TextIO, *, dry_run: bool, trust_r
             "Warning: supervisor unreachable; showing what a registry-only pass would purge; "
             "pass --trust-registry to purge using the registry alone\n"
         )
-    report = reconcile_storage(registry, dry_run=effective_dry_run, live=live)
+    report = reconcile_storage(registry, dry_run=effective_dry_run, live=live, live_known=reachable)
     prefix = "Dry run: " if effective_dry_run else "Reconciled: "
     out.write(prefix + report.summary() + "\n")
     for name in report.purged_orphans + report.evicted:
