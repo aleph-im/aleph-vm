@@ -86,7 +86,11 @@ async def test_existing_file_touch_failure_does_not_fail_the_cache_hit(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_get_existing_file_passes_the_data_cap(mocker, tmp_path):
+async def test_get_existing_file_passes_the_runtime_cap(mocker, tmp_path):
+    """MAX_DATA_ARCHIVE_SIZE only ever gated a program's `data` archive.
+    get_existing_file serves immutable volumes, the SNP and V-PROGRAM runtime
+    bundles and a V-PROGRAM's workload image, none of which was ever bounded
+    by 10 MB and all of which are routinely larger."""
     import aleph.vm.storage as storage_module
     from aleph.vm.conf import settings
 
@@ -98,7 +102,57 @@ async def test_get_existing_file_passes_the_data_cap(mocker, tmp_path):
 
     await storage_module.get_existing_file("ref")
 
-    download.assert_awaited_once_with("http://x/f", tmp_path / "data" / "ref", max_bytes=settings.MAX_DATA_ARCHIVE_SIZE)
+    download.assert_awaited_once_with(
+        "http://x/f", tmp_path / "data" / "ref", max_bytes=settings.MAX_RUNTIME_ARCHIVE_SIZE
+    )
+
+
+def _existing_file_env(mocker, tmp_path):
+    import aleph.vm.storage as storage_module
+    from aleph.vm.conf import settings
+
+    cache = tmp_path / "data"
+    cache.mkdir()
+    mocker.patch.object(settings, "DATA_CACHE", cache)
+    mocker.patch.object(settings, "FAKE_DATA_PROGRAM", None)
+    mocker.patch.object(storage_module, "_get_content_url", AsyncMock(return_value="http://x/f"))
+    mocker.patch.object(storage_module, "chown_to_jailman", AsyncMock())
+    return cache
+
+
+@pytest.mark.asyncio
+async def test_get_existing_file_streams_a_volume_larger_than_the_data_cap(mocker, tmp_path):
+    """End to end through download_file's retry and cleanup wrapper: a 12 MB
+    immutable volume used to be refused with a 400 by the 10 MB data cap."""
+    import aleph.vm.storage as storage_module
+
+    cache = _existing_file_env(mocker, tmp_path)
+    megabyte = b"x" * (1024 * 1024)
+    session, _ = _session([megabyte] * 12, content_length=12 * 1024 * 1024)
+
+    with patch("aleph.vm.storage.aiohttp.ClientSession", return_value=session):
+        path = await storage_module.get_existing_file("ref")
+
+    assert path == cache / "ref"
+    assert path.stat().st_size == 12 * 1024 * 1024
+    assert not (cache / "ref.part").exists()
+
+
+@pytest.mark.asyncio
+async def test_get_existing_file_above_the_runtime_cap_leaves_no_part(mocker, tmp_path):
+    import aleph.vm.storage as storage_module
+    from aleph.vm.conf import settings
+
+    cache = _existing_file_env(mocker, tmp_path)
+    session, resp = _session([b"x"], content_length=settings.MAX_RUNTIME_ARCHIVE_SIZE + 1)
+
+    with patch("aleph.vm.storage.aiohttp.ClientSession", return_value=session):
+        with pytest.raises(FileTooLargeError):
+            await storage_module.get_existing_file("ref")
+
+    resp.content.read.assert_not_called()
+    assert not (cache / "ref.part").exists()
+    assert not (cache / "ref").exists()
 
 
 @pytest.mark.asyncio

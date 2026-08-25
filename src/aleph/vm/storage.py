@@ -626,7 +626,13 @@ async def get_existing_file(ref: str) -> Path:
 
     cache_path = Path(settings.DATA_CACHE) / ref
     url = await _get_content_url(ref)
-    await download_file(url, cache_path, max_bytes=settings.MAX_DATA_ARCHIVE_SIZE)
+    # Not MAX_DATA_ARCHIVE_SIZE: that setting has only ever gated a program's
+    # `data` archive (get_data_path), and this function serves immutable
+    # volumes, the SNP and V-PROGRAM runtime bundle tarballs and a V-PROGRAM's
+    # workload image plus its hash tree. None of those was ever bounded by 10
+    # MB and all of them are routinely far larger, so the image cap is the
+    # only one that fits.
+    await download_file(url, cache_path, max_bytes=settings.MAX_RUNTIME_ARCHIVE_SIZE)
     await chown_to_jailman(cache_path)
     return cache_path
 
