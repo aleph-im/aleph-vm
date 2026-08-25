@@ -552,3 +552,80 @@ def test_a_retained_dir_a_create_is_using_is_not_reclaimed_for_its_parent(pools,
 
     assert evict_caches(registry) == []
     assert parent.exists() and adopted.exists()
+
+
+def _fake_device(monkeypatch, tmp_path, ref="parent", *, present=True):
+    """A /dev/mapper and a /sys/dev/block the test owns.
+
+    ``_is_block_device`` answers on existence: a regular file stands in for a
+    device node, which no test can create, and a path that is not there is
+    still not there.
+    """
+    mapper = tmp_path / "mapper"
+    mapper.mkdir(exist_ok=True)
+    sysfs = tmp_path / "sys-dev-block"
+    sysfs.mkdir(exist_ok=True)
+    monkeypatch.setattr(cache_module, "DEVICE_MAPPER_DIRECTORY", str(mapper))
+    monkeypatch.setattr(cache_module, "SYS_DEV_BLOCK", sysfs)
+    monkeypatch.setattr(cache_module, "_is_block_device", lambda path: path.exists())
+    device = mapper / ref
+    if present:
+        device.write_bytes(b"")
+    return device, sysfs
+
+
+def _holders_of(sysfs, device):
+    """Where the kernel would list what is stacked on ``device``."""
+    rdev = device.stat().st_rdev
+    return sysfs / f"{os.major(rdev)}:{os.minor(rdev)}" / "holders"
+
+
+def test_a_parent_device_with_no_holders_is_free(monkeypatch, tmp_path):
+    device, sysfs = _fake_device(monkeypatch, tmp_path)
+    _holders_of(sysfs, device).mkdir(parents=True)
+
+    assert cache_module.parent_device_is_free("parent") is True
+
+
+def test_a_parent_device_a_vm_is_stacked_on_is_not_free(monkeypatch, tmp_path, caplog):
+    """create_devmapper stacks one <namespace>_base per VM on the image."""
+    caplog.set_level(logging.INFO)
+    device, sysfs = _fake_device(monkeypatch, tmp_path)
+    holders = _holders_of(sysfs, device)
+    holders.mkdir(parents=True)
+    (holders / "dm-3").mkdir()
+
+    assert cache_module.parent_device_is_free("parent") is False
+    assert "dm-3" in caplog.text
+
+
+def test_a_ref_with_no_device_at_all_is_free(monkeypatch, tmp_path):
+    """Nothing is stacked on a device that does not exist."""
+    _fake_device(monkeypatch, tmp_path, present=False)
+
+    assert cache_module.parent_device_is_free("parent") is True
+
+
+def test_a_device_sysfs_does_not_know_is_not_free(monkeypatch, tmp_path, caplog):
+    """Fail closed: the question could not be answered, and the cost of
+    guessing wrong is a running VM's disk."""
+    _fake_device(monkeypatch, tmp_path)
+
+    assert cache_module.parent_device_is_free("parent") is False
+    assert "still in use" in caplog.text
+
+
+def test_an_unreadable_holders_directory_is_not_free(monkeypatch, tmp_path):
+    device, sysfs = _fake_device(monkeypatch, tmp_path)
+    holders = _holders_of(sysfs, device)
+    holders.parent.mkdir(parents=True)
+    holders.write_bytes(b"not a directory")
+
+    assert cache_module.parent_device_is_free("parent") is False
+
+
+def test_an_implausible_ref_is_never_free(monkeypatch, tmp_path):
+    _fake_device(monkeypatch, tmp_path, present=False)
+
+    assert cache_module.parent_device_is_free("../escape") is False
+    assert cache_module.parent_device_is_free("-o") is False
