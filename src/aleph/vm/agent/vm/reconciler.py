@@ -115,10 +115,12 @@ def live_hashes(registry: AgentVmRegistry) -> set[str]:
     """Snapshot of the VMs the registry knows are alive.
 
     A pass runs in a worker thread while the event loop keeps creating and
-    retiring VMs, so the set is taken once, on the loop, and handed over;
-    iterating the registry from the thread would read it mid-mutation.
+    retiring VMs, so the set is taken once and handed over rather than read
+    repeatedly mid-mutation. ``list()`` first: the snapshot is then a single
+    atomic step, which matters for the one caller that does run off the loop
+    (the room maker, called from placement inside a worker thread).
     """
-    return {str(vm_hash) for vm_hash, _ in registry.items()}
+    return {str(vm_hash) for vm_hash, _ in list(registry.items())}
 
 
 def reconcile_storage(
@@ -391,21 +393,46 @@ async def reconcile_now(app: web.Application, *, dry_run: bool = False) -> Recon
     return await asyncio.to_thread(reconcile_storage, registry, dry_run=dry_run, live=live)
 
 
+def _log_startup_preview(preview: ReconcileReport) -> None:
+    """Announce what the first pass is about to remove, per pool.
+
+    On an upgraded node the first pass finds every directory leaked by the
+    bugs this work fixes, which under ``reap`` is a one-shot cleanup of
+    potentially a lot of data (spec section 6). The per-pool breakdown is
+    what lets an operator match the log against the disk whose free space
+    jumped.
+    """
+    namespaces = [*preview.purged_orphans, *preview.marked_orphans, *preview.evicted]
+    if not namespaces:
+        return
+    logger.warning(
+        "Startup storage reconcile will purge %d orphan(s), mark %d, evict %d, freeing about %d bytes "
+        "(VOLUME_RETENTION=%s)",
+        len(preview.purged_orphans),
+        len(preview.marked_orphans),
+        len(preview.evicted),
+        preview.bytes_freed,
+        settings.VOLUME_RETENTION,
+    )
+    for pool in get_pools():
+        on_pool = [pool.path / namespace for namespace in namespaces if (pool.path / namespace).is_dir()]
+        if not on_pool:
+            continue
+        logger.warning(
+            "Startup storage reconcile: pool %d (%s) gives back %d directory(ies), %d bytes",
+            pool.index,
+            pool.path,
+            len(on_pool),
+            sum(directory_size_bytes(directory) for directory in on_pool),
+        )
+
+
 async def reconcile_at_startup(app: web.Application) -> None:
     """on_startup hook: one pass, preceded by a summary of what the pass will
     remove, so an operator reading the log knows why free space jumped after
     an upgrade."""
     preview = await reconcile_now(app, dry_run=True)
-    if preview.purged_orphans or preview.marked_orphans or preview.evicted:
-        logger.warning(
-            "Startup storage reconcile will purge %d orphan(s), mark %d, evict %d, freeing about %d bytes "
-            "(VOLUME_RETENTION=%s)",
-            len(preview.purged_orphans),
-            len(preview.marked_orphans),
-            len(preview.evicted),
-            preview.bytes_freed,
-            settings.VOLUME_RETENTION,
-        )
+    _log_startup_preview(preview)
     await reconcile_now(app)
 
 
