@@ -184,6 +184,16 @@ def purge_vm_storage(vm_hash: ItemHash | str) -> int:
         except OSError:
             logger.warning("Failed to remove volume directory %s", volumes_dir, exc_info=True)
 
+    purge_vm_side_dirs(namespace)
+
+    return deleted
+
+
+def purge_vm_side_dirs(vm_hash: ItemHash | str) -> None:
+    """Delete the per-VM directories that are not volumes: the confidential
+    session directory and the staging directories. Rebuilt by the next
+    create, so a retained (reclaimable) VM keeps only its volumes."""
+    namespace = _checked_namespace(vm_hash)
     if settings.CONFIDENTIAL_SESSION_DIRECTORY:
         session_dir = Path(settings.CONFIDENTIAL_SESSION_DIRECTORY) / namespace
         if session_dir.exists():
@@ -192,7 +202,4 @@ def purge_vm_storage(vm_hash: ItemHash | str) -> int:
                 logger.info("Removed the confidential session directory of %s", namespace)
             except OSError:
                 logger.warning("Failed to remove the session directory of %s", namespace, exc_info=True)
-
     purge_vm_staging(namespace)
-
-    return deleted

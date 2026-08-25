@@ -251,3 +251,16 @@ def test_erase_leaves_a_directory_that_still_holds_a_dm_backed_volume(pools, mon
     assert held.parent.exists(), "the directory holding the dm-backed volume must survive"
     assert not other_pool_dir.exists(), "directories with nothing held are still removed"
     assert "still holds device-mapper-backed volumes" in caplog.text
+
+
+def test_purge_side_dirs_leaves_the_volumes(pools):
+    from aleph.vm.agent.vm.purge import purge_vm_side_dirs
+
+    rootfs = _volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    session_dir = pools["sessions"] / VM_HASH
+    session_dir.mkdir(parents=True)
+
+    purge_vm_side_dirs(VM_HASH)
+
+    assert rootfs.exists()
+    assert not session_dir.exists()
