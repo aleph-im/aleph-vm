@@ -667,6 +667,43 @@ def test_check_message_ignores_a_file_no_declared_volume_claims(mocker, tmp_path
     assert kwargs["max_volume_credit"] is None
 
 
+def test_two_spellings_of_a_name_discount_one_file_once(mocker, tmp_path):
+    """Two declared volumes can look up the same file: "a b" is sanitized to
+    "a_b" by storage.get_volume_path, so a message declaring both names has
+    two volumes claiming a_b.ext4. One file backs one volume, so it discounts
+    once and the second volume is still required whole."""
+    manager = _manager()
+    check = mocker.patch.object(manager, "check_capacity")
+    directory = _stage_volume_files(mocker, tmp_path / "pool0", {"a_b.ext4": 10_000 * 1024 * 1024})
+    _patch_namespace_dirs(mocker, directory)
+    content = _instance_content(rootfs_mib=None, volumes=(_volume("a b", 10_000), _volume("a_b", 10_000)))
+
+    manager.check_message(content, exclude_vm_hash=_VM_HASH)
+
+    assert check.call_args.kwargs["disk_mib"] == 10_000
+
+
+def test_the_boot_disk_is_credited_its_own_file(mocker, tmp_path):
+    """Matching on the stem alone let rootfs.ext4 shadow rootfs.qcow2 (they
+    share a stem, and the ext4 sorts first), crediting the boot disk a file it
+    will not use. The suffix decides: a QEMU boot disk is a qcow2."""
+    manager = _manager()
+    check = mocker.patch.object(manager, "check_capacity")
+    directory = _stage_volume_files(
+        mocker,
+        tmp_path / "pool0",
+        {"rootfs.ext4": 1_000 * 1024 * 1024, "rootfs.qcow2": 20_000 * 1024 * 1024},
+    )
+    _patch_namespace_dirs(mocker, directory)
+    content = _instance_content(rootfs_mib=20_000)
+
+    manager.check_message(content, exclude_vm_hash=_VM_HASH)
+
+    kwargs = check.call_args.kwargs
+    assert kwargs["disk_mib"] == 0
+    assert kwargs["max_volume_credit"].path == directory / "rootfs.qcow2"
+
+
 def test_check_message_without_a_hash_discounts_nothing(mocker):
     """The reserve endpoint admits a message no VM owns yet: there is no
     directory to discount, and none is looked for."""
@@ -757,6 +794,27 @@ def test_the_credit_goes_only_to_the_pool_that_holds_the_file(mocker, tmp_path):
         manager.check_message(content, exclude_vm_hash=_VM_HASH)
 
 
+def test_a_colliding_stem_never_discounts_one_file_twice(mocker, tmp_path):
+    """A schema-valid message can declare a rootfs AND a persistent volume
+    named "rootfs": both look up the same stem. The directory holds one file,
+    which may pay for one of them and never for both. Here the node still has
+    to allocate a 20 GiB volume with 5 GiB free, so the create is refused;
+    letting the single qcow2 discount both declarations would have floored the
+    total to 0 and admitted it."""
+    manager = _manager()
+    _patch_host(mocker, memory_bytes=64 * 1024**3, cores=16, disk_bytes=5 * 1024**3)
+    pool = tmp_path / "pool0"
+    directory = _stage_volume_files(mocker, pool, {"rootfs.qcow2": 20 * 1024**3})
+    _patch_namespace_dirs(mocker, directory)
+    _patch_eligible_pools(mocker, (pool, 5 * 1024**3))
+    content = _instance_content(rootfs_mib=20 * 1024, volumes=(_volume("rootfs", 20 * 1024),))
+
+    with pytest.raises(InsufficientResourcesError) as excinfo:
+        manager.check_message(content, exclude_vm_hash=_VM_HASH)
+
+    assert "Disk: required 20480 MiB" in str(excinfo.value)
+
+
 # ── existing_volume_files ───────────────────────────────────────────────────
 
 
@@ -787,6 +845,8 @@ def test_existing_volume_files_spans_pools_and_skips_what_is_not_a_volume(mocker
     found = existing_volume_files(_VM_HASH)
 
     # The marker is not a volume, and a symlink is not this directory's space.
-    assert set(found) == {"rootfs", "data"}
-    assert found["rootfs"] == first / "rootfs.qcow2"
-    assert found["data"] == second / "data.ext4"
+    # Files are keyed by name, suffix included: rootfs.qcow2 and rootfs.ext4
+    # share a stem but are different volumes.
+    assert set(found) == {"rootfs.qcow2", "data.ext4"}
+    assert found["rootfs.qcow2"] == first / "rootfs.qcow2"
+    assert found["data.ext4"] == second / "data.ext4"
