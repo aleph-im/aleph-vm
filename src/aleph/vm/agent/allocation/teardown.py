@@ -6,24 +6,18 @@ is not the authority on those. A v-program inverts that, because the scheduler
 IS its single source of truth, and it is credit-paid and confidential by
 construction.
 
-Tearing down is a composite: the supervisor owns the VM, the agent owns the
-registry record, the DB rows and the staging directories, so all of them have
-to go.
+Stopping means retiring as GONE: the scheduler said this VM should not exist,
+so the record and side state go, and the disks follow VOLUME_RETENTION. The
+named seam exists because the legacy endpoint and the v2 reconciler share this
+exact behaviour.
 """
-
-import logging
 
 from aleph_message.models import ItemHash
 
-from aleph.vm.agent.metrics import delete_records_for_vm
-from aleph.vm.agent.snp_instance_launch import remove_snp_instance_staging
+from aleph.vm.agent.vm.retire import RetireReason, retire_vm
 from aleph.vm.agent.vm_registry import AgentVmRecord, AgentVmRegistry
-from aleph.vm.agent.vprogram_launch import remove_vprogram_staging
 from aleph.vm.supervisor_interface.abc import Supervisor
-from aleph.vm.supervisor_interface.errors import VmNotFoundError
-from aleph.vm.supervisor_interface.types import ConfidentialMode, VmId, VmInfo
-
-logger = logging.getLogger(__name__)
+from aleph.vm.supervisor_interface.types import ConfidentialMode, VmInfo
 
 
 def is_removable_by_allocation(record: AgentVmRecord, info: VmInfo) -> bool:
@@ -41,16 +35,11 @@ def is_removable_by_allocation(record: AgentVmRecord, info: VmInfo) -> bool:
 
 
 async def teardown_vm(vm_hash: ItemHash, *, supervisor: Supervisor, registry: AgentVmRegistry) -> None:
-    """Delete the VM and every piece of agent-side state that belongs to it.
+    """Retire the VM as GONE, the allocation plane's one way to stop a VM.
 
-    Idempotent: a VM the supervisor has already forgotten still has its agent
-    state cleaned, since that state is ours and would otherwise leak.
+    Everything this used to do by hand (supervisor delete, registry forget,
+    DB rows, staging directories) is what GONE does, plus device teardown and
+    the retention policy for the disks; a VM the supervisor has already
+    forgotten is still cleaned, since the rest of that state is ours.
     """
-    try:
-        await supervisor.delete_vm(VmId(str(vm_hash)))
-    except VmNotFoundError:
-        logger.info("Supervisor no longer knows %s; cleaning agent state anyway", vm_hash)
-    registry.forget(vm_hash)
-    await delete_records_for_vm(str(vm_hash))
-    remove_vprogram_staging(vm_hash)
-    remove_snp_instance_staging(vm_hash)
+    await retire_vm(vm_hash, RetireReason.GONE, supervisor=supervisor, registry=registry)
