@@ -10,6 +10,14 @@ plausible item hash.
 the registry is refilled at boot from the agent DB alone, so it can be empty
 or incomplete while VMs are running, and the startup pass refuses to purge
 anything when that union cannot be established (see ``_startup_refusal``).
+A live set the supervisor could not confirm also stops the cache pass (see
+``_enforce_cache_budget``) and the device teardown below.
+
+Two parts of a pass run on the event loop rather than in the walk's worker
+thread, because both shell out to dmsetup: ``_teardown_orphan_devices``
+before it (a volume a dm target still holds cannot be reclaimed, so the
+devices go first) and ``_release_cache_devices`` after it (the devices of
+the parent images the cache pass evicted).
 
 Loop-triggered passes are serialized, not coalesced: a sweep that retires N
 VMs GONE under ``keep`` queues N passes behind the lock, each re-reading the
@@ -63,8 +71,9 @@ from aleph.vm.agent.vm.reclaimable import (
 from aleph.vm.agent.vm.retire import teardown_namespace_devices
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
-from aleph.vm.storage import MOUNT_ROOT  # /mnt/{namespace}_{volume name}
-from aleph.vm.storage import DEVICE_MAPPER_DIRECTORY
+
+# MOUNT_ROOT is /mnt, where a volume's mount point is {namespace}_{volume name}.
+from aleph.vm.storage import DEVICE_MAPPER_DIRECTORY, MOUNT_ROOT
 from aleph.vm.storage_budget import parse_budget
 from aleph.vm.storage_pools import StoragePool, get_pools, iter_namespace_dirs
 from aleph.vm.supervisor_interface.abc import Supervisor
