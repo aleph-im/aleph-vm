@@ -1,0 +1,135 @@
+"""retire_vm: the one agent-side deletion function and its reasons."""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from aleph_message.models import InstanceContent, ItemHash
+from reclaim_fixtures import VM_HASH, pools, volume  # noqa: F401
+
+import aleph.vm.agent.vm.retire as retire_module
+from aleph.vm.agent.vm.reclaimable import read_marker
+from aleph.vm.agent.vm.retire import RetireReason, retire_vm
+from aleph.vm.agent.vm_registry import AgentVmRegistry
+from aleph.vm.conf import settings
+from aleph.vm.supervisor_interface.errors import VmNotFoundError
+from aleph.vm.supervisor_interface.types import VmId
+
+
+@pytest.fixture
+def env(pools, mocker):  # noqa: F811
+    """A registry with one recorded VM, its files on disk, and every side
+    effect that leaves the filesystem mocked."""
+    registry = AgentVmRegistry()
+    rootfs = MagicMock()
+    rootfs.parent.ref = "parent-ref"
+    content = MagicMock(spec=InstanceContent, volumes=[], rootfs=rootfs)
+    registry.record(ItemHash(VM_HASH), message=content, original=content, persistent=True)
+    rootfs = volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=4096)
+    data = volume(pools["pool1"], VM_HASH, "data.ext4", size=4096)
+    session = pools["sessions"] / VM_HASH
+    session.mkdir()
+    (session / "vm_session.b64").write_bytes(b"s")
+    staging = pools["execution_root"] / "vprogram" / VM_HASH
+    staging.mkdir(parents=True)
+    (staging / "bundle").write_bytes(b"b")
+    delete_records = mocker.patch.object(retire_module, "delete_records_for_vm", new_callable=AsyncMock)
+    purge_backups = mocker.patch.object(retire_module, "purge_vm_backups")
+    supervisor = MagicMock(delete_vm=AsyncMock())
+    return {
+        "registry": registry,
+        "supervisor": supervisor,
+        "rootfs": rootfs,
+        "data": data,
+        "session": session,
+        "staging": staging,
+        "delete_records": delete_records,
+        "purge_backups": purge_backups,
+    }
+
+
+def _all_present(env) -> bool:
+    return all(env[k].exists() for k in ("rootfs", "data", "session", "staging"))
+
+
+@pytest.mark.asyncio
+async def test_recreate_only_quiesces(env):
+    await retire_vm(VM_HASH, RetireReason.RECREATE, supervisor=env["supervisor"])
+
+    env["supervisor"].delete_vm.assert_awaited_once_with(VmId(VM_HASH), keep_port_mappings=True)
+    assert _all_present(env)
+    assert ItemHash(VM_HASH) in env["registry"]
+    env["delete_records"].assert_not_awaited()
+    env["purge_backups"].assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", [RetireReason.GONE, RetireReason.ERASE, RetireReason.FAILED_CREATE])
+async def test_purging_reasons_under_reap(env, monkeypatch, reason):
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+
+    await retire_vm(VM_HASH, reason, supervisor=env["supervisor"], registry=env["registry"])
+
+    env["supervisor"].delete_vm.assert_awaited_once_with(VmId(VM_HASH), keep_port_mappings=False)
+    assert not env["rootfs"].exists()
+    assert not env["data"].exists()
+    assert not env["session"].exists()
+    assert not env["staging"].exists()
+    assert ItemHash(VM_HASH) not in env["registry"]
+    env["delete_records"].assert_awaited_once_with(VM_HASH)
+    env["purge_backups"].assert_called_once_with(VM_HASH)
+
+
+@pytest.mark.asyncio
+async def test_gone_under_keep_marks_volumes_and_removes_the_rest(env, monkeypatch, pools):  # noqa: F811
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+
+    await retire_vm(VM_HASH, RetireReason.GONE, supervisor=env["supervisor"], registry=env["registry"])
+
+    assert env["rootfs"].exists()
+    assert env["data"].exists()
+    marker = read_marker(pools["pool0"] / VM_HASH)
+    assert marker is not None and marker.reason == "gone"
+    assert marker.depends_on == ("parent-ref",)
+    assert read_marker(pools["pool1"] / VM_HASH) is not None
+    assert not env["session"].exists()
+    assert not env["staging"].exists()
+    assert ItemHash(VM_HASH) not in env["registry"]
+    env["purge_backups"].assert_called_once_with(VM_HASH)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", [RetireReason.ERASE, RetireReason.FAILED_CREATE])
+async def test_erase_and_failed_create_ignore_keep(env, monkeypatch, reason):
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+
+    await retire_vm(VM_HASH, reason, supervisor=env["supervisor"], registry=env["registry"])
+
+    assert not env["rootfs"].exists()
+    assert not env["data"].exists()
+
+
+@pytest.mark.asyncio
+async def test_vm_unknown_to_the_supervisor_is_still_retired(env, monkeypatch):
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    env["supervisor"].delete_vm.side_effect = VmNotFoundError(VM_HASH)
+
+    await retire_vm(VM_HASH, RetireReason.FAILED_CREATE, supervisor=env["supervisor"], registry=env["registry"])
+
+    assert not env["rootfs"].exists()
+    assert not env["staging"].exists()
+
+
+@pytest.mark.asyncio
+async def test_non_recreate_requires_a_registry(env):
+    with pytest.raises(ValueError):
+        await retire_vm(VM_HASH, RetireReason.GONE, supervisor=env["supervisor"])
+
+
+@pytest.mark.asyncio
+async def test_retire_is_idempotent(env, monkeypatch):
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    await retire_vm(VM_HASH, RetireReason.GONE, supervisor=env["supervisor"], registry=env["registry"])
+    await retire_vm(VM_HASH, RetireReason.GONE, supervisor=env["supervisor"], registry=env["registry"])
+    assert env["supervisor"].delete_vm.await_count == 2

@@ -1,0 +1,83 @@
+"""The one way the agent ends a VM.
+
+Every path that used to call ``supervisor.delete_vm`` and then some subset
+of ``registry.forget``, ``delete_records_for_vm`` and ``remove_*_staging``
+goes through ``retire_vm`` with a reason. The reason has no default: a call
+site must say what it means, which is what was missing when disks leaked
+(spec S1). The supervisor's DeleteVm is quiescence only; storage policy is
+decided here, agent-side, and never crosses the wire.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from enum import Enum
+
+from aleph_message.models import ItemHash
+
+from aleph.vm.agent.metrics import delete_records_for_vm
+from aleph.vm.agent.vm.backup import purge_vm_backups
+from aleph.vm.agent.vm.purge import purge_vm_side_dirs, purge_vm_storage
+from aleph.vm.agent.vm.reclaimable import depends_on_from_content, mark_reclaimable
+from aleph.vm.agent.vm_registry import AgentVmRecord, AgentVmRegistry
+from aleph.vm.conf import settings
+from aleph.vm.supervisor_interface.abc import Supervisor
+from aleph.vm.supervisor_interface.errors import VmNotFoundError
+from aleph.vm.supervisor_interface.types import VmId
+
+logger = logging.getLogger(__name__)
+
+
+class RetireReason(Enum):
+    RECREATE = "recreate"  # the same VM comes back immediately: amend, crash recovery, idle reap, reboot
+    GONE = "gone"  # positive knowledge it will not return: forgotten, unpaid, deallocated, migrated away
+    ERASE = "erase"  # the owner asked for a wipe
+    FAILED_CREATE = "failed_create"  # a create that never committed
+
+
+async def retire_vm(
+    vm_hash: ItemHash | str,
+    reason: RetireReason,
+    *,
+    supervisor: Supervisor,
+    registry: AgentVmRegistry | None = None,
+) -> None:
+    """Quiesce the VM through the supervisor, then apply ``reason`` to
+    everything the agent holds for it: registry record, DB records, volumes,
+    session and staging directories, backups.
+
+    RECREATE stops after the quiesce (port mappings kept, storage untouched).
+    Every other reason drops the records and the side directories; GONE
+    applies VOLUME_RETENTION to the volumes, ERASE and FAILED_CREATE purge
+    them regardless (retention protects against administrative deletion,
+    not against the owner's own request, and a VM that never ran has nothing
+    worth keeping).
+    """
+    vm_id = VmId(str(vm_hash))
+    try:
+        await supervisor.delete_vm(vm_id, keep_port_mappings=reason is RetireReason.RECREATE)
+    except VmNotFoundError:
+        logger.debug("Retire %s (%s): the supervisor does not know it", vm_hash, reason.value)
+    if reason is RetireReason.RECREATE:
+        return
+    if registry is None:
+        msg = f"retire_vm({reason.value}) needs the registry to drop the VM's record"
+        raise ValueError(msg)
+
+    item_hash = vm_hash if isinstance(vm_hash, ItemHash) else ItemHash(str(vm_hash))
+    record = registry.get(item_hash)
+    registry.forget(item_hash)
+    await delete_records_for_vm(str(vm_hash))
+    await asyncio.to_thread(_release_storage, str(vm_hash), reason, record)
+    await asyncio.to_thread(purge_vm_backups, str(vm_hash))
+    logger.info("Retired %s (%s)", vm_hash, reason.value)
+
+
+def _release_storage(namespace: str, reason: RetireReason, record: AgentVmRecord | None) -> None:
+    if reason is RetireReason.GONE and settings.VOLUME_RETENTION == "keep":
+        depends_on = depends_on_from_content(record.message) if record is not None else ()
+        mark_reclaimable(namespace, "gone", depends_on)
+        purge_vm_side_dirs(namespace)
+        return
+    purge_vm_storage(namespace)
