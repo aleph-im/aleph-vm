@@ -62,8 +62,8 @@ async def test_remove_devmapper_tears_down_in_order(pools, commands, monkeypatch
 
     dm_removes = [c for c in commands if c[:2] == ["dmsetup", "remove"]]
     assert dm_removes == [
-        ["dmsetup", "remove", f"{VM_HASH}_data"],
-        ["dmsetup", "remove", f"{VM_HASH}_base"],
+        ["dmsetup", "remove", "--retry", f"{VM_HASH}_data"],
+        ["dmsetup", "remove", "--retry", f"{VM_HASH}_base"],
     ]
     assert ["losetup", "-j", str(backing)] in commands
     assert not (mount_root / f"{VM_HASH}_data").exists()
@@ -80,7 +80,7 @@ async def test_remove_devmapper_keeps_base_while_a_sibling_snapshot_exists(pools
     await remove_devmapper(VM_HASH, "data")
 
     dm_removes = [c for c in commands if c[:2] == ["dmsetup", "remove"]]
-    assert dm_removes == [["dmsetup", "remove", f"{VM_HASH}_data"]]
+    assert dm_removes == [["dmsetup", "remove", "--retry", f"{VM_HASH}_data"]]
 
 
 @pytest.mark.asyncio
@@ -94,23 +94,70 @@ async def test_remove_devmapper_never_touches_the_shared_parent_device(pools, co
 
     await remove_devmapper(VM_HASH, "data")
 
-    assert ["dmsetup", "remove", "parent-image-ref"] not in commands
+    assert ["dmsetup", "remove", "--retry", "parent-image-ref"] not in commands
 
 
 @pytest.mark.asyncio
-async def test_remove_devmapper_is_a_no_op_without_devices(pools, commands):  # noqa: F811
+async def test_remove_devmapper_runs_nothing_without_a_device_or_a_file(pools, commands):  # noqa: F811
     await remove_devmapper(VM_HASH, "data")
 
-    assert [c for c in commands if c[0] == "dmsetup"] == []
+    assert commands == []
 
 
 @pytest.mark.asyncio
-async def test_remove_devmapper_refuses_an_implausible_name(commands, monkeypatch):
+async def test_remove_devmapper_detaches_a_stale_loop_without_a_dm_device(pools, commands):  # noqa: F811
+    """A create interrupted between the losetup and the dmsetup create leaves
+    a loop device on the volume file and no dm target above it."""
+    backing = volume(pools["pool0"], VM_HASH, "data.btrfs")
+
+    await remove_devmapper(VM_HASH, "data")
+
+    assert commands == [
+        ["losetup", "-j", str(backing)],
+        ["losetup", "-d", "/dev/loop7"],
+        ["losetup", "-d", "/dev/loop9"],
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("volume_name", ["data.1", "my data"])
+async def test_remove_devmapper_tears_down_an_awkward_but_valid_name(
+    pools,  # noqa: F811
+    commands,
+    monkeypatch,
+    volume_name,
+):
+    """dmsetup only rejects "/", "." and ".."; a volume named "data.1" or
+    "my data" creates fine, so it has to tear down fine too."""
+    backing = volume(pools["pool0"], VM_HASH, f"{volume_name}.btrfs")  # noqa: F811
+    mapped = Path("/dev/mapper") / f"{VM_HASH}_{volume_name}"
+    _present_devices(monkeypatch, {mapped}, [])
+
+    await remove_devmapper(VM_HASH, volume_name)
+
+    assert ["dmsetup", "remove", "--retry", f"{VM_HASH}_{volume_name}"] in commands
+    assert ["losetup", "-j", str(backing)] in commands
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "namespace, volume_name",
+    [
+        ("../../etc", "data"),  # not an item hash
+        (VM_HASH, "a/b"),  # dmsetup rejects "/"
+        (VM_HASH, "."),
+        (VM_HASH, ".."),
+        (VM_HASH, ""),
+        (VM_HASH, "d" * 128),  # over the 127 byte device-mapper name limit
+    ],
+)
+async def test_remove_devmapper_refuses_a_name_dmsetup_could_not_have_created(
+    commands, monkeypatch, namespace, volume_name
+):
     """A name that could never have been created is never composed into a
     dmsetup argument."""
     _present_devices(monkeypatch, set(), [])
 
-    await remove_devmapper("../../etc", "data")
-    await remove_devmapper(VM_HASH, "../data")
+    await remove_devmapper(namespace, volume_name)
 
     assert commands == []
