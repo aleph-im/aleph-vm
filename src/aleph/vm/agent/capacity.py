@@ -435,7 +435,15 @@ class CapacityManager:
     def _committed_resources(self, excluded: Collection[ItemHash]) -> tuple[int, int, int]:
         """(committed_instance_memory_mib, committed_program_memory_mib,
         committed_vcpus) summed over the registry, skipping the records of
-        ``excluded`` (see ``check_capacity`` and ``simulate``)."""
+        ``excluded`` (see ``check_capacity`` and ``simulate``).
+
+        A record is not proof that a VM runs. A create that fails against
+        volumes that already existed retires RECREATE and deliberately keeps
+        its record (``run._retire_after_create_failure``), so the sums here
+        can include a VM that never started, until the next allocation cycle
+        replaces or retires it. That is conservative (it under-admits, never
+        over-admits) and it never blocks the retry of that VM's own create,
+        which excludes its own hash."""
         committed_instance_memory_mib = 0
         committed_program_memory_mib = 0
         committed_vcpus = 0
