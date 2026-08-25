@@ -26,7 +26,9 @@ NOW = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
 
 
 def test_marker_round_trips_through_json():
-    marker = ReclaimableMarker(reclaimable_since=NOW, reason="gone", size_bytes=42, depends_on=("abc", "def"))
+    marker = ReclaimableMarker(
+        reclaimable_since=NOW, reason="gone", size_bytes=42, depends_on=("abc", "def"), owner="0xOWNER"
+    )
     text = marker.to_json()
     assert json.loads(text) == {
         "version": 1,
@@ -34,8 +36,28 @@ def test_marker_round_trips_through_json():
         "reason": "gone",
         "size_bytes": 42,
         "depends_on": ["abc", "def"],
+        "owner": "0xOWNER",
     }
     assert ReclaimableMarker.from_json(text) == marker
+
+
+def test_a_marker_written_before_the_owner_field_still_parses():
+    """Markers on disk predate the owner field; version stays 1 and they must
+    keep parsing (they are simply markers nobody can be authorized against)."""
+    text = json.dumps(
+        {
+            "version": 1,
+            "reclaimable_since": "2026-08-24T12:00:00+00:00",
+            "reason": "orphan",
+            "size_bytes": 7,
+            "depends_on": [],
+        }
+    )
+
+    marker = ReclaimableMarker.from_json(text)
+
+    assert marker.owner is None
+    assert marker.reason == "orphan" and marker.size_bytes == 7
 
 
 def test_read_marker_is_none_without_file(pools):  # noqa: F811

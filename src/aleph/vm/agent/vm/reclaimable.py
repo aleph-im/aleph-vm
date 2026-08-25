@@ -40,6 +40,13 @@ class ReclaimableMarker:
     reason: ReclaimReason
     size_bytes: int
     depends_on: tuple[str, ...] = ()
+    # The owner address from the VM's message, copied here because the marker
+    # outlives every other record of it: GONE forgets the registry record and
+    # deletes the DB rows. It is the only thing that lets the node answer
+    # "these are your disks" for a retained VM (see views.operator.operate_erase).
+    # Optional: markers written before this field, and orphan markers for a VM
+    # whose message the node never held, have no owner.
+    owner: str | None = None
     version: int = MARKER_VERSION
 
     def to_json(self) -> str:
@@ -51,11 +58,13 @@ class ReclaimableMarker:
     @classmethod
     def from_json(cls, text: str) -> ReclaimableMarker:
         data = json.loads(text)
+        owner = data.get("owner")
         return cls(
             reclaimable_since=datetime.fromisoformat(data["reclaimable_since"]),
             reason=data["reason"],
             size_bytes=int(data["size_bytes"]),
             depends_on=tuple(data.get("depends_on", ())),
+            owner=str(owner) if owner else None,
             version=int(data.get("version", MARKER_VERSION)),
         )
 
@@ -128,6 +137,7 @@ def mark_reclaimable(
     depends_on: tuple[str, ...] = (),
     *,
     now: datetime | None = None,
+    owner: str | None = None,
 ) -> list[Path]:
     """Write one marker per namespace directory (one per pool the VM spans)."""
     namespace = _checked_namespace(namespace)
@@ -139,6 +149,7 @@ def mark_reclaimable(
             reason=reason,
             size_bytes=directory_size_bytes(directory),
             depends_on=depends_on,
+            owner=owner,
         )
         write_marker(directory, marker)
         written.append(directory / MARKER_NAME)
@@ -157,15 +168,21 @@ def adopt(namespace: str) -> int:
     return cleared
 
 
-def is_reclaimable(namespace: str) -> bool:
-    """True when at least one of the VM's directories carries a marker.
+def retained_marker(namespace: str) -> ReclaimableMarker | None:
+    """The marker of a retained VM, from the first of its directories that
+    carries one, or None.
 
     The only record a retained VM has left: its registry record and its DB
-    records were dropped at GONE, so this is how a caller asks whether the
-    node still holds anything for a hash it otherwise knows nothing about.
+    rows were dropped at GONE, so this is how a caller asks whether the node
+    still holds anything for a hash it otherwise knows nothing about, and
+    who it belongs to.
     """
     namespace = _checked_namespace(namespace)
-    return any(read_marker(directory) is not None for directory in iter_namespace_dirs(namespace))
+    for directory in iter_namespace_dirs(namespace):
+        marker = read_marker(directory)
+        if marker is not None:
+            return marker
+    return None
 
 
 def iter_reclaimable() -> Iterator[tuple[Path, ReclaimableMarker]]:
