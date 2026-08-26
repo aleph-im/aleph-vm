@@ -150,6 +150,13 @@ class QemuVM:
                 f"tap,id=net0,ifname={self.interface_name},script=no,downscript=no",
             ]
 
+        # Data and rescue volumes come before cloud-init so that device
+        # letter assignment is predictable: vdb is always the first host
+        # volume (original rootfs in rescue mode, first data volume in
+        # normal mode). Cloud-init is auto-detected by its "cidata" label
+        # and does not need a fixed device letter.
+        args += self._get_host_volumes_args()
+
         if self.cloud_init_drive_path:
             # Use explicit drive syntax instead of -cdrom for Q35
             # compatibility. On Q35, -cdrom creates an unattached IDE
@@ -169,8 +176,6 @@ class QemuVM:
                 "-device",
                 "virtio-balloon-pci,free-page-reporting=on",
             ]
-
-        args += self._get_host_volumes_args()
 
         # Add CPU configuration for migration compatibility
         # Use migratable=on to ensure CPU features are compatible across different hosts
@@ -202,9 +207,12 @@ class QemuVM:
     def _get_host_volumes_args(self):
         args = []
         for volume in self.host_volumes:
+            # Use the actual extension, not a substring match: paths like
+            # rootfs.qcow2.backup must be treated as raw, not qcow2.
+            volume_format = "qcow2" if volume.path_on_host.suffix == ".qcow2" else "raw"
             args += [
                 "-drive",
-                f"file={volume.path_on_host},format=raw,"
+                f"file={volume.path_on_host},format={volume_format},"
                 f"readonly={'on' if volume.read_only else 'off'},"
                 f"media=disk,if=virtio",
             ]
