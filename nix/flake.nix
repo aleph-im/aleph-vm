@@ -157,7 +157,10 @@
       # never into anything measured (initrd, cmdline), or every commit
       # would move the launch measurement. `self.rev` exists for a clean git
       # checkout, `self.dirtyRev` for a dirty one (nix >= 2.19); "unknown"
-      # covers flakes evaluated outside git.
+      # covers flakes evaluated outside git. Interpolating it makes the
+      # three image directories rebuild on every commit; they are cheap
+      # (symlinks and a few cp), so that is accepted rather than moving the
+      # file into anything measured.
       sourceRev = self.rev or self.dirtyRev or "unknown";
 
       kernel = pkgs.callPackage ./kernel.nix {};

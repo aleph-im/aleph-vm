@@ -64,6 +64,7 @@ if diff -u "$golden" "$current"; then
   echo "Golden measurements match." >&2
 else
   seeded_at="$(git -C "$repo_root" log -1 --format=%h -- nix/golden-measurements.json 2>/dev/null || echo unknown)"
+  seeded_at="${seeded_at:-unknown}"
   head_rev="$(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || echo unknown)"
   cat >&2 <<EOF
 
