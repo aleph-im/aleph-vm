@@ -63,9 +63,12 @@ fi
 if diff -u "$golden" "$current"; then
   echo "Golden measurements match." >&2
 else
-  cat >&2 <<'EOF'
+  seeded_at="$(git -C "$repo_root" log -1 --format=%h -- nix/golden-measurements.json 2>/dev/null || echo unknown)"
+  head_rev="$(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  cat >&2 <<EOF
 
-Launch measurements diverged from nix/golden-measurements.json.
+Launch measurements diverged from nix/golden-measurements.json (last seeded
+in commit ${seeded_at}; this tree is ${head_rev}).
 If this change is intended, run nix/check-golden-measurements.sh --update
 and commit the new golden file with the change that caused it. If nothing
 in the measured chain was meant to change, this is a reproducibility
