@@ -14,6 +14,7 @@ image="$(nix build "$repo_root/nix#image" --no-link --print-out-paths)"
 roothash="$(cat "$image/rootfs.ext4.roothash")"
 
 log="$(mktemp)"
+# shellcheck disable=SC2329  # invoked via the EXIT trap
 cleanup() {
   if [ -n "${qemu_pid:-}" ] && kill -0 "$qemu_pid" 2>/dev/null; then
     kill "$qemu_pid" 2>/dev/null || true
