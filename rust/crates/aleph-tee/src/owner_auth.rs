@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn payload_shape_is_stable() {
-        // The payload format is a wire contract shared with attest-cli and the
+        // The payload format is a wire contract shared with the aleph-rs SDK client and the
         // Python harness; lock its shape.
         let payload = inject_secret_payload(b"k", "{}");
         let parts: Vec<&str> = payload.split('|').collect();

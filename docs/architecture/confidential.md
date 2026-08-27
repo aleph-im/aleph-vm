@@ -10,8 +10,8 @@ session-based, CRN-mediated launch-secret handshake, while SEV-SNP boots
 measured and unattended, with secrets delivered later over a client-to-guest
 attested TLS channel that never involves the CRN. This doc covers host
 capability probing, the QEMU argv differences between the three paths, the
-attestation stack (`aleph-tee`, the in-guest `aleph-attest-agent`, the
-verifying `aleph-attest-cli`), the measured Nix guest image and its
+attestation stack (`aleph-tee`, the in-guest `aleph-attest-agent`; the
+verifying client lives in the aleph-rs SDK), the measured Nix guest image and its
 dm-verity boot chain, and what aleph-vm does with a V-PROGRAM message once
 one arrives (runtime bundle staging, scheduler threading, NUMA/hugepage
 placement). Create-path state machine detail (`await_session`, adoption,
@@ -145,21 +145,16 @@ call with 409; everything else falls through to a reverse proxy
 (`proxy_handler`) that strips hop-by-hop headers and `Content-Length` before
 forwarding to the upstream workload on `127.0.0.1:8080`.
 
-**`rust/crates/aleph-attest-cli`** is the verifying client
-(`client.rs`, `verify.rs`). `SnpCertVerifier` implements rustls's
-`ServerCertVerifier` trait so the *entire* verification (attestation
-extension present, blob-derived key binding, optional measurement pin, full
-AMD chain VCEK -> ASK -> ARK with the ARK pinned against a crate-builtin AMD
-root) runs synchronously inside `verify_server_cert`, before the TLS
-handshake can complete. Because application data (a GET response body, an
-injected secret) is only ever sent after the handshake finishes, a failed
-verification means the request byte never leaves the client and the
-response byte never enters it. The chain check is async; the sync
-`verify_server_cert` callback drives it with `block_in_place` +
-`Handle::block_on` on the multi-threaded tokio runtime. Three CLI verbs use
-this: `Attest` (Layer 2, TLS-bound only), `FreshAttest` (Layer 3, adds a
-nonce challenge to the `.well-known/attestation` endpoint and independently
-chain-verifies that second report), and `InjectSecret`.
+**The verifying client** is not in this repository: it is the `attest`
+module of the aleph-rs SDK (`crates/aleph-sdk/src/attest/`, driven by the
+`aleph` CLI's `confidential` and `instance` commands). Its `SnpCertVerifier`
+implements rustls's `ServerCertVerifier` trait so the *entire* verification
+(attestation extension present, blob-derived key binding, measurement pin,
+guest-policy pin, TCB floor, full AMD chain VCEK -> ASK -> ARK with a pinned
+ARK) runs inside `verify_server_cert`, before the TLS handshake can
+complete: a failed verification means no request byte ever leaves the
+client. The `aleph-attest-cli` crate that used to live here was the
+aleph-cvm donor's client and was removed once the SDK verifier superseded it.
 
 ### Measured Nix guest images and dm-verity
 
@@ -272,8 +267,8 @@ byte-identical to the pre-NUMA baseline.
   consumer derives `report_data`/`measurement` by re-parsing that blob,
   never from an unsigned copy that might travel alongside it:
   `rust/crates/aleph-tee/src/types.rs`,
-  `rust/crates/aleph-tee/src/sev_snp/verify.rs`,
-  `rust/crates/aleph-attest-cli/src/verify.rs`.
+  `rust/crates/aleph-tee/src/sev_snp/verify.rs` (and the SDK verifier on
+  the client side).
 - `report_data` schemes are domain-separated and, for the fresh scheme,
   bound to the served TLS public key; the raw nonce never lands in
   `report_data` verbatim: `rust/crates/aleph-tee/src/report_data.rs`.
@@ -283,9 +278,9 @@ byte-identical to the pre-NUMA baseline.
   never trusted from whatever the KDS or a poisoned cache returns:
   `rust/crates/aleph-tee/src/sev_snp/verify.rs`.
 - The TLS handshake only completes for a fully AMD-chain-verified TEE:
-  `verify_server_cert` runs the complete check before returning `Ok`, so no
-  request or response byte can cross an unverified connection:
-  `rust/crates/aleph-attest-cli/src/verify.rs`.
+  the SDK's `verify_server_cert` runs the complete check before returning
+  `Ok`, so no request or response byte can cross an unverified connection
+  (aleph-rs, `crates/aleph-sdk/src/attest/ratls.rs`).
 - The SEV-SNP guest policy is canonicalized to a bare `0x`-hex literal
   before it reaches the `sev-snp-guest` QEMU object, closing an argv
   property-injection path; an unparseable policy falls back to the
@@ -342,9 +337,7 @@ byte-identical to the pre-NUMA baseline.
   `rust/crates/aleph-attest-agent/src/tls.rs`,
   `rust/crates/aleph-attest-agent/src/secrets.rs`,
   `rust/crates/aleph-attest-agent/src/proxy.rs`.
-- Verifying client: `rust/crates/aleph-attest-cli/src/main.rs`,
-  `rust/crates/aleph-attest-cli/src/verify.rs`,
-  `rust/crates/aleph-attest-cli/src/client.rs`.
+- Verifying client: aleph-rs, `crates/aleph-sdk/src/attest/`.
 - QEMU argv and host CPUID: `rust/crates/supervisor-controller/src/qemu.rs`,
   `rust/crates/supervisor-controller/src/cpuid.rs`.
 - Migration refusal gates: `src/aleph/vm/agent/views/migration.py`,

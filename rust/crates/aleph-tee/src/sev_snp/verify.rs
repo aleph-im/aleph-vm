@@ -71,7 +71,8 @@ fn pinned_amd_ark_der(product: &str) -> Result<Vec<u8>> {
 ///
 /// A `valid: true` result is NOT by itself sufficient to trust a guest. It
 /// says only "this is a genuine AMD report from some SEV-SNP machine of this
-/// product". The caller (aleph-attest-cli, increment B2b) MUST additionally:
+/// product". A verifying client (the aleph-rs SDK's `attest` module is the
+/// reference one) MUST additionally:
 ///
 /// - **Pin the measurement**: compare `VerificationResult.measurement` against
 ///   the expected launch measurement for the guest image. This function does
