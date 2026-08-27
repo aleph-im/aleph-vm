@@ -18,19 +18,12 @@
 #      /mnt/root/mnt/workload instead of being chrooted directly, so the
 #      platform's /sbin/init (the podman/podman-compose runner, see
 #      compose-rootfs.nix) is the chroot entrypoint, never the workload.
-#   4. The chroot target is always /mnt/root, with a fatal check on
-#      /mnt/root/sbin/init (missing or non-executable -> poweroff; never
-#      warn-and-continue).
-#   5. Fail-closed supervision: waits on the guest PID specifically and
-#      powers off when it exits, instead of init.sh's bare `wait` (a dead
-#      compose stack takes the VM down).
-#   6. Agent-start ordering: the attest-agent is started BEFORE the chroot
-#      (init.sh starts it AFTER, once past the whole platform-init
-#      if/elif/else block), so `$!` right after the `chroot ... &` reliably
-#      captures the guest's own pid instead of the attest-agent's. The
-#      "starting /sbin/init from rootfs" echo stays where it was, directly
-#      above the chroot line, so the attest-agent start now falls between
-#      that echo and the chroot it used to sit right next to in init.sh.
+#   4. The chroot target is always /mnt/root (init.sh picks /mnt/workload
+#      when a workload volume is present). The fatal check on
+#      $root/sbin/init, the agent-before-chroot start ordering (so `$!`
+#      after `chroot ... &` is the guest's own pid) and the fail-closed
+#      supervision (wait on that pid, power off when it exits) are the same
+#      in both scripts.
 
 # shellcheck disable=SC1091  # /bin/init-common.sh only exists inside the initrd
 . /bin/init-common.sh
@@ -187,9 +180,9 @@ fi
 # be reached directly even during the window before the agent is up.
 setup_firewall
 
-# Compose delta 4: the chroot target is always /mnt/root, with a fatal check
-# on /mnt/root/sbin/init (missing or non-executable -> poweroff; never
-# warn-and-continue, unlike init.sh's rootfs-only WARNING path).
+# Compose delta 4: the chroot target is always /mnt/root, with the same
+# fatal check on /sbin/init (missing or non-executable -> poweroff) as
+# init.sh.
 if [ ! -x /mnt/root/sbin/init ]; then
     echo "init: FATAL: no /sbin/init found in rootfs"
     exec /bin/busybox poweroff -f
@@ -199,10 +192,10 @@ echo "init: starting /sbin/init from rootfs"
 # Start the attestation agent (after rootfs mount).
 /bin/aleph-attest-agent --port 8443 --upstream http://127.0.0.1:8080 &
 
-# Compose delta 5: fail-closed supervision. Unlike init.sh's bare `wait`
-# (which would keep an attested VM alive after the runtime died), wait
-# specifically on the guest's PID and power off as soon as it exits: a dead
-# compose stack takes the VM down.
+# Fail-closed supervision (same as init.sh / init-instance.sh): wait
+# specifically on the guest's PID and power off as soon as it exits, so a
+# dead compose stack takes the VM down instead of leaving a live attested
+# endpoint proxying to nothing.
 /bin/busybox chroot /mnt/root /sbin/init &
 guest_pid=$!
 wait "$guest_pid"
