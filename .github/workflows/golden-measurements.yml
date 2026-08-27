@@ -20,12 +20,15 @@ on:
     branches: [main, dev]
     paths:
       - "nix/**"
-      # The initrd bakes the attest-agent binary, so the agent crate and the
-      # workspace lockfile are measured inputs too. The rest of rust/ is
-      # excluded on purpose: unrelated workspace changes must not cost hours
-      # of CI, and the weekly cron backstops anything the filter misses.
+      # The initrd bakes the attest-agent binary. Its measured input set is
+      # the agent workspace (own Cargo.lock), aleph-tee (path dependency) and
+      # the root Cargo.toml (aleph-tee inherits [workspace.dependencies]
+      # versions from it). Nothing else under rust/ reaches the measurement
+      # since the initrd holds file content only (initrd.nix); the weekly
+      # cron backstops anything this filter misses.
+      - "rust/Cargo.toml"
       - "rust/crates/aleph-attest-agent/**"
-      - "rust/Cargo.lock"
+      - "rust/crates/aleph-tee/**"
       - ".github/workflows/golden-measurements.yml"
   pull_request:
     # od/** covers stacked PRs (increment N+1 based on increment N's
@@ -33,8 +36,15 @@ on:
     branches: [main, dev, od/**]
     paths:
       - "nix/**"
+      # The initrd bakes the attest-agent binary. Its measured input set is
+      # the agent workspace (own Cargo.lock), aleph-tee (path dependency) and
+      # the root Cargo.toml (aleph-tee inherits [workspace.dependencies]
+      # versions from it). Nothing else under rust/ reaches the measurement
+      # since the initrd holds file content only (initrd.nix); the weekly
+      # cron backstops anything this filter misses.
+      - "rust/Cargo.toml"
       - "rust/crates/aleph-attest-agent/**"
-      - "rust/Cargo.lock"
+      - "rust/crates/aleph-tee/**"
       - ".github/workflows/golden-measurements.yml"
 
 

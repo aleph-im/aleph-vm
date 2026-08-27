@@ -67,7 +67,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: rust
+          workspaces: |
+            rust
+            rust/crates/aleph-attest-agent
 
       - name: cargo fmt
         working-directory: rust
@@ -79,6 +81,20 @@ jobs:
 
       - name: cargo test
         working-directory: rust
+        run: cargo test --locked
+
+      # aleph-attest-agent is its own workspace (own Cargo.lock: it is the
+      # measured guest binary, see rust/Cargo.toml). Same three gates.
+      - name: cargo fmt (aleph-attest-agent workspace)
+        working-directory: rust/crates/aleph-attest-agent
+        run: cargo fmt --check
+
+      - name: cargo clippy (aleph-attest-agent workspace)
+        working-directory: rust/crates/aleph-attest-agent
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: cargo test (aleph-attest-agent workspace)
+        working-directory: rust/crates/aleph-attest-agent
         run: cargo test --locked
 
       # The conformance suite drives the compiled daemon with the production

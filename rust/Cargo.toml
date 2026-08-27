@@ -6,9 +6,15 @@ members = [
     "crates/supervisor-controller",
     "crates/supervisor-cli",
     "crates/aleph-tee",
-    "crates/aleph-attest-agent",
     "crates/aleph-attest-cli",
 ]
+# aleph-attest-agent is its own workspace with its own Cargo.lock: it is the
+# binary baked into the measured SEV-SNP initrd, so its dependency set must
+# only move when deliberately bumped there, never as a side effect of a
+# supervisor-side `cargo update`. It still depends on crates/aleph-tee by
+# path (compiled under the agent's lock). Build/lint it with
+# `cargo <cmd> --manifest-path crates/aleph-attest-agent/Cargo.toml`.
+exclude = ["crates/aleph-attest-agent"]
 
 [workspace.package]
 edition = "2024"
@@ -71,7 +77,8 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 k256 = { version = "0.13", features = ["ecdsa"] }
 sha3 = "0.10"
 
-# aleph-attest-agent (B2a): in-guest attested-TLS HTTPS sidecar ported from
+# aleph-attest-agent (B2a, now its own workspace under crates/aleph-attest-agent,
+# which pins these same versions explicitly): in-guest attested-TLS HTTPS sidecar ported from
 # aleph-cvm. actix-web serves the reverse proxy + attestation/inject-secret
 # endpoints; the rustls-0_23 feature wires in tokio-rustls for bind_rustls_0_23.
 actix-web = { version = "4", features = ["rustls-0_23"] }
