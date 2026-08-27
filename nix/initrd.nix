@@ -56,14 +56,18 @@ let
   # Assert at image build time that the applet is present: the only drift
   # vector is a nixpkgs flake.lock bump changing the default busybox config,
   # which is exactly when this check runs again.
+  #
+  # pkgsStatic: the initrd below ships REGULAR FILES only (no nix store
+  # closure), so every binary in it must be statically linked. pkgs.busybox
+  # is a dynamically linked glibc build and would fail to exec.
   checkedBusybox = pkgs.runCommand "busybox-with-udhcpc6" { } ''
-    ${pkgs.busybox}/bin/busybox --list | grep -qx udhcpc6 || {
+    ${pkgs.pkgsStatic.busybox}/bin/busybox --list | grep -qx udhcpc6 || {
       echo "error: busybox lacks the udhcpc6 applet; guest DHCPv6 would silently no-op." >&2
       echo "Enable CONFIG_UDHCPC6 via a busybox extraConfig override." >&2
       exit 1
     }
     mkdir -p $out/bin
-    cp ${pkgs.busybox}/bin/busybox $out/bin/busybox
+    cp ${pkgs.pkgsStatic.busybox}/bin/busybox $out/bin/busybox
   '';
 
   # nftables kernel modules for the guest firewall. NF_TABLES is =m in the
@@ -80,37 +84,79 @@ let
     xz -d -k -c ${modDir}/net/netfilter/nfnetlink.ko.xz > $out/nfnetlink.ko
     xz -d -k -c ${modDir}/net/netfilter/nf_tables.ko.xz > $out/nf_tables.ko
   '';
-in
-pkgs.makeInitrd {
-  contents =
-    # Base: shared by every flavor (v-program and instance images alike).
+  # Archive contents: one entry per file that must exist in the guest, at its
+  # final path, as a regular file with a fixed mode. This replaces
+  # pkgs.makeInitrd, which copies the nix CLOSURE of each object into the
+  # cpio (nix/store/<hash>-.../...) and symlinks the final path to it. That
+  # closure form embeds every object's store path, so the initrd bytes, and
+  # with them the SEV-SNP launch measurement, changed whenever a store path
+  # changed, even with byte-identical binaries (the attest-agent derivation
+  # hash covers the whole cargo workspace, so any Rust change anywhere moved
+  # the measurement). It also dragged glibc, headers and man pages into the
+  # guest. Here the measurement is a function of file CONTENT only.
+  entries =
     [
-      { object = "${checkedBusybox}/bin/busybox"; symlink = "/bin/busybox"; }
-      { object = init-script; symlink = "/init"; }
-      { object = init-common-script; symlink = "/bin/init-common.sh"; }
-      { object = udhcpc-script; symlink = "/bin/udhcpc.script"; }
-      { object = udhcpc6-script; symlink = "/bin/udhcpc6.script"; }
-      { object = "${attest-agent}/bin/aleph-attest-agent"; symlink = "/bin/aleph-attest-agent"; }
+      { source = "${checkedBusybox}/bin/busybox"; path = "bin/busybox"; mode = "755"; }
+      { source = init-script; path = "init"; mode = "755"; }
+      { source = init-common-script; path = "bin/init-common.sh"; mode = "755"; }
+      { source = udhcpc-script; path = "bin/udhcpc.script"; mode = "755"; }
+      { source = udhcpc6-script; path = "bin/udhcpc6.script"; mode = "755"; }
+      { source = "${attest-agent}/bin/aleph-attest-agent"; path = "bin/aleph-attest-agent"; mode = "755"; }
       # dm-mod/dm-bufio are always shipped: dm-bufio is dm-verity-only but
       # harmless on a luks image (see the dmModules comment above).
-      { object = "${dmModules}/dm-mod.ko"; symlink = "/lib/modules/dm-mod.ko"; }
-      { object = "${dmModules}/dm-bufio.ko"; symlink = "/lib/modules/dm-bufio.ko"; }
+      { source = "${dmModules}/dm-mod.ko"; path = "lib/modules/dm-mod.ko"; mode = "644"; }
+      { source = "${dmModules}/dm-bufio.ko"; path = "lib/modules/dm-bufio.ko"; mode = "644"; }
     ]
     # dm-verity rootfs integrity (v-program image).
     ++ pkgs.lib.optionals withVerity [
-      { object = "${staticCryptsetup}/bin/veritysetup"; symlink = "/bin/veritysetup"; }
-      { object = "${dmModules}/dm-verity.ko"; symlink = "/lib/modules/dm-verity.ko"; }
+      { source = "${staticCryptsetup}/bin/veritysetup"; path = "bin/veritysetup"; mode = "755"; }
+      { source = "${dmModules}/dm-verity.ko"; path = "lib/modules/dm-verity.ko"; mode = "644"; }
     ]
     # Guest firewall (v-program image only; instances get no in-guest
     # firewall, see init-instance.sh).
     ++ pkgs.lib.optionals withNft [
-      { object = "${staticNft}/bin/nft"; symlink = "/bin/nft"; }
-      { object = "${nftModules}/nfnetlink.ko"; symlink = "/lib/modules/nfnetlink.ko"; }
-      { object = "${nftModules}/nf_tables.ko"; symlink = "/lib/modules/nf_tables.ko"; }
+      { source = "${staticNft}/bin/nft"; path = "bin/nft"; mode = "755"; }
+      { source = "${nftModules}/nfnetlink.ko"; path = "lib/modules/nfnetlink.ko"; mode = "644"; }
+      { source = "${nftModules}/nf_tables.ko"; path = "lib/modules/nf_tables.ko"; mode = "644"; }
     ]
     # LUKS encrypted rootfs (confidential-instance image).
     ++ pkgs.lib.optionals withLuks [
-      { object = "${staticCryptsetup}/bin/cryptsetup"; symlink = "/bin/cryptsetup"; }
-      { object = "${dmCryptModules}/dm-crypt.ko"; symlink = "/lib/modules/dm-crypt.ko"; }
+      { source = "${staticCryptsetup}/bin/cryptsetup"; path = "bin/cryptsetup"; mode = "755"; }
+      { source = "${dmCryptModules}/dm-crypt.ko"; path = "lib/modules/dm-crypt.ko"; mode = "644"; }
     ];
-}
+
+  installEntries = pkgs.lib.concatMapStringsSep "\n"
+    (e: "install -D -m ${e.mode} ${e.source} root/${e.path}")
+    entries;
+in
+pkgs.runCommand "initrd" {
+  nativeBuildInputs = [ pkgs.cpio pkgs.gzip pkgs.file ];
+} ''
+  mkdir -p root/dev root/proc root/sys
+  ${installEntries}
+
+  # Every executable must be static: there is no loader or libc in here.
+  for f in root/bin/* root/init; do
+    if file -b "$f" | grep -q 'dynamically linked'; then
+      echo "error: $f is dynamically linked; the content-only initrd cannot run it" >&2
+      exit 1
+    fi
+  done
+
+  # Same reproducible cpio recipe as nixpkgs' makeInitrd (fixed mtime,
+  # sorted entries, root ownership, gzip -9n) minus the store closure.
+  (cd root && find . -mindepth 1 -exec touch -h -d '@1' '{}' +)
+  (cd root && find . -mindepth 1 -printf '%P\0' | sort -z \
+    | cpio --quiet -o -H newc -R +0:+0 --reproducible --null \
+    | gzip -9n > ../initrd.gz)
+
+  # Contract check: no store path may ever end up in the archive again.
+  if gzip -dc initrd.gz | cpio -t --quiet | grep -q '^nix/'; then
+    echo "error: initrd embeds nix store paths; the launch measurement would track derivation hashes" >&2
+    exit 1
+  fi
+
+  mkdir -p $out
+  mv initrd.gz $out/initrd
+  ln -s initrd $out/initrd.gz
+''

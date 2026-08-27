@@ -3,8 +3,9 @@
 #
 # Builds the flake's pinned measurement outputs and compares them to the
 # committed golden file (nix/golden-measurements.json). A mismatch means the
-# measured boot chain changed: OVMF, kernel, initrd contents (including the
-# attest-agent binary), or the kernel cmdline (dm-verity root hashes). That
+# measured boot chain changed: OVMF, kernel, initrd contents (the regular
+# files listed in initrd.nix, including the attest-agent binary; never a nix
+# store path, see initrd.nix), or the kernel cmdline (dm-verity root hashes). That
 # is either an intended change (regenerate the golden file in the same PR,
 # and remember that anything pinning the old measurement must migrate) or an
 # unintended reproducibility regression (investigate before merging).
