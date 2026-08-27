@@ -113,7 +113,13 @@ else
     if ! /bin/busybox mount -o ro "$blkdev" /mnt/root; then
         echo "init: WARNING: read-only mount failed; falling back to a writable mount"
         echo "init: WARNING: the rootfs is NOT integrity-protected on this path"
-        /bin/busybox mount "$blkdev" /mnt/root || echo "init: mount failed completely"
+        if ! /bin/busybox mount "$blkdev" /mnt/root; then
+            # Nothing to run: without a rootfs the rest of this script would
+            # prepare an empty chroot and start the attest-agent proxying to
+            # nothing. Fail closed like every other flavor does.
+            echo "init: FATAL: rootfs mount failed"
+            exec /bin/busybox poweroff -f
+        fi
     fi
 fi
 
@@ -166,26 +172,28 @@ setup_firewall
 # entrypoint, e.g. fib-service) runs INSTEAD OF the baked platform
 # /sbin/init (the busybox httpd fallback used when no workload is present).
 if [ -n "$workload_roothash" ]; then
-    if [ -x /mnt/workload/sbin/init ]; then
-        echo "init: starting /sbin/init from workload volume"
-        /bin/busybox chroot /mnt/workload /sbin/init &
-    else
-        # dm-verity already proved the volume authentic, so a missing
-        # /sbin/init means a malformed workload image: fail closed like every
-        # other error path instead of leaving the attest-agent proxying to a
-        # dead upstream.
-        echo "init: FATAL: no /sbin/init found in workload volume"
-        exec /bin/busybox poweroff -f
-    fi
-elif [ -x /mnt/root/sbin/init ]; then
-    echo "init: starting /sbin/init from rootfs"
-    /bin/busybox chroot /mnt/root /sbin/init &
+    guest_root=/mnt/workload
 else
-    echo "init: WARNING: no /sbin/init found in rootfs"
+    guest_root=/mnt/root
+fi
+if [ ! -x "$guest_root/sbin/init" ]; then
+    # dm-verity already proved the volume authentic, so a missing /sbin/init
+    # means a malformed image: fail closed like every other error path
+    # instead of leaving the attest-agent proxying to a dead upstream.
+    echo "init: FATAL: no /sbin/init found in $guest_root"
+    exec /bin/busybox poweroff -f
 fi
 
 # Start the attestation agent (after rootfs mount).
 /bin/aleph-attest-agent --port 8443 --upstream http://127.0.0.1:8080 &
 
-# Wait for children.
-wait
+# Fail-closed supervision (same as init-compose.sh): wait on the guest's PID
+# specifically, not on all children. A bare `wait` would keep the VM, and its
+# live attested TLS endpoint, up after the workload died, with the agent
+# proxying to a dead upstream; instead a dead workload takes the VM down.
+echo "init: starting /sbin/init from $guest_root"
+/bin/busybox chroot "$guest_root" /sbin/init &
+guest_pid=$!
+wait "$guest_pid"
+echo "init: /sbin/init exited; powering off"
+exec /bin/busybox poweroff -f

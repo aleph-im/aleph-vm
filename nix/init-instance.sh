@@ -82,10 +82,7 @@ if ! /bin/busybox mount -t ext4 /dev/mapper/cryptroot /mnt/root; then
 fi
 
 prepare_chroot /mnt/root
-if [ -x /mnt/root/sbin/init ]; then
-    echo "init: starting /sbin/init from rootfs"
-    /bin/busybox chroot /mnt/root /sbin/init &
-else
+if [ ! -x /mnt/root/sbin/init ]; then
     # A missing /sbin/init means the owner's decrypted rootfs is malformed
     # (the same failure class as a v-program workload with no /sbin/init, which
     # also powers off). Fail closed rather than leaving a RUNNING-but-useless VM
@@ -96,7 +93,15 @@ else
     exec /bin/busybox poweroff -f
 fi
 
-# Wait for children (the attest-agent keeps serving re-attestation for the
-# VM's lifetime; the initramfs /tmp/secrets is invisible to the chroot except
-# through prepare_chroot's bind mount).
-wait
+# Fail-closed supervision (same as init.sh / init-compose.sh): wait on the
+# guest's PID specifically, not on all children. The attest-agent keeps
+# serving re-attestation for the VM's lifetime, so a bare `wait` would keep
+# the VM and its live attested endpoint up after the owner's /sbin/init
+# died; instead a dead guest takes the VM down. (The initramfs /tmp/secrets
+# is invisible to the chroot except through prepare_chroot's bind mount.)
+echo "init: starting /sbin/init from rootfs"
+/bin/busybox chroot /mnt/root /sbin/init &
+guest_pid=$!
+wait "$guest_pid"
+echo "init: /sbin/init exited; powering off"
+exec /bin/busybox poweroff -f
