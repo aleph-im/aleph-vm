@@ -7,6 +7,7 @@
 # the attest-agent is expected to fail without /dev/sev-guest.
 #
 # Usage: nix/boot-smoke.sh
+# Local tool, not a CI gate: it needs KVM (or a slow TCG boot).
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

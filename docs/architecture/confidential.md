@@ -171,7 +171,11 @@ init. Determinism is not cosmetic here: the launch measurement
 (`sev-snp-measure`, vendored and patched in `flake.nix`,
 `measurementFor`) is a pure function of the exact bytes of OVMF, kernel,
 initrd and cmdline, so a non-reproducible build makes precomputed
-measurements meaningless.
+measurements meaningless. The attest-agent is built from its own cargo
+workspace (`rust/crates/aleph-attest-agent`, own `Cargo.lock`) and the
+initrd holds file content only (no nix store closure), so the launch
+measurement moves only when the guest's files change; see divergences
+entry 64(d) and `nix/initrd.nix`.
 
 `nix/init.sh` is the guest's PID 1. It brings up networking (static `ip=`
 if present on the cmdline, otherwise `udhcpc`), parses `roothash=` and

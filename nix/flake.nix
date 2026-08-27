@@ -152,6 +152,17 @@
       # updates or every pinned launch measurement silently changes.
       sev-snp-measure = pkgs.python3Packages.sev-snp-measure;
 
+      # Source revision the image outputs were built from, for audit and
+      # rebuild. Written to $out/source-rev of the image directories ONLY:
+      # never into anything measured (initrd, cmdline), or every commit
+      # would move the launch measurement. `self.rev` exists for a clean git
+      # checkout, `self.dirtyRev` for a dirty one (nix >= 2.19); "unknown"
+      # covers flakes evaluated outside git. Interpolating it makes the
+      # three image directories rebuild on every commit; they are cheap
+      # (symlinks and a few cp), so that is accepted rather than moving the
+      # file into anything measured.
+      sourceRev = self.rev or self.dirtyRev or "unknown";
+
       kernel = pkgs.callPackage ./kernel.nix {};
       initrd = pkgs.callPackage ./initrd.nix {
         inherit attest-agent kernel;
@@ -370,6 +381,7 @@
         cp ${measurement} $out/measurement.hex
         cp ${verity}/hashtree $out/rootfs.ext4.verity
         cp ${verity}/roothash $out/rootfs.ext4.roothash
+        echo "${sourceRev}" > $out/source-rev
       '';
 
       # Convenience: all measured-image artifacts in one directory, for the
@@ -385,6 +397,7 @@
         cp ${composeMeasurement} $out/measurement.hex
         cp ${composeVerity}/hashtree $out/rootfs.ext4.verity
         cp ${composeVerity}/roothash $out/rootfs.ext4.roothash
+        echo "${sourceRev}" > $out/source-rev
       '';
 
       # Per-deployment measurement helper for the instance image: the owner
@@ -424,6 +437,7 @@
         ln -s ${kernel}/bzImage $out/bzImage
         ln -s ${instanceInitrd}/initrd $out/initrd
         cp ${ovmfFd} $out/OVMF.fd
+        echo "${sourceRev}" > $out/source-rev
       '';
 
       # Build-covers instanceMeasurementFor with a fixed placeholder owner
