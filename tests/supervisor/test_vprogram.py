@@ -31,7 +31,6 @@ from aleph.vm.agent.tasks import _group_executions_by_payment
 from aleph.vm.agent.vm_registry import AgentVmRecord, AgentVmRegistry
 from aleph.vm.conf import settings
 from aleph.vm.resources import InsufficientResourcesError
-from aleph.vm.supervisor.local import LocalSupervisor
 from aleph.vm.supervisor_interface.errors import VmSetupError
 from aleph.vm.supervisor_interface.types import (
     Backend,
@@ -137,7 +136,7 @@ async def test_update_allocations_starts_v_programs(aiohttp_client, mocker, sche
     message = load_vprogram_message()
     vm_hash = str(message.item_hash)
 
-    app = setup_webapp(supervisor=LocalSupervisor(None))
+    app = setup_webapp(supervisor=MagicMock())
     app["pubsub"] = None
     app["supervisor"] = MagicMock(delete_vm=AsyncMock(), list_vms=AsyncMock(return_value=[]))
 
@@ -161,7 +160,7 @@ async def test_update_allocations_stops_descheduled_vprogram(aiohttp_client, moc
     message = load_vprogram_message()
     vm_hash = str(message.item_hash)
 
-    app = setup_webapp(supervisor=LocalSupervisor(None))
+    app = setup_webapp(supervisor=MagicMock())
     app["pubsub"] = None
     app["vm_registry"].record(ItemHash(vm_hash), message=message.content, original=message.content, persistent=True)
 
@@ -188,7 +187,7 @@ async def test_update_allocations_spares_scheduled_vprogram(aiohttp_client, mock
     vm_hash = str(message.item_hash)
 
     mocker.patch("aleph.vm.agent.views.start_persistent_vm", new_callable=AsyncMock)
-    app = setup_webapp(supervisor=LocalSupervisor(None))
+    app = setup_webapp(supervisor=MagicMock())
     app["pubsub"] = None
     app["vm_registry"].record(ItemHash(vm_hash), message=message.content, original=message.content, persistent=True)
 

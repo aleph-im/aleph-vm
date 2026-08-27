@@ -33,17 +33,16 @@ flowchart TB
     end
 ```
 
-The agent and the supervisor daemon are separate distributions of the same
-`aleph.vm` package, joined only by the gRPC contract in `proto/supervisor.proto`
-and the Python DTO/ABC layer that mirrors it,
-`src/aleph/vm/supervisor_interface/`. That layer is the floor: it imports
+The agent (Python, `aleph.vm.agent`) and the supervisor daemon (Rust,
+`rust/crates/supervisor-daemon`) are separate programs joined only by the gRPC
+contract in `proto/supervisor.proto` and the Python DTO/ABC layer that mirrors
+it, `src/aleph/vm/supervisor_interface/`. That layer is the floor: it imports
 only stdlib, pydantic and wire value types, and an `import-linter` contract in
-`pyproject.toml` forbids it from importing either `aleph.vm.agent` or
-`aleph.vm.supervisor` (and the reverse in both directions), checked in CI.
-The boundary carries no exemptions today: the agent has no import edge into
-`aleph.vm.supervisor`, `aleph.vm.pool`, `aleph.vm.models`, `aleph.vm.network`
-or `aleph.vm.hypervisors`, and those supervisor-side packages have none back
-into `aleph.vm.agent`. The on-disk controller-config schema
+`pyproject.toml` forbids it from importing `aleph.vm.agent`, checked in CI.
+There is no supervisor-side Python left to guard against: the Python daemon,
+its VM pool, models, host-network plumbing and hypervisor wrappers were
+removed in 2026-08 once the Rust daemon had become the only implementation
+CI and the testnets ran. The on-disk controller-config schema
 (`src/aleph/vm/supervisor_interface/configuration.py`) also lives in that
 contract layer, because both sides need it: the agent writes
 `{vm_hash}-controller.json`, the controller process reads it.
@@ -77,36 +76,32 @@ methods); the concrete implementation the agent talks to is
 `GrpcSupervisor` (`src/aleph/vm/supervisor_interface/client.py`), a client
 over a Unix-domain-socket gRPC channel resolved from
 `settings.SUPERVISOR_GRPC_SOCKET` (`src/aleph/vm/agent/supervisor.py`,
-`build_supervisor`). A `LocalSupervisor` in-process implementation exists
-for the single-process test/benchmark harness
-(`src/aleph/vm/testing/harness.py`, wired from `aleph.vm.agent.cli`); production
-never uses it.
+`build_supervisor`). There is no in-process implementation: every path,
+including tests, goes through the socket.
 
-### Dual daemon implementation, selected at boot
+### One daemon implementation
 
-Both a Python supervisor daemon (`src/aleph/vm/supervisor/daemon.py`) and a
-Rust one (`rust/crates/supervisor-daemon`) ship in the same `.deb`. Which one
-runs is an environment variable, `ALEPH_VM_SUPERVISOR_IMPL` (default
-`rust` since 2.0), read by a tiny dispatch script the systemd unit execs:
-`packaging/supervisor-launcher` for the daemon and
-`packaging/controller-launcher` for each per-VM controller. Both scripts read
-the same `/etc/aleph-vm/supervisor.env`, so one env change switches the
-daemon and every controller together; an operator typo falls back to the
-default (`rust`) rather than failing to start. Rollback to the Python daemon
-is therefore a config change (`ALEPH_VM_SUPERVISOR_IMPL=python`), not a
-packaging event.
+The Rust daemon (`rust/crates/supervisor-daemon`) and the Rust per-VM
+controller (`rust/crates/supervisor-controller`) are the only supervisor-side
+implementation and the systemd units exec their binaries directly
+(`/opt/aleph-vm/bin/aleph-vm-supervisor`, `/opt/aleph-vm/bin/aleph-vm-controller`).
+Until 2026-08 a Python daemon shipped alongside behind an
+`ALEPH_VM_SUPERVISOR_IMPL` dispatch (default `python`, then `rust` as of
+2.0); that daemon, the
+launcher scripts and the flag are gone. A `supervisor.env` that still carries
+`ALEPH_VM_SUPERVISOR_IMPL=...` is harmless: nothing reads it.
 
 ### systemd unit topology
 
 Three unit shapes, all under `packaging/aleph-vm/etc/systemd/system/`:
 
 - `aleph-vm-supervisor.service`: the pool owner, one per node, execs
-  `packaging/supervisor-launcher`.
+  `/opt/aleph-vm/bin/aleph-vm-supervisor`.
 - `aleph-vm-agent.service`: the HTTP API, `After=`/`Wants=` the supervisor
   unit.
 - `aleph-vm-controller@.service`: a systemd *template* unit, one instance
   per persistent VM (`aleph-vm-controller@{vm_hash}.service`), execs
-  `packaging/controller-launcher` with `--config=/var/lib/aleph/vm/{vm_hash}-controller.json`.
+  `/opt/aleph-vm/bin/aleph-vm-controller` with `--config=/var/lib/aleph/vm/{vm_hash}-controller.json`.
   `KillMode=mixed` and `TimeoutStopSec=60`: SIGTERM reaches only the
   controller process, which sends an ACPI powerdown to the guest and falls
   back to a QMP `quit` if the guest does not respond, before systemd
@@ -273,10 +268,8 @@ auto-stopped.
   both `check_memory_backstop` and `validate_spec_gpus` run under
   `creation_lock` inside `create_vm`
   (`rust/crates/supervisor-daemon/src/lifecycle.rs`).
-- The daemon selection (`ALEPH_VM_SUPERVISOR_IMPL`) and the controller
-  selection read the same environment file, so a node can never end up
-  running the Rust daemon with the Python controller or vice versa
-  (`packaging/supervisor-launcher`, `packaging/controller-launcher`).
+- The daemon and every controller read the same environment file
+  (`/etc/aleph-vm/supervisor.env`), so one configuration governs both.
 - The supervisor gRPC socket is bound under `umask 0o077` and `chmod 0700`;
   shutdown only unlinks the socket inode this daemon instance actually
   bound (`rust/crates/supervisor-daemon/src/server.rs`).
@@ -291,10 +284,6 @@ auto-stopped.
   (`types.py`), the closed error vocabulary (`errors.py`), the on-disk
   controller config schema (`configuration.py`), wire conversion
   (`wire/proto_convert.py`).
-- `src/aleph/vm/supervisor/`: the Python supervisor daemon
-  (`daemon.py`, `grpc_server.py`, `local.py`) and its controllers
-  (`controllers/qemu`, `controllers/qemu_confidential`,
-  `controllers/firecracker`).
 - `rust/crates/supervisor-daemon/src/main.rs`,
   `rust/crates/supervisor-daemon/src/server.rs`,
   `rust/crates/supervisor-daemon/src/service.rs`,
@@ -311,7 +300,5 @@ auto-stopped.
   controller entry point.
 - `rust/crates/supervisor-cli/`: `alephctl`, the direct-gRPC debug CLI.
 - `packaging/aleph-vm/etc/systemd/system/`: the three unit files.
-- `packaging/supervisor-launcher`, `packaging/controller-launcher`: the
-  implementation-dispatch scripts.
 - `pyproject.toml`: the `[tool.importlinter]` contracts enforcing the
   agent/supervisor/contract boundary.

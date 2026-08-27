@@ -9,7 +9,7 @@ These downloaders *compose* the host-resource surface (they hold the
 ``message_content`` and expose ``rootfs_path`` / ``volumes`` / the program code
 fields ``translate.py`` and ``program_client`` read); they deliberately do NOT
 subclass the supervisor's ``VmResources`` controller classes, which is what
-keeps the agent free of an ``aleph.vm.supervisor.controllers`` import.
+kept the agent free of any supervisor-side import.
 
 They raise the neutral contract vocabulary
 (``aleph.vm.supervisor_interface.errors``), not the controller exception

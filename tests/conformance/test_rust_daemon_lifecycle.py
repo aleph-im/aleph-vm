@@ -4,10 +4,10 @@ NOT_FOUND vocabulary of every mutation, DeleteVm's on-disk and sqlite
 effects (read back by the SQLAlchemy models and by a restarted daemon),
 and the unprivileged-nftables failure shape of AddPortForward.
 
-The Python oracle: the LocalSupervisor error mapping (error_mapping.py +
-grpc_server.py) for the rejection paths, and the exact
-`save_controller_configuration` / SQLAlchemy `PortMapping` artifacts for
-the persistence assertions. The full boot paths (systemd units, taps,
+The oracle: the wire contract's error vocabulary
+(aleph.vm.supervisor_interface.errors) for the rejection paths, and the exact
+controller-configuration JSON / frozen SQLAlchemy `PortMapping` schema
+(tests/conformance/oracle.py) for the persistence assertions. The full boot paths (systemd units, taps,
 kernel nftables) are covered by the implementation-agnostic
 tests/integration suite run as root.
 """
@@ -15,17 +15,16 @@ tests/integration suite run as root.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 from conftest import cargo_missing
+from oracle import Base, PortMapping
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from aleph.vm.supervisor.networking_db import Base, PortMapping
 from aleph.vm.supervisor_interface.client import GrpcSupervisor
 from aleph.vm.supervisor_interface.configuration import (
     Configuration,
@@ -361,65 +360,3 @@ async def test_delete_with_keep_port_mappings_preserves_the_rows(start_daemon, e
     (row,) = _rows(execution_root, KEPT_HASH)
     assert row.deleted_at is None, "keep_port_mappings must preserve the persisted rows"
     assert row.host_port == 24501
-
-
-def test_the_committed_written_config_fixture_matches_the_live_models():
-    """Drift guard: the committed written-controller-config fixture must be
-    exactly what the current pydantic Configuration model serializes (the
-    Rust config writer reproduces the fixture byte-for-byte, so a model
-    change without regeneration would hide a divergence)."""
-    import importlib.util
-
-    repo_root = Path(__file__).resolve().parents[2]
-    script = repo_root / "scripts" / "generate_rust_fixtures.py"
-    spec = importlib.util.spec_from_file_location("generate_rust_fixtures", script)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    committed = (repo_root / "rust/crates/supervisor-daemon/tests/fixtures/written-controller-config.json").read_text()
-    assert module.written_controller_config_payload() == committed, (
-        "the pydantic Configuration model and the committed fixture diverged; "
-        "run scripts/generate_rust_fixtures.py and commit the result"
-    )
-
-
-def test_the_committed_firecracker_config_fixture_matches_the_live_models():
-    """Drift guard: the committed Firecracker-config fixture must be exactly
-    what the current pydantic FirecrackerConfig model serializes (the Rust
-    launcher reproduces the fixture byte-for-byte, so a model change without
-    regeneration would hide a divergence)."""
-    import importlib.util
-
-    repo_root = Path(__file__).resolve().parents[2]
-    script = repo_root / "scripts" / "generate_rust_fixtures.py"
-    spec = importlib.util.spec_from_file_location("generate_rust_fixtures", script)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    committed = (repo_root / "rust/crates/supervisor-daemon/tests/fixtures/firecracker-config.json").read_text()
-    assert module.firecracker_config_payload() == committed, (
-        "the pydantic FirecrackerConfig model and the committed fixture diverged; "
-        "run scripts/generate_rust_fixtures.py and commit the result"
-    )
-
-
-def test_the_committed_nftables_fixture_matches_firewall_py():
-    """Drift guard: the committed nftables oracle must be exactly what the
-    current firewall.py produces (the Rust pure layer replays the fixture,
-    so a firewall.py change without regeneration would hide a divergence).
-    """
-    import importlib.util
-
-    repo_root = Path(__file__).resolve().parents[2]
-    script = repo_root / "scripts" / "generate_rust_fixtures.py"
-    spec = importlib.util.spec_from_file_location("generate_rust_fixtures", script)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    committed = json.loads((repo_root / "rust/crates/supervisor-daemon/tests/fixtures/nftables.json").read_text())
-    assert module.nftables_fixture_payload() == committed, (
-        "firewall.py and the committed fixture diverged; run " "scripts/generate_rust_fixtures.py and commit the result"
-    )

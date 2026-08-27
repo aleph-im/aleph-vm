@@ -1,21 +1,18 @@
 """Conformance for the Rust daemon's read-only world (increment 2).
 
-Builds a fixture EXECUTION_ROOT with the actual Python models (pydantic
-``Configuration`` serialized exactly like ``save_controller_configuration``,
-the SQLAlchemy ``PortMapping`` schema for supervisor.sqlite3), boots the
-compiled daemon on it and asserts the read-only RPCs through the production
-Python client.
+Builds a fixture EXECUTION_ROOT with the actual contract models (pydantic
+``Configuration`` serialized exactly like the daemon persists it, the frozen
+SQLAlchemy ``PortMapping`` schema for supervisor.sqlite3 from
+``tests/conformance/oracle.py``), boots the compiled daemon on it and asserts
+the read-only RPCs through the production Python client.
 
-The oracle is model-predicted: the restarted Python daemon
-(``load_persistent_executions``) only ever adopts VMs whose controller units
-are ACTIVE, and no ``aleph-vm-controller@*.service`` unit exists for these
-fixture hashes, so every VM must be reported STOPPED with no tap addresses
-and no port forwards (a live in-process Python daemon comparison would need
-root and real units; see docs/plans/rust-port-divergences.md entries 11-14
-for where the stopped-VM reporting deliberately goes beyond Python, which
-destroys such state at startup instead of reporting it). The VmSpec oracle
-IS Python code: ``spec_from_controller_configuration``, the exact
-reconstruction the restarted Python daemon serves from GetVmSpec.
+The oracle is model-predicted: the daemon only ever adopts VMs whose
+controller units are ACTIVE, and no ``aleph-vm-controller@*.service`` unit
+exists for these fixture hashes, so every VM must be reported STOPPED with no
+tap addresses and no port forwards (see docs/architecture/divergences.md
+entries 11-14 for the stopped-VM reporting). The VmSpec oracle is the frozen
+copy of the Python daemon's ``spec_from_controller_configuration``, the exact
+reconstruction served from GetVmSpec.
 """
 
 from __future__ import annotations
@@ -28,11 +25,10 @@ from pathlib import Path
 
 import pytest
 from conftest import cargo_missing
+from oracle import Base, PortMapping, spec_from_controller_configuration
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from aleph.vm.supervisor.networking_db import Base, PortMapping
-from aleph.vm.supervisor.qemu_build import spec_from_controller_configuration
 from aleph.vm.supervisor_interface.client import GrpcSupervisor
 from aleph.vm.supervisor_interface.configuration import (
     Configuration,
@@ -229,8 +225,7 @@ async def test_get_vm_spec_matches_the_python_reconstruction(adopted_daemon):
     client = GrpcSupervisor(socket_path)
     try:
         for vm_hash, configuration in configurations.items():
-            # The exact spec the restarted Python daemon would serve:
-            # execution.vm_spec = spec_from_controller_configuration(config).
+            # The exact spec the restarted daemon serves (frozen Python oracle).
             expected = spec_from_controller_configuration(configuration)
             assert await client.get_vm_spec(VmId(vm_hash)) == expected
     finally:

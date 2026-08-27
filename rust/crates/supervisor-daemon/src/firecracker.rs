@@ -1302,8 +1302,8 @@ mod tests {
 
     #[test]
     fn the_config_json_matches_the_committed_pydantic_fixture() {
-        // Byte parity with MicroVM.save_configuration_file for the fixture
-        // inputs of scripts/generate_rust_fixtures.py (unjailed paths).
+        // Byte parity with the Python MicroVM.save_configuration_file for
+        // the frozen fixture inputs (unjailed paths).
         let config = FirecrackerConfig {
             boot_source: BootSource {
                 kernel_image_path: "/opt/firecracker/vmlinux.bin".to_string(),

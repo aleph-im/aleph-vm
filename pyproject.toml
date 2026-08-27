@@ -38,13 +38,11 @@ dependencies = [
   # MERGE GATE: replace the git pin with a released aleph-message version (V-PROGRAM schema, PR #158)
   "aleph-message @ git+https://github.com/aleph-im/aleph-message@4ad261ff25f595a64589d49bf36f514c402e7c5e",
   "aleph-superfluid~=0.2.1",
-  "dbus-python==1.3.2",
   "eth-account~=0.10",
   "grpcio>=1.70,<1.71",                                                                                     # generated _pb2_grpc.py embeds GRPC_GENERATED_VERSION=1.70.0; older installs RuntimeError on import
   "jsonschema==4.19.1",
   "jwcrypto==1.5.6",
   "msgpack==1.1.2",
-  "nftables @ git+https://salsa.debian.org/pkg-netfilter-team/pkg-nftables#egg=nftables&subdirectory=py",
   "packaging>=23.2",
   # Fixing this protobuf dependency version to avoid getting CI errors as version 5.29.0 have this compilation issue
   "protobuf==5.29.6",
@@ -52,11 +50,8 @@ dependencies = [
   "py-cpuinfo==9",
   "pydantic>=2,<3",
   "pydantic-settings~=2.6.1",
-  "pyroute2==0.7.12",
-  "python-cpuid==0.1.1",
   "python-dotenv~=1.1.0",
   "pyyaml==6.0.1",
-  "qmp==1.1",
   "redis>=4.2",
   "schedule==1.2.1",
   "sentry-sdk==2.8",
@@ -90,9 +85,8 @@ dependencies = [
 
 [tool.hatch.envs.default.scripts]
 # The aleph-vm console script (aleph.vm.agent.cli:main) is a flat argparse
-# CLI, no subcommands; the supervisor daemon is a separate module entry point.
+# CLI, no subcommands; the supervisor daemon is the Rust binary under rust/.
 agent = "aleph-vm {args:--help}"
-supervisor = "python -m aleph.vm.supervisor {args:--help}"
 config = "aleph-vm --print-settings --do-not-run {args}"
 
 [tool.hatch.envs.testing]
@@ -285,60 +279,14 @@ section_whitelines = 2
 [tool.importlinter]
 root_package = "aleph"
 # Grimp counts TYPE_CHECKING and function-level imports too, so type-only and
-# lazy edges also appear here. All contracts use allow_indirect_imports:
-# direct edges are what defines package ownership; the single sanctioned
-# indirect chain is agent.cli -> aleph.vm.testing.harness -> supervisor.local
-# (the composition-root harness for benchmarks and the droplet CI, loaded
-# lazily and living outside both sides).
+# lazy edges also appear here. The supervisor side of the process split is the
+# Rust daemon (rust/crates/supervisor-daemon); the Python tree holds the agent
+# and the contract it dials the daemon with, and the contract must stay free of
+# agent code so the wire types keep meaning the same thing on both ends.
 
 [[tool.importlinter.contracts]]
-name = "supervisor_interface (contract + wire + client) depends on neither side"
+name = "supervisor_interface (contract + wire + client) does not depend on the agent"
 type = "forbidden"
 allow_indirect_imports = "true"
 source_modules = [ "aleph.vm.supervisor_interface" ]
-forbidden_modules = [
-  "aleph.vm.agent",
-  "aleph.vm.supervisor",
-  "aleph.vm.pool",
-  "aleph.vm.models",
-  "aleph.vm.network",
-  "aleph.vm.hypervisors",
-  "aleph.vm.testing",
-]
-
-[[tool.importlinter.contracts]]
-name = "the agent does not import the supervisor side"
-type = "forbidden"
-allow_indirect_imports = "true"
-source_modules = [ "aleph.vm.agent" ]
-forbidden_modules = [
-  "aleph.vm.supervisor",
-  "aleph.vm.pool",
-  "aleph.vm.models",
-  "aleph.vm.network",
-  "aleph.vm.hypervisors",
-]
-# Total separation, no exemptions: the agent talks to the supervisor daemon
-# only through aleph.vm.supervisor_interface (the Supervisor ABC, the DTOs,
-# and the GrpcSupervisor client in supervisor_interface.client). The network
-# package is supervisor-side host plumbing (TAP/nftables/IPv6 forwarding used
-# by the pool and the controllers); the agent never touches it. models and
-# hypervisors are supervisor-side too (VmExecution and the VMM wrappers): the
-# agent has no remaining edge into either, not even a type-only one.
-
-[[tool.importlinter.contracts]]
-name = "the supervisor side does not import the agent"
-type = "forbidden"
-allow_indirect_imports = "true"
-source_modules = [
-  "aleph.vm.supervisor",
-  "aleph.vm.pool",
-  "aleph.vm.models",
-  "aleph.vm.network",
-  "aleph.vm.hypervisors",
-]
-forbidden_modules = [ "aleph.vm.agent", "aleph.vm.testing" ]
-# pool, models, network and hypervisors are supervisor-side packages: they may
-# import neither the agent nor the aleph.vm.testing harness. Migration is
-# agent-side job plumbing (it imports agent.run/messages/translate) and lives
-# at aleph.vm.agent.migration, covered by the agent contract above.
+forbidden_modules = [ "aleph.vm.agent" ]

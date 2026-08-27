@@ -1,14 +1,12 @@
 ---
 name: "aleph-vm CodeQL config"
 
-# Exclude non-shipped developer tooling from analysis. scripts/ holds codegen
-# and test-fixture generators (e.g. generate_controller_argv_fixtures.py,
-# generate_rust_fixtures.py) plus one-off diagnostics, none of which is imported
-# by the runtime package or packaged. CodeQL taints the hardcoded dummy SEV
-# session/godh *paths* those generators write into fixtures as clear-text
-# secrets (py/clear-text-{storage,logging}-sensitive-data); on fixture data that
-# is a false positive, and it fails the CodeQL check on every PR that carries a
-# generator. Dropping scripts/ from the analysis scope removes the noise without
-# hiding any shipped code.
+# Exclude non-shipped developer tooling from analysis. scripts/ holds codegen,
+# bundle tooling and one-off diagnostics, none of which is imported by the
+# runtime package or packaged. CodeQL taints hardcoded dummy SEV session/godh
+# *paths* such tooling writes into fixtures as clear-text secrets
+# (py/clear-text-{storage,logging}-sensitive-data); on fixture data that is a
+# false positive. Dropping scripts/ from the analysis scope removes the noise
+# without hiding any shipped code.
 paths-ignore:
   - scripts

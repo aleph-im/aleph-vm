@@ -16,6 +16,7 @@ import os
 import shutil
 import signal
 import stat
+import subprocess
 from pathlib import Path
 
 import psutil
@@ -45,6 +46,17 @@ GPU_ENV = {"ALEPH_VM_ENABLE_GPU_SUPPORT": "1" if HAVE_LSPCI else "0"}
 def rust_daemon(start_daemon, execution_root: Path):
     with start_daemon(execution_root, GPU_ENV) as started:
         yield started
+
+
+def _interface_ipv4_addresses(interface: str) -> list[ipaddress.IPv4Address]:
+    """Every IPv4 address configured on *interface*, via ip(8)."""
+    out = subprocess.run(
+        ["ip", "-4", "-o", "addr", "show", "dev", interface],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return [ipaddress.IPv4Address(line.split()[3].split("/")[0]) for line in out.splitlines() if line.strip()]
 
 
 def default_route_interface() -> str | None:
@@ -89,16 +101,15 @@ async def test_get_host_info_matches_the_python_sources(rust_daemon):
     assert info.hostname == os.uname().nodename
 
     # host_ipv4: the default-route interface address, global scope preferred
-    # (Network.__init__ resolves it through netifaces at startup).
+    # (resolved at daemon startup). Validate against the interface's own
+    # addresses: an address of that interface, global scope when it has one.
     interface = default_route_interface()
     assert interface is not None, "the daemon started, so a default interface must exist"
-    try:
-        from aleph.vm.network.get_interface_ipv4 import get_interface_ipv4
-
-        assert info.host_ipv4 == get_interface_ipv4(interface)
-    except ImportError:
-        # netifaces missing in this environment: validate the shape only.
-        ipaddress.IPv4Address(info.host_ipv4)
+    reported = ipaddress.IPv4Address(info.host_ipv4)
+    addresses = _interface_ipv4_addresses(interface)
+    assert reported in addresses, f"{reported} is not an address of {interface}: {addresses}"
+    if any(a.is_global for a in addresses):
+        assert reported.is_global, f"{interface} has a global address but the daemon reported {reported}"
 
     # The daemon must have created the volumes dir (settings.setup parity),
     # and available disk is statvfs free on it. Inherently racy: allow a

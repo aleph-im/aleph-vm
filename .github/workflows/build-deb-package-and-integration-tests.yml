@@ -63,9 +63,7 @@ jobs:
           dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/firecracker/vmlinux.bin
           dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/sevctl
           dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/aleph-vm/bin/aleph-vm-supervisor
-          dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/aleph-vm/bin/supervisor-launcher
           dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/aleph-vm/bin/aleph-vm-controller
-          dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/aleph-vm/bin/controller-launcher
 
       - uses: actions/upload-artifact@v4
         with:

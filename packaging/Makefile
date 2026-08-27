@@ -3,25 +3,20 @@ all: debian-package
 debian-package: debian-package-resources debian-package-code debian-package-rust
 	sudo dpkg-deb --build aleph-vm target/aleph-vm.deb
 
-# Rust supervisor daemon (design doc 2026-07-04-rust-supervisor-daemon-design.md,
-# section 9): built with the toolchain pinned in rust/rust-toolchain.toml
-# (rustup picks it up when cargo runs from inside rust/), installed under
-# /opt/aleph-vm/bin/ next to the supervisor-launcher dispatch script.
-# The deb keeps shipping the full Python tree regardless of the
-# ALEPH_VM_SUPERVISOR_IMPL flag (default rust); the Python daemon only runs
-# when an operator sets python in /etc/aleph-vm/supervisor.env.
+# Rust supervisor daemon and per-VM controller: the only supervisor-side
+# implementation (the Python daemon was removed in 2026-08). Built with the
+# toolchain pinned in rust/rust-toolchain.toml (rustup picks it up when cargo
+# runs from inside rust/), installed under /opt/aleph-vm/bin/ and exec'd
+# directly by the aleph-vm-supervisor.service / aleph-vm-controller@.service
+# units. The Python tree the deb ships is the agent (aleph.vm.agent) and the
+# supervisor_interface client it dials the daemon with.
 # Depends on debian-package-code because that target wipes and rebuilds
 # ./aleph-vm/opt/aleph-vm, where the binaries land.
 debian-package-rust: debian-package-code
 	cd ../rust && cargo build --release --locked
 	mkdir -p ./aleph-vm/opt/aleph-vm/bin
 	install -m 0755 ../rust/target/release/aleph-vm-supervisor ./aleph-vm/opt/aleph-vm/bin/aleph-vm-supervisor
-	install -m 0755 ./supervisor-launcher ./aleph-vm/opt/aleph-vm/bin/supervisor-launcher
-	# Per-VM controller (phase 3 task A3): the Rust controller launches the
-	# persistent QEMU process, dispatched from the same ALEPH_VM_SUPERVISOR_IMPL
-	# flag via controller-launcher. Inert until an operator flips the flag.
 	install -m 0755 ../rust/target/release/aleph-vm-controller ./aleph-vm/opt/aleph-vm/bin/aleph-vm-controller
-	install -m 0755 ./controller-launcher ./aleph-vm/opt/aleph-vm/bin/controller-launcher
 	# Debug CLI (2026-07-07-alephctl): ships next to the supervisor so
 	# operators can poke the gRPC socket on-node without a full agent stack.
 	install -m 0755 ../rust/target/release/alephctl ./aleph-vm/opt/aleph-vm/bin/alephctl
@@ -45,7 +40,7 @@ debian-package-code:
 	# MERGE GATE: aleph-message is git-pinned to the V-PROGRAM schema ref, swap for a release with pyproject.toml.
 	# protobuf is pinned to 5.29.6: 5.29.0 has a compilation issue; 6.x needs grpcio/tools 1.71+.
 	# legacy-cgi is packaging-only: it backfills the `cgi` module removed from the Python 3.13+ stdlib.
-	build_venv/bin/pip install --no-cache-dir  --progress-bar off --target ./aleph-vm/opt/aleph-vm/ 'aleph-message @ git+https://github.com/aleph-im/aleph-message@4ad261ff25f595a64589d49bf36f514c402e7c5e' 'eth-account~=0.10' 'sentry-sdk==2.8' 'qmp==1.1' 'aleph-superfluid~=0.2.1' 'sqlalchemy[asyncio]>=2' 'aiosqlite==0.19' 'alembic==1.13.1' 'aiohttp-cors~=0.7.0' 'pydantic-settings~=2.6.1' 'pyroute2==0.7.12' 'python-cpuid==0.1.1' 'solathon==1.0.7' 'protobuf==5.29.6' 'grpcio>=1.70,<1.71' 'redis>=4.2' 'legacy-cgi>=1.0'
+	build_venv/bin/pip install --no-cache-dir  --progress-bar off --target ./aleph-vm/opt/aleph-vm/ 'aleph-message @ git+https://github.com/aleph-im/aleph-message@4ad261ff25f595a64589d49bf36f514c402e7c5e' 'eth-account~=0.10' 'sentry-sdk==2.8' 'aleph-superfluid~=0.2.1' 'sqlalchemy[asyncio]>=2' 'aiosqlite==0.19' 'alembic==1.13.1' 'aiohttp-cors~=0.7.0' 'pydantic-settings~=2.6.1' 'solathon==1.0.7' 'protobuf==5.29.6' 'grpcio>=1.70,<1.71' 'redis>=4.2' 'legacy-cgi>=1.0'
 	build_venv/bin/python3 -m compileall ./aleph-vm/opt/aleph-vm/
 
 debian-package-resources: firecracker-bins vmlinux target/bin/sevctl

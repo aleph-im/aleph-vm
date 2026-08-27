@@ -129,20 +129,9 @@ jobs:
           slug: aleph-im/aleph-vm
 
   tests-integration:
-    name: "Supervisor integration tests (${{ matrix.supervisor-impl }})"
+    name: "Supervisor integration tests"
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-
-    strategy:
-      fail-fast: false
-      matrix:
-        # The suite is implementation-agnostic: the same tests drive the
-        # Python daemon and the Rust one. Since increment 4 the rust leg
-        # runs the full Firecracker surface (boot, port forwards,
-        # WatchEvents, StreamLogs) and may only skip the backup tests
-        # (increment 5); the conftest CI guard fails the job if the FC
-        # prerequisites would silently skip either leg.
-        supervisor-impl: [python, rust]
 
     steps:
       - uses: actions/checkout@v4
@@ -182,19 +171,16 @@ jobs:
         run: cd runtimes/instance-rootfs && sudo ./create-ubuntu-24-04-qemu-disk.sh
 
       - name: Install the pinned Rust toolchain
-        if: matrix.supervisor-impl == 'rust'
         working-directory: rust
         run: |
           sudo apt-get install -y protobuf-compiler
           rustup show
 
       - uses: Swatinem/rust-cache@v2
-        if: matrix.supervisor-impl == 'rust'
         with:
           workspaces: rust
 
       - name: Build the Rust supervisor daemon
-        if: matrix.supervisor-impl == 'rust'
         working-directory: rust
         run: cargo build --locked
 
@@ -204,9 +190,8 @@ jobs:
           # runner's systemd-resolved (127.0.0.53) is unreachable from a VM,
           # so pin public nameservers (same as the droplet CI).
           ALEPH_VM_DNS_NAMESERVERS: '["1.1.1.1","8.8.8.8"]'
-          ALEPH_VM_SUPERVISOR_IMPL: ${{ matrix.supervisor-impl }}
         run: |-
-          sudo --preserve-env=ALEPH_VM_DNS_NAMESERVERS,ALEPH_VM_SUPERVISOR_IMPL \
+          sudo --preserve-env=ALEPH_VM_DNS_NAMESERVERS \
             env AVM_ITEST=1 \
             AVM_ITEST_QEMU_IMAGE="$PWD/runtimes/instance-rootfs/rootfs.img" \
             hatch run testing:python -m pytest -v -p no:cacheprovider --durations=10 tests/integration
@@ -247,12 +232,10 @@ jobs:
 
       - name: Run Shellcheck on all shell scripts
         run: |-
-          # Also lint the extensionless packaging launchers (supervisor-launcher /
-          # controller-launcher): they carry no ".sh" suffix but ARE the scripts
-          # that flip the production cutover, so they must be shellcheck-clean.
-          # And the measured-guest scripts (*.script, e.g. nix/udhcpc.script):
-          # they run as PID-1-adjacent code inside SEV-SNP VMs.
+          # Also lint the measured-guest scripts (*.script, e.g.
+          # nix/udhcpc.script): they run as PID-1-adjacent code inside SEV-SNP
+          # VMs.
           # `-exec ... +` (not `\;`): with `\;` find swallows shellcheck's exit
           # code, so findings never failed this job; `+` propagates a nonzero
           # exit from any batch and makes the check an actual gate.
-          find ./ -type f \( -name "*.sh" -o -name "*-launcher" -o -name "*.script" \) -exec shellcheck {} +
+          find ./ -type f \( -name "*.sh" -o -name "*.script" \) -exec shellcheck {} +

@@ -233,8 +233,8 @@ async def watch_supervisor_events(app: web.Application) -> None:
 def build_supervisor(settings) -> GrpcSupervisor:
     """Build the agent's handle on the supervisor daemon.
 
-    gRPC is the only supervisor mode: the daemon (`python -m
-    aleph.vm.supervisor`) owns the VmPool and serves the `Supervisor` contract
+    gRPC is the only supervisor mode: the Rust daemon (`aleph-vm-supervisor`,
+    rust/crates/supervisor-daemon) owns the VM pool and serves the `Supervisor` contract
     on `settings.SUPERVISOR_GRPC_SOCKET`. The setting is always set: it
     defaults to `EXECUTION_ROOT/supervisor.sock`, the same path the packaged
     supervisor.env pins.
@@ -451,8 +451,8 @@ def run():
     secret_token = token_urlsafe(nbytes=32)
     (settings.EXECUTION_ROOT / "login_token").write_text(secret_token)
     (settings.EXECUTION_ROOT / "login_token").chmod(0o400)
-    # The supervisor daemon (python -m aleph.vm.supervisor) owns the VmPool;
-    # the agent only holds the gRPC client handle.
+    # The Rust supervisor daemon owns the VM pool; the agent only holds the
+    # gRPC client handle.
     app = setup_webapp(supervisor=build_supervisor(settings))
     # Store app singletons. Note that app["pubsub"] will also be created.
     app["secret_token"] = secret_token
