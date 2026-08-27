@@ -46,12 +46,6 @@
       # Musl cross-compiler for C dependencies (openssl-sys, etc.).
       muslCC = pkgs.pkgsCross.musl64.stdenv.cc;
 
-      # This repo's Rust workspace lives at <repo>/rust; this flake lives at
-      # <repo>/nix. attest-cli is built from the whole workspace (crane sees
-      # Cargo.lock and every member; -p keeps cargo from building the
-      # proto/tonic crates, so no protoc is needed).
-      workspaceSrc = craneToolchain.cleanCargoSource ../rust;
-
       # The attest-agent is the MEASURED guest binary and its own cargo
       # workspace (rust/crates/aleph-attest-agent, own Cargo.lock). Its source
       # is narrowed to exactly its measured inputs: the agent crate, aleph-tee
@@ -101,32 +95,12 @@
         CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = "${muslCC}/bin/x86_64-unknown-linux-musl-cc";
       };
 
-      # Attestation CLI (static musl binary), the client-side SEV-SNP verifier.
-      # Built like the agent (static openssl for the aleph-tee/sev KDS chain) so
-      # it runs on any host regardless of glibc, e.g. a testnets SNP node.
-      attest-cli = craneToolchain.buildPackage {
-        src = workspaceSrc;
-        cargoExtraArgs = "-p aleph-attest-cli";
-        doCheck = false;
-        CARGO_BUILD_TARGET = "x86_64-unknown-linux-musl";
-        CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
-        nativeBuildInputs = [ pkgs.pkg-config muslCC ];
-        buildInputs = [ staticOpenssl.dev ];
-        OPENSSL_DIR = "${staticOpenssl.dev}";
-        OPENSSL_LIB_DIR = "${staticOpenssl.out}/lib";
-        OPENSSL_STATIC = "1";
-        OPENSSL_NO_VENDOR = "1";
-        CC_x86_64_unknown_linux_musl = "${muslCC}/bin/x86_64-unknown-linux-musl-cc";
-        AR_x86_64_unknown_linux_musl = "${muslCC}/bin/x86_64-unknown-linux-musl-ar";
-        CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = "${muslCC}/bin/x86_64-unknown-linux-musl-cc";
-      };
-
       # fib-service demo workload (static musl binary): a trivial actix-web app
       # exposing GET /fib/{n} (saturating u64 Fibonacci) and GET /health, later
       # baked into the measured guest as a V-PROGRAM workload. It has no C
-      # dependencies (plain actix-web HTTP, no TLS/openssl), so unlike
-      # attest-agent/attest-cli it needs only the musl cross-CC env, not the
-      # static-openssl buildInputs/OPENSSL_* env those carry.
+      # dependencies (plain actix-web HTTP, no TLS/openssl), so unlike the
+      # attest-agent it needs only the musl cross-CC env, not the
+      # static-openssl buildInputs/OPENSSL_* env that carries.
       fib-service = craneToolchain.buildPackage {
         src = craneToolchain.cleanCargoSource ./fib-service;
         # There is no test harness to run for a musl cross build here.
@@ -462,7 +436,6 @@
       packages.${system} = {
         inherit
           attest-agent
-          attest-cli
           fib-service
           ovmf
           kernel

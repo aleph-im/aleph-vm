@@ -6,7 +6,6 @@ members = [
     "crates/supervisor-controller",
     "crates/supervisor-cli",
     "crates/aleph-tee",
-    "crates/aleph-attest-cli",
 ]
 # aleph-attest-agent is its own workspace with its own Cargo.lock: it is the
 # binary baked into the measured SEV-SNP initrd, so its dependency set must

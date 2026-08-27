@@ -55,7 +55,6 @@ described in full.
 | `rust/crates/supervisor-proto` | Protobuf/gRPC bindings, compiled fresh from `proto/supervisor.proto` on every build. |
 | `rust/crates/aleph-tee` | The shared SEV-SNP attestation library: report retrieval, parsing, verification primitives. |
 | `rust/crates/aleph-attest-agent` | The in-guest attestation sidecar that serves the attested TLS proxy for V-PROGRAM workloads. |
-| `rust/crates/aleph-attest-cli` | The verifying client that chain-validates a guest's attested TLS certificate. |
 | `proto/` | The `supervisor.proto` contract shared by both daemon implementations. |
 | `packaging/` | systemd units, the implementation-dispatch launcher scripts, and `.deb`/Dockerfile build inputs. |
 | `scripts/` | Codegen and CI helpers: proto binding generation, proto-drift checking, fixture generation, repo split. |

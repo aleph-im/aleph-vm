@@ -3,9 +3,9 @@
 //! An SEV-SNP attestation report carries 64 free bytes (`report_data`) that the
 //! guest chooses and AMD signs verbatim. This module defines the ONE canonical
 //! way those 64 bytes are filled, so the constructing side (aleph-attest-agent)
-//! and the verifying side (the future aleph-attest-cli, increment B2b) cannot
-//! drift. Both MUST use these functions: an ad-hoc scheme on either side
-//! reopens the attack described below.
+//! and the verifying side (the `attest` module of the aleph-rs SDK, which
+//! mirrors these constructors) cannot drift. Both MUST use this scheme: an
+//! ad-hoc variant on either side reopens the attack described below.
 //!
 //! # Why domain separation and channel binding
 //!
