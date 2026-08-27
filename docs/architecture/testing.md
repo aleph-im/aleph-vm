@@ -6,9 +6,9 @@
 
 How aleph-vm is tested across the Python/Rust port boundary: the Rust
 unit/lib tests, the Python conformance suite that drives the compiled Rust
-daemon and treats the Python implementation as the parity oracle, the
-implementation-agnostic integration matrix (same tests against both daemon
-legs), the droplet CI that installs packaged `.deb`s on real cloud VMs, and
+daemon against the frozen record of the Python daemon it was ported from,
+the integration suite that drives the daemon built from the tree over
+gRPC, the droplet CI that installs packaged `.deb`s on real cloud VMs, and
 the local-dev workflow (compile-only verification locally, CI as the actual
 test gate).
 
@@ -99,14 +99,12 @@ test gate).
   check (import-linter), the proto-bindings-up-to-date check
   (`scripts/check_proto_clean.sh`), and `hatch run testing:cov`
   (`pytest --cov`) over pytest's configured `testpaths`, which is the whole
-  `tests/` tree: `tests/supervisor/`, `tests/migration/`, `tests/network/`,
-  `tests/vprogram/` and `tests/test_controller_launcher.py`, uploaded to
-  Codecov. `tests/integration/` and `tests/conformance/` are collected in
+  `tests/` tree: `tests/supervisor/`, `tests/migration/` and
+  `tests/vprogram/`, uploaded to Codecov. `tests/integration/` and `tests/conformance/` are collected in
   this same run but skip themselves via their own opt-in gates (`AVM_ITEST`,
   `ALEPH_VM_CONFORMANCE`), not by path exclusion. The
-  `tests-integration` job separately runs `tests/integration/` for real,
-  twice, once per `supervisor-impl` matrix leg (`python`, `rust`), building
-  the Rust daemon only for the rust leg.
+  `tests-integration` job separately runs `tests/integration/` for real
+  against the Rust daemon and controller it builds from the tree.
 - `.github/workflows/test-rust.yml` is path-filtered to changes under
   `rust/`, `proto/`, `tests/conformance/` and the Python modules that feed
   the Rust port, so pure-Python PRs never pay for it. In one job it runs `cargo

@@ -113,18 +113,18 @@ The supervisor daemon starts and stops controller units through systemd
 `rust/crates/supervisor-daemon/src/lifecycle.rs`); it never links hypervisor
 code into itself. This is the seam that lets the controller be ported (or
 reimplemented) independently of the daemon: `supervisor-controller`
-(`rust/crates/supervisor-controller/src/main.rs`) is the Rust port of the
-Python controller's QEMU path (`src/aleph/vm/supervisor/controllers/qemu`,
-`qemu_confidential`): it parses the same `{vm_hash}-controller.json`,
+(`rust/crates/supervisor-controller/src/main.rs`) was ported from the
+Python controller's QEMU and confidential-QEMU paths (removed with the
+Python daemon in 2026-08): it parses the same `{vm_hash}-controller.json`,
 waits for the daemon-created `vmtap{vm_id}` interface, spawns QEMU, and
 blocks on it. (The config's `vm_id` field is the integer `vm_index`, not
 the wire `vm_id`, which is the VM hash: see
-`src/aleph/vm/controllers/configuration.py`.)
+`src/aleph/vm/supervisor_interface/configuration.py`.)
 
 Ephemeral (non-persistent) Firecracker programs are different: they are
 **direct child processes of the supervisor daemon**, not systemd units at
-all (`rust/crates/supervisor-daemon/src/firecracker.rs`, ported from
-`src/aleph/vm/hypervisors/firecracker/microvm.py`). Cold-boot latency for
+all (`rust/crates/supervisor-daemon/src/firecracker.rs`, ported from the
+Python daemon's Firecracker `MicroVM` wrapper). Cold-boot latency for
 on-demand programs is a competitive metric, and unit-creation overhead was
 not worth adding during the port. The direct consequence: an ephemeral
 program can never outlive the daemon that spawned it, and it is never

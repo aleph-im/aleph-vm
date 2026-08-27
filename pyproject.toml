@@ -79,9 +79,6 @@ allow-direct-references = true
 
 [tool.hatch.envs.default]
 platforms = [ "linux" ]
-dependencies = [
-  #  "git+https://salsa.debian.org/pkg-netfilter-team/pkg-nftables#egg=nftables&subdirectory=py",
-]
 
 [tool.hatch.envs.default.scripts]
 # The aleph-vm console script (aleph.vm.agent.cli:main) is a flat argparse
