@@ -56,6 +56,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history: check-golden-measurements.sh names the commit that
+          # last touched the golden file on divergence, which a depth-1
+          # checkout (only the synthetic merge commit) cannot resolve.
+          fetch-depth: 0
 
       - name: Free runner disk space
         # The nix store for a full chain build (edk2, kernel, rust
