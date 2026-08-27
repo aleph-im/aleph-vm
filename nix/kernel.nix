@@ -1,5 +1,17 @@
 { pkgs, lib, ... }:
 
+# SEV-SNP guest kernel: a whitelist configuration (kernel-config.fragment)
+# on top of `make allnoconfig`, built with nixpkgs' manual-config kernel
+# builder from the nixpkgs-pinned 6.18 LTS source.
+#
+# Why not `linuxPackages_6_18.kernel.override { structuredExtraConfig }`
+# (the previous form): that layers a few dozen options over nixpkgs' distro
+# config, which compiles ~7000 modules (every driver nixpkgs enables) for a
+# guest whose initrds ship seven. Any override also loses the binary-cache
+# hit, so every golden-measurement CI run spent 2h+ of its 2h20m compiling
+# that distro kernel on a 4-vCPU runner. The whitelist builds in minutes and
+# is the smaller attack surface a confidential guest wants anyway.
+#
 # LTS 6.18 (the 2025 LTS line), not 6.6 or 6.12: the #VC-handler hardening
 # against malicious-hypervisor interrupt/exception injection (HECKLER
 # CVE-2024-25743/25744, WeSee CVE-2024-25742) landed in 6.7-rc5/6.9-rc1 and
@@ -11,6 +23,74 @@
 # failure mode the nixos-26.05 re-pin fixed.
 let
   base = pkgs.linuxPackages_6_18.kernel;
+
+  fragment = ./kernel-config.fragment;
+
+  # The complete .config: allnoconfig seeded with the fragment
+  # (KCONFIG_ALLCONFIG), then olddefconfig to settle the dependencies the
+  # fragment's choices pull in. Kconfig silently drops a requested option
+  # whose dependencies are unmet (or that no longer exists), and a silently
+  # dropped VIRTIO_BLK or SEV_GUEST is a guest that does not boot, so the
+  # result is checked line by line against the fragment and the build fails
+  # on the first divergence.
+  configfile = pkgs.stdenv.mkDerivation {
+    pname = "linux-config-snp-guest";
+    inherit (base) version src;
+    nativeBuildInputs = with pkgs; [ bison flex perl ];
+    # The kernel's own Makefiles, nothing from the tree is patched.
+    dontPatch = true;
+    dontFixup = true;
+    buildPhase = ''
+      runHook preBuild
+      export KCONFIG_NOTIMESTAMP=1
+      make ARCH=x86_64 KCONFIG_ALLCONFIG=${fragment} allnoconfig
+      make ARCH=x86_64 olddefconfig
+      runHook postBuild
+    '';
+    checkPhase = ''
+      runHook preCheck
+      status=0
+      while IFS= read -r line; do
+        case "$line" in
+          CONFIG_*=*)
+            if ! grep -qxF "$line" .config; then
+              echo "kernel config: requested '$line', got '$(grep -E "^(# )?''${line%%=*}[= ]" .config || echo "<absent>")'" >&2
+              status=1
+            fi
+            ;;
+          "# CONFIG_"*" is not set")
+            sym=''${line#\# }
+            sym=''${sym%% is not set}
+            if grep -qE "^$sym=" .config; then
+              echo "kernel config: requested '$line', got '$(grep -E "^$sym=" .config)'" >&2
+              status=1
+            fi
+            ;;
+        esac
+      done < ${fragment}
+      if [ "$status" -ne 0 ]; then
+        echo "kernel config: the fragment was not honoured, see above (missing dependency or renamed symbol?)" >&2
+        exit 1
+      fi
+      runHook postCheck
+    '';
+    doCheck = true;
+    installPhase = ''
+      runHook preInstall
+      cp .config $out
+      runHook postInstall
+    '';
+  };
+
+  kernel = pkgs.linuxKernel.manualConfig {
+    inherit (base) version src modDirVersion;
+    inherit configfile;
+    # manual-config only needs to know whether the config is modular (it
+    # splits out the `modules` output initrd.nix reads from) and whether
+    # Rust is on; giving it that directly avoids import-from-derivation on
+    # the generated .config.
+    config = { CONFIG_MODULES = "y"; };
+  };
 in
 
 # Fail evaluation, not review, if a future channel or package change lowers
@@ -24,66 +104,4 @@ assert lib.assertMsg (lib.versionAtLeast base.version "6.18")
     (CVE-2025-38560). Do not ship it to confidential guests.
   '';
 
-base.override {
-  structuredExtraConfig = with lib.kernel; {
-    # SEV-SNP guest support (mkForce to override base config "m" → "y")
-    AMD_MEM_ENCRYPT = lib.mkForce yes;
-    SEV_GUEST = lib.mkForce yes;
-    CRYPTO_DEV_CCP = lib.mkForce yes;
-    CRYPTO_DEV_CCP_DD = lib.mkForce yes;
-    CRYPTO_DEV_SP_PSP = lib.mkForce yes;
-
-    # Networking (built-in, since we boot from initrd without module loading)
-    PACKET = lib.mkForce yes;         # AF_PACKET sockets (required by udhcpc/DHCP)
-    UNIX = lib.mkForce yes;           # AF_UNIX sockets
-
-    # Filesystems (built-in for initrd boot)
-    EXT4_FS = lib.mkForce yes;        # ext4 rootfs support
-
-    # dm-verity / dm-crypt: BLK_DEV_DM, DM_VERITY, DM_CRYPT default to =m.
-    # We load them as modules from the initrd rather than forcing =y, because
-    # the kconfig dependency chain (DM_VERITY → BLK_DEV_DM → DAX) conflicts
-    # with nixpkgs' generate-config.pl interactive config generator.
-    #
-    # Disable trusted/encrypted kernel key types — dm-crypt optionally depends
-    # on these, but they pull in TPM/TEE subsystems we don't have. cryptsetup
-    # manages keys in userspace, so the kernel keyring integration is unnecessary.
-    TRUSTED_KEYS = lib.mkForce no;
-    ENCRYPTED_KEYS = lib.mkForce no;
-
-    # The platform rootfs integrity chain is dm-verity, which needs
-    # CRYPTO_SHA256 only. CRYPTO_AES/XTS/ESSIV are the LUKS2/dm-crypt
-    # algorithms (aes-xts-plain64), built in so the confidential-instance
-    # image's cryptsetup luksOpen never needs a crypto module load.
-    CRYPTO_AES = lib.mkForce yes;
-    CRYPTO_XTS = lib.mkForce yes;
-    CRYPTO_SHA256 = lib.mkForce yes;
-    CRYPTO_ESSIV = lib.mkForce yes;
-
-    # Virtio (for disk and network)
-    VIRTIO = lib.mkForce yes;
-    VIRTIO_PCI = lib.mkForce yes;
-    VIRTIO_BLK = lib.mkForce yes;
-    VIRTIO_NET = lib.mkForce yes;
-    VIRTIO_CONSOLE = lib.mkForce yes;
-
-    # Hardening — these are default=y upstream, but we set them explicitly
-    # so a config change never silently drops them.
-    RANDOMIZE_BASE = lib.mkForce yes;       # KASLR
-    STACKPROTECTOR_STRONG = lib.mkForce yes;
-    FORTIFY_SOURCE = lib.mkForce yes;
-    HARDENED_USERCOPY = lib.mkForce yes;
-
-    # Compile out the 32-bit syscall entry paths entirely. Since 6.9 the
-    # kernel disables them at runtime on SEV/TDX guests (the CVE-2024-25744
-    # mitigation for HECKLER-style int 0x80 injection); removing the code
-    # from the build makes that stance unbypassable and shrinks the #VC
-    # attack surface. The guest userland is 64-bit-only static musl, so
-    # nothing needs compat.
-    IA32_EMULATION = lib.mkForce no;
-    X86_X32_ABI = lib.mkForce no;
-
-    # Note: MODULES left as default (yes) to avoid interactive config questions.
-    # For a minimal production kernel, use a fully custom .config instead.
-  };
-}
+kernel
