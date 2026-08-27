@@ -181,3 +181,77 @@ pub async fn proxy_handler(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::body::to_bytes;
+    use actix_web::http::StatusCode;
+    use aleph_tee::types::{AttestationReport, TeeType};
+    use anyhow::Result;
+
+    /// Echoes `report_data` into the blob so the test can see what was bound.
+    struct MockBackend;
+
+    impl TeeBackend for MockBackend {
+        fn tee_type(&self) -> TeeType {
+            TeeType::SevSnp
+        }
+
+        fn get_report(&self, report_data: &[u8; 64]) -> Result<AttestationReport> {
+            Ok(AttestationReport {
+                tee_type: TeeType::SevSnp,
+                data: report_data.to_vec(),
+            })
+        }
+
+        fn parse_report(&self, _raw: &[u8]) -> Result<AttestationReport> {
+            unimplemented!("not needed for these tests")
+        }
+    }
+
+    fn state() -> web::Data<AppState> {
+        web::Data::new(AppState {
+            backend: Arc::new(MockBackend),
+            served_public_key_raw: vec![0x42; 97],
+            upstream: "http://127.0.0.1:1".to_string(),
+            http_client: reqwest::Client::new(),
+        })
+    }
+
+    async fn attest(nonce: &str) -> (StatusCode, String) {
+        let resp = attestation_endpoint(
+            state(),
+            web::Query(AttestationQuery {
+                nonce: nonce.to_string(),
+            }),
+        )
+        .await;
+        let status = resp.status();
+        let body = to_bytes(resp.into_body()).await.expect("body");
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    #[actix_web::test]
+    async fn nonce_at_the_cap_is_accepted() {
+        let (status, _) = attest(&"ab".repeat(MAX_NONCE_LEN)).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[actix_web::test]
+    async fn nonce_over_the_cap_is_rejected_before_decoding() {
+        // One byte over the cap, and deliberately NOT valid hex: the length
+        // check must fire first, so the error names the bound, not the hex.
+        let too_long = format!("{}zz", "ab".repeat(MAX_NONCE_LEN));
+        let (status, body) = attest(&too_long).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("nonce too long"), "{body}");
+    }
+
+    #[actix_web::test]
+    async fn invalid_hex_nonce_is_rejected() {
+        let (status, body) = attest("zz").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("invalid hex nonce"), "{body}");
+    }
+}
