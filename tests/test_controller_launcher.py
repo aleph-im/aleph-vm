@@ -1,8 +1,8 @@
 """Dispatch tests for packaging/controller-launcher.
 
 The launcher is the exact artifact that flips the production cutover, and it
-is on the critical path for the DEFAULT python install too (the systemd unit
-execs the launcher, not python directly). These tests EXEC the real script
+is on the critical path for the DEFAULT (rust) install too (the systemd unit
+execs the launcher, not the binary directly). These tests EXEC the real script
 (not a reimplementation) so a dispatch regression cannot ship green.
 
 The launcher hardcodes /opt/aleph-vm paths in production. To exercise it
@@ -27,14 +27,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER = REPO_ROOT / "packaging" / "controller-launcher"
 
 # The four operator-visible cases the case-statement must cover, and the
-# target each one selects. "python" is both the explicit value and the
-# default for "unset" and any unknown value (an operator typo must not brick
-# the node): the launcher never routes an unknown impl to the Rust binary.
+# target each one selects. "rust" is both the explicit value and the default
+# for "unset" and any unknown value (an operator typo must not brick the
+# node): the Python controller only ever runs when asked for by name.
 _CASES = [
     pytest.param("rust", "rust", id="rust->rust"),
     pytest.param("python", "python", id="python->python"),
-    pytest.param(None, "python", id="unset->python"),
-    pytest.param("bogus", "python", id="bogus->python"),
+    pytest.param(None, "rust", id="unset->rust"),
+    pytest.param("bogus", "rust", id="bogus->rust"),
 ]
 
 

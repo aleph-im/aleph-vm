@@ -196,8 +196,8 @@ tests.
 - **The integration suite is implementation-agnostic by construction.**
   `tests/integration/conftest.py` selects the daemon via
   `ALEPH_VM_SUPERVISOR_IMPL` and fails loudly on an unrecognized value
-  instead of defaulting to Python, so the CI matrix's rust leg can never
-  silently test the wrong daemon.
+  instead of guessing (its default mirrors the launcher's, `rust`), so
+  neither CI matrix leg can silently test the wrong daemon.
 - **Proto bindings must stay regenerated and committed.**
   `scripts/check_proto_clean.sh`, run in `test-using-pytest.yml`, reruns
   the Python generator and fails the build if `supervisor_pb2.py` or

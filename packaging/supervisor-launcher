@@ -4,8 +4,9 @@
 #
 # aleph-vm-supervisor.service execs this script; the implementation is
 # selected by ALEPH_VM_SUPERVISOR_IMPL from /etc/aleph-vm/supervisor.env
-# (loaded by the unit's EnvironmentFile). The deb ships both daemons;
-# cutover is a one-line env change, not a packaging event.
+# (loaded by the unit's EnvironmentFile). The deb ships both daemons; the
+# Rust daemon is the default (2.0), ALEPH_VM_SUPERVISOR_IMPL=python is the
+# one-line rollback to the Python daemon, not a packaging event.
 set -eu
 
 # Target selection is overridable via environment purely so the dispatch can
@@ -15,7 +16,7 @@ set -eu
 : "${ALEPH_VM_SUPERVISOR_BIN:=/opt/aleph-vm/bin/aleph-vm-supervisor}"
 : "${ALEPH_VM_SUPERVISOR_PYTHON:=python3}"
 
-case "${ALEPH_VM_SUPERVISOR_IMPL:-python}" in
+case "${ALEPH_VM_SUPERVISOR_IMPL:-rust}" in
   rust)
     exec "$ALEPH_VM_SUPERVISOR_BIN" "$@"
     ;;
@@ -23,8 +24,8 @@ case "${ALEPH_VM_SUPERVISOR_IMPL:-python}" in
     exec "$ALEPH_VM_SUPERVISOR_PYTHON" -m aleph.vm.supervisor "$@"
     ;;
   *)
-    # An operator typo must not brick the node: log and run the default.
-    echo "supervisor-launcher: unknown ALEPH_VM_SUPERVISOR_IMPL='${ALEPH_VM_SUPERVISOR_IMPL}', falling back to python" >&2
-    exec "$ALEPH_VM_SUPERVISOR_PYTHON" -m aleph.vm.supervisor "$@"
+    # An operator typo must not brick the node: log and run the default (rust).
+    echo "supervisor-launcher: unknown ALEPH_VM_SUPERVISOR_IMPL='${ALEPH_VM_SUPERVISOR_IMPL}', falling back to rust" >&2
+    exec "$ALEPH_VM_SUPERVISOR_BIN" "$@"
     ;;
 esac
