@@ -47,20 +47,44 @@
       muslCC = pkgs.pkgsCross.musl64.stdenv.cc;
 
       # This repo's Rust workspace lives at <repo>/rust; this flake lives at
-      # <repo>/nix. Point crane at the workspace root so it sees Cargo.lock and
-      # every member. The attest-agent crate does not depend on the proto/tonic
-      # crates, so no .proto files or protoc are needed (the -p filter below
-      # keeps cargo from building them).
+      # <repo>/nix. attest-cli is built from the whole workspace (crane sees
+      # Cargo.lock and every member; -p keeps cargo from building the
+      # proto/tonic crates, so no protoc is needed).
       workspaceSrc = craneToolchain.cleanCargoSource ../rust;
+
+      # The attest-agent is the MEASURED guest binary and its own cargo
+      # workspace (rust/crates/aleph-attest-agent, own Cargo.lock). Its source
+      # is narrowed to exactly its measured inputs: the agent crate, aleph-tee
+      # (path dependency) and the root Cargo.toml (aleph-tee inherits its
+      # dependency versions from it; cargo accepts the root's other members
+      # being absent). Any other file under rust/ cannot change this
+      # derivation, so a supervisor-side change never rebuilds or re-measures
+      # the agent.
+      agentSrc = pkgs.lib.fileset.toSource {
+        root = ../rust;
+        fileset = pkgs.lib.fileset.unions [
+          ../rust/Cargo.toml
+          (craneToolchain.fileset.commonCargoSources ../rust/crates/aleph-tee)
+          (craneToolchain.fileset.commonCargoSources ../rust/crates/aleph-attest-agent)
+        ];
+      };
 
       # Attestation agent (static musl binary), built from THIS repo's crate.
       # Needs static openssl for openssl-sys (the sev crate dependency pulled in
       # transitively via aleph-tee).
       staticOpenssl = pkgs.pkgsStatic.openssl;
       attest-agent = craneToolchain.buildPackage {
-        src = workspaceSrc;
-        # Build only the agent crate and its dependency subtree.
-        cargoExtraArgs = "-p aleph-attest-agent";
+        src = agentSrc;
+        cargoToml = ../rust/crates/aleph-attest-agent/Cargo.toml;
+        cargoLock = ../rust/crates/aleph-attest-agent/Cargo.lock;
+        # The cargo root is the nested agent workspace, not the source root
+        # (crane FAQ "workspace not at source root"): jump into it after
+        # unpacking and pin sourceRoot so later phases stay there. ../aleph-tee
+        # and ../../Cargo.toml remain reachable in the unpacked tree.
+        postUnpack = ''
+          cd $sourceRoot/crates/aleph-attest-agent
+          sourceRoot="."
+        '';
         # There is no test harness to run for a musl cross build here.
         doCheck = false;
         CARGO_BUILD_TARGET = "x86_64-unknown-linux-musl";
