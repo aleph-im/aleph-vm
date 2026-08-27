@@ -8,8 +8,9 @@
 # reads). One env flag switches BOTH the daemon and the controller, so a node
 # never runs the Rust daemon with the Python controller or vice versa.
 #
-# The deb ships both controllers; cutover is a one-line env change, not a
-# packaging event. "$@" carries the --config=... argument through unchanged.
+# The deb ships both controllers; the Rust controller is the default (2.0),
+# ALEPH_VM_SUPERVISOR_IMPL=python is the one-line rollback, not a packaging
+# event. "$@" carries the --config=... argument through unchanged.
 set -eu
 
 # Target selection is overridable via environment purely so the dispatch can
@@ -19,7 +20,7 @@ set -eu
 : "${ALEPH_VM_CONTROLLER_BIN:=/opt/aleph-vm/bin/aleph-vm-controller}"
 : "${ALEPH_VM_CONTROLLER_PYTHON:=/usr/bin/python3}"
 
-case "${ALEPH_VM_SUPERVISOR_IMPL:-python}" in
+case "${ALEPH_VM_SUPERVISOR_IMPL:-rust}" in
   rust)
     exec "$ALEPH_VM_CONTROLLER_BIN" "$@"
     ;;
@@ -27,8 +28,8 @@ case "${ALEPH_VM_SUPERVISOR_IMPL:-python}" in
     exec "$ALEPH_VM_CONTROLLER_PYTHON" -m aleph.vm.supervisor.controllers "$@"
     ;;
   *)
-    # An operator typo must not brick the node: log and run the default.
-    echo "controller-launcher: unknown ALEPH_VM_SUPERVISOR_IMPL='${ALEPH_VM_SUPERVISOR_IMPL}', falling back to python" >&2
-    exec "$ALEPH_VM_CONTROLLER_PYTHON" -m aleph.vm.supervisor.controllers "$@"
+    # An operator typo must not brick the node: log and run the default (rust).
+    echo "controller-launcher: unknown ALEPH_VM_SUPERVISOR_IMPL='${ALEPH_VM_SUPERVISOR_IMPL}', falling back to rust" >&2
+    exec "$ALEPH_VM_CONTROLLER_BIN" "$@"
     ;;
 esac

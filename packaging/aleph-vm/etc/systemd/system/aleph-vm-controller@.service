@@ -14,7 +14,7 @@ WorkingDirectory=/opt/aleph-vm
 Environment=PYTHONPATH=/opt/aleph-vm/:$PYTHONPATH
 EnvironmentFile=/etc/aleph-vm/supervisor.env
 # The launcher picks the controller implementation from ALEPH_VM_SUPERVISOR_IMPL
-# (default python), carried by the EnvironmentFile above: the SAME file and flag
+# (default rust), carried by the EnvironmentFile above: the SAME file and flag
 # the supervisor daemon reads, so one env change switches both together.
 ExecStart=/opt/aleph-vm/bin/controller-launcher --config=/var/lib/aleph/vm/%i-controller.json
 Restart=on-failure

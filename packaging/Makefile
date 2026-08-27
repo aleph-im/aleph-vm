@@ -8,8 +8,8 @@ debian-package: debian-package-resources debian-package-code debian-package-rust
 # (rustup picks it up when cargo runs from inside rust/), installed under
 # /opt/aleph-vm/bin/ next to the supervisor-launcher dispatch script.
 # The deb keeps shipping the full Python tree regardless of the
-# ALEPH_VM_SUPERVISOR_IMPL flag (default python); the Rust daemon is inert
-# until an operator flips /etc/aleph-vm/supervisor.env.
+# ALEPH_VM_SUPERVISOR_IMPL flag (default rust); the Python daemon only runs
+# when an operator sets python in /etc/aleph-vm/supervisor.env.
 # Depends on debian-package-code because that target wipes and rebuilds
 # ./aleph-vm/opt/aleph-vm, where the binaries land.
 debian-package-rust: debian-package-code

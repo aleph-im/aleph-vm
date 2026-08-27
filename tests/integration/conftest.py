@@ -67,13 +67,14 @@ HAS_KVM = os.access("/dev/kvm", os.R_OK | os.W_OK)
 # Which supervisor daemon the suite drives: the same selector the packaged
 # launcher reads (design doc section 5). The tests themselves are
 # implementation-agnostic; only the spawn differs. Unknown values fail
-# loudly at collection: silently falling back to python would run the CI
-# matrix's rust leg against the wrong daemon.
-SUPERVISOR_IMPL = os.environ.get("ALEPH_VM_SUPERVISOR_IMPL", "python")
+# loudly at collection: silently picking one daemon would run a CI matrix
+# leg against the wrong implementation. The default mirrors the launcher's
+# (rust since 2.0).
+SUPERVISOR_IMPL = os.environ.get("ALEPH_VM_SUPERVISOR_IMPL", "rust")
 if SUPERVISOR_IMPL not in ("python", "rust"):
     msg = (
         f"unknown ALEPH_VM_SUPERVISOR_IMPL={SUPERVISOR_IMPL!r}: "
-        "expected 'python' or 'rust' (refusing to silently test the python daemon)"
+        "expected 'python' or 'rust' (refusing to silently pick a daemon)"
     )
     raise RuntimeError(msg)
 RUST_DAEMON_BINARY = Path(

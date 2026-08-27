@@ -87,13 +87,14 @@ never uses it.
 Both a Python supervisor daemon (`src/aleph/vm/supervisor/daemon.py`) and a
 Rust one (`rust/crates/supervisor-daemon`) ship in the same `.deb`. Which one
 runs is an environment variable, `ALEPH_VM_SUPERVISOR_IMPL` (default
-`python`), read by a tiny dispatch script the systemd unit execs:
+`rust` since 2.0), read by a tiny dispatch script the systemd unit execs:
 `packaging/supervisor-launcher` for the daemon and
 `packaging/controller-launcher` for each per-VM controller. Both scripts read
 the same `/etc/aleph-vm/supervisor.env`, so one env change switches the
-daemon and every controller together; an operator typo falls back to
-`python` rather than failing to start. Cutover and rollback are therefore a
-config change, not a packaging event.
+daemon and every controller together; an operator typo falls back to the
+default (`rust`) rather than failing to start. Rollback to the Python daemon
+is therefore a config change (`ALEPH_VM_SUPERVISOR_IMPL=python`), not a
+packaging event.
 
 ### systemd unit topology
 
