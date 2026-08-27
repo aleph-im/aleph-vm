@@ -207,7 +207,10 @@ impl SecretStore {
                 // Partial write: some secrets may already be on disk.
                 // Still mark as injected to prevent retry with inconsistent state.
                 **guard = true;
-                return InjectOutcome::Internal(format!("failed to write secret: {key}"));
+                // The key name is already in the log line above; keep it out
+                // of the response body (a secret's name can itself be
+                // sensitive, and the caller knows which keys it sent).
+                return InjectOutcome::Internal("failed to write secret".to_string());
             }
             info!(key = %key, "injected secret");
             injected.push(key.clone());

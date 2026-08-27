@@ -44,6 +44,15 @@ pub struct AppState {
     pub http_client: reqwest::Client,
 }
 
+/// Upper bound on the decoded nonce accepted by the attestation endpoint.
+///
+/// The nonce is hashed into `report_data` (see `aleph_tee::report_data`), so
+/// its length carries no security value beyond the entropy a caller wants to
+/// commit; 32 bytes is the conventional size, 128 leaves generous room. The
+/// cap only exists so a caller cannot make the agent hex-decode and hash an
+/// arbitrarily long query string.
+pub const MAX_NONCE_LEN: usize = 128;
+
 /// Query parameters for the attestation endpoint.
 #[derive(Deserialize)]
 pub struct AttestationQuery {
@@ -62,6 +71,13 @@ pub async fn attestation_endpoint(
     state: web::Data<AppState>,
     query: web::Query<AttestationQuery>,
 ) -> HttpResponse {
+    // Bound the nonce before decoding so an oversized query string is
+    // rejected without being hex-decoded first.
+    if query.nonce.len() > MAX_NONCE_LEN * 2 {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": format!("nonce too long: at most {MAX_NONCE_LEN} bytes ({} hex chars)", MAX_NONCE_LEN * 2)
+        }));
+    }
     // Decode the hex nonce.
     let nonce = match hex::decode(&query.nonce) {
         Ok(n) => n,
@@ -75,9 +91,11 @@ pub async fn attestation_endpoint(
     match get_fresh_report(state.backend.as_ref(), &state.served_public_key_raw, &nonce) {
         Ok(report) => HttpResponse::Ok().json(report),
         Err(e) => {
+            // The full error (backend, device path, firmware status) stays in
+            // the guest log; the client only learns that the report failed.
             tracing::error!("attestation report failed: {e:#}");
             HttpResponse::InternalServerError()
-                .json(serde_json::json!({"error": format!("attestation failed: {e:#}")}))
+                .json(serde_json::json!({"error": "attestation report failed"}))
         }
     }
 }
@@ -156,9 +174,10 @@ pub async fn proxy_handler(
             }
         }
         Err(e) => {
+            // Same split as above: the reqwest error names the upstream
+            // address and the failure detail, which belong in the log only.
             tracing::error!("proxy request to {upstream_url} failed: {e:#}");
-            HttpResponse::BadGateway()
-                .json(serde_json::json!({"error": format!("upstream unreachable: {e:#}")}))
+            HttpResponse::BadGateway().json(serde_json::json!({"error": "upstream unreachable"}))
         }
     }
 }
