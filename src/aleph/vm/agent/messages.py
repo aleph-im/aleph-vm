@@ -18,6 +18,12 @@ async def try_get_message(ref: str) -> ExecutableMessage:
     """Get the message or raise an aiohttp HTTP error"""
     try:
         return await get_message(ref)
+    except FileNotFoundError as error:
+        # The API answered but has no message under this hash: never
+        # existed, or forgotten since. A caller's bad reference, not a
+        # node failure, so a 404 rather than the 500 an unhandled error
+        # would produce.
+        raise HTTPNotFound(reason="Hash not found", text=f"Hash not found: {ref}") from error
     except ClientConnectorError as error:
         raise HTTPServiceUnavailable(reason="Aleph Connector unavailable") from error
     except ClientResponseError as error:
