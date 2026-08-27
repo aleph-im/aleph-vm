@@ -100,7 +100,14 @@ async fn main() -> Result<()> {
         backend,
         served_public_key_raw,
         upstream: cli.upstream.clone(),
-        http_client: reqwest::Client::new(),
+        // A reverse proxy relays 3xx responses to the caller; it must never
+        // follow them itself, or an upstream redirect would make the agent
+        // fetch (and serve, over the attested channel) whatever the redirect
+        // points at, which can be anything reachable from inside the guest.
+        http_client: reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .context("failed to build upstream HTTP client")?,
     });
     // Secret store: one-shot without --owner, overwriting with --owner (see
     // secrets::inject_secret_handler). Writes to the production
