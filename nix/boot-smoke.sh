@@ -40,7 +40,8 @@ qemu_pid=$!
 markers=(
   "init: mounting /dev/mapper/verity-root"
   "init: firewall active"
-  "init: starting /sbin/init from rootfs"
+  # init.sh names the mount point ("from /mnt/root"), so match the prefix.
+  "init: starting /sbin/init from "
 )
 
 deadline=$((SECONDS + 120))
