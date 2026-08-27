@@ -187,7 +187,13 @@ that init runs, `setup_firewall` loads a stateless nftables ruleset that
 drops everything inbound except loopback and `tcp dport 8443`, so the raw
 workload port is never reachable except through the attest-agent's proxy.
 The agent itself (`aleph-attest-agent --port 8443 --upstream
-http://127.0.0.1:8080`) starts last.
+http://127.0.0.1:8080`) starts just before the chroot; init then waits on
+the guest's pid and powers the VM off when it exits, so a dead workload
+never sits behind a live attested endpoint. This makes the foreground
+contract load-bearing for every image flavor: the chrooted `/sbin/init`
+(a V-PROGRAM workload entrypoint, the compose runner, or an owner-built
+confidential-instance rootfs) must not daemonize and return, or the VM
+powers off right after it starts.
 
 The daemon-side half of the roothash story is
 `rust/crates/supervisor-daemon/src/lifecycle.rs`, `snp_config_slice`. The

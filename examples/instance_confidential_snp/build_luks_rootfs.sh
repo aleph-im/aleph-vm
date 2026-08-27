@@ -6,8 +6,12 @@
 #
 # Contract (docs/plans/2026-08-18-snp-confidential-instances-design.md):
 # whole-device LUKS2 container, ext4 inside, an executable /sbin/init run
-# CHROOTED by the measured init (not PID 1: systemd images will not work),
-# SSH keys and all provisioning inside the image. The CRN never sees the
+# CHROOTED by the measured init (not PID 1: systemd images will not work)
+# that MUST stay in the foreground (the measured init waits on it and powers
+# the VM off as soon as it exits, so a daemonizing init or a wrapper script
+# that backgrounds its services and returns gets the VM shut down right
+# after the passphrase is injected), SSH keys and all provisioning inside
+# the image. The CRN never sees the
 # passphrase; it is injected post-attestation by the `aleph` CLI (aleph-rs)
 # over the owner-key-gated attested-TLS channel.
 set -euo pipefail

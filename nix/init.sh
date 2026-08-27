@@ -5,8 +5,9 @@
 # aleph-cvm donor: the LUKS encrypted-rootfs branch and the compose workload
 # volume branch are stripped (design section 6 non-goals). What remains is the
 # core measured-boot chain: bring up networking, verify + mount the
-# dm-verity-protected rootfs (or plain-mount if no roothash), chroot into it,
-# and start the attestation agent. See rust-port-divergences.
+# dm-verity-protected rootfs (or plain-mount if no roothash), start the
+# attestation agent, chroot into the rootfs and wait on that /sbin/init,
+# powering off when it exits. See rust-port-divergences.
 #
 # The mounts/networking prologue and the wait_for_rootfs_blkdev/wait_for_dev/
 # prepare_chroot helpers live in init-common.sh, shared with init-instance.sh.
