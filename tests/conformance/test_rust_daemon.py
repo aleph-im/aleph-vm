@@ -2,10 +2,10 @@
 
 Boots the compiled `aleph-vm-supervisor` binary on a temporary socket and
 drives it with the production Python client (GrpcSupervisor). The Python
-in-process implementation (LocalSupervisor.get_host_info) is the parity
-oracle; since it needs a full VmPool, the expectations are computed from the
-same primary sources it reads (os.cpu_count, psutil MemTotal, os.uname,
-netifaces on the default route interface, shutil.disk_usage, lspci).
+daemon's ``LocalSupervisor.get_host_info`` was the parity oracle (that daemon
+was removed in 2026-08); the expectations are computed from the same primary
+sources it read (os.cpu_count, psutil MemTotal, os.uname, the addresses of
+the default-route interface via ``ip -4 addr``, shutil.disk_usage, lspci).
 
 Opt-in: the suite runs only with ALEPH_VM_CONFORMANCE=1 and cargo on PATH,
 so the regular Python CI job never pays for a Rust build.
