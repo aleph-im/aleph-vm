@@ -89,6 +89,9 @@ let
   buildScript = pkgs.writeShellScript "build-compose-rootfs" ''
     set -euo pipefail
 
+    # Mount-point for verified data volumes (mount_verified_volumes in the
+    # initrd): a tmpfs over /volumes holds the per-index directories, since
+    # this rootfs is read-only under dm-verity at boot.
     mkdir -p rootfs/nix/store rootfs/sbin rootfs/bin rootfs/mnt/workload rootfs/etc rootfs/var rootfs/run rootfs/tmp rootfs/dev rootfs/proc rootfs/sys rootfs/root rootfs/sys/fs/cgroup rootfs/etc/containers/networks rootfs/dev/shm rootfs/tmp/secrets rootfs/volumes
 
     # Bind-mount target for the initrd's /etc/resolv.conf file bind-mount
@@ -96,10 +99,6 @@ let
     # target, and the rootfs is read-only under dm-verity so init cannot
     # create it at boot).
     touch rootfs/etc/resolv.conf
-
-    # Mount-point for verified data volumes (mount_verified_volumes in the
-    # initrd): a tmpfs over /volumes holds the per-index directories, since
-    # this rootfs is read-only under dm-verity at boot.
 
     # Same read-only constraint for the secrets bind-mount target.
     chmod 1777 rootfs/tmp

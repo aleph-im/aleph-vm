@@ -221,7 +221,7 @@ mount_verified_volumes() {
         echo "init: FATAL: verified_volumes set but ${guest_root} ships no /volumes mount-point directory"
         exec /bin/busybox poweroff -f
     fi
-    if ! /bin/busybox mount -t tmpfs tmpfs "${guest_root}/volumes"; then
+    if ! /bin/busybox mount -t tmpfs -o nodev,nosuid tmpfs "${guest_root}/volumes"; then
         echo "init: FATAL: tmpfs mount on ${guest_root}/volumes failed"
         exec /bin/busybox poweroff -f
     fi
@@ -245,7 +245,7 @@ mount_verified_volumes() {
             exec /bin/busybox poweroff -f
         fi
         /bin/busybox mkdir -p "${guest_root}/volumes/${volume_index}"
-        if ! /bin/busybox mount -t ext4 -o ro "/dev/mapper/verity-volume-${volume_index}" "${guest_root}/volumes/${volume_index}"; then
+        if ! /bin/busybox mount -t ext4 -o ro,nodev,nosuid "/dev/mapper/verity-volume-${volume_index}" "${guest_root}/volumes/${volume_index}"; then
             echo "init: FATAL: verity mount failed for volume ${volume_index}"
             exec /bin/busybox poweroff -f
         fi

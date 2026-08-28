@@ -27,9 +27,12 @@ workload_roothash=$(/bin/busybox sed -n 's/.*\bworkload_roothash=\([0-9a-fA-F]*\
 
 # Verified data volumes: comma-joined roothashes, lowercase hex only (the
 # schema and daemon both pin lowercase). Same \b reasoning as above: no
-# other token ends in "verified_volumes".
+# other token ends in "verified_volumes". Capture up to the next space (not
+# a charset restricted to [0-9a-f,]): a malformed token must reach
+# mount_verified_volumes' anchored grep so it is the one gate that decides
+# well-formedness, rather than silently truncating to an empty capture here.
 # shellcheck disable=SC2034  # verified_volumes is consumed by mount_verified_volumes (init-common.sh), not here
-verified_volumes=$(/bin/busybox sed -n 's/.*\bverified_volumes=\([0-9a-f,]*\).*/\1/p' /proc/cmdline)
+verified_volumes=$(/bin/busybox sed -n 's/.*\bverified_volumes=\([^ ]*\).*/\1/p' /proc/cmdline)
 
 # Wait for the rootfs block device to appear.
 wait_for_rootfs_blkdev
