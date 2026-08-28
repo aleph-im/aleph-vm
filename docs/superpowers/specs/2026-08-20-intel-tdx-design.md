@@ -48,7 +48,17 @@ free in-flight edit. Accepted deliberately: neither `aleph-sdk` nor
 `aleph-types` is published to crates.io, so consumers resolve through git tags
 and the blast radius is a coordinated internal bump.
 
-**Spike 1 resolved, spike 2 inherits the top slot.** QEMU's `tdx-guest` object
+**Spike 2 resolved, and it moved the design.** The reassuring half: the
+deployment-varying firmware inputs (TD HOB, CFV) go to `rtmr0`, which decision 3
+already leaves unpinned, and the one deployment-varying input that could reach
+`rtmr1` (the GPT, via PCR 5) is avoided by never booting through the UEFI boot
+manager off a partition table. The unwelcome half: TDVF uses
+`BlobVerifierLibNull`, so unlike SEV-SNP nothing binds the kernel cmdline or
+initrd to any measurement. That invalidates a premise 6.2 rests on. New section
+6.6 records both, and proposes shipping the TDX runtime as a UKI so that
+kernel, initrd and cmdline collapse into a single measured PE in `rtmr1`.
+
+**Spike 1 resolved.** QEMU's `tdx-guest` object
 does expose a settable `mrconfigid`, verified through the whole host-side chain
 (6.2), so the MRCONFIGID recipe in section 6 stands. The remaining
 highest-risk unknown is whether TDVF folds anything deployment-varying into
@@ -499,6 +509,12 @@ QEMU start. A CRN that sets a malformed `mrconfigid` does not launch a
 mis-measured TD, it fails to launch at all. That is a third leg alongside the
 two in the paragraph above.
 
+**The cmdline premise below does not survive the port.** This recipe keeps the
+cmdline fixed per runtime and relies on that. On SEV-SNP the cmdline sits in the
+launch digest, so "fixed" is enforced; on TDX nothing measures or verifies it.
+See 6.6, which also proposes the remedy (ship the runtime as a UKI). Read 6.2
+as conditional on that being settled.
+
 **What is still unexercised.** `MRCONFIGID` is all-zero in **all four** 8.1
 fixtures. Nothing we hold demonstrates a populated value surviving into a
 quote, so the QEMU-to-quote path is confirmed by source and architecture but
@@ -624,6 +640,84 @@ spike 5 confirms the kernel interface and real hardware has exercised the path.
 and hardening later is not a protocol change.
 
 ---
+
+### 6.6 What TDVF actually measures, and the direct-boot gap
+
+Resolved spike 2, 2026-08-28, against EDK2 `edk2-stable202608`. The answer to
+the question as asked is reassuring. What turned up alongside it is not, and it
+changes the boot recipe.
+
+**The register mapping**, from
+`OvmfPkg/IntelTdx/TdxMeasurementLib/TdxMeasurementCommon.c`:
+
+| TPM PCR | TDX register |
+|---|---|
+| 0 | MRTD |
+| 1, 7 | `rtmr0` |
+| 2 to 6 | `rtmr1` |
+| 8 to 15 | `rtmr2` |
+
+**The deployment-varying firmware inputs land in `rtmr0`, which we already do
+not pin.** `SecTdxHelper.c` extends both the TD HOB and the CFV to RTMR index 0
+explicitly. The TD HOB is the VMM-supplied memory-resource description, so it
+varies with RAM size and topology; the CFV is the variable store. Decision 3's
+choice to leave `rtmr0` unpinned was right, and for exactly this reason.
+
+**One deployment-varying input can reach `rtmr1`: the GPT.**
+`SecurityPkg/Library/DxeTpm2MeasureBootLib`, which TDVF pulls into
+`SecurityStubDxe`, measures the GPT partition table at `PCRIndex = 5` and
+routes it through `CcProtocol->MapPcrToMrIndex`, so PCR 5 lands in `rtmr1`.
+Partition GUIDs and layout differ per deployment, so a bundle booted through
+the UEFI boot manager off a GPT disk has an unpublishable `rtmr1`.
+
+Avoidable rather than fatal. The GPT measurement is gated on
+`LocateDevicePath (&gEfiBlockIoProtocolGuid, ...)` succeeding for the boot
+device, and runs at most once (`mTcg2MeasureGptTableFlag`). A kernel loaded
+from the fw_cfg-backed `QemuKernelLoaderFs` is not a BlockIo GPT device, so the
+path never fires. **Constraint: the TDX boot path must load the kernel directly
+and must never boot through the UEFI boot manager off a GPT disk.** A rootfs the
+*kernel* mounts later is fine; it is UEFI-level boot from a partition that
+pollutes the register.
+
+**The larger problem: on TDX nothing binds the kernel, initrd or cmdline.**
+
+On SEV-SNP this is handled by OVMF kernel hashing.
+`OvmfPkg/AmdSev/AmdSevX64.dsc` sets
+`BlobVerifierLib | BlobVerifierLibSevHashes`, which checks the fw_cfg-loaded
+kernel, initrd and cmdline against a hash table injected into the launch
+measurement. That is what puts all three inside the SNP launch digest today.
+
+`OvmfPkg/IntelTdx/IntelTdxX64.dsc` sets `BlobVerifierLibNull`. There is no TDX
+equivalent of the SEV hashes mechanism, and MRTD covers only the firmware
+image, not fw_cfg content. Tracing the load path in
+`OvmfPkg/Library/GenericQemuLoadImageLib`: the cmdline is read from the
+synthetic `cmdline` file and assigned to `LoadOptions`, and the library
+contains **zero** measurement calls. The kernel PE itself *is* measured, since
+`gBS->LoadImage` reaches the security stub and `Tcg2MeasurePeImage` at
+`PCRIndex = 4`, hence `rtmr1`. The cmdline and initrd are neither measured nor
+verified.
+
+So 6.2's "the cmdline is fixed per runtime" is fixed only by intention. Nothing
+enforces it, and a malicious host can vary it freely without moving any
+register. On SNP that sentence is true because the cmdline is in the launch
+digest. Ported to TDX unchanged it is false, and it is load-bearing for the
+whole recipe.
+
+**Proposed remedy: ship the TDX runtime as a UKI.** A unified kernel image is a
+single PE binary carrying kernel, initrd and cmdline as `.linux`, `.initrd` and
+`.cmdline` sections. `LoadImage` measures the Authenticode hash over the whole
+PE, so all three collapse into one deterministic `rtmr1` measurement through
+the PCR 4 path confirmed above, with no dependence on a TDX blob verifier that
+does not exist. It composes with the GPT constraint, since a UKI loads from
+`QemuKernelLoaderFs` and never touches a partition table.
+
+This needs confirming against a real TDVF boot before 6.2 is rewritten around
+it, because it rests on the PE hash covering the section payloads as expected.
+It is the last item in this design that needs hardware to settle, and it is the
+first thing to check when a TDX host appears. The alternatives, for the record:
+embed the kernel into the firmware image so MRTD covers it, which is the
+TD-Shim and IGVM direction section 10 already tracks, or write and upstream a
+TDX blob verifier, which is materially more work than either.
 
 ## 7. Hardware-gated surface (specified, not built)
 
@@ -861,6 +955,7 @@ RA-TLS.
 | 8 | Node-side launch-TCB tracking (7.6) | aleph-vm | TEE-agnostic; buildable for SNP today; still unbuilt |
 | 9 | `DOMAIN_LAUNCH_TCB` + client-side `rtmr3` recomputation, warn-on-mismatch (6.5) | aleph-vm, aleph-rs | hardware-free; guest-side extend ships with 7 |
 | 10 | TDX guest kernel config in the whitelist fragment, as its own measured runtime | aleph-vm | **New.** See below. |
+| 11 | Build the TDX runtime as a UKI; forbid UEFI boot from a GPT disk on the TDX path | aleph-vm (nix) | **New.** Closes the 6.6 gap; confirm the PE measurement on first hardware. |
 
 **Increment 10 is new**, created by PR #1169's move to `allnoconfig` plus an
 explicit whitelist fragment. Under the previous distro config, TDX guest
@@ -920,14 +1015,12 @@ now the highest-risk item and the next thing to investigate.
    6.2. Decision 4 stands and the `rtmr2` fallback is not needed. The residual
    is only that no fixture demonstrates a populated value reaching a quote, so
    confirming that end to end is a Tier 2 item for first hardware.
-2. **[HIGHEST PRIORITY] Is anything deployment-varying folded into `rtmr1` or
-   `rtmr2`?** Under the
-   6.2 recipe the cmdline is fixed per runtime, so which of the two registers
-   receives it no longer matters. What does matter is whether TDVF measures
-   anything that differs between deployments of the same bundle: the descriptor
-   block device, the VM UUID, ACPI tables, or boot order. Any such input makes
-   the affected register unpublishable in the manifest and forces it out of the
-   pinned set. This is the highest-risk spike in the list.
+2. **~~Is anything deployment-varying folded into `rtmr1` or `rtmr2`?~~
+   RESOLVED 2026-08-28.** Answer to the question as asked: not if we forbid one
+   specific boot path. But answering it surfaced a larger problem. Both the
+   register mapping and the resulting constraint are recorded in the new
+   section 6.6, which also documents why 6.2's "the cmdline is fixed per
+   runtime" does not hold on TDX as it does on SEV-SNP.
 3. **Does our nix guest kernel's ConfigFS-TSM `outblob` yield a full quote or a
    bare TDREPORT?** Determines whether decision 2 holds as written or needs the
    `/dev/tdx_guest` `GET_QUOTE` ioctl fallback.
