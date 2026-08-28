@@ -236,6 +236,13 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
     # ' verified_volumes=h1,h2' from this sidecar next to the rootfs, exactly
     # like the workload roothash above; no sidecar means no cmdline token,
     # matching the CLI's template-token dropping for volume-less messages.
+    # A runtime whose template has no {verified_volumes} slot cannot bind
+    # volumes into its measurement: refuse the launch up front (the CLI
+    # refuses the same way before signing), rather than boot a 1.0 initrd
+    # that ignores the token and fail later as an attestation mismatch.
+    if content.volumes and "{verified_volumes}" not in manifest.boot.cmdline_template:
+        msg = f"V-PROGRAM {vm_hash} declares verified volumes but runtime {content.runtime.ref} has no {{verified_volumes}} cmdline slot"
+        raise VmSetupError(msg)
     if len(content.volumes) > MAX_VERIFIED_VOLUMES:
         msg = (
             f"V-PROGRAM {vm_hash} declares {len(content.volumes)} volumes; at most {MAX_VERIFIED_VOLUMES} are supported"
