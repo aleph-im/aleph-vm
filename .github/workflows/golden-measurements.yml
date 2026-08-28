@@ -8,7 +8,7 @@ name: "Golden SEV-SNP measurements"
 # static-musl attest-agent), about 20 minutes on a 4-vCPU runner since the
 # kernel became a whitelist config (nix/kernel-config.fragment); it was
 # 2h20m on nixpkgs' distro config. Trigger surface instead:
-#   - PRs and dev/main pushes touching the measured inputs
+#   - PRs and dev*/main pushes touching the measured inputs
 #   - a weekly cron, which catches reproducibility drift with unchanged
 #     inputs (the flake is fully pinned, so any diff on cron is drift)
 #   - manual dispatch
@@ -19,7 +19,7 @@ on:
     # Mondays, 06:17 UTC.
     - cron: "17 6 * * 1"
   push:
-    branches: [main, dev]
+    branches: [main, 'dev*']
     paths:
       - "nix/**"
       # The initrd bakes the attest-agent binary. Its measured input set is
@@ -34,8 +34,8 @@ on:
       - ".github/workflows/golden-measurements.yml"
   pull_request:
     # od/** covers stacked PRs (increment N+1 based on increment N's
-    # branch), which must carry CI before the stack lands on dev.
-    branches: [main, dev, od/**]
+    # branch), which must carry CI before the stack lands on a dev branch.
+    branches: [main, 'dev*', od/**]
     paths:
       - "nix/**"
       # The initrd bakes the attest-agent binary. Its measured input set is

@@ -4,11 +4,11 @@ name: "py.test and linting"
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main, 'dev*']
   pull_request:
     # od/** covers stacked PRs (increment N+1 based on increment N's
-    # branch), which must carry CI before the stack lands on dev.
-    branches: [main, dev, od/**]
+    # branch), which must carry CI before the stack lands on a dev branch.
+    branches: [main, 'dev*', od/**]
 
 
 jobs:
