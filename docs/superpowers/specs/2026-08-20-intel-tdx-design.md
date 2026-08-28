@@ -48,15 +48,14 @@ free in-flight edit. Accepted deliberately: neither `aleph-sdk` nor
 `aleph-types` is published to crates.io, so consumers resolve through git tags
 and the blast radius is a coordinated internal bump.
 
-**Spike 2 resolved, and it moved the design.** The reassuring half: the
-deployment-varying firmware inputs (TD HOB, CFV) go to `rtmr0`, which decision 3
-already leaves unpinned, and the one deployment-varying input that could reach
-`rtmr1` (the GPT, via PCR 5) is avoided by never booting through the UEFI boot
-manager off a partition table. The unwelcome half: TDVF uses
-`BlobVerifierLibNull`, so unlike SEV-SNP nothing binds the kernel cmdline or
-initrd to any measurement. That invalidates a premise 6.2 rests on. New section
-6.6 records both, and proposes shipping the TDX runtime as a UKI so that
-kernel, initrd and cmdline collapse into a single measured PE in `rtmr1`.
+**Spike 2 resolved.** The deployment-varying firmware inputs (TD HOB, CFV) go
+to `rtmr0`, which decision 3 already leaves unpinned, so that decision was
+right. The one deployment-varying input that can reach `rtmr1` is the GPT, via
+PCR 5, avoided by never booting through the UEFI boot manager off a partition
+table. New section 6.6 records the full input-to-register map, traced to call
+sites. One question is left open there and deliberately not decided: which
+register receives the kernel cmdline. It is answerable without hardware and
+gates increment 7.
 
 **Spike 1 resolved.** QEMU's `tdx-guest` object
 does expose a settable `mrconfigid`, verified through the whole host-side chain
@@ -509,11 +508,13 @@ QEMU start. A CRN that sets a malformed `mrconfigid` does not launch a
 mis-measured TD, it fails to launch at all. That is a third leg alongside the
 two in the paragraph above.
 
-**The cmdline premise below does not survive the port.** This recipe keeps the
-cmdline fixed per runtime and relies on that. On SEV-SNP the cmdline sits in the
-launch digest, so "fixed" is enforced; on TDX nothing measures or verifies it.
-See 6.6, which also proposes the remedy (ship the runtime as a UKI). Read 6.2
-as conditional on that being settled.
+**The cmdline premise needs checking before this recipe is final.** On SEV-SNP
+the cmdline sits in the launch digest, so "fixed per runtime" is enforced. On
+TDX it is measured, but 6.6 could not settle into which register: an EDK2 trace
+points at `rtmr0` (via the `Boot####` variable), which this design does not pin,
+while `tdx-measure` attributes it to `rtmr1`/`rtmr2`. If it is `rtmr0`, the
+cmdline must move into the `MRCONFIGID` descriptor below. 6.6 describes a
+hardware-free experiment that settles it.
 
 **What is still unexercised.** `MRCONFIGID` is all-zero in **all four** 8.1
 fixtures. Nothing we hold demonstrates a populated value surviving into a
@@ -641,11 +642,9 @@ and hardening later is not a protocol change.
 
 ---
 
-### 6.6 What TDVF actually measures, and the direct-boot gap
+### 6.6 What TDVF actually measures
 
-Resolved spike 2, 2026-08-28, against EDK2 `edk2-stable202608`. The answer to
-the question as asked is reassuring. What turned up alongside it is not, and it
-changes the boot recipe.
+Resolved spike 2, 2026-08-28, against EDK2 `edk2-stable202608`.
 
 **The register mapping**, from
 `OvmfPkg/IntelTdx/TdxMeasurementLib/TdxMeasurementCommon.c`:
@@ -657,67 +656,69 @@ changes the boot recipe.
 | 2 to 6 | `rtmr1` |
 | 8 to 15 | `rtmr2` |
 
-**The deployment-varying firmware inputs land in `rtmr0`, which we already do
-not pin.** `SecTdxHelper.c` extends both the TD HOB and the CFV to RTMR index 0
-explicitly. The TD HOB is the VMM-supplied memory-resource description, so it
-varies with RAM size and topology; the CFV is the variable store. Decision 3's
-choice to leave `rtmr0` unpinned was right, and for exactly this reason.
+**Where each input lands**, all traced to a specific call site:
 
-**One deployment-varying input can reach `rtmr1`: the GPT.**
-`SecurityPkg/Library/DxeTpm2MeasureBootLib`, which TDVF pulls into
-`SecurityStubDxe`, measures the GPT partition table at `PCRIndex = 5` and
-routes it through `CcProtocol->MapPcrToMrIndex`, so PCR 5 lands in `rtmr1`.
-Partition GUIDs and layout differ per deployment, so a bundle booted through
-the UEFI boot manager off a GPT disk has an unpublishable `rtmr1`.
+| Input | Call site | PCR | Register |
+|---|---|---|---|
+| TD HOB (VMM memory layout) | `SecTdxHelper.c`, explicit RTMR index 0 | n/a | `rtmr0` |
+| CFV (variable store) | `SecTdxHelper.c`, explicit RTMR index 0 | n/a | `rtmr0` |
+| `BootOrder` and `Boot####` | `TdTcg2Dxe.c` `ReadAndMeasureBootVariable`, `MapPcrToMrIndex(1)` | 1 | `rtmr0` |
+| GPT partition table | `DxeTpm2MeasureBootLib` `Tcg2MeasureGptTable` | 5 | `rtmr1` |
+| Loaded PE image (the kernel) | `DxeTpm2MeasureBootLib` `Tcg2MeasurePeImage` | 4 | `rtmr1` |
 
-Avoidable rather than fatal. The GPT measurement is gated on
+**Decision 3 is vindicated.** The deployment-varying firmware inputs (TD HOB,
+which carries RAM size and topology, and the CFV) go to `rtmr0`, which this
+design already declines to pin.
+
+**One constraint on the boot path.** The GPT partition table reaches `rtmr1`,
+and partition GUIDs differ per deployment. The measurement is gated on
 `LocateDevicePath (&gEfiBlockIoProtocolGuid, ...)` succeeding for the boot
-device, and runs at most once (`mTcg2MeasureGptTableFlag`). A kernel loaded
-from the fw_cfg-backed `QemuKernelLoaderFs` is not a BlockIo GPT device, so the
-path never fires. **Constraint: the TDX boot path must load the kernel directly
-and must never boot through the UEFI boot manager off a GPT disk.** A rootfs the
-*kernel* mounts later is fine; it is UEFI-level boot from a partition that
-pollutes the register.
+device and runs at most once (`mTcg2MeasureGptTableFlag`), so loading the kernel
+from the fw_cfg-backed `QemuKernelLoaderFs` avoids it entirely. **The TDX boot
+path must therefore load the kernel directly and never boot through the UEFI
+boot manager off a GPT disk.** A rootfs the *kernel* mounts later is fine; it is
+UEFI-level boot from a partition that pollutes the register.
 
-**The larger problem: on TDX nothing binds the kernel, initrd or cmdline.**
+**Direct boot is the standard approach, and it is what we should use.**
+Canonical's TDX reference stack boots this way, and `virtee/tdx-measure` (from
+the same organisation as the `sev-snp-measure` this design already relies on,
+itself a fork of `dstack-mr`) exists precisely to pre-compute MRTD and RTMR0 to
+RTMR2 for that boot chain from the kernel, initrd, cmdline and platform config.
+That tool is the natural counterpart to `sev-snp-measure` for increment 7.
 
-On SEV-SNP this is handled by OVMF kernel hashing.
-`OvmfPkg/AmdSev/AmdSevX64.dsc` sets
-`BlobVerifierLib | BlobVerifierLibSevHashes`, which checks the fw_cfg-loaded
-kernel, initrd and cmdline against a hash table injected into the launch
-measurement. That is what puts all three inside the SNP launch digest today.
+Note that IGVM, which section 10 tracks as a possible direction, is **not**
+available here: QEMU's IGVM support covers AMD SEV, SEV-ES and SEV-SNP only.
 
-`OvmfPkg/IntelTdx/IntelTdxX64.dsc` sets `BlobVerifierLibNull`. There is no TDX
-equivalent of the SEV hashes mechanism, and MRTD covers only the firmware
-image, not fw_cfg content. Tracing the load path in
-`OvmfPkg/Library/GenericQemuLoadImageLib`: the cmdline is read from the
-synthetic `cmdline` file and assigned to `LoadOptions`, and the library
-contains **zero** measurement calls. The kernel PE itself *is* measured, since
-`gBS->LoadImage` reaches the security stub and `Tcg2MeasurePeImage` at
-`PCRIndex = 4`, hence `rtmr1`. The cmdline and initrd are neither measured nor
-verified.
+**Open question: which register receives the cmdline.** Two sources disagree
+and this was not settled.
 
-So 6.2's "the cmdline is fixed per runtime" is fixed only by intention. Nothing
-enforces it, and a malicious host can vary it freely without moving any
-register. On SNP that sentence is true because the cmdline is in the launch
-digest. Ported to TDX unchanged it is false, and it is load-bearing for the
-whole recipe.
+- Tracing EDK2, the direct-boot kernel is launched through a `Boot####` UEFI
+  variable whose load options carry the cmdline, and `MeasureAllBootVariables`
+  routes those through `MapPcrToMrIndex(1)`, i.e. **`rtmr0`**.
+- `tdx-measure` documents its `direct` block (kernel, initrd, cmdline) as
+  computing **`rtmr1` and `rtmr2`**, and says the `Boot####` variable is derived
+  automatically for direct boot.
 
-**Proposed remedy: ship the TDX runtime as a UKI.** A unified kernel image is a
-single PE binary carrying kernel, initrd and cmdline as `.linux`, `.initrd` and
-`.cmdline` sections. `LoadImage` measures the Authenticode hash over the whole
-PE, so all three collapse into one deterministic `rtmr1` measurement through
-the PCR 4 path confirmed above, with no dependence on a TDX blob verifier that
-does not exist. It composes with the GPT constraint, since a UKI loads from
-`QemuKernelLoaderFs` and never touches a partition table.
+If the cmdline lands only in `rtmr0`, pinning MRTD, `rtmr1` and `rtmr2` does not
+bind it, and since `rtmr0` also carries the TD HOB it cannot simply be added to
+the pinned set: it varies with RAM size and vCPU count. That would be a real
+gap in the 6.2 recipe and would need answering, most likely by folding the
+cmdline into the `MRCONFIGID` deployment descriptor, which 6.2 already
+establishes as a channel the client pins and the guest checks. Recording that
+as the presumptive fallback rather than a decision.
 
-This needs confirming against a real TDVF boot before 6.2 is rewritten around
-it, because it rests on the PE hash covering the section payloads as expected.
-It is the last item in this design that needs hardware to settle, and it is the
-first thing to check when a TDX host appears. The alternatives, for the record:
-embed the kernel into the firmware image so MRTD covers it, which is the
-TD-Shim and IGVM direction section 10 already tracks, or write and upstream a
-TDX blob verifier, which is materially more work than either.
+**This is resolvable without hardware and should be, before increment 7.**
+`tdx-measure` computes measurements from files and config alone. Run it twice
+over identical inputs with only the cmdline changed and observe which register
+moves. That settles the question empirically and also validates the tool
+against our own boot chain, which increment 7 needs regardless.
+
+Note for whoever does it: TDVF uses `BlobVerifierLibNull` where
+`AmdSevX64.dsc` uses `BlobVerifierLibSevHashes`, so TDX gets no equivalent of
+SEV's pre-verification of the fw_cfg blobs against the launch measurement.
+Measurement and verification are separate concerns here, and only the former
+applies on TDX. That absence is what makes "which register receives the
+cmdline" the load-bearing question rather than a detail.
 
 ## 7. Hardware-gated surface (specified, not built)
 
@@ -955,7 +956,7 @@ RA-TLS.
 | 8 | Node-side launch-TCB tracking (7.6) | aleph-vm | TEE-agnostic; buildable for SNP today; still unbuilt |
 | 9 | `DOMAIN_LAUNCH_TCB` + client-side `rtmr3` recomputation, warn-on-mismatch (6.5) | aleph-vm, aleph-rs | hardware-free; guest-side extend ships with 7 |
 | 10 | TDX guest kernel config in the whitelist fragment, as its own measured runtime | aleph-vm | **New.** See below. |
-| 11 | Build the TDX runtime as a UKI; forbid UEFI boot from a GPT disk on the TDX path | aleph-vm (nix) | **New.** Closes the 6.6 gap; confirm the PE measurement on first hardware. |
+| 11 | Settle which register receives the cmdline, via a `tdx-measure` differential run; forbid UEFI boot from a GPT disk on the TDX path | aleph-vm | **New.** Hardware-free (6.6); gates increment 7. |
 
 **Increment 10 is new**, created by PR #1169's move to `allnoconfig` plus an
 explicit whitelist fragment. Under the previous distro config, TDX guest
