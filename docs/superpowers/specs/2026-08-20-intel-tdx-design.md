@@ -48,6 +48,12 @@ free in-flight edit. Accepted deliberately: neither `aleph-sdk` nor
 `aleph-types` is published to crates.io, so consumers resolve through git tags
 and the blast radius is a coordinated internal bump.
 
+**Spike 1 resolved, spike 2 inherits the top slot.** QEMU's `tdx-guest` object
+does expose a settable `mrconfigid`, verified through the whole host-side chain
+(6.2), so the MRCONFIGID recipe in section 6 stands. The remaining
+highest-risk unknown is whether TDVF folds anything deployment-varying into
+`rtmr1` or `rtmr2`, which would push those out of the pinned set.
+
 **Two new items, one new lever.** The guest kernel moved to LTS 6.18 with an
 eval-time floor assert (#1122), which resolves spike 5 favourably. Against
 that, PR #1169 rebuilds the guest kernel as `allnoconfig` plus an explicit
@@ -473,17 +479,32 @@ A lying CRN has no move: either it sets `MRCONFIGID` honestly, in which case the
 client's pin against the message catches any wrong value, or it sets it
 dishonestly, in which case the guest refuses to boot.
 
-**Caveat found 2026-08-28: nobody populates this field in practice.**
-`MRCONFIGID` is all-zero in **both** genuine production quotes among the 8.1
-fixtures, including the Sapphire Rapids production quote; only the synthetic v5
-samples carry a non-zero value. The field is architecturally present and
-measured, so the reasoning above stands, but the whole path from
-`qemu -object tdx-guest,mrconfigid=...` through the TDX module and into the
-quote is unexercised by any fixture we hold. That promotes spike 1 from
-background confirmation to the load-bearing question for this section: it is
-the one unknown that could still invalidate the recipe. It is answerable from
-QEMU and kernel source with no TDX hardware, so it should be settled before
-increment 7 is written up.
+**Confirmed settable, 2026-08-28.** The host-side path is real, and every link
+was checked rather than assumed:
+
+| Link | Evidence |
+|---|---|
+| `-object tdx-guest,mrconfigid=<base64>` | `mrconfigid` is a settable `string` property on the `tdx-guest` object, confirmed live via QMP `qom-list-properties` against QEMU 10.2.1. Siblings `mrowner`, `mrownerconfig`, `attributes`, `sept-ve-disable` and `quote-generation-socket` are all present, so decision 2's QGS path is settable the same way. |
+| base64, exactly 48 bytes | QEMU v10.2.0 `target/i386/kvm/tdx.c` runs `qbase64_decode`, then rejects anything whose length is not `QCRYPTO_HASH_DIGEST_LEN_SHA384`. |
+| into KVM | `memcpy(init_vm->mrconfigid, data, data_len)` then the `KVM_TDX_INIT_VM` ioctl. |
+| into the TDX module | Linux 6.18 uapi `struct kvm_tdx_init_vm { __u64 mrconfigid[6]; /* sha384 digest */ }`, landing in `struct td_params { u64 mrconfigid[6]; }`, the TD_PARAMS input to `TDH.MNG.INIT`. |
+
+Note `-object tdx-guest,help` reports "there are no options for tdx-guest";
+the properties are registered via `object_property_add_str`, so QMP
+`qom-list-properties` is the way to enumerate them. Worth knowing before
+concluding the object is unconfigurable.
+
+A useful side effect for 6.2's argument: the length check is fail-closed at
+QEMU start. A CRN that sets a malformed `mrconfigid` does not launch a
+mis-measured TD, it fails to launch at all. That is a third leg alongside the
+two in the paragraph above.
+
+**What is still unexercised.** `MRCONFIGID` is all-zero in **all four** 8.1
+fixtures. Nothing we hold demonstrates a populated value surviving into a
+quote, so the QEMU-to-quote path is confirmed by source and architecture but
+not by evidence. Closing that gap needs hardware and belongs to Tier 2. The
+recipe is safe to build against; it is the one thing to verify first when a TDX
+host does appear.
 
 **Descriptor delivery.** The descriptor must reach the guest over a channel that
 does not perturb `rtmr1` or `rtmr2`, or the recipe defeats its own purpose by
@@ -776,9 +797,19 @@ looks; it catches our parsing and chain-walk mistakes, not shared
 misinterpretations of the spec. Cross-checking against `go-tdx-guest`'s
 independent implementation is what covers that gap.
 
-Two findings from these fixtures are recorded where they bite: MRCONFIGID is
-all-zero in both genuine production quotes (6.2), and `rtmr3` is all-zero in
-every one of them (6.5).
+Two findings from these fixtures are recorded where they bite: `MRCONFIGID` is
+all-zero in all four (6.2), and so is `rtmr3` (6.5).
+
+**Parsing trap, worth stating because it was hit while checking the above.**
+The TD report body does not sit at a fixed offset. In quote v4 it begins
+directly after the 48-byte header. In v5 a *body descriptor* intervenes: a
+`u16` body type and a `u32` body size, so the body begins at offset 54, and the
+type distinguishes `TdReport10` (584 bytes) from `TdReport15` (648). Parsing a
+v5 quote at the v4 offset does not fail loudly, because everything is
+fixed-size opaque bytes; it silently shifts every register by six and yields
+plausible-looking digests. Both v5 fixtures here are `TdReport15`. Increment 2
+must dispatch on quote version before touching the body, and the parser tests
+should include a v5 quote specifically to catch this.
 
 ### 8.2 Test matrix
 
@@ -879,19 +910,18 @@ slips indefinitely, increment 8 should still ship.
 
 ## 11. Open questions (spikes, not design forks)
 
-**Status 2026-08-28:** spike 5 is resolved; spike 1 is promoted to the top of
-the list and is the next thing to investigate.
+**Status 2026-08-28:** spikes 1 and 5 are resolved, both favourably. Spike 2 is
+now the highest-risk item and the next thing to investigate.
 
-1. **[HIGHEST PRIORITY] Does QEMU's `tdx-guest` object expose `mrconfigid` as a
-   settable base64 property, and does the value survive into the quote?**
-   Believed yes, alongside `mrowner` and `mrownerconfig`, but it needs
-   confirming against the QEMU version we would target. Decision 4 depends on
-   it; if it is not settable, the fallback is per-deployment `rtmr2` plus TDVF
-   measurement emulation in the CCN, which is materially worse. Promoted
-   because the 8.1 fixtures show `MRCONFIGID` all-zero in genuine production
-   quotes (6.2), so nothing we hold exercises this path. Answerable from QEMU
-   and kernel source without hardware.
-2. **Is anything deployment-varying folded into `rtmr1` or `rtmr2`?** Under the
+1. **~~Does QEMU's `tdx-guest` object expose `mrconfigid` as a settable base64
+   property?~~ RESOLVED 2026-08-28, favourably.** It does: a settable `string`
+   property taking base64 that must decode to exactly 48 bytes, plumbed through
+   `KVM_TDX_INIT_VM` into the TDX module's TD_PARAMS. Full evidence chain in
+   6.2. Decision 4 stands and the `rtmr2` fallback is not needed. The residual
+   is only that no fixture demonstrates a populated value reaching a quote, so
+   confirming that end to end is a Tier 2 item for first hardware.
+2. **[HIGHEST PRIORITY] Is anything deployment-varying folded into `rtmr1` or
+   `rtmr2`?** Under the
    6.2 recipe the cmdline is fixed per runtime, so which of the two registers
    receives it no longer matters. What does matter is whether TDVF measures
    anything that differs between deployments of the same bundle: the descriptor
