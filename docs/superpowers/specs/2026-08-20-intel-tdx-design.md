@@ -1,15 +1,14 @@
 # Intel TDX support: design
 
-**Date:** 2026-08-20
-**Revised:** 2026-08-28 (see [Revision history](#revision-history))
+**Date:** 2026-08-20, revised 2026-08-28
 **Status:** Approved design, ready for implementation planning.
 **Branch:** `od/tdx-design` off `main`.
 
 **Driver:** roadmap / portability proof. There is no Intel TDX hardware in the
 fleet today. The purpose of this work is to prove that the `aleph-tee`
 abstraction generalizes beyond AMD, and to lock the protocol and schema seams
-that would be expensive to change once SEV-SNP ships. Hardware bring-up is
-specified here but deliberately not built.
+that would be expensive to change once they are in wide use. Hardware bring-up
+is specified here but deliberately not built.
 
 **Related:**
 
@@ -22,75 +21,22 @@ specified here but deliberately not built.
 
 ---
 
-## Revision history
-
-### 2026-08-28
-
-Four changes in the tree invalidated or unblocked parts of the original plan.
-
-**`dev` no longer exists.** It merged to `main` as aleph-vm 2.0.0, and the Rust
-supervisor and controller became the packaging default (#1171). This branch is
-now based on `main`. `TeeBackend` was narrowed in the interim to carry neither
-launch nor verification, which *helps*: the TDX backend owes only `get_report`
-and `parse_report`, exactly as section 7.1 assumed, and `TeeType::Tdx` is
-already a variant.
-
-**Increment 0 is no longer a blocker.** Real TDX quotes and complete DCAP
-collateral were sourced from open-source projects; see section 8.1. Nothing
-TDX-specific is gated on hardware any more. Only final validation is, and that
-is the Tier 2 concern the repo already models for SEV-SNP.
-
-**Increment 5's free window closed.** aleph-rs v0.17.0 shipped, publishing
-`aleph_sdk::attest::VerificationResult` with a scalar `measurement`, and
-aleph-vm 2.0.0 dropped `aleph-attest-cli` in favour of that SDK verifier. The
-register-map change is now a breaking change to a released crate rather than a
-free in-flight edit. Accepted deliberately: neither `aleph-sdk` nor
-`aleph-types` is published to crates.io, so consumers resolve through git tags
-and the blast radius is a coordinated internal bump.
-
-**Spike 2 resolved, and the design survives it.** Decision 3 was right: the
-deployment-varying firmware inputs (TD HOB, CFV) go to `rtmr0`, already
-unpinned. The cmdline lands in `rtmr2`, which is pinned, so 6.2's premise
-holds; this was measured with `virtee/tdx-measure` against our own guest image
-rather than argued. Three constraints fall out, all recorded in 6.6: never boot
-the TDX path off a GPT disk, require at least 2 GB of guest memory, and fix the
-machine shape (device set, device order, vCPU count) per runtime, since `rtmr1`
-tracks the ACPI table size. That last one is the TDX analogue of SEV-SNP's
-`vcpu_type` problem.
-
-**Spike 1 resolved.** QEMU's `tdx-guest` object
-does expose a settable `mrconfigid`, verified through the whole host-side chain
-(6.2), so the MRCONFIGID recipe in section 6 stands. The remaining
-highest-risk unknown is whether TDVF folds anything deployment-varying into
-`rtmr1` or `rtmr2`, which would push those out of the pinned set.
-
-**Two new items, one new lever.** The guest kernel moved to LTS 6.18 with an
-eval-time floor assert (#1122), which resolves spike 5 favourably. Against
-that, PR #1169 rebuilds the guest kernel as `allnoconfig` plus an explicit
-whitelist fragment, so TDX guest support is no longer free: it must be named in
-the fragment, and a TDX guest is a separate measured image. Finally,
-`nix/golden-measurements.json` and its weekly drift cron did not exist when
-this was written; increment 7 should extend that file rather than invent a
-parallel manifest mechanism. Note the golden file holds four scalar hex
-strings, so it needs the same scalar-to-register-map treatment as everything
-else.
-
----
-
 ## 1. Goal and scope
 
 Deliver two things:
 
-1. **The schema and trait seams**, landed now, so that adding TDX later is
-   additive rather than a breaking protocol change. The window is open: the
-   `aleph-message` TEE schema lives on the unmerged `od/vprogram-schema` branch
-   and the latest release is 1.2.0, so `LaunchMeasurement` can still change
-   shape for free.
+1. **The schema and trait seams.** The first half already shipped:
+   aleph-message 1.3.0 carries `LaunchMeasurement.registers` as an object
+   rather than a scalar digest, and aleph-vm 2.0.0 and aleph-rs 0.17.0 consume
+   it. What remains is the `tdx` platform value, `mode="tdx"`, and the
+   register-map form of `VerificationResult` (section 4.4), which is now a
+   breaking change to a released crate and should land before its cost grows
+   further.
 2. **A hardware-free TDX quote verifier** in `aleph-tee`. DCAP verification is
    pure computation: given one captured quote plus its Intel-signed collateral,
    the entire verifier can be implemented and fully tested with no TDX machine
-   anywhere. That is the bulk of the hard work, and it is the portability proof
-   made concrete rather than asserted.
+   anywhere. Real quotes and full collateral are available from open-source
+   projects (section 8.1), so nothing in this half waits on hardware.
 
 Out of scope for the buildable increment, specified in section 7: the in-guest
 backend, QEMU argument generation, the TDVF nix derivation, QGS/PCCS host
@@ -100,44 +46,56 @@ operations, and CRN capability advertisement.
 
 ## 2. Background: what already fits, and what does not
 
-The existing split isolates TDX's differences remarkably well. Three files'
-worth of new code plus two schema changes cover it.
+The existing split isolates TDX's differences well. Three files' worth of new
+code plus two schema changes cover it.
 
 | Layer | SEV-SNP today | TDX | Verdict |
 |---|---|---|---|
 | `TeeBackend` trait | report produce/parse only | same | unchanged |
 | `AttestationReport{tee_type,data}` | AMD blob is sole truth | quote is self-certifying | unchanged |
 | `report_data.rs` | domain-separated SHA-384 into 64 bytes | TDX `REPORTDATA` is also 64 bytes | unchanged |
-| `VerificationResult.measurement` | one `Vec<u8>` | needs N registers | **changes** |
-| `LaunchMeasurement.digest` | one hex scalar | needs N registers | **changes** |
+| `LaunchMeasurement.registers` | `SevSnpRegisters{launch}` | `TdxRegisters{mrtd, rtmr1, rtmr2, mrconfigid}` | discriminated union |
+| `VerificationResult.measurement` | one scalar | needs N registers | **changes**, breaking |
 | `snp_min_tcb` aggregate key | numeric SPL ladder | status + advisories + module SVN | **generalizes** |
 | verification chain | VCEK/ASK/ARK, pinned ARK | PCK chain, pinned Intel SGX Root CA | new module, same discipline |
 | privilege gate | `MAX_ACCEPTED_VMPL = 1` | `TDATTRIBUTES.DEBUG == 0`, `MRSIGNERSEAM == 0` | new module, same discipline |
 | launch argv | `sev-snp-guest` object | `tdx-guest` object | new function, spec only |
 | evidence source | `/dev/sev-guest` ioctl | ConfigFS-TSM `outblob` | new function, spec only |
+| expected-measurement tool | `sev-snp-measure` | `virtee/tdx-measure` | same org, same role |
 
 Placeholders already in the tree: `aleph_tee::types::TeeType::Tdx` (serializes
 as `"tdx"`, already tested), `HostInfo.tdx_supported = 6` and
 `TeeBackend.TEE_BACKEND_TDX = 3` in `proto/supervisor.proto`, and a `TeeConfig`
-that is already backend-agnostic.
+that is already backend-agnostic. `TeeBackend` deliberately carries neither
+launch nor verification, so a TDX backend owes only `get_report` and
+`parse_report`.
 
 ### 2.1 Two properties better than expected
 
 - **`vcpu_type` is not a TDX measurement input.** A TD's initial vCPU state is
   defined by the TDX module, not by the QEMU CPU model, so TDX
-  `LaunchMeasurement` entries carry `vcpu_type: None`: the same shape section 10
-  of the protocol design predicted for IGVM. The mixed-fleet problem SNP has
-  (distinct digests for EPYC-v3 and EPYC-v4) does not exist on TDX.
+  `LaunchMeasurement` entries carry `vcpu_type: None`. The mixed-fleet problem
+  SNP has (distinct digests for EPYC-v3 and EPYC-v4) does not exist on TDX.
+  Section 6.6 checked the other machine-shape inputs and found none that reach
+  the pinned registers.
 - **Verification needs no Intel API key.** The PCK certificate chain is embedded
   in the quote itself (cert data type 5). Only TCB Info, QE Identity and CRLs
   are fetched; all three are free, unauthenticated, and Intel-signed, so they
   are verifiable from any mirror or a local PCCS. The trust path never depends
   on who served the collateral.
 
-### 2.2 One property worse than expected
+### 2.2 One property different
 
-The CCN cannot recompute RTMRs. This drives the boot-recipe decision in
-section 6.
+RTMR recomputation is practical but version-coupled. `virtee/tdx-measure`
+reproduces MRTD and RTMR0 to RTMR2 for a direct-boot chain from the kernel,
+initrd, cmdline and platform configuration, and section 6.6 validates it
+against our own guest image. But it pins a QEMU source version per
+distribution, because the ACPI tables and kernel setup-header patching it
+models are QEMU's. That is the `sev-snp-measure` coupling the protocol design
+already complains about, with a second dimension. This shapes the boot recipe
+in section 6: the per-deployment binding goes somewhere the CCN can check with
+one hash, and RTMR recomputation is kept as an optional strengthening rather
+than the critical path.
 
 ---
 
@@ -146,10 +104,9 @@ section 6.
 1. **`LaunchMeasurement` carries a register object, not a scalar digest**, with
    a **closed** key set per platform. An unknown register key is as
    schema-invalid as an unknown platform. Adding a register later is a schema
-   release, which is the correct fail-closed stance. v1 ships this as a
-   concrete SEV-SNP model rather than a generic map, so the closed set is a
-   property of the type rather than of a validator; a second platform turns it
-   into a discriminated union. See section 4.1.
+   release, which is the correct fail-closed stance. Shipped in 1.3.0 as a
+   concrete SEV-SNP model; a second platform turns it into a discriminated
+   union. See section 4.1.
 2. **The `TeeBackend` trait is unchanged.** `get_report` stays synchronous and
    returns a quote; the TDX backend hides the host round trip inside a blocking
    ConfigFS-TSM `outblob` read. No async infection of `SevSnpBackend` or
@@ -159,25 +116,30 @@ section 6.
    TDX-module SVN floor. G1's architecture is preserved intact: client-side
    enforcement, compiled-in baseline, aggregate raises only.
 4. **The per-deployment binding moves from the measured cmdline into
-   `MRCONFIGID`** for TDX. This is what makes CCN validation tractable without
-   emulating TDVF's measurement protocol. See section 6.
+   `MRCONFIGID`** for TDX. The CCN then checks the binding by recomputing one
+   SHA-384, the guest enforces it at boot, and the cmdline stays fixed per
+   runtime so `rtmr2` is publishable. See section 6.
 5. **Pinned registers are `{mrtd, rtmr1, rtmr2, mrconfigid}`.** `rtmr0` is
-   deliberately not pinned: it varies with vCPU count and memory map, which are
-   deployment parameters, not code identity. `rtmr3` is not pinned either, but
-   it is not free; see decision 8.
+   deliberately not pinned: TDVF extends the VMM-supplied memory layout and the
+   variable store into it, which are deployment parameters, not code identity.
+   `rtmr3` is not pinned either, but it is not free; see decision 8.
 6. **We own the quote parsing and the policy.** Third-party DCAP crates are used
    as a differential-test oracle only, never in the trust path. Rationale in
    section 5.3.
 7. **The CCN validates `rtmr1`/`rtmr2` by comparison against the runtime
-   manifest**, not by derivation from first principles. An accepted, documented
-   weakening relative to SNP; see section 6.3.
+   manifest**, not by derivation. An accepted, documented weakening relative to
+   SNP that can be closed later with `tdx-measure`; see section 6.3.
 8. **`rtmr3` is reserved for a launch-TCB commitment**, extended exactly once by
    the measured initrd. This is what recovers a cryptographic launch-TCB gate on
    a platform whose quotes otherwise report only the current TCB. The register
    is *derived*, not pinned: it appears in no message, and the client recomputes
-   the expected value rather than comparing against a declared constant. The
-   semantics are reserved from v1; client enforcement starts as warn-on-mismatch
-   and hardens once real hardware has exercised it. See section 6.5.
+   the expected value rather than comparing against a declared constant. Client
+   enforcement starts as warn-on-mismatch and hardens once real hardware has
+   exercised it. See section 6.5.
+9. **Direct boot only, with two boot-path constraints.** The kernel is loaded
+   by TDVF from fw_cfg, never through the UEFI boot manager off a GPT disk, and
+   guest memory is at least 2.75 GB. Both keep deployment-varying inputs out of
+   `rtmr1`; see section 6.6.
 
 ---
 
@@ -185,13 +147,8 @@ section 6.
 
 ### 4.1 `LaunchMeasurement` (aleph-message)
 
-`digest: str` becomes `registers`, an object rather than a scalar, because a
-TEE's launch identity is not always one value.
-
-**Shipped shape (v1, SEV-SNP only).** Since exactly one platform is defined,
-`registers` is a concrete model rather than a generic map. The closed key set
-then falls out of the model itself: a required field plus `extra="forbid"`,
-with no validator to keep in step.
+Shipped in 1.3.0: `registers` is a concrete model, so the closed key set is a
+property of the type rather than of a validator.
 
 ```python
 class SevSnpRegisters(HashableModel):
@@ -205,16 +162,14 @@ class LaunchMeasurement(HashableModel):
     vcpu_type: Optional[str] = None
 ```
 
-This was deliberately chosen over a `Dict[str, str]` carrying per-platform
-required-key tables. The generic version needed a `_REQUIRED_REGISTERS` map, a
-`MAX_REGISTERS` cap, a register-name pattern and a `check_registers` validator,
-all to support a platform that does not exist yet. The concrete model gets a
-sharper JSON schema too (`required: ["launch"]` plus
-`additionalProperties: false`, rather than `maxProperties` and a
-`patternProperties` bag that cannot say which keys are expected), and located
-errors (`missing`, `extra_forbidden`) instead of hand-assembled messages.
+This was chosen over a `Dict[str, str]` with per-platform required-key tables.
+The generic version needed a `_REQUIRED_REGISTERS` map, a `MAX_REGISTERS` cap,
+a register-name pattern and a `check_registers` validator, all to support a
+platform that does not exist yet. The concrete model gets a sharper JSON schema
+(`required: ["launch"]` plus `additionalProperties: false`) and located errors
+(`missing`, `extra_forbidden`) instead of hand-assembled messages.
 
-**Adding TDX.** `registers` becomes a union discriminated on `platform`:
+**Adding TDX** turns `registers` into a union discriminated on `platform`:
 
 ```python
 class TdxRegisters(HashableModel):
@@ -229,10 +184,6 @@ registers: Annotated[Union[SevSnpRegisters, TdxRegisters], Field(discriminator=.
 
 That is a schema release either way, since an unknown `platform` is already
 schema-invalid (decision 1). The wire shape does not change for SEV-SNP.
-
-SEV-SNP migrates from `digest: "<hex>"` to `registers: {"launch": "<hex>"}`.
-Because `od/vprogram-schema` is unmerged and unreleased, there is no wire
-compatibility burden.
 
 `rtmr3` is deliberately absent from the TDX register set. It carries the
 launch-TCB commitment (section 6.5), which the client *derives* rather than
@@ -272,20 +223,23 @@ already-published floors keep working. In `aleph-rs`,
 `aleph_sdk::attest::tcb` gains a `TdxTcbPolicy` beside `TcbFloor`, and
 `TcbFloorPolicy::for_silicon` generalizes to dispatch on TEE type.
 
-### 4.4 `VerificationResult` (aleph-tee, Rust)
+### 4.4 `VerificationResult` (aleph-tee and aleph-sdk, Rust)
 
-Symmetric to 4.1: `measurement: Vec<u8>` becomes
-`registers: BTreeMap<String, Vec<u8>>`. SNP emits `{"launch": ...}`. The
-existing doc-comment invariant ("derived from the AMD-verified blob, NOT a
-caller-supplied copy") carries over verbatim and applies per register.
+Symmetric to 4.1, and shaped the same way: a concrete per-platform type, not a
+`BTreeMap`. The scalar `measurement` becomes `registers`, an enum discriminated
+on TEE type whose SEV-SNP arm carries `launch` and whose TDX arm carries the
+four pinned registers. The existing doc-comment invariant ("derived from the
+AMD-verified blob, NOT a caller-supplied copy") carries over verbatim and
+applies per register.
 
-**Revised 2026-08-28.** This is now a breaking change, not a free one. The same
-scalar exists in two shipped places: `aleph_tee::types::VerificationResult`
-(`measurement: Vec<u8>`) and, since aleph-rs v0.17.0, the public
+The same scalar exists in two shipped places: `aleph_tee::types::VerificationResult`
+(`measurement: Vec<u8>`) and, since aleph-rs 0.17.0, the public
 `aleph_sdk::attest::VerificationResult` (`measurement: String`). Both move
 together, in an aleph-rs 0.18.0 plus coordinated bumps in aleph-vm and
-aleph-vm-scheduler. The cost is a release, not a redesign, and it rises with
-every further release: this should land ahead of the TDX-specific increments
+aleph-vm-scheduler. Neither `aleph-sdk` nor `aleph-types` is published to
+crates.io, so consumers resolve through git tags and the blast radius is a
+coordinated internal bump. The cost is a release, not a redesign, and it rises
+with every further tag: this lands first, ahead of the TDX-specific increments,
 even though nothing about it is TDX-specific.
 
 ---
@@ -299,7 +253,7 @@ Mirrors `sev_snp/` so the two read as siblings:
 ```
 aleph-tee/src/tdx/
   mod.rs          pub use backend::TdxBackend;
-  quote.rs        parse: header (48B) -> TD report body -> signature data -> cert data
+  quote.rs        parse: header (48B) -> [v5 body descriptor] -> TD report body -> signature data -> cert data
   certs.rs        pinned Intel SGX Root CA; PCK chain; SGX extension OIDs
   collateral.rs   TCB Info / QE Identity / CRL fetch plus Intel-signature check
   verify.rs       verify_tdx_quote(): orchestration and policy gates
@@ -307,15 +261,34 @@ aleph-tee/src/tdx/
   qemu.rs         tdx_qemu_args() (spec only)
 ```
 
-`quote.rs` handles both body shapes: `TdReport10` (584 bytes: `tee_tcb_svn`,
-`mrseam`, `mrsignerseam`, `seam_attributes`, `td_attributes`, `xfam`, `mrtd`,
-`mrconfigid`, `mrowner`, `mrownerconfig`, `rtmr0..3`, `report_data`) and TDX
-1.5's `TdReport15` (648 bytes, adding `tee_tcb_svn2` and `mrservicetd`).
+`quote.rs` dispatches on quote version before touching the body. In v4 the TD
+report body starts directly after the 48-byte header. In v5 a body descriptor
+(`u16` type, `u32` size) intervenes, so the body starts at offset 54, and the
+type distinguishes `TdReport10` (584 bytes: `tee_tcb_svn`, `mrseam`,
+`mrsignerseam`, `seam_attributes`, `td_attributes`, `xfam`, `mrtd`,
+`mrconfigid`, `mrowner`, `mrownerconfig`, `rtmr0..3`, `report_data`) from
+`TdReport15` (648 bytes, adding `tee_tcb_svn2` and `mrservicetd`). Parsing a v5
+quote at the v4 offset does not fail loudly, because everything is fixed-size
+opaque bytes; it silently shifts every register by six and yields
+plausible-looking digests. The parser tests include a v5 quote specifically to
+catch this.
 
 Extractors mirror the SNP ones: `extract_report_data(&body) -> [u8; 64]` and
-`extract_registers(&body) -> BTreeMap<&'static str, [u8; 48]>`.
+`extract_registers(&body) -> TdxRegisters`.
 
 ### 5.2 `verify_tdx_quote()`
+
+Signature: `verify_tdx_quote(quote, collateral, now: SystemTime, policy)`.
+
+**The verifier takes the current time as a parameter and never reads the
+clock.** Steps 3, 7 and 8 consult validity windows: CRLs carry `nextUpdate`,
+and TCB Info and QE Identity carry `issueDate`/`nextUpdate`. A verifier that
+calls `SystemTime::now()` internally cannot be tested against archived
+collateral, because collateral expires; the fixtures in 8.1 already carry
+`nextUpdate` values years in the past. Production callers pass the real clock,
+tests pass a timestamp inside the fixture's window, and freshness stays
+enforced in production. The shipped SEV-SNP verifier should be checked for the
+same latent problem, since the remedy is identical.
 
 Steps, with the SEV-SNP analogue in brackets:
 
@@ -331,25 +304,13 @@ Steps, with the SEV-SNP analogue in brackets:
    a total break.
 6. Verify the quote signature over `header || td_report_body` under the
    attestation key. [report signature check]
-
-**The verifier takes the current time as a parameter, never reads the clock.**
-Steps 3, 7 and 8 all consult validity windows: CRLs carry `nextUpdate`, and TCB
-Info and QE Identity carry `issueDate`/`nextUpdate`. A verifier that calls
-`SystemTime::now()` internally cannot be tested against archived collateral,
-because collateral expires. This is not hypothetical: the fixtures in 8.1 carry
-`nextUpdate` values already years in the past. So the signature is
-`verify_tdx_quote(quote, collateral, now: SystemTime, policy)`, with production
-callers passing the real clock and tests passing a timestamp inside the
-fixture's window. Freshness stays enforced in production; it simply becomes an
-input rather than an ambient read. Check whether the shipped SEV-SNP verifier
-has the same latent problem, since the remedy is identical.
 7. Verify QE Identity against Intel's signed enclave identity.
 8. Parse FMSPC, CPUSVN and PCESVN from the PCK certificate's SGX extension
    (OID `1.2.840.113741.1.13.1`); walk TCB levels to the highest satisfied one,
    yielding `(status, advisory_ids)`. For TDX, also match `tdxtcbcomponents`
    against `tee_tcb_svn`.
 9. Platform gates (section 5.4). [`check_vmpl`]
-10. Return `VerificationResult` with the register map and `report_data`.
+10. Return `VerificationResult` with the registers and `report_data`.
 
 As with SNP, a `valid: true` verdict is **not** sufficient to trust a guest. It
 says only "this is a genuine Intel-attested TD on a platform at an acceptable
@@ -361,8 +322,8 @@ domain-separated schemes apply unchanged.
 ### 5.3 On third-party crates
 
 `dcap-qvl` and `dcap-rs` are pure-Rust DCAP verifiers; Intel's own QVL is FFI to
-the SGX SDK. The recommendation is to own the parsing and the policy, and to use
-a third-party crate only as a differential-test oracle.
+the SGX SDK. We own the parsing and the policy, and use a third-party crate only
+as a differential-test oracle.
 
 The precedent is in `sev_snp/`. The aleph-cvm donor verifier was working code,
 and porting it surfaced two real vulnerabilities: unsigned standalone
@@ -399,8 +360,8 @@ pub struct TdxTcbPolicy {
 }
 ```
 
-Proposed builtin baseline: accept `UpToDate` and `SWHardeningNeeded`; reject
-everything else.
+Builtin baseline: accept `UpToDate` and `SWHardeningNeeded`; reject everything
+else.
 
 - `SWHardeningNeeded` is routine and pertains to QE software mitigations.
 - `ConfigurationNeeded` is **rejected by default**. It typically flags BIOS
@@ -443,10 +404,7 @@ Two mechanisms address this, and they are not alternatives:
   client*, because only the TD can extend an RTMR and the extending initrd is
   itself covered by the pinned measurements. This is the real fix.
 
-With 6.5 in place the residual risk is not "TDX cannot express the gate" but
-"TDX expresses the gate through a guest-side mechanism whose kernel interface
-needs confirming" (spike 5). Until that spike lands and client enforcement
-hardens, treat the gap as open and rely on 7.6.
+Until client enforcement of 6.5 hardens, treat the gap as open and rely on 7.6.
 
 ---
 
@@ -458,20 +416,20 @@ Protocol decision 3 requires checked redundancy: messages carry measurements
 *and* their inputs, and the CCN verifies consistency. For SNP the CCN recomputes
 the launch digest with `sev-snp-measure`. For TDX:
 
-- `mrtd` is recomputable: parse TDVF metadata, hash the TD pages. Cheap, and
-  TDVF is the smallest artifact.
-- `rtmr1` and `rtmr2` are **not** practically recomputable. They are extended by
-  TDVF during boot, so reproducing them means emulating TDVF's measurement
-  protocol and event ordering. That is the `sev-snp-measure` fragility section
-  10 of the protocol design already complains about, but worse and more tightly
-  version-coupled.
+- `mrtd` is cheaply recomputable: parse TDVF metadata, hash the TD pages. TDVF
+  is the smallest artifact.
+- `rtmr1` and `rtmr2` are recomputable with `tdx-measure`, but that tool models
+  QEMU's kernel loading and ACPI generation and pins a QEMU version per
+  distribution (section 2.2). Putting it on the CCN's critical path couples
+  message validation to the CRN's QEMU version.
 
 Publishing expected RTMRs in the runtime manifest (content-addressed,
 publisher-measured at nix build time) and having the CCN compare rather than
-recompute solves `rtmr1` (the kernel). It **fails for `rtmr2`**, because TDVF
-measures the kernel cmdline there, and the cmdline is exactly where the SNP
-recipe puts the per-deployment `workload_roothash`. A per-deployment cmdline
-means a per-deployment `rtmr2`, which no manifest can publish.
+recompute avoids that coupling for `rtmr1`. It **fails for `rtmr2`** as the SNP
+recipe stands, because TDVF measures the kernel cmdline into `rtmr2` (section
+6.6), and the cmdline is exactly where the SNP recipe puts the per-deployment
+`workload_roothash`. A per-deployment cmdline means a per-deployment `rtmr2`,
+which no manifest can publish.
 
 ### 6.2 The recipe: `tdx-mrconfigid-v1`
 
@@ -485,53 +443,31 @@ initrd reads the descriptor, hashes it, compares against `MRCONFIGID` from its
 own local TDREPORT (cheap: no QGS round trip needed for a TDREPORT), and fails
 closed on mismatch.
 
-A lying CRN has no move: either it sets `MRCONFIGID` honestly, in which case the
-client's pin against the message catches any wrong value, or it sets it
-dishonestly, in which case the guest refuses to boot.
+A lying CRN has no move. Either it sets `MRCONFIGID` honestly, in which case the
+client's pin against the message catches any wrong value; or it sets it
+dishonestly, in which case the guest refuses to boot; or it sets it malformed,
+in which case QEMU refuses to start, since `tdx.c` base64-decodes the property
+and rejects anything that is not exactly 48 bytes.
 
-**Confirmed settable, 2026-08-28.** The host-side path is real, and every link
-was checked rather than assumed:
-
-| Link | Evidence |
-|---|---|
-| `-object tdx-guest,mrconfigid=<base64>` | `mrconfigid` is a settable `string` property on the `tdx-guest` object, confirmed live via QMP `qom-list-properties` against QEMU 10.2.1. Siblings `mrowner`, `mrownerconfig`, `attributes`, `sept-ve-disable` and `quote-generation-socket` are all present, so decision 2's QGS path is settable the same way. |
-| base64, exactly 48 bytes | QEMU v10.2.0 `target/i386/kvm/tdx.c` runs `qbase64_decode`, then rejects anything whose length is not `QCRYPTO_HASH_DIGEST_LEN_SHA384`. |
-| into KVM | `memcpy(init_vm->mrconfigid, data, data_len)` then the `KVM_TDX_INIT_VM` ioctl. |
-| into the TDX module | Linux 6.18 uapi `struct kvm_tdx_init_vm { __u64 mrconfigid[6]; /* sha384 digest */ }`, landing in `struct td_params { u64 mrconfigid[6]; }`, the TD_PARAMS input to `TDH.MNG.INIT`. |
-
-Note `-object tdx-guest,help` reports "there are no options for tdx-guest";
-the properties are registered via `object_property_add_str`, so QMP
-`qom-list-properties` is the way to enumerate them. Worth knowing before
-concluding the object is unconfigurable.
-
-A useful side effect for 6.2's argument: the length check is fail-closed at
-QEMU start. A CRN that sets a malformed `mrconfigid` does not launch a
-mis-measured TD, it fails to launch at all. That is a third leg alongside the
-two in the paragraph above.
-
-**The cmdline premise holds, confirmed empirically.** On SEV-SNP the cmdline
-sits in the launch digest. On TDX it lands in `rtmr2`, which this design pins,
-so "fixed per runtime" is enforced there instead. Measured with `tdx-measure`
-against our own guest image; see 6.6, which also records two constraints this
-recipe inherits: at least 2 GB of guest memory, and a machine shape fixed per
-runtime.
-
-**What is still unexercised.** `MRCONFIGID` is all-zero in **all four** 8.1
-fixtures. Nothing we hold demonstrates a populated value surviving into a
-quote, so the QEMU-to-quote path is confirmed by source and architecture but
-not by evidence. Closing that gap needs hardware and belongs to Tier 2. The
-recipe is safe to build against; it is the one thing to verify first when a TDX
-host does appear.
+**The host-side path is confirmed**, every link checked: `mrconfigid` is a
+settable `string` property on QEMU's `tdx-guest` object (QEMU 10.2.1, via QMP
+`qom-list-properties`; note that `-object tdx-guest,help` reports "no options"
+because the properties are registered with `object_property_add_str`), decoded
+and length-checked in `target/i386/kvm/tdx.c`, copied into
+`kvm_tdx_init_vm.mrconfigid[6]` for `KVM_TDX_INIT_VM`, and landing in the TDX
+module's `td_params.mrconfigid` (Linux 6.18 uapi). What no fixture yet shows is
+a populated value surviving into a quote: `MRCONFIGID` is all-zero in every
+quote in section 8.1. That end-to-end confirmation is the first Tier 2 item.
 
 **Descriptor delivery.** The descriptor must reach the guest over a channel that
-does not perturb `rtmr1` or `rtmr2`, or the recipe defeats its own purpose by
-making those registers per-deployment again. The descriptor's integrity comes
-entirely from the `MRCONFIGID` comparison, so the channel needs no integrity
-property of its own: any unmeasured host-to-guest path works. The default is a
-small raw virtio-blk device (the same shape as the existing cloud-init drive),
-read by the initrd before it derives the verity roothash. Confirming that TDVF
-does not fold attached block devices into `rtmr1`/`rtmr2` is spike 2 in
-section 11.
+does not perturb `rtmr1` or `rtmr2`, or the recipe defeats its own purpose. Its
+integrity comes entirely from the `MRCONFIGID` comparison, so the channel needs
+no integrity property of its own: any unmeasured host-to-guest path works. The
+default is a small raw virtio-blk device (the same shape as the existing
+cloud-init drive), read by the initrd before it derives the verity roothash.
+Section 6.6 confirms this is safe: TDVF only measures a block device's partition
+table when it *boots* from it, and the device count does not reach the pinned
+registers.
 
 Note that this is a genuine exception to protocol decision 11 ("every guest
 input is measured or verity-bound"), and a deliberate one: the descriptor is
@@ -549,15 +485,20 @@ enforced by the guest at boot as well as by the client at verification.
 | "CRN must not add, drop or reorder tokens" | prose discipline | mechanically enforced by the hash |
 
 The cost is honest: TDX gets a *different* boot recipe from SNP rather than a
-mirrored one, so two recipes are maintained. The alternatives are worse: emulate
-TDVF measurement in pyaleph indefinitely, or drop `rtmr2` from the pin set and
-lose cmdline and initrd integrity entirely.
+mirrored one, so two recipes are maintained. The mirrored alternative, a
+per-deployment cmdline with the CCN recomputing `rtmr2` through `tdx-measure`,
+is viable now that the tool exists, and was rejected on cost rather than
+possibility: it puts a Rust tool pinned to QEMU versions on pyaleph's critical
+path, in exchange for nothing the descriptor does not already give, and it
+gives up the guest-side enforcement.
 
 ### 6.3 Runtime manifest
 
 The manifest (section 11 of the protocol design) gains a per-recipe
 `measurements` block publishing the expected `mrtd`, `rtmr1` and `rtmr2` for the
-bundle, measured once at build time by the publisher.
+bundle, measured once at build time by the publisher with `tdx-measure`. In
+this repo that means extending `nix/golden-measurements.json` and its weekly
+drift check to a TDX runtime entry, rather than inventing a parallel mechanism.
 
 CCN validation for a `mode="tdx"` message then becomes:
 
@@ -569,8 +510,10 @@ CCN validation for a `mode="tdx"` message then becomes:
 **Accepted weakening:** for `rtmr1` and `rtmr2` the CCN checks *consistency with
 the manifest*, not *derivation from first principles*. The mitigation is that
 the manifest is content-addressed and immutable, and its values are
-independently reproducible by anyone who boots the bundle once, so a lying
-publisher is caught by any single verifier.
+independently reproducible by anyone who runs `tdx-measure` over the bundle, so
+a lying publisher is caught by any single verifier. The weakening can be closed
+later by having the CCN recompute with `tdx-measure` as a second check, at the
+coupling cost described in 6.1; that is a strengthening, not a redesign.
 
 ### 6.4 Alternative considered and rejected
 
@@ -587,10 +530,6 @@ as a measurement substitute.
 This is what closes section 5.6 cryptographically rather than merely
 operationally.
 
-**Confirmed 2026-08-28:** `rtmr3` is all-zero in every one of the 8.1 fixtures,
-production quotes included. The register really is unclaimed in practice, so
-reserving it here collides with nothing deployed.
-
 **Why it works.** A TD can read its own TDREPORT locally, with no QGS round trip
 and therefore no host involvement: `CPUSVN` sits in `REPORTMACSTRUCT` and
 `tee_tcb_svn` in `TEE_TCB_INFO`. So the guest can observe the platform TCB at
@@ -603,8 +542,15 @@ an unforgeable, unrewindable statement about what it saw at launch.
 1. The measured initrd, before any untrusted code runs, extends `rtmr3` once:
 
    ```
-   rtmr3 = extend(0, SHA-384(DOMAIN_LAUNCH_TCB || cpusvn || pcesvn || tee_tcb_svn))
+   rtmr3 = extend(0, SHA-384(DOMAIN_LAUNCH_TCB || cpusvn || tee_tcb_svn))
    ```
+
+   PCESVN is deliberately **not** in the commitment. It lives in the PCK
+   certificate, which the guest only sees inside a quote, and a quote needs the
+   host's QGS. Including it would make the boot-time commitment host-dependent,
+   which is the property the scheme exists to avoid. PCESVN is still checked by
+   the client at verification time from the quote's PCK chain; it is simply
+   not part of the launch-time statement.
 
 2. Every subsequent quote carries that `rtmr3` value.
 3. The guest reports its observed launch TCB in band over the attested channel.
@@ -625,147 +571,89 @@ the two attested-TLS schemes.
 
 **Register discipline.** `rtmr3` is reserved. It is extended **exactly once**,
 by the initrd, and never again: because the client checks an exact value, any
-later extension by workload code breaks verification. This is a constraint the
-runtime bundle owns, and it is the reason the semantics are reserved from v1
-even though enforcement is not. Adding the extend later would change the initrd,
-therefore change `rtmr1`/`rtmr2`, therefore force every published bundle to
-re-version.
+later extension breaks verification. This binds the whole guest stack, not just
+workload code. `rtmr3` is the conventional application register in the wider
+ecosystem (dstack, for one, extends it with application identity), which is no
+conflict here since we own the guest image, but it does mean the guest kernel's
+own subsystems (IMA, the TSM driver) must be audited for `rtmr3` writes before
+enforcement hardens. That audit is spike 3 in section 11. Adding the extend
+later would change the initrd, therefore change `rtmr1`/`rtmr2`, therefore
+force every published bundle to re-version, which is why the semantics are
+reserved from v1 even though enforcement is not.
 
 **Why `rtmr3` specifically.** `rtmr0` and `rtmr1` are firmware-owned. `rtmr2` is
 already in the pinned set, so extending it would break the pin. `rtmr3` is the
 only register both guest-extendable and free.
 
 **Rollout.** Client enforcement is warn-on-mismatch in v1 and hard-fail once
-spike 5 confirms the kernel interface and real hardware has exercised the path.
-`rtmr3` never appears in a message: it is derived, so no schema field is needed
-and hardening later is not a protocol change.
+real hardware has exercised the path and the kernel audit is clean. `rtmr3`
+never appears in a message: it is derived, so no schema field is needed and
+hardening later is not a protocol change.
 
----
+### 6.6 What TDVF measures
 
-### 6.6 What TDVF actually measures
+Traced in EDK2 `edk2-stable202608` and confirmed with `virtee/tdx-measure`
+against our own guest image (the nix-built `aleph-cvm-image` bzImage and
+initrd). `tdx-measure --runtime-only` computes `rtmr1` and `rtmr2` from the
+kernel, initrd and cmdline alone, so everything below except MRTD and `rtmr0`
+is reproducible without a TDVF binary or a TDX machine.
 
-Resolved spike 2, 2026-08-28, against EDK2 `edk2-stable202608`.
+**Register mapping**, from `TdxMeasurementCommon.c`: PCR 0 is MRTD; PCRs 1 and
+7 are `rtmr0`; PCRs 2 to 6 are `rtmr1`; PCRs 8 to 15 are `rtmr2`.
 
-**The register mapping**, from
-`OvmfPkg/IntelTdx/TdxMeasurementLib/TdxMeasurementCommon.c`:
+**Where each input lands:**
 
-| TPM PCR | TDX register |
-|---|---|
-| 0 | MRTD |
-| 1, 7 | `rtmr0` |
-| 2 to 6 | `rtmr1` |
-| 8 to 15 | `rtmr2` |
-
-**Where each input lands**, all traced to a specific call site:
-
-| Input | Call site | PCR | Register |
-|---|---|---|---|
-| TD HOB (VMM memory layout) | `SecTdxHelper.c`, explicit RTMR index 0 | n/a | `rtmr0` |
-| CFV (variable store) | `SecTdxHelper.c`, explicit RTMR index 0 | n/a | `rtmr0` |
-| `BootOrder` and `Boot####` | `TdTcg2Dxe.c` `ReadAndMeasureBootVariable`, `MapPcrToMrIndex(1)` | 1 | `rtmr0` |
-| GPT partition table | `DxeTpm2MeasureBootLib` `Tcg2MeasureGptTable` | 5 | `rtmr1` |
-| Loaded PE image (the kernel) | `DxeTpm2MeasureBootLib` `Tcg2MeasurePeImage` | 4 | `rtmr1` |
-
-**Decision 3 is vindicated.** The deployment-varying firmware inputs (TD HOB,
-which carries RAM size and topology, and the CFV) go to `rtmr0`, which this
-design already declines to pin.
-
-**One constraint on the boot path.** The GPT partition table reaches `rtmr1`,
-and partition GUIDs differ per deployment. The measurement is gated on
-`LocateDevicePath (&gEfiBlockIoProtocolGuid, ...)` succeeding for the boot
-device and runs at most once (`mTcg2MeasureGptTableFlag`), so loading the kernel
-from the fw_cfg-backed `QemuKernelLoaderFs` avoids it entirely. **The TDX boot
-path must therefore load the kernel directly and never boot through the UEFI
-boot manager off a GPT disk.** A rootfs the *kernel* mounts later is fine; it is
-UEFI-level boot from a partition that pollutes the register.
-
-**Direct boot is the standard approach, and it is what we should use.**
-Canonical's TDX reference stack boots this way, and `virtee/tdx-measure` (from
-the same organisation as the `sev-snp-measure` this design already relies on,
-itself a fork of `dstack-mr`) exists precisely to pre-compute MRTD and RTMR0 to
-RTMR2 for that boot chain from the kernel, initrd, cmdline and platform config.
-That tool is the natural counterpart to `sev-snp-measure` for increment 7.
-
-Note that IGVM, which section 10 tracks as a possible direction, is **not**
-available here: QEMU's IGVM support covers AMD SEV, SEV-ES and SEV-SNP only.
-
-**Settled empirically, 2026-08-28: the cmdline lands in `rtmr2`.** Run with
-`virtee/tdx-measure` against our own guest image (`aleph-cvm-image`: nix-built
-bzImage plus initrd), `--runtime-only`, changing nothing but the cmdline:
-
-| Run | `rtmr1` | `rtmr2` |
+| Input | Call site | Register |
 |---|---|---|
-| `console=ttyS0 root=/dev/vda1` | `c0ac70cd…` | `3c055ade…` |
-| `… EVIL=1` | `c0ac70cd…` (same) | `604ecd0f…` (differs) |
+| TD HOB (VMM memory layout) | `SecTdxHelper.c`, explicit index 0 | `rtmr0` |
+| CFV (variable store) | `SecTdxHelper.c`, explicit index 0 | `rtmr0` |
+| `BootOrder`, `Boot####` (boot device path) | `TdTcg2Dxe.c`, PCR 1 | `rtmr0` |
+| Loaded PE image (the kernel) | `DxeTpm2MeasureBootLib`, PCR 4 | `rtmr1` |
+| GPT partition table of the *boot* device | `DxeTpm2MeasureBootLib`, PCR 5 | `rtmr1` |
+| Kernel cmdline (`+ " initrd=initrd"`) | direct-boot event log | `rtmr2` |
+| Initrd content | direct-boot event log | `rtmr2` |
 
-So the earlier EDK2 trace was misread: the `Boot####` variable that reaches
-`rtmr0` carries the boot device path, not the kernel command line. `rtmr2` is in
-the pinned set, so **6.2's premise holds and no fallback into `MRCONFIGID` is
-needed.** `src/kernel.rs` confirms the shape:
-`measure_rtmr2_direct` is a log over `sha384(utf16(cmdline + " initrd=initrd"))`
-followed by `sha384(initrd)`.
+The cmdline placement was confirmed empirically: changing only the cmdline
+leaves `rtmr1` byte-identical and moves `rtmr2`. Decision 5 is vindicated on
+the same evidence: the deployment-varying firmware inputs all go to `rtmr0`.
 
-**What each pinned register actually depends on**, from `machine.rs` and
-`kernel.rs`:
+**What `rtmr1` depends on.** From `tdx-measure`'s `patch_kernel`, which mirrors
+QEMU's `x86_load_linux`: the kernel image, the initrd size, and the initrd load
+address. That address is `below_4g_mem_size - acpi_data_size - 1` rounded, where
+`acpi_data_size` is QEMU's `PC_FW_DATA`, a compile-time constant (`0x28000`),
+and `below_4g_mem_size` follows the q35 memory split. Device count, device
+order and vCPU count do **not** reach `rtmr1`; they shape `rtmr0` via the TD
+HOB. This is what lets section 2.1 stand.
 
-| Register | Inputs |
-|---|---|
-| `rtmr1` | kernel image, initrd **size**, memory size, ACPI table **size** |
-| `rtmr2` | cmdline, initrd **content** |
+**Constraint 1: direct boot, never the UEFI boot manager off a GPT disk.** The
+GPT measurement is gated on the boot device being a BlockIo device and runs at
+most once. A kernel loaded from the fw_cfg-backed `QemuKernelLoaderFs` never
+triggers it. A rootfs the *kernel* mounts later is fine, as is the descriptor
+block device in 6.2. Direct boot is also the standard approach: Canonical's
+reference stack uses it, and `tdx-measure` targets it.
 
-Two of those inputs are the deployment-varying risk this spike was opened to
-find, and they behave differently.
-
-**Memory size: harmless above 2 GB.** Sweeping it while holding everything else
-fixed, `rtmr1` moves at small sizes and then saturates:
+**Constraint 2: guest memory at least 2.75 GB.** The q35 split pins
+`below_4g_mem_size` to 2 GB once RAM reaches `0xb0000000`; below that it tracks
+RAM, so the initrd address, and with it `rtmr1`, varies with memory size:
 
 | Memory | `rtmr1` |
 |---|---|
-| 256 MB | `b7c6834d…` |
-| 1 GB | `c993ad26…` |
-| 2 GB | `c0ac70cd…` |
-| 2.75 GB, 3 GB, 16 GB, 64 GB, 512 GB | `c0ac70cd…` (all identical) |
+| 1 GB, 2.25 GB, 2.5 GB, 2.625 GB | four distinct values |
+| 2.75 GB, 3 GB, 16 GB, 64 GB, 512 GB | identical |
 
-It is constant for every size at or above 2 GB, which is why `tdx-measure`
-warns that `--runtime-only` assumes more than 2.75 GB. **Constraint: require at
-least 2 GB of guest memory on the TDX path and `rtmr1` is memory-invariant.**
-That is not a real restriction for our instances, but it must be stated,
-because below it the register is unpublishable.
+(Exactly 2 GB coincides with the saturated value; do not rely on it.) This is
+the threshold `tdx-measure` itself warns about. Below it `rtmr1` is
+unpublishable in any manifest.
 
-**ACPI table size: the genuine constraint.** `rtmr1` changes with it, since
-`patch_kernel` writes the ACPI data size into the kernel setup header before
-the Authenticode hash is taken:
+**Not available: IGVM.** QEMU's IGVM loader supports AMD SEV, SEV-ES and SEV-SNP
+only. Section 10 keeps it as a direction; it is not an option for this design.
 
-| ACPI size | `rtmr1` |
-|---|---|
-| `0x28000` | `c0ac70cd…` |
-| `0x29000` | `28157509…` |
-| `0x30000` | `b88b3fcc…` |
+**Evidence caveat.** The register attribution above is `tdx-measure`'s model of
+TDVF, corroborated by the EDK2 source everywhere both are checkable, but not
+yet by a quote from a TDX machine. Confirming it against a real quote is a Tier
+2 item alongside the `MRCONFIGID` end-to-end check.
 
-ACPI table size is a function of the machine shape: device set, device order
-and vCPU count (the MADT enumerates CPUs). `tdx-measure`'s own README states
-that `-device` ordering is part of its API contract, because QEMU's PCI
-auto-slot assignment depends on it. **So the TDX machine shape must be fixed
-per runtime and versioned with it.** Any change to the device list, its order,
-or the vCPU count is a new measurement and therefore a new runtime.
-
-This is the TDX analogue of the SEV-SNP `vcpu_type` problem that
-[`LaunchMeasurement.vcpu_type`](#41-launchmeasurement-aleph-message) already
-exists to solve, and it is worth deciding during increment 1 whether the same
-field generalises or TDX needs its own machine-shape discriminator.
-
-**Reproducing this.** The cmdline and memory results need no TDX hardware and
-no TDVF: `--runtime-only` computes `rtmr1` and `rtmr2` from the kernel, initrd
-and cmdline alone. Only MRTD and `rtmr0` need a real TDVF binary and generated
-ACPI tables. Increment 7 should wire `tdx-measure` in as the counterpart to
-`sev-snp-measure`, and the golden-measurements check should cover the TDX
-runtime the same way.
-
-**One caveat on the evidence.** These numbers come from `tdx-measure`'s model of
-what TDVF does, not from a TDX machine. The model is credible (it targets
-Canonical's reference stack and is validated against it) and it agrees with the
-EDK2 reading on everything checkable, but the register *attribution* is the
-tool's, not a quote's. Confirming it against a real quote stays a Tier 2 item.
+---
 
 ## 7. Hardware-gated surface (specified, not built)
 
@@ -789,6 +677,8 @@ QGS outage will be misdiagnosed as a compromised guest.
 -machine q35,confidential-guest-support=tdx0,kernel-irqchip=split,hpet=off,vmport=off
 -object tdx-guest,id=tdx0,mrconfigid=<base64 48B>,quote-generation-socket=vsock:2:4050
 -bios /usr/local/share/ovmf-tdx/OVMF.fd
+-kernel ... -initrd ... -append "<fixed per runtime>"
+-m <at least 2.75G>
 -nodefaults
 ```
 
@@ -820,13 +710,17 @@ Two consequences worth acting on:
 
 - **Controller:** `QemuConfig` gains `tdx: Option<bool>` and `mrconfigid`, an
   `is_tdx()` mirroring `is_snp()`, `build_tdx_argv`, and an
-  `argv_parity_tdx.rs` conformance fixture set.
+  `argv_parity_tdx.rs` conformance fixture set. The argv builder enforces
+  decision 9: direct boot only, memory floor asserted.
 - **Proto:** `ConfidentialMode.CONFIDENTIAL_MODE_TDX = 4`, and an `mrconfigid`
   field on `TeeConfig`. Additive only.
 - **Nix:** a `tdvf.nix` building edk2 `OvmfPkg/IntelTdx/IntelTdxX64.dsc`,
-  reproducible because `mrtd` is pinned; and a guest kernel configuration with
-  `CONFIG_INTEL_TDX_GUEST`, `CONFIG_TDX_GUEST_DRIVER` and `CONFIG_TSM_REPORTS`.
-  The current 6.18 guest kernel is recent enough.
+  reproducible because `mrtd` is pinned; and a TDX guest kernel. The guest
+  kernel is built from `allnoconfig` plus an explicit whitelist fragment, so
+  TDX support is not free: `INTEL_TDX_GUEST`, `TDX_GUEST_DRIVER` and
+  `TSM_REPORTS` must be named, and a TDX guest is its own measured runtime with
+  its own golden-measurements entry, not a variant of the SNP image. The 6.18
+  guest kernel is recent enough for all three.
 
 ### 7.4 Host operations
 
@@ -912,12 +806,11 @@ one consistent mechanism.
 
 ## 8. Testing
 
-### 8.1 Fixture provenance (increment 0, resolved 2026-08-28)
+### 8.1 Fixture provenance
 
 Real TDX quotes and complete DCAP collateral are available from open-source
 projects under permissive licences. aleph-vm is MIT, so MIT and Apache-2.0
-sources both vendor cleanly with attribution. This removes the hardware
-dependency from increments 2 to 4 entirely.
+sources both vendor cleanly with attribution.
 
 | Source | Licence | What it gives |
 |---|---|---|
@@ -925,58 +818,47 @@ dependency from increments 2 to 4 entirely.
 | [`google/go-tdx-guest`](https://github.com/google/go-tdx-guest) `testing/testdata/` | Apache-2.0 | `tdx_prod_quote_SPR_E4.dat` (production Sapphire Rapids, v4), `quote_sample_v5.dat` (v5), separated PCS responses (`sample_tcbInfo_response`, `sample_qeIdentity_response`, `pckcrl`, `rootcrl.der`) shaped like the real endpoints, plus CCEL event-log data for RTMR replay. |
 | [`automata-network/automata-dcap-attestation`](https://github.com/automata-network/automata-dcap-attestation) `rust-crates/samples/` | MIT | v3/v4/v5 quotes as an independent cross-check. |
 
-Verified rather than assumed: all four quotes parse with
-`tee_type == 0x00000081` and Intel's QE vendor ID
-`939a7233f79c4ca9940a0db3957f0607`, and each embeds a full three-certificate
-PCK chain as cert data type 5. Coverage spans quote v4 **and** v5, `UpToDate`
-**and** `OutOfDate` TCB levels, and genuine production silicon, which is enough
-to exercise every step of 5.2 and the whole 5.5 policy matrix.
+Verified: all four quotes parse with `tee_type == 0x00000081` and Intel's QE
+vendor ID `939a7233f79c4ca9940a0db3957f0607`, and each embeds a full
+three-certificate PCK chain as cert data type 5. Coverage spans quote v4 **and**
+v5 (both v5 fixtures are `TdReport15`), `UpToDate` **and** `OutOfDate` TCB
+levels, and genuine production silicon, which is enough to exercise every step
+of 5.2 and the whole 5.5 policy matrix. `MRCONFIGID` and `rtmr3` are all-zero
+in all four, which is why 6.2 and 6.5 each carry a Tier 2 confirmation item.
 
-Convenient side effect: `dcap-qvl` is both the fixture source and the
-differential oracle 5.3 already nominated, so the oracle is known to agree with
-the fixtures by construction. That makes the differential test weaker than it
-looks; it catches our parsing and chain-walk mistakes, not shared
-misinterpretations of the spec. Cross-checking against `go-tdx-guest`'s
-independent implementation is what covers that gap.
-
-Two findings from these fixtures are recorded where they bite: `MRCONFIGID` is
-all-zero in all four (6.2), and so is `rtmr3` (6.5).
-
-**Parsing trap, worth stating because it was hit while checking the above.**
-The TD report body does not sit at a fixed offset. In quote v4 it begins
-directly after the 48-byte header. In v5 a *body descriptor* intervenes: a
-`u16` body type and a `u32` body size, so the body begins at offset 54, and the
-type distinguishes `TdReport10` (584 bytes) from `TdReport15` (648). Parsing a
-v5 quote at the v4 offset does not fail loudly, because everything is
-fixed-size opaque bytes; it silently shifts every register by six and yields
-plausible-looking digests. Both v5 fixtures here are `TdReport15`. Increment 2
-must dispatch on quote version before touching the body, and the parser tests
-should include a v5 quote specifically to catch this.
+`dcap-qvl` is both a fixture source and the differential oracle 5.3 nominates,
+so the oracle agrees with those fixtures by construction. That makes the
+differential test weaker than it looks: it catches our parsing and chain-walk
+mistakes, not shared misinterpretations of the spec. Cross-checking against
+`go-tdx-guest`'s independent implementation is what covers that gap.
 
 ### 8.2 Test matrix
 
 Tier 1, all in CI, no hardware anywhere:
 
-- **Quote parsing** against golden vectors, covering both `TdReport10` and
-  `TdReport15` bodies.
+- **Quote parsing** against golden vectors, covering v4 and v5 framing and both
+  `TdReport10` and `TdReport15` bodies.
 - **Chain verification**: the pinned-root happy path plus one test per reject
   reason (forged root, broken chain, revoked certificate, wrong
   QE-report-to-attestation-key binding, tampered signature). This mirrors how
   `sev_snp/verify.rs` already exercises each reject path individually.
 - **Collateral**: cached Intel-signed TCB Info and QE Identity as fixtures;
   assert signature verification and the TCB-level walk against hand-built
-  ladders.
+  ladders; assert the injected-clock freshness check rejects when `now` is
+  past `nextUpdate`.
 - **Policy**: table-driven over all seven statuses crossed with the override
   matrix; explicitly assert that `Revoked` is non-overridable.
 - **Platform gates**: one test per gate, each asserting the reject.
-- **Schema**: closed-key-set validation, the SNP `{"launch"}` migration, and
+- **Schema**: closed-key-set validation, the discriminated union, and
   `mrconfigid` injection rejection (mirroring `test_policy_injection_is_rejected`).
 - **Differential**: our verifier against `dcap-qvl` over the same fixtures, as a
   dev-dependency only, never in the trust path.
+- **Expected measurements**: `tdx-measure --runtime-only` over the TDX runtime
+  bundle in the golden-measurements check, alongside `sev-snp-measure`.
 - **Launch-TCB state machine (7.6)**: table-driven over the four states, plus a
   persistence round trip asserting a recorded launch TCB survives a supervisor
   restart, plus the degrade-to-baseline path when the settings aggregate is
-  unreachable. All hardware-free.
+  unreachable.
 - **`rtmr3` commitment (6.5)**: assert the client's recomputation matches a
   fixture quote; assert a mismatched in-band launch TCB is rejected; assert a
   second extension breaks verification (the register-discipline constraint);
@@ -984,46 +866,36 @@ Tier 1, all in CI, no hardware anywhere:
   mirroring the existing domain-separation tests in `report_data.rs`.
 
 Tier 2 (`#[ignore]`, requires a Xeon): `get_report`, argv boot, end-to-end
-RA-TLS.
+RA-TLS, a populated `MRCONFIGID` surviving into a quote, and the 6.6 register
+attribution against a real quote.
 
 ---
 
 ## 9. Increments and sequencing
 
-| # | Increment | Repo | Status (2026-08-28) |
+In execution order:
+
+| # | Increment | Repo | Note |
 |---|---|---|---|
-| 0 | Real TDX quote plus collateral as fixtures | n/a | **Done.** Sourced open-source; see 8.1. No hardware needed. |
-| 1 | `registers` map, `TeePlatform.tdx`, `mode="tdx"`, policy-absent validator | aleph-message | **SNP half shipped** in aleph-message 1.3.0. The `tdx` platform value, `mode="tdx"` and the policy-absent validator remain. |
-| 2 | `tdx/quote.rs` parsing and extractors | aleph-vm | unblocked by 0 |
-| 3 | DCAP chain verification (steps 2 to 6) | aleph-vm | unblocked by 0; takes `now` as a parameter (5.2) |
-| 4 | Collateral, TCB walk, platform gates (steps 7 to 9) | aleph-vm | unblocked by 0; ditto |
-| 5 | `registers` on both `VerificationResult`s | aleph-vm, aleph-rs | **Promoted.** Now breaking (4.4); cost rises per release; hardware-free |
+| 5 | `registers` on both `VerificationResult`s (4.4) | aleph-rs 0.18.0, aleph-vm, aleph-vm-scheduler | **First.** Breaking; cost rises per aleph-rs tag; hardware-free; SNP-facing |
+| 1 | `TeePlatform.tdx`, `TdxRegisters`, the discriminated union, `mode="tdx"`, policy-absent validator | aleph-message, then pyaleph / aleph-rs / aleph-vm | schema release; SNP half already shipped in 1.3.0 |
+| 2 | `tdx/quote.rs` parsing and extractors, v4 and v5 | aleph-vm | additive |
+| 3 | DCAP chain verification (5.2 steps 2 to 6), injected clock | aleph-vm | additive |
+| 4 | Collateral, TCB walk, platform gates (5.2 steps 7 to 9) | aleph-vm | additive |
 | 6 | `tee_min_tcb` and `TdxTcbPolicy` | aleph-rs | generalizes G1 |
-| 7 | Spec: `tdx-mrconfigid-v1` recipe, manifest `measurements` block, QGS runbook | aleph-vm docs | **extend `nix/golden-measurements.json`**, do not invent a parallel mechanism |
-| 8 | Node-side launch-TCB tracking (7.6) | aleph-vm | TEE-agnostic; buildable for SNP today; still unbuilt |
-| 9 | `DOMAIN_LAUNCH_TCB` + client-side `rtmr3` recomputation, warn-on-mismatch (6.5) | aleph-vm, aleph-rs | hardware-free; guest-side extend ships with 7 |
-| 10 | TDX guest kernel config in the whitelist fragment, as its own measured runtime | aleph-vm | **New.** See below. |
-| 11 | Enforce the 6.6 boot constraints: no UEFI boot off a GPT disk, at least 2 GB guest memory, machine shape pinned per runtime | aleph-vm | **New.** Cmdline placement settled (6.6); this is the remaining work. |
+| 7 | Spec: `tdx-mrconfigid-v1` recipe, `tdx-measure` in the golden-measurements check, QGS runbook | aleph-vm docs, nix | spec plus one CI hook |
+| 10 | TDX guest kernel in the whitelist fragment, `tdvf.nix`, as its own measured runtime | aleph-vm nix | needed before 7 can produce a real golden entry |
+| 11 | Enforce decision 9 in the argv builder: direct boot only, memory floor | aleph-vm controller | small; rides with 7.3 |
+| 8 | Node-side launch-TCB tracking (7.6) | aleph-vm | TEE-agnostic; buildable for SNP today |
+| 9 | `DOMAIN_LAUNCH_TCB` + client-side `rtmr3` recomputation, warn-on-mismatch (6.5) | aleph-vm, aleph-rs | after 2 to 4; low value until the guest-side extend ships with 10 |
 
-**Increment 10 is new**, created by PR #1169's move to `allnoconfig` plus an
-explicit whitelist fragment. Under the previous distro config, TDX guest
-support came for free; under a whitelist it must be named
-(`INTEL_TDX_GUEST`, the TDX guest driver, `TSM_REPORTS`), and the fragment's
-own comment is blunt about the failure mode: a dropped `SEV_GUEST` is a guest
-that does not boot. A TDX guest is a separate measured chain, so it is a
-separate runtime in the runtime vocabulary with its own golden-measurements
-entry, not a variant of the SNP image.
+Increments 2 to 4 are pure addition and can proceed at any pace. Increment 5
+is the only time-sensitive one.
 
-**Revised ordering.** With increment 0 resolved, the blocking structure
-collapses: nothing TDX-specific waits on hardware. What remains time-sensitive
-is increment 5, whose cost is now a coordinated release and grows with each
-further aleph-rs tag. It should go first, ahead of the TDX-specific work,
-despite being SNP-facing.
-
-Increment 8 is still worth calling out: it is the only item that delivers value
-**before** any TDX hardware exists, because the same tracking serves SEV-SNP
-operators today. It also discharges the spec G1 section 8.1 deferred. If TDX
-slips indefinitely, increment 8 should still ship.
+Increment 8 is worth calling out separately: it is the only item here that
+delivers value **before** any TDX hardware exists, because the same tracking
+serves SEV-SNP operators today. It also discharges the spec G1 section 8.1
+deferred. If TDX slips indefinitely, increment 8 should still ship.
 
 ---
 
@@ -1033,16 +905,19 @@ slips indefinitely, increment 8 should still ship.
   to the manifest, recompute `mrconfigid`). Hardware-free, but it depends on the
   manifest `measurements` block from increment 7, so it is deferred rather than
   sequenced.
+- **CCN-side `rtmr1`/`rtmr2` recomputation** with `tdx-measure`, as the optional
+  strengthening in 6.3.
 - **All hardware bring-up**: `TdxBackend`, argv, TDVF nix derivation, QGS/PCCS
   operations, capability detection. Specified in section 7, not built.
 - **NVIDIA confidential computing composition.** TDX is a host TEE under
   confidential GPUs, but GPU attestation composition is its own design.
-- **IGVM for TDX.** TDX is in the IGVM format but not in QEMU's IGVM loader, and
-  CRN hosts run QEMU well below the required version. Section 10 of the protocol
-  design already tags IGVM as a future recipe; nothing here changes that.
+- **IGVM for TDX.** TDX is in the IGVM format but not in QEMU's IGVM loader
+  (AMD only), and CRN hosts run QEMU well below the required version. Section
+  10 of the protocol design already tags IGVM as a future recipe; nothing here
+  changes that.
 - **Hard-fail enforcement of the `rtmr3` commitment.** Reserved and implemented
-  as warn-on-mismatch now (increment 9); hardening waits on spike 5 and on real
-  hardware exercising the path.
+  as warn-on-mismatch now (increment 9); hardening waits on the kernel audit
+  (spike 3) and on real hardware exercising the path.
 - **TD-preserving update semantics** beyond noting in 5.6 that they advance
   `tee_tcb_svn` under a running TD, which is precisely the event `rtmr3` is
   designed to survive.
@@ -1053,37 +928,35 @@ slips indefinitely, increment 8 should still ship.
 
 ## 11. Open questions (spikes, not design forks)
 
-**Status 2026-08-28:** spikes 1 and 5 are resolved, both favourably. Spike 2 is
-now the highest-risk item and the next thing to investigate.
-
-1. **~~Does QEMU's `tdx-guest` object expose `mrconfigid` as a settable base64
-   property?~~ RESOLVED 2026-08-28, favourably.** It does: a settable `string`
-   property taking base64 that must decode to exactly 48 bytes, plumbed through
-   `KVM_TDX_INIT_VM` into the TDX module's TD_PARAMS. Full evidence chain in
-   6.2. Decision 4 stands and the `rtmr2` fallback is not needed. The residual
-   is only that no fixture demonstrates a populated value reaching a quote, so
-   confirming that end to end is a Tier 2 item for first hardware.
-2. **~~Is anything deployment-varying folded into `rtmr1` or `rtmr2`?~~
-   RESOLVED 2026-08-28.** Answer to the question as asked: not if we forbid one
-   specific boot path. But answering it surfaced a larger problem. Both the
-   register mapping and the resulting constraint are recorded in the new
-   section 6.6, which also documents why 6.2's "the cmdline is fixed per
-   runtime" does not hold on TDX as it does on SEV-SNP.
-3. **Does our nix guest kernel's ConfigFS-TSM `outblob` yield a full quote or a
+1. **Does our nix guest kernel's ConfigFS-TSM `outblob` yield a full quote or a
    bare TDREPORT?** Determines whether decision 2 holds as written or needs the
    `/dev/tdx_guest` `GET_QUOTE` ioctl fallback.
-4. **Which TCB statuses do real Sapphire Rapids and Emerald Rapids platforms
+2. **Which TCB statuses do real Sapphire Rapids and Emerald Rapids platforms
    actually report?** The 5.5 baseline rejects `ConfigurationNeeded`; if that
    status is near-universal in practice, the baseline needs revisiting before
    any hardware lands.
-5. **~~Is a guest-side RTMR extend interface available and stable on our
-   kernel?~~ RESOLVED 2026-08-28, favourably.** The guest kernel moved from LTS
-   6.12 to LTS 6.18 (#1122), with an eval-time assert holding the floor. 6.18
-   carries ConfigFS-TSM comfortably, so the interface decision 8 and section 6.5
-   rest on is available. Two caveats survive. First, availability is not the
-   same as *our* kernel exposing it: under PR #1169's `allnoconfig` whitelist
-   the relevant options must be named explicitly (increment 10), so this becomes
-   a config question rather than an upstream one. Second, the extend path itself
-   is still unexercised by any fixture, since `rtmr3` is all-zero everywhere we
-   looked. Reserving the register was always safe regardless, which is why
-   decision 8 did not wait on this.
+3. **Does anything in the 6.18 guest kernel extend `rtmr3` on its own?** IMA
+   and the TSM driver are the candidates. The 6.5 register discipline requires
+   the answer to be no; if it is not, the extend must be disabled in the
+   whitelist fragment before enforcement can harden.
+
+**Resolved**, with the evidence folded into the sections above: whether
+`mrconfigid` is settable on QEMU's `tdx-guest` object (yes, 6.2); whether
+TDVF folds deployment-varying inputs into the pinned registers (only via two
+avoidable boot-path choices, 6.6); whether a guest-side RTMR extend interface
+exists on our kernel (yes, LTS 6.18 with ConfigFS-TSM, subject to the
+whitelist fragment naming it).
+
+---
+
+## Revision history
+
+- **2026-08-28.** Rebased onto `main` after the aleph-vm 2.0.0 and aleph-rs
+  0.17.0 releases. Increment 0 resolved from open-source fixtures (8.1);
+  spikes on `mrconfigid`, TDVF measurement and the kernel extend interface
+  resolved (6.2, 6.6, 11). Increment 5 promoted to first, now a breaking
+  change. Decision 9 and the memory floor added from the `tdx-measure`
+  results. `VerificationResult.registers` reshaped from a map to a concrete
+  per-platform type to match what 1.3.0 shipped. PCESVN dropped from the
+  `rtmr3` commitment. Verifier takes `now` as a parameter.
+- **2026-08-20.** Initial approved design.
