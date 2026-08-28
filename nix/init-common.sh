@@ -178,3 +178,70 @@ prepare_chroot() {
     fi
     echo "init: chroot environment prepared at ${target} (proc, sys, dev, secrets, DNS)"
 }
+
+# Verified data volumes (V-PROGRAM content.volumes): comma-joined dm-verity
+# roothashes from the measured `verified_volumes=` cmdline token, in message
+# list order. Device order is positional and load-bearing: volume i's data
+# disk is the (5+2i)-th virtio disk and its hash tree the next one, i.e. the
+# pairs (vde,vdf), (vdg,vdh), ... after vda-vdd (rootfs, platform hash tree,
+# workload data, workload hash tree). Verifies pair i against roothash i and
+# mounts it read-only at <guest_root>/volumes/<i>.
+#
+# The guest root is a read-only verity mount, so per-index mount-point
+# directories cannot be created there at boot; the image ships an empty
+# /volumes directory (workload.nix / compose-rootfs.nix) and a tmpfs mounted
+# over it holds the per-index directories. Fail closed on any mismatch: a
+# missing device, a failed verity open, a guest root without /volumes, or
+# volumes without a workload all power the VM off.
+#
+# Expects the caller to have set $verified_volumes and $workload_roothash
+# from /proc/cmdline. No-op when no volumes are declared.
+mount_verified_volumes() {
+    local guest_root volume_count volume_index vol_roothash data_letter hash_letter datadev hashdev
+    guest_root="$1"
+    [ -n "$verified_volumes" ] || return 0
+    if [ -z "$workload_roothash" ]; then
+        echo "init: FATAL: verified_volumes set without workload_roothash (volume devices start after the workload pair)"
+        exec /bin/busybox poweroff -f
+    fi
+    volume_count=$(echo "$verified_volumes" | /bin/busybox tr ',' ' ' | /bin/busybox wc -w)
+    if [ "$volume_count" -gt 8 ]; then
+        echo "init: FATAL: ${volume_count} verified volumes declared; at most 8 are supported"
+        exec /bin/busybox poweroff -f
+    fi
+    if [ ! -d "${guest_root}/volumes" ]; then
+        echo "init: FATAL: verified_volumes set but ${guest_root} ships no /volumes mount-point directory"
+        exec /bin/busybox poweroff -f
+    fi
+    if ! /bin/busybox mount -t tmpfs tmpfs "${guest_root}/volumes"; then
+        echo "init: FATAL: tmpfs mount on ${guest_root}/volumes failed"
+        exec /bin/busybox poweroff -f
+    fi
+    volume_index=0
+    for vol_roothash in $(echo "$verified_volumes" | /bin/busybox tr ',' ' '); do
+        data_letter=$(echo "e g i k m o q s" | /bin/busybox cut -d' ' -f$((volume_index + 1)))
+        hash_letter=$(echo "f h j l n p r t" | /bin/busybox cut -d' ' -f$((volume_index + 1)))
+        datadev="/dev/vd${data_letter}"
+        hashdev="/dev/vd${hash_letter}"
+        if ! wait_for_dev "$datadev"; then
+            echo "init: FATAL: verified volume ${volume_index} data device ${datadev} not found"
+            exec /bin/busybox poweroff -f
+        fi
+        if ! wait_for_dev "$hashdev"; then
+            echo "init: FATAL: verified volume ${volume_index} hash tree device ${hashdev} not found"
+            exec /bin/busybox poweroff -f
+        fi
+        echo "init: setting up dm-verity on ${datadev} with hash tree ${hashdev} (volume ${volume_index})"
+        if ! /bin/veritysetup open "$datadev" "verity-volume-${volume_index}" "$hashdev" "$vol_roothash" 2>&1; then
+            echo "init: FATAL: dm-verity verification failed for volume ${volume_index} - it may be tampered"
+            exec /bin/busybox poweroff -f
+        fi
+        /bin/busybox mkdir -p "${guest_root}/volumes/${volume_index}"
+        if ! /bin/busybox mount -t ext4 -o ro "/dev/mapper/verity-volume-${volume_index}" "${guest_root}/volumes/${volume_index}"; then
+            echo "init: FATAL: verity mount failed for volume ${volume_index}"
+            exec /bin/busybox poweroff -f
+        fi
+        volume_index=$((volume_index + 1))
+    done
+    echo "init: ${volume_index} verified volume(s) mounted under ${guest_root}/volumes"
+}

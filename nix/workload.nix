@@ -28,8 +28,11 @@ pkgs.runCommand "workload.ext4" {
   # read-only under dm-verity, so init.sh cannot create these at boot; they
   # must ship in the image for the proc/sys/dev bind mounts, the /tmp/secrets
   # secret-delivery bind mount, and the /etc/resolv.conf file bind mount
-  # (a file bind-mount needs an existing target). Mirrors rootfs.nix.
-  mkdir -p workload/proc workload/sys workload/dev workload/etc workload/tmp/secrets
+  # (a file bind-mount needs an existing target). Mirrors rootfs.nix. The
+  # /volumes directory is the mount-point for verified data volumes
+  # (mount_verified_volumes in init-common.sh); a tmpfs over it holds the
+  # per-index directories.
+  mkdir -p workload/proc workload/sys workload/dev workload/etc workload/tmp/secrets workload/volumes
   touch workload/etc/resolv.conf
   chmod 1777 workload/tmp
   chmod 0700 workload/tmp/secrets

@@ -25,6 +25,12 @@ roothash=$(/bin/busybox sed -n 's/.*\broothash=\([0-9a-fA-F]*\).*/\1/p' /proc/cm
 # match is unambiguous on its own. The two tokens never cross-match.
 workload_roothash=$(/bin/busybox sed -n 's/.*\bworkload_roothash=\([0-9a-fA-F]*\).*/\1/p' /proc/cmdline)
 
+# Verified data volumes: comma-joined roothashes, lowercase hex only (the
+# schema and daemon both pin lowercase). Same \b reasoning as above: no
+# other token ends in "verified_volumes".
+# shellcheck disable=SC2034  # verified_volumes is consumed by mount_verified_volumes (init-common.sh), not here
+verified_volumes=$(/bin/busybox sed -n 's/.*\bverified_volumes=\([0-9a-f,]*\).*/\1/p' /proc/cmdline)
+
 # Wait for the rootfs block device to appear.
 wait_for_rootfs_blkdev
 if [ -z "$blkdev" ]; then
@@ -161,8 +167,12 @@ fi
 # /mnt/workload and preparing /mnt/root would be wasted work (and vice versa).
 if [ -n "$workload_roothash" ]; then
     prepare_chroot /mnt/workload
+    mount_verified_volumes /mnt/workload
 else
     prepare_chroot /mnt/root
+    # No-op without volumes; fatal if volumes were declared without a
+    # workload (the helper checks).
+    mount_verified_volumes /mnt/root
 fi
 
 # Install the guest firewall BEFORE starting the workload, so the app can never
