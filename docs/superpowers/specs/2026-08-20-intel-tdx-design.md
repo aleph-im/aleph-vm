@@ -1,8 +1,9 @@
 # Intel TDX support: design
 
 **Date:** 2026-08-20
+**Revised:** 2026-08-28 (see [Revision history](#revision-history))
 **Status:** Approved design, ready for implementation planning.
-**Branch:** `od/tdx-design` off `dev`.
+**Branch:** `od/tdx-design` off `main`.
 
 **Driver:** roadmap / portability proof. There is no Intel TDX hardware in the
 fleet today. The purpose of this work is to prove that the `aleph-tee`
@@ -18,6 +19,45 @@ specified here but deliberately not built.
 - [`2026-08-18-snp-confidential-instances-design.md`](../../plans/2026-08-18-snp-confidential-instances-design.md).
 - [`2026-08-12-snp-tcb-floor-design.md`](../../plans/2026-08-12-snp-tcb-floor-design.md)
   (G1), whose client-side floor architecture this design generalizes.
+
+---
+
+## Revision history
+
+### 2026-08-28
+
+Four changes in the tree invalidated or unblocked parts of the original plan.
+
+**`dev` no longer exists.** It merged to `main` as aleph-vm 2.0.0, and the Rust
+supervisor and controller became the packaging default (#1171). This branch is
+now based on `main`. `TeeBackend` was narrowed in the interim to carry neither
+launch nor verification, which *helps*: the TDX backend owes only `get_report`
+and `parse_report`, exactly as section 7.1 assumed, and `TeeType::Tdx` is
+already a variant.
+
+**Increment 0 is no longer a blocker.** Real TDX quotes and complete DCAP
+collateral were sourced from open-source projects; see section 8.1. Nothing
+TDX-specific is gated on hardware any more. Only final validation is, and that
+is the Tier 2 concern the repo already models for SEV-SNP.
+
+**Increment 5's free window closed.** aleph-rs v0.17.0 shipped, publishing
+`aleph_sdk::attest::VerificationResult` with a scalar `measurement`, and
+aleph-vm 2.0.0 dropped `aleph-attest-cli` in favour of that SDK verifier. The
+register-map change is now a breaking change to a released crate rather than a
+free in-flight edit. Accepted deliberately: neither `aleph-sdk` nor
+`aleph-types` is published to crates.io, so consumers resolve through git tags
+and the blast radius is a coordinated internal bump.
+
+**Two new items, one new lever.** The guest kernel moved to LTS 6.18 with an
+eval-time floor assert (#1122), which resolves spike 5 favourably. Against
+that, PR #1169 rebuilds the guest kernel as `allnoconfig` plus an explicit
+whitelist fragment, so TDX guest support is no longer free: it must be named in
+the fragment, and a TDX guest is a separate measured image. Finally,
+`nix/golden-measurements.json` and its weekly drift cron did not exist when
+this was written; increment 7 should extend that file rather than invent a
+parallel manifest mechanism. Note the golden file holds four scalar hex
+strings, so it needs the same scalar-to-register-map treatment as everything
+else.
 
 ---
 
@@ -223,6 +263,15 @@ Symmetric to 4.1: `measurement: Vec<u8>` becomes
 existing doc-comment invariant ("derived from the AMD-verified blob, NOT a
 caller-supplied copy") carries over verbatim and applies per register.
 
+**Revised 2026-08-28.** This is now a breaking change, not a free one. The same
+scalar exists in two shipped places: `aleph_tee::types::VerificationResult`
+(`measurement: Vec<u8>`) and, since aleph-rs v0.17.0, the public
+`aleph_sdk::attest::VerificationResult` (`measurement: String`). Both move
+together, in an aleph-rs 0.18.0 plus coordinated bumps in aleph-vm and
+aleph-vm-scheduler. The cost is a release, not a redesign, and it rises with
+every further release: this should land ahead of the TDX-specific increments
+even though nothing about it is TDX-specific.
+
 ---
 
 ## 5. `aleph-tee::tdx`
@@ -266,6 +315,18 @@ Steps, with the SEV-SNP analogue in brackets:
    a total break.
 6. Verify the quote signature over `header || td_report_body` under the
    attestation key. [report signature check]
+
+**The verifier takes the current time as a parameter, never reads the clock.**
+Steps 3, 7 and 8 all consult validity windows: CRLs carry `nextUpdate`, and TCB
+Info and QE Identity carry `issueDate`/`nextUpdate`. A verifier that calls
+`SystemTime::now()` internally cannot be tested against archived collateral,
+because collateral expires. This is not hypothetical: the fixtures in 8.1 carry
+`nextUpdate` values already years in the past. So the signature is
+`verify_tdx_quote(quote, collateral, now: SystemTime, policy)`, with production
+callers passing the real clock and tests passing a timestamp inside the
+fixture's window. Freshness stays enforced in production; it simply becomes an
+input rather than an ambient read. Check whether the shipped SEV-SNP verifier
+has the same latent problem, since the remedy is identical.
 7. Verify QE Identity against Intel's signed enclave identity.
 8. Parse FMSPC, CPUSVN and PCESVN from the PCK certificate's SGX extension
    (OID `1.2.840.113741.1.13.1`); walk TCB levels to the highest satisfied one,
@@ -412,6 +473,18 @@ A lying CRN has no move: either it sets `MRCONFIGID` honestly, in which case the
 client's pin against the message catches any wrong value, or it sets it
 dishonestly, in which case the guest refuses to boot.
 
+**Caveat found 2026-08-28: nobody populates this field in practice.**
+`MRCONFIGID` is all-zero in **both** genuine production quotes among the 8.1
+fixtures, including the Sapphire Rapids production quote; only the synthetic v5
+samples carry a non-zero value. The field is architecturally present and
+measured, so the reasoning above stands, but the whole path from
+`qemu -object tdx-guest,mrconfigid=...` through the TDX module and into the
+quote is unexercised by any fixture we hold. That promotes spike 1 from
+background confirmation to the load-bearing question for this section: it is
+the one unknown that could still invalidate the recipe. It is answerable from
+QEMU and kernel source with no TDX hardware, so it should be settled before
+increment 7 is written up.
+
 **Descriptor delivery.** The descriptor must reach the guest over a channel that
 does not perturb `rtmr1` or `rtmr2`, or the recipe defeats its own purpose by
 making those registers per-deployment again. The descriptor's integrity comes
@@ -475,6 +548,10 @@ as a measurement substitute.
 
 This is what closes section 5.6 cryptographically rather than merely
 operationally.
+
+**Confirmed 2026-08-28:** `rtmr3` is all-zero in every one of the 8.1 fixtures,
+production quotes included. The register really is unclaimed in practice, so
+reserving it here collides with nothing deployed.
 
 **Why it works.** A TD can read its own TDREPORT locally, with no QGS round trip
 and therefore no host involvement: `CPUSVN` sits in `REPORTMACSTRUCT` and
@@ -672,6 +749,39 @@ one consistent mechanism.
 
 ## 8. Testing
 
+### 8.1 Fixture provenance (increment 0, resolved 2026-08-28)
+
+Real TDX quotes and complete DCAP collateral are available from open-source
+projects under permissive licences. aleph-vm is MIT, so MIT and Apache-2.0
+sources both vendor cleanly with attribution. This removes the hardware
+dependency from increments 2 to 4 entirely.
+
+| Source | Licence | What it gives |
+|---|---|---|
+| [`Phala-Network/dcap-qvl`](https://github.com/Phala-Network/dcap-qvl) `sample/` | MIT | `tdx_quote` + `tdx_quote_collateral.json`, and a `tdx_quote_outdated` pair. The JSON carries the **entire** collateral set in one file: `pck_crl_issuer_chain`, `root_ca_crl`, `pck_crl`, `tcb_info_issuer_chain`, `tcb_info`, `tcb_info_signature`, `qe_identity_issuer_chain`, `qe_identity`, `qe_identity_signature`. |
+| [`google/go-tdx-guest`](https://github.com/google/go-tdx-guest) `testing/testdata/` | Apache-2.0 | `tdx_prod_quote_SPR_E4.dat` (production Sapphire Rapids, v4), `quote_sample_v5.dat` (v5), separated PCS responses (`sample_tcbInfo_response`, `sample_qeIdentity_response`, `pckcrl`, `rootcrl.der`) shaped like the real endpoints, plus CCEL event-log data for RTMR replay. |
+| [`automata-network/automata-dcap-attestation`](https://github.com/automata-network/automata-dcap-attestation) `rust-crates/samples/` | MIT | v3/v4/v5 quotes as an independent cross-check. |
+
+Verified rather than assumed: all four quotes parse with
+`tee_type == 0x00000081` and Intel's QE vendor ID
+`939a7233f79c4ca9940a0db3957f0607`, and each embeds a full three-certificate
+PCK chain as cert data type 5. Coverage spans quote v4 **and** v5, `UpToDate`
+**and** `OutOfDate` TCB levels, and genuine production silicon, which is enough
+to exercise every step of 5.2 and the whole 5.5 policy matrix.
+
+Convenient side effect: `dcap-qvl` is both the fixture source and the
+differential oracle 5.3 already nominated, so the oracle is known to agree with
+the fixtures by construction. That makes the differential test weaker than it
+looks; it catches our parsing and chain-walk mistakes, not shared
+misinterpretations of the spec. Cross-checking against `go-tdx-guest`'s
+independent implementation is what covers that gap.
+
+Two findings from these fixtures are recorded where they bite: MRCONFIGID is
+all-zero in both genuine production quotes (6.2), and `rtmr3` is all-zero in
+every one of them (6.5).
+
+### 8.2 Test matrix
+
 Tier 1, all in CI, no hardware anywhere:
 
 - **Quote parsing** against golden vectors, covering both `TdReport10` and
@@ -707,26 +817,39 @@ RA-TLS.
 
 ## 9. Increments and sequencing
 
-| # | Increment | Repo | Note |
+| # | Increment | Repo | Status (2026-08-28) |
 |---|---|---|---|
-| 0 | Obtain a real TDX quote plus its collateral as test fixtures | n/a | **Everything is blocked on this.** Azure DCesv5 / GCP C3, or Intel DCAP samples. |
-| 1 | `registers` map, `TeePlatform.tdx`, `mode="tdx"`, policy-absent validator | aleph-message | **Urgent**: must land before the 1.2.x release |
-| 2 | `tdx/quote.rs` parsing and extractors | aleph-vm | additive |
-| 3 | DCAP chain verification (steps 2 to 6) | aleph-vm | additive |
-| 4 | Collateral, TCB walk, platform gates (steps 7 to 9) | aleph-vm | additive |
-| 5 | `VerificationResult.registers` | aleph-vm | touches SNP; land before the SNP client ships |
+| 0 | Real TDX quote plus collateral as fixtures | n/a | **Done.** Sourced open-source; see 8.1. No hardware needed. |
+| 1 | `registers` map, `TeePlatform.tdx`, `mode="tdx"`, policy-absent validator | aleph-message | **SNP half shipped** in aleph-message 1.3.0. The `tdx` platform value, `mode="tdx"` and the policy-absent validator remain. |
+| 2 | `tdx/quote.rs` parsing and extractors | aleph-vm | unblocked by 0 |
+| 3 | DCAP chain verification (steps 2 to 6) | aleph-vm | unblocked by 0; takes `now` as a parameter (5.2) |
+| 4 | Collateral, TCB walk, platform gates (steps 7 to 9) | aleph-vm | unblocked by 0; ditto |
+| 5 | `registers` on both `VerificationResult`s | aleph-vm, aleph-rs | **Promoted.** Now breaking (4.4); cost rises per release; hardware-free |
 | 6 | `tee_min_tcb` and `TdxTcbPolicy` | aleph-rs | generalizes G1 |
-| 7 | Spec: `tdx-mrconfigid-v1` recipe, manifest `measurements` block, QGS runbook | aleph-vm docs | spec only |
-| 8 | Node-side launch-TCB tracking (7.6): persisted launch TCB, aggregate floor read, four-state machine, operator surface | aleph-vm | TEE-agnostic; buildable for SNP today |
-| 9 | `DOMAIN_LAUNCH_TCB` + client-side `rtmr3` recomputation, warn-on-mismatch (6.5) | aleph-vm, aleph-rs | hardware-free; the guest-side extend ships with 7 |
+| 7 | Spec: `tdx-mrconfigid-v1` recipe, manifest `measurements` block, QGS runbook | aleph-vm docs | **extend `nix/golden-measurements.json`**, do not invent a parallel mechanism |
+| 8 | Node-side launch-TCB tracking (7.6) | aleph-vm | TEE-agnostic; buildable for SNP today; still unbuilt |
+| 9 | `DOMAIN_LAUNCH_TCB` + client-side `rtmr3` recomputation, warn-on-mismatch (6.5) | aleph-vm, aleph-rs | hardware-free; guest-side extend ships with 7 |
+| 10 | TDX guest kernel config in the whitelist fragment, as its own measured runtime | aleph-vm | **New.** See below. |
 
-Increments 1 and 5 are the time-sensitive ones. Increments 2 to 4 are pure
-addition and can proceed at any pace.
+**Increment 10 is new**, created by PR #1169's move to `allnoconfig` plus an
+explicit whitelist fragment. Under the previous distro config, TDX guest
+support came for free; under a whitelist it must be named
+(`INTEL_TDX_GUEST`, the TDX guest driver, `TSM_REPORTS`), and the fragment's
+own comment is blunt about the failure mode: a dropped `SEV_GUEST` is a guest
+that does not boot. A TDX guest is a separate measured chain, so it is a
+separate runtime in the runtime vocabulary with its own golden-measurements
+entry, not a variant of the SNP image.
 
-Increment 8 is worth calling out separately: it is the only item here that
-delivers value **before** any TDX hardware exists, because the same tracking
-serves SEV-SNP operators today. It also discharges the spec G1 section 8.1
-deferred. If TDX slips indefinitely, increment 8 should still ship.
+**Revised ordering.** With increment 0 resolved, the blocking structure
+collapses: nothing TDX-specific waits on hardware. What remains time-sensitive
+is increment 5, whose cost is now a coordinated release and grows with each
+further aleph-rs tag. It should go first, ahead of the TDX-specific work,
+despite being SNP-facing.
+
+Increment 8 is still worth calling out: it is the only item that delivers value
+**before** any TDX hardware exists, because the same tracking serves SEV-SNP
+operators today. It also discharges the spec G1 section 8.1 deferred. If TDX
+slips indefinitely, increment 8 should still ship.
 
 ---
 
@@ -756,11 +879,18 @@ deferred. If TDX slips indefinitely, increment 8 should still ship.
 
 ## 11. Open questions (spikes, not design forks)
 
-1. **Does QEMU's `tdx-guest` object expose `mrconfigid` as a settable base64
-   property?** Believed yes, alongside `mrowner` and `mrownerconfig`, but it
-   needs confirming against the QEMU version we would target. Decision 4 depends
-   on it; if it is not settable, the fallback is per-deployment `rtmr2` plus
-   TDVF measurement emulation in the CCN, which is materially worse.
+**Status 2026-08-28:** spike 5 is resolved; spike 1 is promoted to the top of
+the list and is the next thing to investigate.
+
+1. **[HIGHEST PRIORITY] Does QEMU's `tdx-guest` object expose `mrconfigid` as a
+   settable base64 property, and does the value survive into the quote?**
+   Believed yes, alongside `mrowner` and `mrownerconfig`, but it needs
+   confirming against the QEMU version we would target. Decision 4 depends on
+   it; if it is not settable, the fallback is per-deployment `rtmr2` plus TDVF
+   measurement emulation in the CCN, which is materially worse. Promoted
+   because the 8.1 fixtures show `MRCONFIGID` all-zero in genuine production
+   quotes (6.2), so nothing we hold exercises this path. Answerable from QEMU
+   and kernel source without hardware.
 2. **Is anything deployment-varying folded into `rtmr1` or `rtmr2`?** Under the
    6.2 recipe the cmdline is fixed per runtime, so which of the two registers
    receives it no longer matters. What does matter is whether TDVF measures
@@ -775,11 +905,14 @@ deferred. If TDX slips indefinitely, increment 8 should still ship.
    actually report?** The 5.5 baseline rejects `ConfigurationNeeded`; if that
    status is near-universal in practice, the baseline needs revisiting before
    any hardware lands.
-5. **Is a guest-side RTMR extend interface available and stable on our kernel?**
-   Decision 8 and section 6.5 rest on it. Mainline Linux exposure of RTMR
-   extension has been contentious, and the usable path (a `tsm` interface, or
-   the `/dev/tdx_guest` extend ioctl) needs confirming on the 6.18 guest kernel.
-   This spike gates hardening client enforcement from warn to hard-fail; it does
-   not gate reserving the register, which is why decision 8 is safe to take now.
-   If the interface turns out unusable, section 5.6's residual risk is reinstated
-   in full and section 7.6 becomes the only mitigation.
+5. **~~Is a guest-side RTMR extend interface available and stable on our
+   kernel?~~ RESOLVED 2026-08-28, favourably.** The guest kernel moved from LTS
+   6.12 to LTS 6.18 (#1122), with an eval-time assert holding the floor. 6.18
+   carries ConfigFS-TSM comfortably, so the interface decision 8 and section 6.5
+   rest on is available. Two caveats survive. First, availability is not the
+   same as *our* kernel exposing it: under PR #1169's `allnoconfig` whitelist
+   the relevant options must be named explicitly (increment 10), so this becomes
+   a config question rather than an upstream one. Second, the extend path itself
+   is still unexercised by any fixture, since `rtmr3` is all-zero everywhere we
+   looked. Reserving the register was always safe regardless, which is why
+   decision 8 did not wait on this.
