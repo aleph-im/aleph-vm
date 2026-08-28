@@ -38,15 +38,28 @@ pub struct AttestationReport {
     pub data: Vec<u8>,
 }
 
+/// The measurement registers SEV-SNP pins: one launch digest.
+///
+/// Mirrors `LaunchMeasurement.registers` on the message side (aleph-message
+/// 1.3.0). A concrete struct rather than a per-platform enum because only
+/// SEV-SNP is defined today; a second platform turns it into an enum
+/// discriminated on TEE type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SevSnpRegisters {
+    /// 48-byte launch digest, from the signed report.
+    #[serde(with = "hex_serde")]
+    pub launch: Vec<u8>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationResult {
     pub valid: bool,
     pub tee_type: TeeType,
     pub summary: String,
-    /// Launch measurement, derived from the AMD-verified blob (NOT a
-    /// caller-supplied copy).
-    #[serde(with = "hex_serde")]
-    pub measurement: Vec<u8>,
+    /// Launch measurement registers, derived from the AMD-verified blob (NOT
+    /// a caller-supplied copy). Object rather than scalar because a TEE's
+    /// launch identity is not always one value; SEV-SNP pins `launch` only.
+    pub registers: SevSnpRegisters,
     /// The 64-byte `report_data`, derived from the AMD-verified blob (NOT a
     /// caller-supplied copy). Callers bind key/nonce commitments against THIS
     /// value, never against any unsigned copy.
@@ -165,6 +178,30 @@ mod hex_serde_array {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verification_result_carries_registers_not_a_scalar_measurement() {
+        let launch = vec![0xAB; 48];
+        let result = VerificationResult {
+            valid: true,
+            tee_type: TeeType::SevSnp,
+            summary: String::new(),
+            registers: SevSnpRegisters {
+                launch: launch.clone(),
+            },
+            report_data: [0u8; 64],
+            details: serde_json::Value::Null,
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(
+            json["registers"]["launch"],
+            serde_json::json!("ab".repeat(48))
+        );
+        assert!(json.get("measurement").is_none(), "{json}");
+
+        let back: VerificationResult = serde_json::from_value(json).unwrap();
+        assert_eq!(back.registers.launch, launch);
+    }
 
     #[test]
     fn test_tee_type_serialization() {

@@ -6,7 +6,7 @@ use openssl::x509::X509;
 use serde_json::json;
 use sev::certs::snp::builtin;
 
-use crate::types::{AttestationReport, TeeType, VerificationResult};
+use crate::types::{AttestationReport, SevSnpRegisters, TeeType, VerificationResult};
 
 use super::certs::{CertChain, TcbParams, fetch_ca_chain, fetch_vcek};
 use super::report::{extract_measurement, extract_report_data, parse_sev_snp_report};
@@ -74,8 +74,8 @@ fn pinned_amd_ark_der(product: &str) -> Result<Vec<u8>> {
 /// product". A verifying client (the aleph-rs SDK's `attest` module is the
 /// reference one) MUST additionally:
 ///
-/// - **Pin the measurement**: compare `VerificationResult.measurement` against
-///   the expected launch measurement for the guest image. This function does
+/// - **Pin the registers**: compare `VerificationResult.registers` against
+///   the launch measurement pinned for the guest image. This function does
 ///   NOT know or check the expected value.
 /// - **Bind freshness / a nonce**: this function does NOT bind `report_data` to
 ///   a caller-supplied nonce. The caller must supply a fresh nonce in
@@ -149,7 +149,9 @@ pub async fn verify_sev_snp_report(
         valid: true,
         tee_type: TeeType::SevSnp,
         summary: format!("SEV-SNP report verified successfully (product: {product})"),
-        measurement,
+        registers: SevSnpRegisters {
+            launch: measurement,
+        },
         report_data,
         details: json!({
             "product": product,
