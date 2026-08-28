@@ -48,14 +48,15 @@ free in-flight edit. Accepted deliberately: neither `aleph-sdk` nor
 `aleph-types` is published to crates.io, so consumers resolve through git tags
 and the blast radius is a coordinated internal bump.
 
-**Spike 2 resolved.** The deployment-varying firmware inputs (TD HOB, CFV) go
-to `rtmr0`, which decision 3 already leaves unpinned, so that decision was
-right. The one deployment-varying input that can reach `rtmr1` is the GPT, via
-PCR 5, avoided by never booting through the UEFI boot manager off a partition
-table. New section 6.6 records the full input-to-register map, traced to call
-sites. One question is left open there and deliberately not decided: which
-register receives the kernel cmdline. It is answerable without hardware and
-gates increment 7.
+**Spike 2 resolved, and the design survives it.** Decision 3 was right: the
+deployment-varying firmware inputs (TD HOB, CFV) go to `rtmr0`, already
+unpinned. The cmdline lands in `rtmr2`, which is pinned, so 6.2's premise
+holds; this was measured with `virtee/tdx-measure` against our own guest image
+rather than argued. Three constraints fall out, all recorded in 6.6: never boot
+the TDX path off a GPT disk, require at least 2 GB of guest memory, and fix the
+machine shape (device set, device order, vCPU count) per runtime, since `rtmr1`
+tracks the ACPI table size. That last one is the TDX analogue of SEV-SNP's
+`vcpu_type` problem.
 
 **Spike 1 resolved.** QEMU's `tdx-guest` object
 does expose a settable `mrconfigid`, verified through the whole host-side chain
@@ -508,13 +509,12 @@ QEMU start. A CRN that sets a malformed `mrconfigid` does not launch a
 mis-measured TD, it fails to launch at all. That is a third leg alongside the
 two in the paragraph above.
 
-**The cmdline premise needs checking before this recipe is final.** On SEV-SNP
-the cmdline sits in the launch digest, so "fixed per runtime" is enforced. On
-TDX it is measured, but 6.6 could not settle into which register: an EDK2 trace
-points at `rtmr0` (via the `Boot####` variable), which this design does not pin,
-while `tdx-measure` attributes it to `rtmr1`/`rtmr2`. If it is `rtmr0`, the
-cmdline must move into the `MRCONFIGID` descriptor below. 6.6 describes a
-hardware-free experiment that settles it.
+**The cmdline premise holds, confirmed empirically.** On SEV-SNP the cmdline
+sits in the launch digest. On TDX it lands in `rtmr2`, which this design pins,
+so "fixed per runtime" is enforced there instead. Measured with `tdx-measure`
+against our own guest image; see 6.6, which also records two constraints this
+recipe inherits: at least 2 GB of guest memory, and a machine shape fixed per
+runtime.
 
 **What is still unexercised.** `MRCONFIGID` is all-zero in **all four** 8.1
 fixtures. Nothing we hold demonstrates a populated value surviving into a
@@ -689,36 +689,83 @@ That tool is the natural counterpart to `sev-snp-measure` for increment 7.
 Note that IGVM, which section 10 tracks as a possible direction, is **not**
 available here: QEMU's IGVM support covers AMD SEV, SEV-ES and SEV-SNP only.
 
-**Open question: which register receives the cmdline.** Two sources disagree
-and this was not settled.
+**Settled empirically, 2026-08-28: the cmdline lands in `rtmr2`.** Run with
+`virtee/tdx-measure` against our own guest image (`aleph-cvm-image`: nix-built
+bzImage plus initrd), `--runtime-only`, changing nothing but the cmdline:
 
-- Tracing EDK2, the direct-boot kernel is launched through a `Boot####` UEFI
-  variable whose load options carry the cmdline, and `MeasureAllBootVariables`
-  routes those through `MapPcrToMrIndex(1)`, i.e. **`rtmr0`**.
-- `tdx-measure` documents its `direct` block (kernel, initrd, cmdline) as
-  computing **`rtmr1` and `rtmr2`**, and says the `Boot####` variable is derived
-  automatically for direct boot.
+| Run | `rtmr1` | `rtmr2` |
+|---|---|---|
+| `console=ttyS0 root=/dev/vda1` | `c0ac70cd…` | `3c055ade…` |
+| `… EVIL=1` | `c0ac70cd…` (same) | `604ecd0f…` (differs) |
 
-If the cmdline lands only in `rtmr0`, pinning MRTD, `rtmr1` and `rtmr2` does not
-bind it, and since `rtmr0` also carries the TD HOB it cannot simply be added to
-the pinned set: it varies with RAM size and vCPU count. That would be a real
-gap in the 6.2 recipe and would need answering, most likely by folding the
-cmdline into the `MRCONFIGID` deployment descriptor, which 6.2 already
-establishes as a channel the client pins and the guest checks. Recording that
-as the presumptive fallback rather than a decision.
+So the earlier EDK2 trace was misread: the `Boot####` variable that reaches
+`rtmr0` carries the boot device path, not the kernel command line. `rtmr2` is in
+the pinned set, so **6.2's premise holds and no fallback into `MRCONFIGID` is
+needed.** `src/kernel.rs` confirms the shape:
+`measure_rtmr2_direct` is a log over `sha384(utf16(cmdline + " initrd=initrd"))`
+followed by `sha384(initrd)`.
 
-**This is resolvable without hardware and should be, before increment 7.**
-`tdx-measure` computes measurements from files and config alone. Run it twice
-over identical inputs with only the cmdline changed and observe which register
-moves. That settles the question empirically and also validates the tool
-against our own boot chain, which increment 7 needs regardless.
+**What each pinned register actually depends on**, from `machine.rs` and
+`kernel.rs`:
 
-Note for whoever does it: TDVF uses `BlobVerifierLibNull` where
-`AmdSevX64.dsc` uses `BlobVerifierLibSevHashes`, so TDX gets no equivalent of
-SEV's pre-verification of the fw_cfg blobs against the launch measurement.
-Measurement and verification are separate concerns here, and only the former
-applies on TDX. That absence is what makes "which register receives the
-cmdline" the load-bearing question rather than a detail.
+| Register | Inputs |
+|---|---|
+| `rtmr1` | kernel image, initrd **size**, memory size, ACPI table **size** |
+| `rtmr2` | cmdline, initrd **content** |
+
+Two of those inputs are the deployment-varying risk this spike was opened to
+find, and they behave differently.
+
+**Memory size: harmless above 2 GB.** Sweeping it while holding everything else
+fixed, `rtmr1` moves at small sizes and then saturates:
+
+| Memory | `rtmr1` |
+|---|---|
+| 256 MB | `b7c6834d…` |
+| 1 GB | `c993ad26…` |
+| 2 GB | `c0ac70cd…` |
+| 2.75 GB, 3 GB, 16 GB, 64 GB, 512 GB | `c0ac70cd…` (all identical) |
+
+It is constant for every size at or above 2 GB, which is why `tdx-measure`
+warns that `--runtime-only` assumes more than 2.75 GB. **Constraint: require at
+least 2 GB of guest memory on the TDX path and `rtmr1` is memory-invariant.**
+That is not a real restriction for our instances, but it must be stated,
+because below it the register is unpublishable.
+
+**ACPI table size: the genuine constraint.** `rtmr1` changes with it, since
+`patch_kernel` writes the ACPI data size into the kernel setup header before
+the Authenticode hash is taken:
+
+| ACPI size | `rtmr1` |
+|---|---|
+| `0x28000` | `c0ac70cd…` |
+| `0x29000` | `28157509…` |
+| `0x30000` | `b88b3fcc…` |
+
+ACPI table size is a function of the machine shape: device set, device order
+and vCPU count (the MADT enumerates CPUs). `tdx-measure`'s own README states
+that `-device` ordering is part of its API contract, because QEMU's PCI
+auto-slot assignment depends on it. **So the TDX machine shape must be fixed
+per runtime and versioned with it.** Any change to the device list, its order,
+or the vCPU count is a new measurement and therefore a new runtime.
+
+This is the TDX analogue of the SEV-SNP `vcpu_type` problem that
+[`LaunchMeasurement.vcpu_type`](#41-launchmeasurement-aleph-message) already
+exists to solve, and it is worth deciding during increment 1 whether the same
+field generalises or TDX needs its own machine-shape discriminator.
+
+**Reproducing this.** The cmdline and memory results need no TDX hardware and
+no TDVF: `--runtime-only` computes `rtmr1` and `rtmr2` from the kernel, initrd
+and cmdline alone. Only MRTD and `rtmr0` need a real TDVF binary and generated
+ACPI tables. Increment 7 should wire `tdx-measure` in as the counterpart to
+`sev-snp-measure`, and the golden-measurements check should cover the TDX
+runtime the same way.
+
+**One caveat on the evidence.** These numbers come from `tdx-measure`'s model of
+what TDVF does, not from a TDX machine. The model is credible (it targets
+Canonical's reference stack and is validated against it) and it agrees with the
+EDK2 reading on everything checkable, but the register *attribution* is the
+tool's, not a quote's. Confirming it against a real quote stays a Tier 2 item.
 
 ## 7. Hardware-gated surface (specified, not built)
 
@@ -956,7 +1003,7 @@ RA-TLS.
 | 8 | Node-side launch-TCB tracking (7.6) | aleph-vm | TEE-agnostic; buildable for SNP today; still unbuilt |
 | 9 | `DOMAIN_LAUNCH_TCB` + client-side `rtmr3` recomputation, warn-on-mismatch (6.5) | aleph-vm, aleph-rs | hardware-free; guest-side extend ships with 7 |
 | 10 | TDX guest kernel config in the whitelist fragment, as its own measured runtime | aleph-vm | **New.** See below. |
-| 11 | Settle which register receives the cmdline, via a `tdx-measure` differential run; forbid UEFI boot from a GPT disk on the TDX path | aleph-vm | **New.** Hardware-free (6.6); gates increment 7. |
+| 11 | Enforce the 6.6 boot constraints: no UEFI boot off a GPT disk, at least 2 GB guest memory, machine shape pinned per runtime | aleph-vm | **New.** Cmdline placement settled (6.6); this is the remaining work. |
 
 **Increment 10 is new**, created by PR #1169's move to `allnoconfig` plus an
 explicit whitelist fragment. Under the previous distro config, TDX guest
