@@ -1,0 +1,280 @@
+# SEV-SNP guest kernel configuration fragment (nix/kernel.nix).
+#
+# Applied on top of `make allnoconfig`: every option not listed here is OFF
+# (or takes its hidden default when it has no prompt). This is a whitelist,
+# not a delta from a distro config: the guest is a single-purpose virtual
+# machine (virtio disks and NICs, serial console, dm-verity/dm-crypt roots,
+# nftables filter, containers on the compose flavor) and nothing else. A
+# smaller kernel is both a smaller #VC/syscall attack surface for a
+# confidential guest and a much cheaper build (nixpkgs' distro config
+# compiles ~7000 modules of which the initrds ship seven).
+#
+# Rules for editing:
+#   - Prefer =y. Only the modules the initrds / compose rootfs actually
+#     install (initrd.nix, compose-rootfs.nix) are =m: dm-mod, dm-bufio,
+#     dm-verity, dm-crypt, nfnetlink, nf_tables, fuse.
+#   - Every line here is verified against the generated .config at build
+#     time (kernel.nix): an option that Kconfig silently drops (missing
+#     dependency, renamed symbol) fails the build instead of the boot.
+#   - Any change moves the SEV-SNP launch measurement: re-seed
+#     nix/golden-measurements.json in the same PR.
+
+# ---------------------------------------------------------------- platform
+CONFIG_64BIT=y
+CONFIG_SMP=y
+CONFIG_NR_CPUS=512
+CONFIG_NUMA=y
+CONFIG_X86_X2APIC=y
+CONFIG_HYPERVISOR_GUEST=y
+CONFIG_PARAVIRT=y
+CONFIG_PARAVIRT_SPINLOCKS=y
+CONFIG_KVM_GUEST=y
+CONFIG_ACPI=y
+CONFIG_PCI=y
+CONFIG_PCI_MSI=y
+CONFIG_PCIEPORTBUS=y
+# OVMF (AmdSev) boots the bzImage through the EFI stub and hands the SNP
+# CC blob over the EFI configuration table: both are mandatory.
+CONFIG_EFI=y
+CONFIG_EFI_STUB=y
+CONFIG_RELOCATABLE=y
+CONFIG_HIGH_RES_TIMERS=y
+CONFIG_NO_HZ_IDLE=y
+CONFIG_HZ_1000=y
+CONFIG_PREEMPT_VOLUNTARY=y
+# Pure-code performance features user workloads benefit from (no device
+# surface): topology-aware scheduling, THP on madvise (2M mappings also
+# suit the SNP RMP), static-key patching.
+CONFIG_SCHED_SMT=y
+CONFIG_SCHED_MC=y
+CONFIG_TRANSPARENT_HUGEPAGE=y
+CONFIG_TRANSPARENT_HUGEPAGE_MADVISE=y
+CONFIG_JUMP_LABEL=y
+CONFIG_HW_RANDOM=y
+CONFIG_HW_RANDOM_VIRTIO=y
+# /proc/config.gz: lets an operator audit the running guest's config.
+CONFIG_IKCONFIG=y
+CONFIG_IKCONFIG_PROC=y
+
+# ------------------------------------------------- confidential computing
+CONFIG_AMD_MEM_ENCRYPT=y
+CONFIG_VIRT_DRIVERS=y
+# /dev/sev-guest for the attest-agent.
+CONFIG_SEV_GUEST=y
+# TDX guest support is kept from the previous config so the same kernel
+# can serve the planned TDX flavor; it is inert on AMD hardware.
+CONFIG_INTEL_TDX_GUEST=y
+
+# ---------------------------------------------------------------- modules
+CONFIG_MODULES=y
+CONFIG_MODULE_UNLOAD=y
+# initrd.nix and compose-rootfs.nix read <name>.ko.xz from kernel.modules.
+CONFIG_MODULE_COMPRESS=y
+CONFIG_MODULE_COMPRESS_XZ=y
+CONFIG_MODULE_COMPRESS_ALL=y
+
+# ------------------------------------------------------------ core / boot
+# EXPERT exposes the default-on syscall families below as choices, so
+# allnoconfig turns them off and only the listed ones come back. Without
+# it, IO_URING or VT could not be disabled at all.
+CONFIG_EXPERT=y
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_RD_GZIP=y
+CONFIG_KERNEL_ZSTD=y
+CONFIG_BINFMT_ELF=y
+CONFIG_BINFMT_SCRIPT=y
+CONFIG_MULTIUSER=y
+CONFIG_SYSVIPC=y
+CONFIG_POSIX_MQUEUE=y
+CONFIG_FUTEX=y
+CONFIG_EPOLL=y
+CONFIG_SIGNALFD=y
+CONFIG_TIMERFD=y
+CONFIG_EVENTFD=y
+CONFIG_AIO=y
+CONFIG_ADVISE_SYSCALLS=y
+CONFIG_MEMBARRIER=y
+CONFIG_RSEQ=y
+CONFIG_KCMP=y
+CONFIG_CACHESTAT_SYSCALL=y
+CONFIG_POSIX_TIMERS=y
+CONFIG_FHANDLE=y
+CONFIG_SHMEM=y
+CONFIG_PCI_QUIRKS=y
+CONFIG_KALLSYMS=y
+CONFIG_PRINTK=y
+CONFIG_BUG=y
+CONFIG_INOTIFY_USER=y
+CONFIG_FILE_LOCKING=y
+CONFIG_FS_POSIX_ACL=y
+
+# -------------------------------------------------- containers (compose)
+CONFIG_CGROUPS=y
+CONFIG_MEMCG=y
+CONFIG_BLK_CGROUP=y
+CONFIG_CGROUP_SCHED=y
+CONFIG_FAIR_GROUP_SCHED=y
+CONFIG_CGROUP_PIDS=y
+CONFIG_CGROUP_FREEZER=y
+CONFIG_CGROUP_DEVICE=y
+CONFIG_CGROUP_CPUACCT=y
+CONFIG_CPUSETS=y
+CONFIG_CGROUP_BPF=y
+CONFIG_NAMESPACES=y
+CONFIG_UTS_NS=y
+CONFIG_IPC_NS=y
+CONFIG_USER_NS=y
+CONFIG_PID_NS=y
+CONFIG_NET_NS=y
+CONFIG_TIME_NS=y
+CONFIG_SECCOMP=y
+CONFIG_SECCOMP_FILTER=y
+CONFIG_KEYS=y
+CONFIG_UNIX98_PTYS=y
+# crun's cgroup v2 device controller is a BPF program.
+CONFIG_BPF_SYSCALL=y
+CONFIG_BPF_JIT=y
+CONFIG_BPF_UNPRIV_DEFAULT_OFF=y
+
+# -------------------------------------------------------------- hardening
+CONFIG_RANDOMIZE_BASE=y
+CONFIG_RANDOMIZE_MEMORY=y
+CONFIG_STACKPROTECTOR=y
+CONFIG_STACKPROTECTOR_STRONG=y
+CONFIG_FORTIFY_SOURCE=y
+CONFIG_HARDENED_USERCOPY=y
+CONFIG_STRICT_KERNEL_RWX=y
+CONFIG_STRICT_MODULE_RWX=y
+CONFIG_VMAP_STACK=y
+CONFIG_SLAB_FREELIST_RANDOM=y
+CONFIG_SLAB_FREELIST_HARDENED=y
+CONFIG_RANDOM_KMALLOC_CACHES=y
+CONFIG_SHUFFLE_PAGE_ALLOCATOR=y
+CONFIG_X86_UMIP=y
+CONFIG_INIT_ON_ALLOC_DEFAULT_ON=y
+CONFIG_INIT_STACK_ALL_ZERO=y
+CONFIG_DEBUG_KERNEL=y
+CONFIG_DEBUG_LIST=y
+CONFIG_BUG_ON_DATA_CORRUPTION=y
+CONFIG_SCHED_STACK_END_CHECK=y
+CONFIG_X86_KERNEL_IBT=y
+CONFIG_X86_USER_SHADOW_STACK=y
+CONFIG_LEGACY_VSYSCALL_NONE=y
+CONFIG_RANDOMIZE_KSTACK_OFFSET=y
+CONFIG_RANDOMIZE_KSTACK_OFFSET_DEFAULT=y
+CONFIG_SECURITY_DMESG_RESTRICT=y
+CONFIG_DEBUG_INFO_NONE=y
+# Legacy x86 surfaces no static 64-bit userland uses.
+# CONFIG_X86_16BIT is not set
+# CONFIG_MODIFY_LDT_SYSCALL is not set
+# CONFIG_X86_IOPL_IOPERM is not set
+# CONFIG_DEVMEM is not set
+# CONFIG_DEVPORT is not set
+# CONFIG_COMPAT_BRK is not set
+# CPU vulnerability mitigations: allnoconfig turns the default-on set off,
+# so each one is listed. A confidential guest's hypervisor is untrusted;
+# these are the in-guest half of the defense.
+CONFIG_CPU_MITIGATIONS=y
+CONFIG_MITIGATION_PAGE_TABLE_ISOLATION=y
+CONFIG_MITIGATION_RETPOLINE=y
+CONFIG_MITIGATION_RETHUNK=y
+CONFIG_MITIGATION_UNRET_ENTRY=y
+CONFIG_MITIGATION_IBPB_ENTRY=y
+CONFIG_MITIGATION_IBRS_ENTRY=y
+CONFIG_MITIGATION_SRSO=y
+CONFIG_MITIGATION_SLS=y
+CONFIG_MITIGATION_GDS=y
+CONFIG_MITIGATION_RFDS=y
+CONFIG_MITIGATION_SPECTRE_BHI=y
+CONFIG_MITIGATION_MDS=y
+CONFIG_MITIGATION_TAA=y
+CONFIG_MITIGATION_MMIO_STALE_DATA=y
+CONFIG_MITIGATION_L1TF=y
+CONFIG_MITIGATION_RETBLEED=y
+CONFIG_MITIGATION_SPECTRE_V1=y
+CONFIG_MITIGATION_SPECTRE_V2=y
+CONFIG_MITIGATION_SRBDS=y
+CONFIG_MITIGATION_SSB=y
+CONFIG_MITIGATION_ITS=y
+CONFIG_MITIGATION_TSA=y
+# 32-bit entry paths compiled out (HECKLER int 0x80 injection, see
+# kernel.nix); the guest userland is 64-bit static musl only.
+# CONFIG_IA32_EMULATION is not set
+# CONFIG_X86_X32_ABI is not set
+# Nothing here should be reachable from a guest: no kexec, no crash
+# kernel, no hibernation, no tracing, no kernel keyrings for dm-crypt
+# (cryptsetup keeps keys in userspace).
+# CONFIG_KEXEC is not set
+# CONFIG_CRASH_DUMP is not set
+# CONFIG_HIBERNATION is not set
+# CONFIG_SUSPEND is not set
+# CONFIG_FTRACE is not set
+# CONFIG_KPROBES is not set
+# CONFIG_IO_URING is not set
+# CONFIG_TRUSTED_KEYS is not set
+# CONFIG_ENCRYPTED_KEYS is not set
+
+# ---------------------------------------------------------------- storage
+CONFIG_BLOCK=y
+CONFIG_BLK_DEV=y
+CONFIG_VIRTIO_MENU=y
+CONFIG_VIRTIO=y
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_MD=y
+# dm-* stay modules: initrd.nix ships them and the inits insmod them in a
+# fixed order (dm-mod -> dm-bufio -> dm-verity, dm-mod -> dm-crypt).
+CONFIG_BLK_DEV_DM=m
+CONFIG_DM_BUFIO=m
+CONFIG_DM_VERITY=m
+CONFIG_DM_CRYPT=m
+CONFIG_EXT4_FS=y
+CONFIG_EXT4_FS_POSIX_ACL=y
+CONFIG_EXT4_FS_SECURITY=y
+# fuse-overlayfs on the compose rootfs (compose-rootfs.nix ships fuse.ko).
+CONFIG_FUSE_FS=m
+CONFIG_TMPFS=y
+CONFIG_TMPFS_POSIX_ACL=y
+CONFIG_TMPFS_XATTR=y
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+CONFIG_PROC_FS=y
+CONFIG_PROC_SYSCTL=y
+CONFIG_SYSFS=y
+
+# ----------------------------------------------------------------- crypto
+# dm-verity needs SHA-256 only; AES/XTS/ESSIV/CBC are the LUKS2 defaults of
+# the confidential-instance image, built in so luksOpen never loads a
+# module.
+CONFIG_CRYPTO=y
+CONFIG_CRYPTO_SHA256=y
+CONFIG_CRYPTO_AES=y
+CONFIG_CRYPTO_AES_NI_INTEL=y
+CONFIG_CRYPTO_CBC=y
+CONFIG_CRYPTO_XTS=y
+CONFIG_CRYPTO_ESSIV=y
+
+# ------------------------------------------------------------- networking
+CONFIG_NET=y
+CONFIG_NET_CORE=y
+CONFIG_NETDEVICES=y
+CONFIG_VIRTIO_NET=y
+CONFIG_PACKET=y
+CONFIG_UNIX=y
+CONFIG_INET=y
+CONFIG_IPV6=y
+CONFIG_SYN_COOKIES=y
+# Guest firewall: init.sh drives a stateless inet filter (iif lo / tcp
+# dport accept, drop policy) through nf_tables.ko + nfnetlink.ko shipped
+# in the initrd; no conntrack, no NAT.
+CONFIG_NETFILTER=y
+CONFIG_NETFILTER_ADVANCED=y
+CONFIG_NF_TABLES=m
+CONFIG_NF_TABLES_INET=y
+
+# ---------------------------------------------------------------- console
+CONFIG_TTY=y
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_VIRTIO_CONSOLE=y
+# CONFIG_VT is not set

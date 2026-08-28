@@ -170,7 +170,16 @@ measurements meaningless. The attest-agent is built from its own cargo
 workspace (`rust/crates/aleph-attest-agent`, own `Cargo.lock`) and the
 initrd holds file content only (no nix store closure), so the launch
 measurement moves only when the guest's files change; see divergences
-entry 64(d) and `nix/initrd.nix`.
+entry 64(d) and `nix/initrd.nix`. The guest kernel (`nix/kernel.nix`) is
+the nixpkgs-pinned 6.18 LTS source built from a whitelist configuration,
+`nix/kernel-config.fragment` applied over `allnoconfig`: virtio, EFI stub,
+SEV-SNP guest, ext4, the dm-verity/dm-crypt/nf_tables/fuse modules the
+initrds ship, cgroups and namespaces for the compose flavor, and the
+hardening set (32-bit entry paths, kexec, io_uring, tracing, `/dev/mem`
+compiled out). Every fragment line is checked against the generated
+`.config` at build time, so a silently dropped option fails the build
+rather than the boot; `nix/boot-smoke.sh` boots the result under plain
+QEMU/KVM. Any edit to the fragment moves the launch measurement.
 
 `nix/init.sh` is the guest's PID 1. It brings up networking (static `ip=`
 if present on the cmdline, otherwise `udhcpc`), parses `roothash=` and

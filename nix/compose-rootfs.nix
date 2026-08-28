@@ -29,29 +29,20 @@
 #      bind-mounts and podman's own bind mounts need, matching rootfs.nix's
 #      comment about verity read-only mounts (the image cannot create these
 #      at boot once mounted read-only under dm-verity).
-#   5. fuse.ko sourcing: extracted from the STOCK kernel module output
-#      (kernel.modules, unmodified nix/kernel.nix) rather than by adding a
-#      module to structuredExtraConfig. That kernel derivation is shared
-#      with the exec-flavor image; changing it would change the shared
-#      kernel store path and thus the existing #image/#measurement outputs,
-#      which must stay byte-identical to base. nixpkgs' default kernel
-#      config already ships CONFIG_FUSE_FS=m (confirmed by building
-#      kernel.modules and finding fs/fuse/fuse.ko.xz under it), so no
-#      kernel-config change is needed at all.
+#   5. fuse.ko sourcing: extracted from the shared kernel module output
+#      (kernel.modules). CONFIG_FUSE_FS=m is part of the guest kernel's
+#      whitelist config (nix/kernel-config.fragment) precisely for this
+#      file; it is one of the seven modules that kernel builds at all.
 #
 # Everything else -- the package set, the buildEnv/closureInfo full-closure
 # copy, the podman/CNI/crun config files -- is donor-identical.
 let
   staticBusybox = pkgs.busybox.override { enableStatic = true; };
 
-  # Kernel module needed by fuse-overlayfs (container layer storage).
-  # The stock kernel (nix/kernel.nix, UNMODIFIED by this file: that
-  # derivation is shared with the exec-flavor image, and changing its
-  # structuredExtraConfig would change the shared kernel store path and
-  # force a from-source rebuild) already ships CONFIG_FUSE_FS=m by nixpkgs
-  # default, confirmed by building kernel.modules and finding
-  # lib/modules/<modDirVersion>/kernel/fs/fuse/fuse.ko.xz there. Same modDir
-  # shape initrd.nix uses for its dm-*/nf_tables modules.
+  # Kernel module needed by fuse-overlayfs (container layer storage), from
+  # the kernel shared with the exec-flavor image (CONFIG_FUSE_FS=m in
+  # nix/kernel-config.fragment). Same modDir shape initrd.nix uses for its
+  # dm-*/nf_tables modules.
   modDir = "${kernel.modules}/lib/modules/${kernel.modDirVersion}/kernel";
   containerModules = pkgs.runCommand "container-modules" {
     nativeBuildInputs = [ pkgs.xz ];
