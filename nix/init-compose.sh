@@ -38,6 +38,11 @@ roothash=$(/bin/busybox sed -n 's/.*\broothash=\([0-9a-fA-F]*\).*/\1/p' /proc/cm
 # match is unambiguous on its own. The two tokens never cross-match.
 workload_roothash=$(/bin/busybox sed -n 's/.*\bworkload_roothash=\([0-9a-fA-F]*\).*/\1/p' /proc/cmdline)
 
+# Verified data volumes: comma-joined roothashes, lowercase hex only (the
+# schema and daemon both pin lowercase). Same \b reasoning as above.
+# shellcheck disable=SC2034  # verified_volumes is consumed by mount_verified_volumes (init-common.sh), not here
+verified_volumes=$(/bin/busybox sed -n 's/.*\bverified_volumes=\([0-9a-f,]*\).*/\1/p' /proc/cmdline)
+
 # Wait for the rootfs block device to appear.
 wait_for_rootfs_blkdev
 if [ -z "$blkdev" ]; then
@@ -175,6 +180,11 @@ if ! /bin/busybox mount --bind /mnt/workload /mnt/root/mnt/workload; then
     echo "init: FATAL: workload bind mount failed"
     exec /bin/busybox poweroff -f
 fi
+
+# Verified data volumes land in the PLATFORM chroot for compose (unlike
+# exec, where they land in the workload chroot): podman runs chrooted into
+# /mnt/root and resolves compose-file bind sources like /volumes/0 there.
+mount_verified_volumes /mnt/root
 
 # Install the guest firewall BEFORE starting the workload, so the app can never
 # be reached directly even during the window before the agent is up.
