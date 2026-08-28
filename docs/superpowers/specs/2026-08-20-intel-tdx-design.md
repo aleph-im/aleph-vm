@@ -225,12 +225,15 @@ already-published floors keep working. In `aleph-rs`,
 
 ### 4.4 `VerificationResult` (aleph-tee and aleph-sdk, Rust)
 
-Symmetric to 4.1, and shaped the same way: a concrete per-platform type, not a
-`BTreeMap`. The scalar `measurement` becomes `registers`, an enum discriminated
-on TEE type whose SEV-SNP arm carries `launch` and whose TDX arm carries the
-four pinned registers. The existing doc-comment invariant ("derived from the
-AMD-verified blob, NOT a caller-supplied copy") carries over verbatim and
-applies per register.
+Symmetric to 4.1, and shaped the same way: the scalar `measurement` becomes
+`registers: SevSnpRegisters`, a concrete struct, not a `BTreeMap` and not yet
+an enum. Adding TDX turns it into an enum discriminated on TEE type, exactly
+as 4.1 turns the message side into a discriminated union; both are breaking
+either way, so the enum arrives with the platform that needs it. On the
+aleph-rs side the SDK reuses `aleph_types::SevSnpRegisters`, so a pin check
+is structural equality on the type the message carries. The existing
+doc-comment invariant ("derived from the AMD-verified blob, NOT a
+caller-supplied copy") carries over verbatim and applies per register.
 
 The same scalar exists in two shipped places: `aleph_tee::types::VerificationResult`
 (`measurement: Vec<u8>`) and, since aleph-rs 0.17.0, the public
@@ -957,6 +960,6 @@ whitelist fragment naming it).
   resolved (6.2, 6.6, 11). Increment 5 promoted to first, now a breaking
   change. Decision 9 and the memory floor added from the `tdx-measure`
   results. `VerificationResult.registers` reshaped from a map to a concrete
-  per-platform type to match what 1.3.0 shipped. PCESVN dropped from the
+  per-platform struct to match what 1.3.0 shipped. PCESVN dropped from the
   `rtmr3` commitment. Verifier takes `now` as a parameter.
 - **2026-08-20.** Initial approved design.
