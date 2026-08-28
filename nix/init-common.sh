@@ -200,6 +200,14 @@ mount_verified_volumes() {
     local guest_root volume_count volume_index vol_roothash data_letter hash_letter datadev hashdev
     guest_root="$1"
     [ -n "$verified_volumes" ] || return 0
+    # Strict shape check before anything is touched: exactly comma-joined
+    # 64-char lowercase hex roothashes, no empty segments. Word-splitting
+    # below would otherwise collapse "a,,b" into two entries and silently
+    # re-index every volume after the gap.
+    if ! echo "$verified_volumes" | /bin/busybox grep -Eq '^[0-9a-f]{64}(,[0-9a-f]{64})*$'; then
+        echo "init: FATAL: verified_volumes token is malformed (expected comma-joined 64-hex roothashes)"
+        exec /bin/busybox poweroff -f
+    fi
     if [ -z "$workload_roothash" ]; then
         echo "init: FATAL: verified_volumes set without workload_roothash (volume devices start after the workload pair)"
         exec /bin/busybox poweroff -f
