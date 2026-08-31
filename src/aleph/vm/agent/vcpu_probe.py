@@ -72,6 +72,11 @@ async def query_qemu_snp_facts() -> QemuSnpFacts:
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
+        # QMP replies are single JSON lines that keep growing with QEMU
+        # releases (qom-list-types measured 43 KB on QEMU 10.2.1, already 66%
+        # of asyncio's default 64 KiB readline limit); raise it well above
+        # that so a future QEMU does not make every probe fail forever.
+        limit=2**20,
     )
     assert process.stdin is not None and process.stdout is not None
 
