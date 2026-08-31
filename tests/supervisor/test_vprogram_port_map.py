@@ -121,6 +121,11 @@ async def test_vprogram_create_maps_attestation_port(mocker):
         return_value=(fake_spec, ATTEST_PORT),
     )
     mocker.patch("aleph.vm.agent.run.persist_record", new_callable=AsyncMock)
+    # The attest-gate itself is unit-tested in test_vprogram_launch.py; here
+    # only the port-forward reconciliation is under test. Keep a reference so
+    # we can still assert the create path actually wires the gate in: a
+    # refactor that drops the call site must not leave this suite green.
+    mock_gate = mocker.patch("aleph.vm.agent.run._wait_until_attest_endpoint_listens", new_callable=AsyncMock)
 
     info = _running_vm_info(str(vm_hash))
     supervisor = FakeSupervisor(info)
@@ -138,6 +143,7 @@ async def test_vprogram_create_maps_attestation_port(mocker):
     pf = supervisor.add_port_forward_calls[0]
     assert pf.vm_port == ATTEST_PORT
     assert pf.protocol is Protocol.TCP
+    mock_gate.assert_awaited_once_with(supervisor, VmId(str(vm_hash)), ATTEST_PORT)
 
     # Idempotency: re-running the reconcile (e.g. daemon re-adopts the VM on
     # restart) must not create a duplicate mapping.

@@ -219,6 +219,9 @@ async def test_create_vm_execution_vprogram_launches_snp(mocker):
         "aleph.vm.agent.run.build_vprogram_spec", new_callable=AsyncMock, return_value=(fake_spec, 8443)
     )
     mock_persist = mocker.patch("aleph.vm.agent.run.persist_record", new_callable=AsyncMock)
+    # The attest-gate itself is unit-tested in test_vprogram_launch.py; here
+    # only the spec-build/create/port-forward wiring is under test.
+    mocker.patch("aleph.vm.agent.run._wait_until_attest_endpoint_listens", new_callable=AsyncMock)
 
     info = _running_vm_info(str(vm_hash))
     assert not info.awaiting_confidential_init

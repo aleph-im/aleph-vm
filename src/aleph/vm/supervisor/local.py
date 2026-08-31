@@ -36,6 +36,7 @@ from aleph.vm.supervisor_interface.errors import (
     InvalidBackendError,
     NotImplementedSupervisorError,
     VmNotFoundError,
+    VmSetupError,
 )
 from aleph.vm.supervisor_interface.types import (
     Backend,
@@ -378,6 +379,15 @@ class LocalSupervisor(Supervisor):
     # Lifecycle
     async def create_vm(self, spec: CreateVmSpec) -> VmInfo:
         with translating_errors():
+            if spec.tee is not None and spec.tee.backend is TeeBackend.SEV_SNP:
+                msg = (
+                    "SEV-SNP launches require the Rust supervisor daemon "
+                    "(ALEPH_VM_SUPERVISOR_IMPL=rust in /etc/aleph-vm/supervisor.env): "
+                    "the Python supervisor only implements the SEV session flow and "
+                    "would leave an SNP guest waiting forever for an owner "
+                    "initialization that never comes"
+                )
+                raise VmSetupError(msg)
             execution = await self.pool.create_vm_from_spec(spec)
             info = _to_vm_info(execution, _controller_state(execution, self.pool))
             self._emit_event(spec.vm_id, VmStatus.DEFINED, info.status)

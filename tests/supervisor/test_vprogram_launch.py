@@ -14,7 +14,9 @@ import json
 import shutil
 import tarfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import IO, Any, cast
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aleph_message.models import VerifiableProgramMessage, parse_message
@@ -704,3 +706,59 @@ def test_remove_vprogram_staging_is_idempotent(tmp_path, monkeypatch):
     # Already gone (second teardown, or a non-V-PROGRAM VM with no staging dir).
     remove_vprogram_staging(vm_hash)
     assert not staging.exists()
+
+
+@pytest.mark.asyncio
+async def test_attest_gate_returns_when_guest_listens(mocker):
+    from aleph.vm.agent import run as run_module
+
+    supervisor = AsyncMock()
+    supervisor.get_vm.return_value = SimpleNamespace(vm_id="vm-1", ipv4=SimpleNamespace(address="172.16.3.2"))
+    writer = MagicMock()
+    writer.wait_closed = AsyncMock()
+    mocker.patch("asyncio.open_connection", new_callable=AsyncMock, return_value=(MagicMock(), writer))
+    await run_module._wait_until_attest_endpoint_listens(supervisor, "vm-1", 8443, timeout=5, interval=0.01)
+    writer.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_attest_gate_returns_after_retry(mocker):
+    """A guest that refuses the first probe but accepts the next one must
+    still be treated as a success: the poll loop retries within the timeout
+    rather than failing on the first refused connection."""
+    from aleph.vm.agent import run as run_module
+
+    supervisor = AsyncMock()
+    supervisor.get_vm.return_value = SimpleNamespace(vm_id="vm-1", ipv4=SimpleNamespace(address="172.16.3.2"))
+    writer = MagicMock()
+    writer.wait_closed = AsyncMock()
+    mocker.patch(
+        "asyncio.open_connection",
+        new_callable=AsyncMock,
+        side_effect=[ConnectionRefusedError, (MagicMock(), writer)],
+    )
+    await run_module._wait_until_attest_endpoint_listens(supervisor, "vm-1", 8443, timeout=5, interval=0.01)
+    writer.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_attest_gate_raises_when_guest_never_listens(mocker):
+    from aleph.vm.agent import run as run_module
+    from aleph.vm.agent.run import VmStartupError
+
+    supervisor = AsyncMock()
+    supervisor.get_vm.return_value = SimpleNamespace(vm_id="vm-1", ipv4=SimpleNamespace(address="172.16.3.2"))
+    mocker.patch("asyncio.open_connection", new_callable=AsyncMock, side_effect=ConnectionRefusedError)
+    with pytest.raises(VmStartupError, match="attestation endpoint"):
+        await run_module._wait_until_attest_endpoint_listens(supervisor, "vm-1", 8443, timeout=0.05, interval=0.01)
+
+
+@pytest.mark.asyncio
+async def test_attest_gate_raises_without_ipv4(mocker):
+    from aleph.vm.agent import run as run_module
+    from aleph.vm.agent.run import VmStartupError
+
+    supervisor = AsyncMock()
+    supervisor.get_vm.return_value = SimpleNamespace(vm_id="vm-1", ipv4=SimpleNamespace(address=""))
+    with pytest.raises(VmStartupError, match="IPv4"):
+        await run_module._wait_until_attest_endpoint_listens(supervisor, "vm-1", 8443, timeout=0.05, interval=0.01)
