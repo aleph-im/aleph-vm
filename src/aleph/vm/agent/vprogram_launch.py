@@ -262,8 +262,19 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
         disks.append(DiskSpec(path=volume_data, readonly=True, format=DiskFormat.RAW, role=DiskRole.EXTRA))
         disks.append(DiskSpec(path=volume_hash_tree, readonly=True, format=DiskFormat.RAW, role=DiskRole.EXTRA))
         volume_roothashes.append(volume.roothash)
+    volumes_sidecar = rootfs_path.parent / f"{rootfs_path.name}.verified_volumes"
     if volume_roothashes:
-        (rootfs_path.parent / f"{rootfs_path.name}.verified_volumes").write_text(",".join(volume_roothashes) + "\n")
+        volumes_sidecar.write_text(",".join(volume_roothashes) + "\n")
+    else:
+        # A volume-less message must leave NO sidecar behind: the daemon
+        # emits the cmdline token from the file's presence, so a stray
+        # {rootfs}.verified_volumes shipped inside a mispackaged runtime
+        # bundle would be spliced into a measured cmdline the CLI never
+        # included, failing verification on every volume-less launch of
+        # that runtime. The staged state mirrors the message, not the
+        # bundle (the workload sidecar above is overwritten for the same
+        # reason).
+        volumes_sidecar.unlink(missing_ok=True)
 
     session_base = settings.CONFIDENTIAL_SESSION_DIRECTORY or (Path(settings.EXECUTION_ROOT) / "sessions")
 

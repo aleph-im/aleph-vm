@@ -605,6 +605,31 @@ async def test_no_volumes_writes_no_sidecar(staged_bundle, snp_vcpu_types):
     assert not rootfs.with_name(rootfs.name + ".verified_volumes").is_file()
 
 
+
+@pytest.mark.asyncio
+async def test_bundle_shipped_volumes_sidecar_is_removed_without_volumes(tmp_path, storage_files, snp_vcpu_types):
+    """A {rootfs}.verified_volumes file shipped INSIDE the runtime bundle
+    must not survive a volume-less launch: the daemon derives the measured
+    cmdline token from the file's presence, and the CLI never measured one,
+    so a stale bundle-shipped sidecar would fail verification on every
+    launch of that (mispackaged) runtime. The staged state mirrors the
+    message, not the bundle."""
+    files = dict(BUNDLE_FILES)
+    files["rootfs.ext4.verified_volumes"] = b"ab" * 32 + b"\n"
+    tar_path = make_bundle(tmp_path, files)
+    manifest_path = make_manifest(tar_path, tmp_path)
+    storage_files[MANIFEST_REF] = manifest_path
+    storage_files[BUNDLE_REF] = tar_path
+    stage_workload(storage_files, tmp_path)
+
+    message = load_vprogram_message()
+    content = message.content.model_copy(update={"volumes": []})
+    spec, _attest_port = await build_vprogram_spec(message.item_hash, content)
+
+    rootfs = spec.rootfs.path
+    assert not rootfs.with_name(rootfs.name + ".verified_volumes").is_file()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "bad_roothash",
