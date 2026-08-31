@@ -19,6 +19,7 @@ from aleph.vm.agent.capacity import CapacityManager
 from aleph.vm.agent.expiry import ExpiryManager
 from aleph.vm.agent.migration.reaper import reap_orphan_migration_files
 from aleph.vm.agent.update_watcher import UpdateWatcher
+from aleph.vm.agent.vcpu_probe import get_snp_launch_capability
 from aleph.vm.agent.vm.backup import BackupManager
 from aleph.vm.agent.vm.program_client import ProgramGuestClient
 from aleph.vm.agent.vm_registry import AgentVmRegistry, rehydrate_registry
@@ -26,7 +27,7 @@ from aleph.vm.conf import settings
 from aleph.vm.sevclient import SevClient
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.client import GrpcSupervisor
-from aleph.vm.utils import create_task_log_exceptions
+from aleph.vm.utils import check_amd_sev_snp_supported, create_task_log_exceptions
 from aleph.vm.version import __version__
 
 from .node_identity import (
@@ -437,6 +438,30 @@ async def _rehydrate_vm_registry(app: web.Application) -> None:
     logger.info("Rehydrated %d VM record(s) into the agent registry", count)
 
 
+async def log_snp_launch_capability(_app) -> None:
+    """on_startup hook: tell the operator, once and loudly, when SNP silicon
+    is enabled but this host still cannot launch confidential guests (field
+    report F2: a capable EPYC host silently advertised nothing, and later a
+    QEMU too old to launch). Never fails startup."""
+    try:
+        if not check_amd_sev_snp_supported():
+            return
+        capability = await get_snp_launch_capability()
+        if capability.supported_vcpu_types:
+            logger.info(
+                "SEV-SNP confidential launches available; advertising guest CPU models: %s",
+                ", ".join(capability.supported_vcpu_types),
+            )
+        else:
+            logger.warning(
+                "SEV-SNP silicon is enabled on this host but confidential launches are "
+                "DISABLED, so the node will not advertise SNP capability: %s",
+                capability.unavailable_reason,
+            )
+    except Exception:
+        logger.exception("Could not determine SNP launch capability at startup")
+
+
 def run():
     """Run the agent web server."""
     settings.check()
@@ -465,6 +490,7 @@ def run():
     )
     app.on_startup.append(_run_migration_reaper)
     app.on_startup.append(_rehydrate_vm_registry)
+    app.on_startup.append(log_snp_launch_capability)
     app.on_startup.append(start_node_hash_discovery)
     app.on_cleanup.append(stop_node_hash_discovery)
 

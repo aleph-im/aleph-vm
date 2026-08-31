@@ -6,6 +6,7 @@ list must reflect what this exact QEMU + kernel + silicon can launch.
 """
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
@@ -406,3 +407,34 @@ async def test_silicon_off_reason_names_the_kernel(mocker):
     capability = await get_snp_launch_capability()
     assert capability.supported_vcpu_types == []
     assert "kvm_amd" in capability.unavailable_reason
+
+
+# ---------------------------------------------------------------------------
+# The agent startup notice (report F2): a capable EPYC host that silently
+# advertised nothing must instead tell the operator why, once and loudly.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_startup_notice_warns_when_silicon_ok_but_qemu_cannot_launch(mocker, caplog):
+    from aleph.vm.agent.supervisor import log_snp_launch_capability
+
+    mocker.patch("aleph.vm.agent.supervisor.check_amd_sev_snp_supported", return_value=True)
+    mocker.patch(
+        "aleph.vm.agent.supervisor.get_snp_launch_capability",
+        new_callable=AsyncMock,
+        return_value=SnpLaunchCapability([], "QEMU (8.2.2) has no 'sev-snp-guest' object..."),
+    )
+    with caplog.at_level(logging.WARNING):
+        await log_snp_launch_capability(None)
+    assert any("DISABLED" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_startup_notice_silent_without_snp_silicon(mocker, caplog):
+    from aleph.vm.agent.supervisor import log_snp_launch_capability
+
+    mocker.patch("aleph.vm.agent.supervisor.check_amd_sev_snp_supported", return_value=False)
+    with caplog.at_level(logging.INFO):
+        await log_snp_launch_capability(None)
+    assert not caplog.records
