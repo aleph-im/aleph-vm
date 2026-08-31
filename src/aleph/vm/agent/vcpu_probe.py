@@ -79,13 +79,48 @@ async def query_cpu_definitions() -> list[dict]:
             process.kill()
 
 
+# Features QEMU reports as unavailable when the host runs kvm_amd nested=0.
+# They exist only to run nested hypervisors inside the guest: an SEV-SNP
+# guest never uses them, and the launch path passes -cpu without enforce, so
+# QEMU merely masks them with a warning. Disabling nested virt is a
+# legitimate host hardening posture and must not empty the advertisement.
+# The set is every name QEMU gives to the SVM feature word (FEAT_SVM over
+# CPUID 0x8000_000A EDX in target/i386/cpu.c; gmet is on QEMU master and not
+# yet in a release) plus the svm bit itself (0x8000_0001 ECX): exactly the
+# features Linux KVM exposes only when kvm_amd runs with nested=1.
+NESTED_VIRT_FEATURES = frozenset(
+    {
+        "svm",
+        "npt",
+        "lbrv",
+        "svm-lock",
+        "nrip-save",
+        "tsc-scale",
+        "vmcb-clean",
+        "flushbyasid",
+        "decodeassists",
+        "pause-filter",
+        "pfthreshold",
+        "avic",
+        "v-vmsave-vmload",
+        "vgif",
+        "gmet",
+        "svme-addr-chk",
+        "vnmi",
+    }
+)
+
+
 def filter_snp_vcpu_types(definitions: list[dict]) -> list[str]:
-    """Keep the EPYC-family models QEMU reports as runnable on this host
-    (empty unavailable-features means every feature the model needs exists)."""
+    """Keep the EPYC-family models QEMU reports as runnable on this host.
+
+    Unavailable features that only matter for nested virtualization are
+    ignored: see NESTED_VIRT_FEATURES."""
     return sorted(
         definition["name"]
         for definition in definitions
-        if definition["name"].startswith("EPYC") and not definition.get("unavailable-features")
+        if definition["name"].startswith("EPYC")
+        and not (set(definition.get("unavailable-features") or ()) - NESTED_VIRT_FEATURES)
     )
 
 

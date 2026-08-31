@@ -13,6 +13,7 @@ import pytest
 from aleph.vm.agent import resources
 from aleph.vm.agent.resources import get_machine_capability, get_machine_properties
 from aleph.vm.agent.vcpu_probe import (
+    NESTED_VIRT_FEATURES,
     PROBE_RETRY_SECONDS,
     filter_snp_vcpu_types,
     get_supported_snp_vcpu_types,
@@ -37,6 +38,37 @@ def test_filter_snp_vcpu_types():
         {"name": "Skylake-Server", "unavailable-features": []},
     ]
     assert filter_snp_vcpu_types(definitions) == ["EPYC", "EPYC-v4"]
+
+
+def test_filter_ignores_nested_virt_features():
+    # kvm_amd nested=0 is a legitimate hardening posture: QEMU then reports
+    # svm/npt/nrip-save unavailable on every EPYC model, but SNP guests never
+    # use nested virt and the launch path passes -cpu without enforce.
+    definitions = [
+        {"name": "EPYC-v4", "unavailable-features": ["svm", "npt", "nrip-save"]},
+        {"name": "EPYC-Genoa", "unavailable-features": ["svm", "npt", "nrip-save"]},
+    ]
+    assert filter_snp_vcpu_types(definitions) == ["EPYC-Genoa", "EPYC-v4"]
+
+
+def test_filter_still_rejects_genuinely_missing_features():
+    definitions = [
+        {"name": "EPYC-Milan", "unavailable-features": ["svm", "perfctr-core"]},
+        {"name": "EPYC", "unavailable-features": []},
+    ]
+    assert filter_snp_vcpu_types(definitions) == ["EPYC"]
+
+
+def test_filter_ignores_every_nested_virt_feature():
+    # Guards the ignore list as a whole: every name in NESTED_VIRT_FEATURES
+    # must be tolerated, so a filter refactor cannot quietly start rejecting
+    # models over one of them. (Drift the other way, a nested-virt name QEMU
+    # adds that this list lacks, can only be caught against a live QEMU.)
+    definitions = [
+        {"name": "EPYC-Milan", "unavailable-features": sorted(NESTED_VIRT_FEATURES)},
+        {"name": "EPYC-Milan-v2", "unavailable-features": ["monitor"]},
+    ]
+    assert filter_snp_vcpu_types(definitions) == ["EPYC-Milan"]
 
 
 @pytest.mark.asyncio
