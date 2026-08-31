@@ -105,6 +105,20 @@ in `MachineProperties` (`src/aleph/vm/agent/resources.py`,
 facts are different axes, and keeping them siblings leaves room for a future
 `tdx` or GPU-CC platform key without a schema break.
 
+### Host requirements for SEV-SNP
+
+SEV-SNP guest launches need QEMU >= 9.1, the first release with the
+`sev-snp-guest` QOM object the probe checks for. Of the packaged targets,
+only Debian 13 ships one; Ubuntu 24.04 (QEMU 8.2) and Debian 12 (QEMU 7.2)
+can serve plain SEV/SEV-ES but not SNP, whatever `query-cpu-definitions`
+reports. `kvm_amd nested=0` is fine, a legitimate hardening posture: the
+filter ignores nested-virt-only unavailable features since 2.0.1, so it no
+longer empties the advertisement. The probe retries every 60s after an empty
+result, so a live QEMU upgrade heals the advertisement without an agent
+restart. Check either end: `/about/capability`'s `tee_unavailable_reason`,
+or the agent's startup log line (`log_snp_launch_capability`,
+`src/aleph/vm/agent/supervisor.py`).
+
 ### The attestation stack
 
 Three crates, cleanly separated by role.
