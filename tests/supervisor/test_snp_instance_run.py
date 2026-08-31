@@ -119,8 +119,12 @@ async def test_snp_instance_create_uses_snp_builder(monkeypatch):
     monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
     monkeypatch.setattr(run_module, "persist_record", AsyncMock())
     # The attest-gate itself is unit-tested in test_vprogram_launch.py; here
-    # only the spec-build/create/port-forward wiring is under test.
-    monkeypatch.setattr(run_module, "_wait_until_attest_endpoint_listens", AsyncMock())
+    # only the spec-build/create/port-forward wiring is under test. Keep a
+    # reference so we can still assert the create path actually wires the
+    # gate in: a refactor that drops the call site must not leave this suite
+    # green.
+    mock_gate = AsyncMock()
+    monkeypatch.setattr(run_module, "_wait_until_attest_endpoint_listens", mock_gate)
 
     supervisor = _fake_supervisor()
     registry = AgentVmRegistry()
@@ -139,6 +143,7 @@ async def test_snp_instance_create_uses_snp_builder(monkeypatch):
     assert 22 in forwarded_ports
     assert _ATTEST_PORT in forwarded_ports
     assert execution is None
+    mock_gate.assert_awaited_once_with(supervisor, VmId(str(VM_HASH)), _ATTEST_PORT)
 
 
 @pytest.mark.asyncio

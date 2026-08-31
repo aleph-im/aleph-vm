@@ -524,6 +524,26 @@ async def test_attest_gate_returns_when_guest_listens(mocker):
 
 
 @pytest.mark.asyncio
+async def test_attest_gate_returns_after_retry(mocker):
+    """A guest that refuses the first probe but accepts the next one must
+    still be treated as a success: the poll loop retries within the timeout
+    rather than failing on the first refused connection."""
+    from aleph.vm.agent import run as run_module
+
+    supervisor = AsyncMock()
+    supervisor.get_vm.return_value = SimpleNamespace(vm_id="vm-1", ipv4=SimpleNamespace(address="172.16.3.2"))
+    writer = MagicMock()
+    writer.wait_closed = AsyncMock()
+    mocker.patch(
+        "asyncio.open_connection",
+        new_callable=AsyncMock,
+        side_effect=[ConnectionRefusedError, (MagicMock(), writer)],
+    )
+    await run_module._wait_until_attest_endpoint_listens(supervisor, "vm-1", 8443, timeout=5, interval=0.01)
+    writer.close.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_attest_gate_raises_when_guest_never_listens(mocker):
     from aleph.vm.agent import run as run_module
     from aleph.vm.agent.run import VmStartupError

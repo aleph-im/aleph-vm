@@ -337,8 +337,14 @@ async def _wait_until_attest_endpoint_listens(
                 raise VmStartupError(msg) from None
             await asyncio.sleep(interval)
         else:
-            writer.close()
-            await writer.wait_closed()
+            # The gate's success condition (TCP accept) is already met here:
+            # if the RA-TLS server RSTs this probe connection right after
+            # accept, that is a close-time detail, not a launch failure.
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except OSError:
+                pass
             return
 
 
