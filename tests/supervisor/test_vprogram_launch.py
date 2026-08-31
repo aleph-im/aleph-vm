@@ -605,7 +605,6 @@ async def test_no_volumes_writes_no_sidecar(staged_bundle, snp_vcpu_types):
     assert not rootfs.with_name(rootfs.name + ".verified_volumes").is_file()
 
 
-
 @pytest.mark.asyncio
 async def test_bundle_shipped_volumes_sidecar_is_removed_without_volumes(tmp_path, storage_files, snp_vcpu_types):
     """A {rootfs}.verified_volumes file shipped INSIDE the runtime bundle
