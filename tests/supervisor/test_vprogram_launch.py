@@ -18,6 +18,7 @@ from typing import IO, Any, cast
 
 import pytest
 from aleph_message.models import VerifiableProgramMessage, parse_message
+from aleph_message.models.execution.vprogram import VerifiedVolume
 
 from aleph.vm.agent.guest_ipv6 import compute_requested_ipv6
 from aleph.vm.agent.vprogram_launch import (
@@ -50,6 +51,25 @@ PLATFORM_ROOTHASH = "cb121a317be7dc7969dd633ca9b6c3718ffe9ea6715b64e0e35a871d484
 WORKLOAD_REF = "beefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef"
 WORKLOAD_HASH_TREE_REF = "feedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeed"
 WORKLOAD_ROOTHASH = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+
+# Fixture volume (in tests/supervisor/fixtures/vprogram_message.json):
+# registered with storage_files in staged_bundle to support tests using
+# the unmodified fixture message (which has volumes: [...] by default).
+FIXTURE_VOLUME_REF = "dadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadada"
+FIXTURE_VOLUME_HASH_TREE_REF = "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5"
+FIXTURE_VOLUME_ROOTHASH = "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef"
+
+# Verified data volumes (content.volumes): refs registered per-test with
+# storage_files, roothashes staged comma-joined in {rootfs}.verified_volumes.
+VOLUME_REFS = [
+    "ac01ac01ac01ac01ac01ac01ac01ac01ac01ac01ac01ac01ac01ac01ac01ac01",
+    "ac02ac02ac02ac02ac02ac02ac02ac02ac02ac02ac02ac02ac02ac02ac02ac02",
+]
+VOLUME_HASH_TREE_REFS = [
+    "bd01bd01bd01bd01bd01bd01bd01bd01bd01bd01bd01bd01bd01bd01bd01bd01",
+    "bd02bd02bd02bd02bd02bd02bd02bd02bd02bd02bd02bd02bd02bd02bd02bd02",
+]
+VOLUME_ROOTHASHES = ["ab" * 32, "cd" * 32]
 
 # The reference manifest shape (tests/vprogram/test_manifest.py), with the
 # bundle digest/size patched per-test to match the locally built tarball.
@@ -163,14 +183,61 @@ def stage_workload(storage_files: dict[str, Path], tmp_path: Path) -> dict[str, 
     return {"data": data_path, "hashtree": hashtree_path}
 
 
-@pytest.fixture
-def staged_bundle(tmp_path, storage_files) -> dict[str, Path]:
+def stage_volumes(storage_files: dict[str, Path], tmp_path: Path, count: int) -> list[VerifiedVolume]:
+    """Register `count` verified volumes with get_existing_file and return
+    the VerifiedVolume entries to put on the message (message list order)."""
+    volumes = []
+    for i in range(count):
+        data_path = tmp_path / f"volume{i}.img"
+        data_path.write_bytes(f"volume {i} data".encode())
+        tree_path = tmp_path / f"volume{i}.verity"
+        tree_path.write_bytes(f"volume {i} hash tree".encode())
+        storage_files[VOLUME_REFS[i]] = data_path
+        storage_files[VOLUME_HASH_TREE_REFS[i]] = tree_path
+        volumes.append(
+            VerifiedVolume(ref=VOLUME_REFS[i], hash_tree=VOLUME_HASH_TREE_REFS[i], roothash=VOLUME_ROOTHASHES[i])
+        )
+    return volumes
+
+
+def _stage_bundle(tmp_path: Path, storage_files: dict[str, Path], **manifest_overrides: Any) -> dict[str, Path]:
     tar_path = make_bundle(tmp_path)
-    manifest_path = make_manifest(tar_path, tmp_path)
+    manifest_path = make_manifest(tar_path, tmp_path, **manifest_overrides)
     storage_files[MANIFEST_REF] = manifest_path
     storage_files[BUNDLE_REF] = tar_path
     workload = stage_workload(storage_files, tmp_path)
+    # Register the fixture's default volume (in vprogram_message.json).
+    fixture_volume_data = tmp_path / "fixture_volume_data.img"
+    fixture_volume_data.write_bytes(b"fixture volume data")
+    fixture_volume_tree = tmp_path / "fixture_volume_tree.img"
+    fixture_volume_tree.write_bytes(b"fixture volume hash tree")
+    storage_files[FIXTURE_VOLUME_REF] = fixture_volume_data
+    storage_files[FIXTURE_VOLUME_HASH_TREE_REF] = fixture_volume_tree
     return {"tar": tar_path, "manifest": manifest_path, **workload}
+
+
+@pytest.fixture
+def staged_bundle(tmp_path, storage_files) -> dict[str, Path]:
+    """A slot-less manifest (MANIFEST_TEMPLATE's cmdline_template has no
+    {verified_volumes} placeholder): the default for tests that either
+    carry no volumes or specifically exercise the missing-slot refusal."""
+    return _stage_bundle(tmp_path, storage_files)
+
+
+@pytest.fixture
+def staged_bundle_with_volume_slot(tmp_path, storage_files) -> dict[str, Path]:
+    """Like staged_bundle, but the manifest's cmdline template carries the
+    {verified_volumes} slot. Any test whose message declares volumes and
+    needs build_vprogram_spec to proceed past the slot-presence check must
+    use this instead of the slot-less staged_bundle."""
+    return _stage_bundle(
+        tmp_path,
+        storage_files,
+        **{
+            "boot.cmdline_template": MANIFEST_TEMPLATE["boot"]["cmdline_template"]
+            + " workload_roothash={workload_roothash} verified_volumes={verified_volumes}"
+        },
+    )
 
 
 @pytest.fixture
@@ -250,7 +317,7 @@ async def test_build_vprogram_spec(staged_bundle, snp_vcpu_types):
     (/dev/vdb), workload data (/dev/vdc), workload hash tree (/dev/vdd);
     persistent."""
     message = load_vprogram_message()
-    content = message.content
+    content = message.content.model_copy(update={"volumes": []})
     spec, attest_port = await build_vprogram_spec(message.item_hash, content)
     assert attest_port == 8443
 
@@ -322,12 +389,13 @@ async def test_build_vprogram_spec_no_ra_tls_attestation_port(tmp_path, storage_
     stage_workload(storage_files, tmp_path)
 
     message = load_vprogram_message()
-    _spec, attest_port = await build_vprogram_spec(message.item_hash, message.content)
+    content = message.content.model_copy(update={"volumes": []})
+    _spec, attest_port = await build_vprogram_spec(message.item_hash, content)
     assert attest_port is None
 
 
 @pytest.mark.asyncio
-async def test_build_vprogram_spec_selects_the_measured_cpu_model(staged_bundle, snp_vcpu_types):
+async def test_build_vprogram_spec_selects_the_measured_cpu_model(staged_bundle_with_volume_slot, snp_vcpu_types):
     # A non-default model: a hardcoded "EPYC-v4" fallback would fail this,
     # unlike an assertion against the default that a bug could satisfy by
     # accident.
@@ -340,7 +408,9 @@ async def test_build_vprogram_spec_selects_the_measured_cpu_model(staged_bundle,
 
 
 @pytest.mark.asyncio
-async def test_build_vprogram_spec_refuses_a_model_the_host_cannot_launch(staged_bundle, snp_vcpu_types):
+async def test_build_vprogram_spec_refuses_a_model_the_host_cannot_launch(
+    staged_bundle_with_volume_slot, snp_vcpu_types
+):
     # The fixture's only measurement is tagged EPYC-v4 and this host can only
     # launch the baseline model: launching anyway would attest wrong.
     snp_vcpu_types(["EPYC"])
@@ -355,7 +425,8 @@ async def test_roothash_sidecar_present_after_staging(staged_bundle, snp_vcpu_ty
     hash tree from <rootfs>.verity next to the rootfs disk: both must be in
     place after staging, with the manifest's platform roothash."""
     message = load_vprogram_message()
-    spec, _attest_port = await build_vprogram_spec(message.item_hash, message.content)
+    content = message.content.model_copy(update={"volumes": []})
+    spec, _attest_port = await build_vprogram_spec(message.item_hash, content)
 
     rootfs = spec.rootfs.path
     roothash_sidecar = rootfs.with_name(rootfs.name + ".roothash")
@@ -376,7 +447,8 @@ async def test_roothash_sidecar_written_when_bundle_lacks_it(tmp_path, storage_f
     stage_workload(storage_files, tmp_path)
 
     message = load_vprogram_message()
-    spec, _attest_port = await build_vprogram_spec(message.item_hash, message.content)
+    content = message.content.model_copy(update={"volumes": []})
+    spec, _attest_port = await build_vprogram_spec(message.item_hash, content)
     rootfs = spec.rootfs.path
     assert rootfs.with_name(rootfs.name + ".roothash").read_text().strip() == PLATFORM_ROOTHASH
 
@@ -441,7 +513,7 @@ async def test_workload_attached_and_sidecar_written(staged_bundle, snp_vcpu_typ
     is NOT a spec disk (the daemon force-inserts it as /dev/vdb), so the
     workload data/hash tree land at /dev/vdc, /dev/vdd."""
     message = load_vprogram_message()
-    content = message.content
+    content = message.content.model_copy(update={"volumes": []})
     assert content.workload.roothash == WORKLOAD_ROOTHASH
     spec, _attest_port = await build_vprogram_spec(message.item_hash, content)
 
@@ -487,6 +559,132 @@ async def test_workload_roothash_non_hex_fails_closed(staged_bundle, bad_roothas
     staging = vprogram_staging_dir(message.item_hash)
     rootfs = staging / "image" / "rootfs.ext4"
     assert not rootfs.with_name(rootfs.name + ".workload_roothash").is_file()
+
+
+@pytest.mark.asyncio
+async def test_volumes_attached_and_sidecar_written(
+    staged_bundle_with_volume_slot, storage_files, tmp_path, snp_vcpu_types
+):
+    """content.volumes are attached as (data, hash tree) EXTRA disk pairs in
+    message list order AFTER the workload pair, and their roothashes staged
+    comma-joined in a {rootfs}.verified_volumes sidecar. Disk order is the
+    positional binding the guest init relies on (volume i's data at the
+    (5+2i)-th virtio disk); the sidecar is how the daemon learns
+    'verified_volumes=h1,h2' (the proto has no cmdline field)."""
+    message = load_vprogram_message()
+    volumes = stage_volumes(storage_files, tmp_path, 2)
+    content = message.content.model_copy(update={"volumes": volumes})
+
+    spec, _attest_port = await build_vprogram_spec(message.item_hash, content)
+
+    # rootfs + workload pair + two volume pairs
+    assert len(spec.disks) == 7
+    assert [d.role for d in spec.disks] == [DiskRole.ROOTFS] + [DiskRole.EXTRA] * 6
+    assert spec.disks[3].path == storage_files[VOLUME_REFS[0]]
+    assert spec.disks[4].path == storage_files[VOLUME_HASH_TREE_REFS[0]]
+    assert spec.disks[5].path == storage_files[VOLUME_REFS[1]]
+    assert spec.disks[6].path == storage_files[VOLUME_HASH_TREE_REFS[1]]
+    assert all(d.readonly and d.format is DiskFormat.RAW for d in spec.disks[3:])
+
+    rootfs = spec.rootfs.path
+    sidecar = rootfs.with_name(rootfs.name + ".verified_volumes")
+    assert sidecar.is_file()
+    assert sidecar.read_text() == ",".join(VOLUME_ROOTHASHES) + "\n"
+
+
+@pytest.mark.asyncio
+async def test_no_volumes_writes_no_sidecar(staged_bundle, snp_vcpu_types):
+    """A volume-less V-PROGRAM must stage NO verified_volumes sidecar: the
+    daemon emits the cmdline token from the sidecar's presence, and the CLI
+    drops the template token when the message declares no volumes; an empty
+    sidecar would break byte-parity between the two."""
+    message = load_vprogram_message()
+    content = message.content.model_copy(update={"volumes": []})
+    spec, _attest_port = await build_vprogram_spec(message.item_hash, content)
+    rootfs = spec.rootfs.path
+    assert not rootfs.with_name(rootfs.name + ".verified_volumes").is_file()
+
+
+@pytest.mark.asyncio
+async def test_bundle_shipped_volumes_sidecar_is_removed_without_volumes(tmp_path, storage_files, snp_vcpu_types):
+    """A {rootfs}.verified_volumes file shipped INSIDE the runtime bundle
+    must not survive a volume-less launch: the daemon derives the measured
+    cmdline token from the file's presence, and the CLI never measured one,
+    so a stale bundle-shipped sidecar would fail verification on every
+    launch of that (mispackaged) runtime. The staged state mirrors the
+    message, not the bundle."""
+    files = dict(BUNDLE_FILES)
+    files["rootfs.ext4.verified_volumes"] = b"ab" * 32 + b"\n"
+    tar_path = make_bundle(tmp_path, files)
+    manifest_path = make_manifest(tar_path, tmp_path)
+    storage_files[MANIFEST_REF] = manifest_path
+    storage_files[BUNDLE_REF] = tar_path
+    stage_workload(storage_files, tmp_path)
+
+    message = load_vprogram_message()
+    content = message.content.model_copy(update={"volumes": []})
+    spec, _attest_port = await build_vprogram_spec(message.item_hash, content)
+
+    rootfs = spec.rootfs.path
+    assert not rootfs.with_name(rootfs.name + ".verified_volumes").is_file()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_roothash",
+    [
+        "not-bare-hex!!",
+        "cafef00d",  # valid hex but not a full sha256
+        "CD" * 32,  # right length, but the schema pins lowercase
+    ],
+)
+async def test_volume_roothash_non_hex_fails_closed(
+    staged_bundle_with_volume_slot, storage_files, tmp_path, snp_vcpu_types, bad_roothash
+):
+    """A volume roothash that fails VERITY_ROOTHASH_PATTERN must never be
+    staged or attached (same reasoning as the workload re-check: the daemon
+    splices the sidecar into the measured cmdline unquoted, and model_copy
+    bypasses field validation)."""
+    message = load_vprogram_message()
+    volumes = stage_volumes(storage_files, tmp_path, 1)
+    bad_volume = volumes[0].model_copy(update={"roothash": bad_roothash})
+    content = message.content.model_copy(update={"volumes": [bad_volume]})
+
+    with pytest.raises(VmSetupError, match="not a bare sha256 hex"):
+        await build_vprogram_spec(message.item_hash, content)
+
+    staging = vprogram_staging_dir(message.item_hash)
+    rootfs = staging / "image" / "rootfs.ext4"
+    assert not rootfs.with_name(rootfs.name + ".verified_volumes").is_file()
+
+
+@pytest.mark.asyncio
+async def test_too_many_volumes_fails_closed(staged_bundle_with_volume_slot, storage_files, tmp_path):
+    """More than MAX_VERIFIED_VOLUMES volumes must be refused on the launch
+    path too (the schema enforces it on parse, but model_copy routes bypass
+    it and the guest init only has device letters for 8 pairs)."""
+    message = load_vprogram_message()
+    volumes = stage_volumes(storage_files, tmp_path, 1)
+    nine = [volumes[0].model_copy() for _ in range(9)]
+    content = message.content.model_copy(update={"volumes": nine})
+
+    with pytest.raises(VmSetupError, match="at most 8"):
+        await build_vprogram_spec(message.item_hash, content)
+
+
+@pytest.mark.asyncio
+async def test_volumes_without_cmdline_slot_fails_closed(staged_bundle, storage_files, tmp_path):
+    """A runtime manifest whose cmdline template has no {verified_volumes}
+    slot cannot bind volumes into its measurement: build_vprogram_spec must
+    refuse up front (matching the CLI's fail-closed check before signing)
+    rather than boot a 1.0 runtime that silently ignores the sidecar and
+    fails later as an opaque attestation mismatch."""
+    message = load_vprogram_message()
+    volumes = stage_volumes(storage_files, tmp_path, 1)
+    content = message.content.model_copy(update={"volumes": volumes})
+
+    with pytest.raises(VmSetupError, match=r"no \{verified_volumes\} cmdline slot"):
+        await build_vprogram_spec(message.item_hash, content)
 
 
 def test_remove_vprogram_staging_is_idempotent(tmp_path, monkeypatch):

@@ -193,13 +193,16 @@ def build_bundle(
 # these is a runtime/format evolution, not a CLI flag.
 CMDLINE_TEMPLATE_V1 = "console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash}"
 # Exec-runtime flavor: the daemon measures a workload rootfs alongside the
-# platform rootfs and folds its dm-verity roothash into the cmdline (Task 1's
-# daemon emits exactly this string). Client-side launch-measurement
-# computation depends on byte-identity with what the daemon emits, so this
-# constant must not be reformatted independently of that emitter.
+# platform rootfs and folds its dm-verity roothash into the cmdline (the daemon
+# emits exactly this string once the CLI drops or fills the verified_volumes
+# token; snp_config_slice appends ' verified_volumes=h1,h2' only when the
+# launcher staged the sidecar). Client-side launch-measurement computation
+# depends on byte-identity with what the daemon emits, so this constant must
+# not be reformatted independently of that emitter.
 CMDLINE_TEMPLATE_EXEC_V1 = (
     "console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash}"
     " workload_roothash={workload_roothash}"
+    " verified_volumes={verified_volumes}"
 )
 DEFAULT_CPU_MODELS = ["EPYC-v4"]
 DEFAULT_ATTESTATION = [

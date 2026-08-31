@@ -286,3 +286,19 @@ def test_make_instance_manifest_from_bundle_info(instance_image_dir: Path, tmp_p
     assert manifest.boot.cmdline_template == CMDLINE_TEMPLATE_LUKS_V1
     assert "{owner}" in manifest.boot.cmdline_template
     assert manifest.source == SOURCE
+
+
+def test_exec_and_compose_templates_carry_the_verified_volumes_slot():
+    """Both workload-bearing templates must end with the verified_volumes
+    token: the CLI refuses --volume against a slot-less runtime (fail
+    closed), so a template without the slot means no volumes, ever, on that
+    runtime. The builtin no-workload template stays slot-less (volumes
+    require a workload)."""
+    from aleph.vm.vprogram.bundle import CMDLINE_TEMPLATE_EXEC_V1, CMDLINE_TEMPLATE_V1
+
+    assert CMDLINE_TEMPLATE_EXEC_V1 == (
+        "console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash}"
+        " workload_roothash={workload_roothash}"
+        " verified_volumes={verified_volumes}"
+    )
+    assert "verified_volumes" not in CMDLINE_TEMPLATE_V1

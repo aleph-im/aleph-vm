@@ -1921,6 +1921,11 @@ const DEFAULT_SNP_POLICY: u32 = 0x30000;
 /// sidecar so it cannot load unbounded into RAM.
 const MAX_ROOTHASH_SIDECAR_BYTES: u64 = 4096;
 
+/// Mirrors aleph_message's MAX_VERIFIED_VOLUMES: the schema cap on
+/// content.volumes, and the number of device-letter pairs the guest init
+/// can address.
+const MAX_VERIFIED_VOLUMES: usize = 8;
+
 /// The SEV-SNP measured-boot slice `build_written_config` fills, or `None` when
 /// the spec is not SNP. A measured SNP launch must present the EXACT OVMF +
 /// kernel + initrd + cmdline the B2a Nix image's `sev-snp-measure` covered, or
@@ -2127,6 +2132,56 @@ fn snp_config_slice(_state: &DaemonState, spec: &pb::VmSpec) -> Result<Option<Sn
         Err(error) => {
             return Err(RpcError::InvalidBackend(format!(
                 "cannot read the workload roothash sidecar {workload_roothash_path}: {error}"
+            )));
+        }
+    };
+    // Verified data volumes: the launcher stages a {rootfs}.verified_volumes
+    // sidecar holding the comma-joined dm-verity roothashes of
+    // content.volumes (message list order = device order). Bound into the
+    // measured cmdline after the workload token; an absent sidecar leaves
+    // the cmdline byte-identical to a volume-less V-PROGRAM, matching the
+    // CLI's template-token dropping.
+    let verified_volumes_path = format!("{rootfs_path}.verified_volumes");
+    let kernel_cmdline = match std::fs::File::open(&verified_volumes_path) {
+        Ok(file) => {
+            use std::io::Read as _;
+            let mut contents = String::new();
+            file.take(MAX_ROOTHASH_SIDECAR_BYTES + 1)
+                .read_to_string(&mut contents)
+                .map_err(|error| {
+                    RpcError::InvalidBackend(format!(
+                        "cannot read the verified-volumes sidecar {verified_volumes_path}: {error}"
+                    ))
+                })?;
+            if contents.len() as u64 > MAX_ROOTHASH_SIDECAR_BYTES {
+                return Err(RpcError::InvalidBackend(format!(
+                    "the verified-volumes sidecar {verified_volumes_path} exceeds \
+                     {MAX_ROOTHASH_SIDECAR_BYTES} bytes"
+                )));
+            }
+            // Spliced verbatim into -append: only a comma-joined list of at
+            // most MAX_VERIFIED_VOLUMES bare lowercase sha256 hex roothashes
+            // is accepted.
+            let joined = contents.trim().to_string();
+            let roothashes: Vec<&str> = joined.split(',').collect();
+            let entry_ok = |entry: &&str| {
+                entry.len() == 64
+                    && entry
+                        .bytes()
+                        .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+            };
+            if roothashes.len() > MAX_VERIFIED_VOLUMES || !roothashes.iter().all(entry_ok) {
+                return Err(RpcError::InvalidBackend(format!(
+                    "the verified-volumes sidecar {verified_volumes_path} is not a comma-joined \
+                     list of at most {MAX_VERIFIED_VOLUMES} sha256 hex roothashes"
+                )));
+            }
+            format!("{kernel_cmdline} verified_volumes={joined}")
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => kernel_cmdline,
+        Err(error) => {
+            return Err(RpcError::InvalidBackend(format!(
+                "cannot read the verified-volumes sidecar {verified_volumes_path}: {error}"
             )));
         }
     };
@@ -4757,6 +4812,114 @@ mod tests {
             "console=ttyS0 root=/dev/mapper/verity-root ro roothash=deadbeef00",
             "no workload sidecar must leave the cmdline byte-identical to before"
         );
+    }
+
+    #[test]
+    fn snp_config_slice_appends_the_verified_volumes_when_the_sidecar_is_present() {
+        // Verified data volumes arrive out-of-band as a
+        // {rootfs}.verified_volumes sidecar (comma-joined roothashes in
+        // message list order). They must be bound into the measured cmdline
+        // AFTER the workload token, matching the runtime manifest template
+        // '... workload_roothash={workload_roothash} verified_volumes={verified_volumes}'
+        // byte for byte once the CLI instantiates it.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+
+        let vm_id = hash('v');
+        let spec = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+        let rootfs = root.join(format!("{vm_id}-rootfs.ext4"));
+        std::fs::write(
+            format!("{}.workload_roothash", rootfs.display()),
+            "cafef00d00\n",
+        )
+        .unwrap();
+        let h1 = "ab".repeat(32);
+        let h2 = "cd".repeat(32);
+        std::fs::write(
+            format!("{}.verified_volumes", rootfs.display()),
+            format!("{h1},{h2}\n"),
+        )
+        .unwrap();
+
+        let slice = snp_config_slice(state, &spec).unwrap().unwrap();
+        assert_eq!(
+            slice.kernel_cmdline,
+            format!(
+                "console=ttyS0 root=/dev/mapper/verity-root ro roothash=deadbeef00 \
+                 workload_roothash=cafef00d00 verified_volumes={h1},{h2}"
+            ),
+            "the verified-volume roothashes are appended after the workload token"
+        );
+    }
+
+    #[test]
+    fn snp_config_slice_leaves_the_cmdline_unchanged_without_a_volumes_sidecar() {
+        // Byte-parity guard: with a workload but no volumes, the cmdline
+        // must be EXACTLY what it was before the volumes mechanism existed
+        // (the CLI drops the {verified_volumes} template token for
+        // volume-less messages, so any daemon-side residue breaks
+        // measurement verification for every existing V-PROGRAM).
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+
+        let vm_id = hash('w');
+        let spec = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+        let rootfs = root.join(format!("{vm_id}-rootfs.ext4"));
+        std::fs::write(
+            format!("{}.workload_roothash", rootfs.display()),
+            "cafef00d00\n",
+        )
+        .unwrap();
+
+        let slice = snp_config_slice(state, &spec).unwrap().unwrap();
+        assert_eq!(
+            slice.kernel_cmdline,
+            "console=ttyS0 root=/dev/mapper/verity-root ro roothash=deadbeef00 \
+             workload_roothash=cafef00d00",
+        );
+    }
+
+    #[test]
+    fn snp_config_slice_rejects_a_malformed_verified_volumes_sidecar() {
+        // The sidecar is spliced verbatim into -append: anything but a
+        // comma-joined list of 1..=8 bare lowercase sha256 hex roothashes is
+        // refused. Uppercase, short entries, empty entries, too many
+        // entries, and an empty file are all InvalidBackend.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+
+        let good = "ab".repeat(32);
+        let nine = vec![good.clone(); 9].join(",");
+        for bad in [
+            "",
+            "cafef00d",                               // short
+            &"AB".repeat(32),                         // uppercase
+            &format!("{good},"),                      // trailing empty entry
+            &format!("{good},zz{}", "ab".repeat(31)), // non-hex
+            nine.as_str(),                            // more than MAX_VERIFIED_VOLUMES
+        ] {
+            let vm_id = hash('x');
+            let spec = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+            let rootfs = root.join(format!("{vm_id}-rootfs.ext4"));
+            std::fs::write(
+                format!("{}.verified_volumes", rootfs.display()),
+                format!("{bad}\n"),
+            )
+            .unwrap();
+            match snp_config_slice(state, &spec) {
+                Err(RpcError::InvalidBackend(_)) => {}
+                other => panic!("sidecar {bad:?} must be InvalidBackend, got {other:?}"),
+            }
+        }
     }
 
     #[test]

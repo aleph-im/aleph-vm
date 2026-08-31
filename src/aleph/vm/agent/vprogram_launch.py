@@ -28,7 +28,10 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from aleph_message.models.execution.vprogram import VERITY_ROOTHASH_PATTERN
+from aleph_message.models.execution.vprogram import (
+    MAX_VERIFIED_VOLUMES,
+    VERITY_ROOTHASH_PATTERN,
+)
 from pydantic import ValidationError
 
 from aleph.vm.agent import snp_staging
@@ -198,8 +201,9 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
 
     # Disk ORDER is load-bearing: the guest init reads the rootfs from the
     # first virtio disk (/dev/vda), the platform dm-verity hash tree from
-    # /dev/vdb, the workload data from /dev/vdc and its hash tree from
-    # /dev/vdd.
+    # /dev/vdb, the workload data from /dev/vdc, its hash tree from /dev/vdd,
+    # and each verified volume as a (data, hash tree) pair after that in
+    # message list order (volume i data at the (5+2i)-th disk).
     #
     # The platform hash tree is NOT attached here: the daemon force-inserts
     # `{rootfs}.verity` (written by _ensure_verity_sidecars above) as the
@@ -225,6 +229,52 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
     (rootfs_path.parent / f"{rootfs_path.name}.workload_roothash").write_text(wl_roothash + "\n")
     disks.append(DiskSpec(path=workload_data, readonly=True, format=DiskFormat.RAW, role=DiskRole.EXTRA))
     disks.append(DiskSpec(path=workload_hashtree, readonly=True, format=DiskFormat.RAW, role=DiskRole.EXTRA))
+
+    # Verified data volumes: (data, hash tree) EXTRA disk pairs in message
+    # list order after the workload pair; the order IS the binding (the guest
+    # init verifies device pair i against roothash i). The daemon derives
+    # ' verified_volumes=h1,h2' from this sidecar next to the rootfs, exactly
+    # like the workload roothash above; no sidecar means no cmdline token,
+    # matching the CLI's template-token dropping for volume-less messages.
+    # A runtime whose template has no {verified_volumes} slot cannot bind
+    # volumes into its measurement: refuse the launch up front (the CLI
+    # refuses the same way before signing), rather than boot a 1.0 initrd
+    # that ignores the token and fail later as an attestation mismatch.
+    if content.volumes and "{verified_volumes}" not in manifest.boot.cmdline_template:
+        msg = f"V-PROGRAM {vm_hash} declares verified volumes but runtime {content.runtime.ref} has no {{verified_volumes}} cmdline slot"
+        raise VmSetupError(msg)
+    if len(content.volumes) > MAX_VERIFIED_VOLUMES:
+        msg = (
+            f"V-PROGRAM {vm_hash} declares {len(content.volumes)} volumes; at most {MAX_VERIFIED_VOLUMES} are supported"
+        )
+        raise VmSetupError(msg)
+    volume_roothashes: list[str] = []
+    for volume_index, volume in enumerate(content.volumes):
+        # Same fail-closed re-check as the workload roothash: the daemon
+        # splices the sidecar into the measured cmdline unquoted, and the
+        # unvalidated construction routes (model_copy/model_construct)
+        # bypass the schema pattern.
+        if not re.fullmatch(VERITY_ROOTHASH_PATTERN, volume.roothash):
+            msg = f"V-PROGRAM {vm_hash} volume {volume_index} roothash is not a bare sha256 hex string"
+            raise VmSetupError(msg)
+        volume_data = await get_existing_file(str(volume.ref))
+        volume_hash_tree = await get_existing_file(str(volume.hash_tree))
+        disks.append(DiskSpec(path=volume_data, readonly=True, format=DiskFormat.RAW, role=DiskRole.EXTRA))
+        disks.append(DiskSpec(path=volume_hash_tree, readonly=True, format=DiskFormat.RAW, role=DiskRole.EXTRA))
+        volume_roothashes.append(volume.roothash)
+    volumes_sidecar = rootfs_path.parent / f"{rootfs_path.name}.verified_volumes"
+    if volume_roothashes:
+        volumes_sidecar.write_text(",".join(volume_roothashes) + "\n")
+    else:
+        # A volume-less message must leave NO sidecar behind: the daemon
+        # emits the cmdline token from the file's presence, so a stray
+        # {rootfs}.verified_volumes shipped inside a mispackaged runtime
+        # bundle would be spliced into a measured cmdline the CLI never
+        # included, failing verification on every volume-less launch of
+        # that runtime. The staged state mirrors the message, not the
+        # bundle (the workload sidecar above is overwritten for the same
+        # reason).
+        volumes_sidecar.unlink(missing_ok=True)
 
     session_base = settings.CONFIDENTIAL_SESSION_DIRECTORY or (Path(settings.EXECUTION_ROOT) / "sessions")
 
