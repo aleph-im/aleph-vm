@@ -12,11 +12,6 @@ on:
       - "src/aleph/vm/supervisor_interface/**"
       - "src/aleph/vm/conf.py"
       - "src/aleph/vm/resources.py"
-      - "src/aleph/vm/network/**"
-      - "src/aleph/vm/supervisor/networking_db.py"
-      - "src/aleph/vm/supervisor/qemu_build.py"
-      - "src/aleph/vm/supervisor/controllers/qemu/cloudinit.py"
-      - "scripts/generate_rust_fixtures.py"
       - "pyproject.toml"
       - ".github/workflows/test-rust.yml"
   pull_request:
@@ -30,11 +25,6 @@ on:
       - "src/aleph/vm/supervisor_interface/**"
       - "src/aleph/vm/conf.py"
       - "src/aleph/vm/resources.py"
-      - "src/aleph/vm/network/**"
-      - "src/aleph/vm/supervisor/networking_db.py"
-      - "src/aleph/vm/supervisor/qemu_build.py"
-      - "src/aleph/vm/supervisor/controllers/qemu/cloudinit.py"
-      - "scripts/generate_rust_fixtures.py"
       - "pyproject.toml"
       - ".github/workflows/test-rust.yml"
 

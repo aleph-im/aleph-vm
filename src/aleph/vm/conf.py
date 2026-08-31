@@ -129,7 +129,7 @@ class Settings(BaseSettings):
     SUPERVISOR_GRPC_SOCKET: Path | None = Field(
         None,
         description="Unix socket of the supervisor gRPC daemon. The agent always talks to the "
-        "supervisor daemon (python -m aleph.vm.supervisor) over gRPC on this socket; the daemon "
+        "supervisor daemon (the Rust aleph-vm-supervisor binary) over gRPC on this socket; the daemon "
         "binds it, the agent dials it. Default to EXECUTION_ROOT/supervisor.sock "
         "(/var/lib/aleph/vm/supervisor.sock in production, matching the packaged supervisor.env).",
     )

@@ -9,11 +9,15 @@
 //! CreateVm. Persistent Firecracker programs are the only UNIMPLEMENTED
 //! surface (ledger entry 39; they belong with the controller port).
 //!
-//! The parity oracle is the Python daemon (`python3 -m aleph.vm.supervisor`)
-//! after a restart: same `ALEPH_VM_*` configuration, same socket lifecycle,
-//! same field-level behavior, with the world rebuilt from disk/systemd/sqlite
-//! the way `load_persistent_executions` rebuilds it (design doc
-//! docs/plans/2026-07-04-rust-supervisor-daemon-design.md, section 7).
+//! The parity oracle was the Python daemon (`python3 -m aleph.vm.supervisor`,
+//! removed in 2026-08 once this daemon became the only implementation) after
+//! a restart: same `ALEPH_VM_*` configuration, same socket lifecycle, same
+//! field-level behavior, with the world rebuilt from disk/systemd/sqlite the
+//! way its `load_persistent_executions` rebuilt it (design doc
+//! docs/plans/2026-07-04-rust-supervisor-daemon-design.md, section 7). The
+//! `LocalSupervisor` / `VmPool` references throughout this crate name that
+//! donor code; the committed fixtures and tests/conformance are what remain
+//! of it.
 //! Deliberate differences from the oracle live in
 //! docs/plans/rust-port-divergences.md.
 

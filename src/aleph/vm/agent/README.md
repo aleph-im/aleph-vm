@@ -113,7 +113,7 @@ over a Unix socket) and the agent (the public HTTP API, drives the daemon).
 Start the daemon first, then the agent:
 ```shell
 export PYTHONPATH=$(pwd)/src
-python3 -m aleph.vm.supervisor &
+/opt/aleph-vm/bin/aleph-vm-supervisor &   # the Rust daemon, built from rust/
 python3 -m aleph.vm.agent
 ```
 or run the agent in debug mode:

@@ -9,7 +9,6 @@ from pathlib import Path
 import alembic.command
 import alembic.config
 import sentry_sdk
-from aleph_message.models import ItemHash
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from aleph.vm import storage_pools
@@ -98,35 +97,12 @@ def parse_args(args):
         help="Add extra info for profiling",
     )
     parser.add_argument(
-        "--benchmark",
-        dest="benchmark",
-        type=int,
-        default=0,
-        help="Number of benchmarks to run",
-    )
-    parser.add_argument(
         "-f",
         "--fake-data-program",
         dest="fake_data_program",
         type=str,
         default=None,
         help="Path to project containing fake data",
-    )
-    parser.add_argument(
-        "-i",
-        "--run-test-instance",
-        dest="run_test_instance",
-        action="store_true",
-        default=False,
-        help="Run a test instance from the network instead of starting the entire supervisor",
-    )
-    parser.add_argument(
-        "-k",
-        "--run-fake-instance",
-        dest="run_fake_instance",
-        action="store_true",
-        default=False,
-        help="Run a fake instance from a local rootfs instead of starting the entire supervisor",
     )
     parser.add_argument(
         "-r",
@@ -211,9 +187,6 @@ def main():
     if args.fake_data_program:
         settings.update(FAKE_DATA_PROGRAM=args.fake_data_program)
 
-    if args.run_fake_instance:
-        settings.USE_FAKE_INSTANCE_BASE = True
-
     if args.use_developer_ssh_keys:
         settings.USE_DEVELOPER_SSH_KEYS = ALLOW_DEVELOPER_SSH_KEYS
 
@@ -260,30 +233,7 @@ def main():
         asyncio.run(run_async_db_migrations())
         logger.debug("DB up to date.")
 
-    # The benchmark and --run-test-instance / --run-fake-instance paths run
-    # the single-process agent+supervisor harness (aleph.vm.testing.harness),
-    # which builds the daemon's engine (VmPool + LocalSupervisor) in this
-    # process instead of dialing a running daemon over gRPC. The import is
-    # deferred so the production agent path never loads supervisor-side code.
-    if args.benchmark > 0:
-        from aleph.vm.testing import harness
-
-        asyncio.run(harness.benchmark(runs=args.benchmark), debug=args.debug_asyncio)
-        logger.info("Finished")
-        sys.exit(0)
-    elif args.do_not_run:
+    if args.do_not_run:
         logger.info("Option --do-not-run, exiting")
-    elif args.run_test_instance:
-        from aleph.vm.testing import harness
-
-        asyncio.run(harness.run_instances([ItemHash(settings.TEST_INSTANCE_ID)]))
-        logger.info("Finished")
-        sys.exit(0)
-    elif args.run_fake_instance:
-        from aleph.vm.testing import harness
-
-        asyncio.run(harness.run_instances([ItemHash(settings.FAKE_INSTANCE_ID)]))
-        logger.info("Finished")
-        sys.exit(0)
     else:
         supervisor.run()

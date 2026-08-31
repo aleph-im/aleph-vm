@@ -38,8 +38,8 @@ flowchart LR
 ```
 
 The agent and the supervisor are separate processes joined only by the
-gRPC contract; a Rust and a Python supervisor daemon both ship, selected at
-boot by an environment variable, and either can adopt VMs a previous
+gRPC contract; the supervisor daemon is the Rust one (the Python daemon it
+was ported from was removed in 2026-08), and it adopts VMs a previous
 instance left running with no VM downtime. [`process-model.md`](process-model.md)
 is where this split, and the adoption model that makes it safe, is
 described in full.
@@ -48,7 +48,7 @@ described in full.
 
 | Path | Purpose |
 |---|---|
-| `src/` | The `aleph.vm` Python package: the agent, the Python supervisor daemon (still shipped), the `supervisor_interface` contract layer, and storage/network/vprogram support code. |
+| `src/` | The `aleph.vm` Python package: the agent, the `supervisor_interface` contract layer, and storage/vprogram support code. |
 | `rust/crates/supervisor-daemon` | The Rust supervisor daemon: gRPC server, lifecycle RPCs, world view/adoption, networking, storage-pool validation, guest quiescence. |
 | `rust/crates/supervisor-controller` | The Rust per-VM QEMU controller process, for persistent, confidential and SEV-SNP VMs. |
 | `rust/crates/supervisor-cli` | `alephctl`, a standalone debug CLI that speaks the gRPC contract directly. |
