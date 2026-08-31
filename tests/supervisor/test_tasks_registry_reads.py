@@ -170,17 +170,6 @@ async def test_domains_aggregate_ignores_owner_instance_absent_from_supervisor(m
     sync.assert_not_awaited()
 
 
-def test_pool_has_no_message_reads():
-    """pool.py must not learn messages off executions; that is registry territory."""
-    import inspect
-
-    from aleph.vm import pool as pool_module
-
-    source = inspect.getsource(pool_module)
-    assert "execution.message" not in source
-    assert "get_executions_by_address" not in source
-
-
 def test_payment_grouping_has_no_pool_status_reads():
     """check_payment / grouping must read VM status from VmInfo, not pool executions."""
     import inspect

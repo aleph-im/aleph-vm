@@ -8,12 +8,8 @@ Wants=docker.service
 User=0
 Group=0
 WorkingDirectory=/opt/aleph-vm
-Environment=PYTHONPATH=/opt/aleph-vm/:$PYTHONPATH
-Environment=PYTHONDONTWRITEBYTECODE="enabled"
 EnvironmentFile=/etc/aleph-vm/supervisor.env
-# The launcher picks the daemon implementation from ALEPH_VM_SUPERVISOR_IMPL
-# (default rust), carried by the EnvironmentFile above.
-ExecStart=/opt/aleph-vm/bin/supervisor-launcher
+ExecStart=/opt/aleph-vm/bin/aleph-vm-supervisor
 Restart=on-failure
 RestartPreventExitStatus=0 130 143
 RestartSec=10s
