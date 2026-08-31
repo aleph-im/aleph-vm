@@ -39,6 +39,25 @@ def test_filter_snp_vcpu_types():
     assert filter_snp_vcpu_types(definitions) == ["EPYC", "EPYC-v4"]
 
 
+def test_filter_ignores_nested_virt_features():
+    # kvm_amd nested=0 is a legitimate hardening posture: QEMU then reports
+    # svm/npt/nrip-save unavailable on every EPYC model, but SNP guests never
+    # use nested virt and the launch path passes -cpu without enforce.
+    definitions = [
+        {"name": "EPYC-v4", "unavailable-features": ["svm", "npt", "nrip-save"]},
+        {"name": "EPYC-Genoa", "unavailable-features": ["svm", "npt", "nrip-save"]},
+    ]
+    assert filter_snp_vcpu_types(definitions) == ["EPYC-Genoa", "EPYC-v4"]
+
+
+def test_filter_still_rejects_genuinely_missing_features():
+    definitions = [
+        {"name": "EPYC-Milan", "unavailable-features": ["svm", "perfctr-core"]},
+        {"name": "EPYC", "unavailable-features": []},
+    ]
+    assert filter_snp_vcpu_types(definitions) == ["EPYC"]
+
+
 @pytest.mark.asyncio
 async def test_get_supported_snp_vcpu_types_no_snp(mocker):
     mocker.patch("aleph.vm.agent.vcpu_probe.check_amd_sev_snp_supported", return_value=False)
