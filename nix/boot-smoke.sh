@@ -28,8 +28,12 @@ cleanup() {
 trap cleanup EXIT
 
 run_phase() {
+  local phase="$1"; shift
   local append="$1"; shift
   local -a extra_drives=("$@")
+  # Drop the previous phase's log before reassigning the global, or the
+  # EXIT trap only ever removes the latest one.
+  rm -f "$log"
   log="$(mktemp)"
   qemu-system-x86_64 \
     -machine q35,accel=kvm:tcg -cpu max -m 1024 -smp 2 \
@@ -60,7 +64,7 @@ run_phase() {
     fi
     sleep 1
   done
-  echo "boot smoke FAILED; serial log follows:" >&2
+  echo "boot smoke FAILED ($phase); serial log follows:" >&2
   cat "$log" >&2
   exit 1
 }
@@ -72,7 +76,7 @@ markers=(
   # init.sh names the mount point ("from /mnt/root"), so match the prefix.
   "init: starting /sbin/init from "
 )
-run_phase "console=ttyS0 root=/dev/mapper/verity-root ro roothash=$roothash"
+run_phase "phase 1" "console=ttyS0 root=/dev/mapper/verity-root ro roothash=$roothash"
 echo "boot smoke phase 1 OK: initrd booted, rootfs verified and mounted, firewall up, /sbin/init started" >&2
 
 # Phase 2: workload + one verified volume. Requires veritysetup and
@@ -100,7 +104,7 @@ markers=(
   "init: 1 verified volume(s) mounted under /mnt/workload/volumes"
   "init: starting /sbin/init from /mnt/workload"
 )
-run_phase \
+run_phase "phase 2" \
   "console=ttyS0 root=/dev/mapper/verity-root ro roothash=$roothash workload_roothash=$wl_roothash verified_volumes=$vol_roothash" \
   -drive "file=$work/workload.ext4,format=raw,if=virtio,readonly=on" \
   -drive "file=$work/workload.verity,format=raw,if=virtio,readonly=on" \
