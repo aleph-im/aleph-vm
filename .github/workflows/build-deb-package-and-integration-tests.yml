@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["debian-12", "debian-13", "ubuntu-22.04", "ubuntu-24.04"]
+        os: ["debian-12", "debian-13", "ubuntu-22.04", "ubuntu-24.04", "ubuntu-26.04"]
         include:
           - os: "debian-12"
             make_target: "all-podman-debian-12"
@@ -33,6 +33,9 @@ jobs:
           - os: "ubuntu-24.04"
             make_target: "all-podman-ubuntu-2404"
             artifact_name: "aleph-vm.ubuntu-24.04.deb"
+          - os: "ubuntu-26.04"
+            make_target: "all-podman-ubuntu-2604"
+            artifact_name: "aleph-vm.ubuntu-26.04.deb"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

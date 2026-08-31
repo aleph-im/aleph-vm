@@ -91,6 +91,13 @@ Unless your focus is developing the VM-Connector, using the Docker image is easi
    sudo apt install /opt/aleph-vm.ubuntu-24.04.deb
    ```
 
+   **On Ubuntu 26.04 (Resolute Raccoon)**, recommended for SEV-SNP hosts
+   (ships QEMU 10.2, which can launch SEV-SNP guests):
+   ```shell
+   sudo wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/2.0.1/aleph-vm.ubuntu-26.04.deb
+   sudo apt install /opt/aleph-vm.ubuntu-26.04.deb
+   ```
+
 3. **Disable Systemd Service**  
    To prevent conflicts, deactivate the system version of aleph-vm by disabling its `systemd` service.
 
