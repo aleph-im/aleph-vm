@@ -96,25 +96,44 @@ pub fn available_disk_bytes(path: &Path) -> Result<u64, DaemonError> {
 /// pools_disk_usage. Unreachable pools contribute zero instead of failing
 /// GetHostInfo: a dead disk must not take Health down.
 pub fn available_disk_bytes_pooled(paths: &[PathBuf]) -> u64 {
-    let mut seen_devices = std::collections::HashSet::new();
-    let mut free = 0u64;
-    for path in paths {
+    available_disk_bytes_pooled_with(paths, |path| {
         let device = match std::fs::metadata(path) {
             Ok(metadata) => metadata.dev(),
             Err(error) => {
                 tracing::warn!(path = %path.display(), %error, "volume pool inaccessible, ignoring");
-                continue;
+                return None;
             }
+        };
+        match available_disk_bytes(path) {
+            Ok(bytes) => Some((device, bytes)),
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "statvfs failed, ignoring pool");
+                Some((device, 0))
+            }
+        }
+    })
+}
+
+/// The dedup-and-sum core of [`available_disk_bytes_pooled`], with the
+/// filesystem probe injected. `probe` yields a pool's (device id, free
+/// bytes), or `None` for an unreachable pool. Split out so tests exercise
+/// the dedup logic against a fixed table: probing the live filesystem twice
+/// and asserting equality is a race with every other process on the machine
+/// (observed flaking twice in CI at a 4 KiB drift).
+fn available_disk_bytes_pooled_with(
+    paths: &[PathBuf],
+    probe: impl Fn(&PathBuf) -> Option<(u64, u64)>,
+) -> u64 {
+    let mut seen_devices = std::collections::HashSet::new();
+    let mut free = 0u64;
+    for path in paths {
+        let Some((device, bytes)) = probe(path) else {
+            continue;
         };
         if !seen_devices.insert(device) {
             continue;
         }
-        match available_disk_bytes(path) {
-            Ok(bytes) => free += bytes,
-            Err(error) => {
-                tracing::warn!(path = %path.display(), %error, "statvfs failed, ignoring pool");
-            }
-        }
+        free += bytes;
     }
     free
 }
@@ -127,23 +146,42 @@ mod tests {
 
     #[test]
     fn pooled_disk_dedups_same_filesystem_and_skips_dead_pools() {
-        let root = PathBuf::from("/");
-        // The same filesystem listed twice counts once...
-        let once = available_disk_bytes_pooled(std::slice::from_ref(&root));
-        let twice = available_disk_bytes_pooled(&[root.clone(), PathBuf::from("/etc")]);
-        // ("/" and "/etc" are usually one filesystem; when they are, the sums
-        // match. Different-filesystem hosts still satisfy the >= invariant.)
-        assert!(twice >= once);
+        let a = PathBuf::from("/pool-a");
+        let b = PathBuf::from("/pool-b");
+        let dead = PathBuf::from("/pool-dead");
+        let probe = |path: &PathBuf| match path.to_str().unwrap() {
+            "/pool-a" => Some((1, 100)),
+            "/pool-b" => Some((2, 40)),
+            "/pool-dead" => None,
+            other => unreachable!("{other}"),
+        };
+        // Distinct filesystems sum; the same filesystem listed twice (b's
+        // device via a second path) counts once; a dead pool contributes
+        // zero instead of erroring.
         assert_eq!(
-            available_disk_bytes_pooled(&[root.clone(), root.clone()]),
-            once
+            available_disk_bytes_pooled_with(
+                &[a.clone(), b.clone(), b.clone(), dead.clone()],
+                probe
+            ),
+            140
         );
-        // A nonexistent pool contributes zero instead of erroring.
         assert_eq!(
-            available_disk_bytes_pooled(&[root, PathBuf::from("/nonexistent-pool")]),
-            once
+            available_disk_bytes_pooled_with(&[a.clone(), a], probe),
+            100
         );
-        assert_eq!(available_disk_bytes_pooled(&[]), 0);
+        assert_eq!(available_disk_bytes_pooled_with(&[dead], probe), 0);
+    }
+
+    #[test]
+    fn pooled_disk_live_smoke() {
+        // Live-filesystem smoke only: a nonexistent pool is zero, and the
+        // real probe runs without panicking. No equality between two live
+        // statvfs calls; that is a race with the rest of the machine.
+        assert_eq!(
+            available_disk_bytes_pooled(&[PathBuf::from("/nonexistent-pool")]),
+            0
+        );
+        let _ = available_disk_bytes_pooled(&[PathBuf::from("/")]);
     }
 
     #[test]
