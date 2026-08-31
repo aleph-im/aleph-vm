@@ -2,7 +2,7 @@
 
 SupervisorError subclasses map one-to-one to proto ErrorCode values. The
 in-process implementation catches the scattered internal backend exceptions and
-re-raises them as this closed set (see ``aleph.vm.supervisor.error_mapping``);
+re-raises them as this closed set (the Rust daemon's error mapping, rust/crates/supervisor-daemon/src/error.rs);
 the gRPC server reuses the same table to fill ErrorDetail trailers; views catch
 SupervisorError instead of backend internals.
 

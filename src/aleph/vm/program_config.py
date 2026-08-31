@@ -6,8 +6,8 @@ Supervisor boundary:
 
 - the **agent** builds the configuration push and runs code from
   ``aleph.vm.agent.vm.program_client``;
-- the **supervisor** runs code over the channel for persistent programs
-  (``aleph.vm.supervisor.local``).
+- the **supervisor** (the Rust daemon) runs code over the channel for
+  persistent programs.
 
 Keeping these types here (depending only on stdlib, ``aleph_message``,
 ``aleph.vm.conf`` and the neutral ``RuntimeConfiguration``) lets neither side

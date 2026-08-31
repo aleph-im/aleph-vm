@@ -5,10 +5,12 @@ end-of-stream semantics for unknown VMs, RunProgramCode's error vocabulary,
 and the ephemeral Firecracker create rejection paths (all raised before any
 boot side effect).
 
-The Python oracle: LocalSupervisor.watch_events/_emit_event and stream_logs
-(local.py), VmPool._create_firecracker_from_spec plus
-SpecProgramResources.from_spec for the rejections, and run_program_code for
-the program gates.
+The oracle was the Python daemon (removed in 2026-08): its
+``LocalSupervisor.watch_events`` / ``_emit_event`` and ``stream_logs``, the
+pool's Firecracker create path plus ``SpecProgramResources.from_spec`` for
+the rejections, and ``run_program_code`` for the program gates. The
+expectations below are that behaviour, frozen; a deliberate change on the
+Rust side updates them and the divergence registry together.
 """
 
 from __future__ import annotations
