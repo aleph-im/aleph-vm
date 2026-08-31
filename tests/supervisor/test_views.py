@@ -348,6 +348,7 @@ async def test_system_capability_mock(aiohttp_client, mocker):
         },
         "memory": {"size": 17179869184, "units": "bytes", "type": "", "clock": None, "clock_units": None},
         "tee": None,
+        "tee_unavailable_reason": None,
     }
 
 
