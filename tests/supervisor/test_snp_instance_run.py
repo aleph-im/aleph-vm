@@ -118,6 +118,9 @@ async def test_snp_instance_create_uses_snp_builder(monkeypatch):
     monkeypatch.setattr(run_module, "get_user_settings", AsyncMock(return_value={}))
     monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
     monkeypatch.setattr(run_module, "persist_record", AsyncMock())
+    # The attest-gate itself is unit-tested in test_vprogram_launch.py; here
+    # only the spec-build/create/port-forward wiring is under test.
+    monkeypatch.setattr(run_module, "_wait_until_attest_endpoint_listens", AsyncMock())
 
     supervisor = _fake_supervisor()
     registry = AgentVmRegistry()
@@ -154,6 +157,9 @@ async def test_snp_instance_never_awaits_confidential_init(monkeypatch):
     monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
     persist = AsyncMock()
     monkeypatch.setattr(run_module, "persist_record", persist)
+    # The attest-gate itself is unit-tested in test_vprogram_launch.py; here
+    # only the fall-through past the SEV await branch is under test.
+    monkeypatch.setattr(run_module, "_wait_until_attest_endpoint_listens", AsyncMock())
 
     info = _info(VmStatus.RUNNING, awaiting_confidential_init=False)
     supervisor = _fake_supervisor()

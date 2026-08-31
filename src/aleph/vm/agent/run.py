@@ -294,6 +294,54 @@ async def _wait_until_running(
         await asyncio.sleep(interval)
 
 
+_ATTEST_READY_TIMEOUT_SECONDS = 90.0
+_ATTEST_READY_POLL_INTERVAL_SECONDS = 2.0
+
+
+async def _wait_until_attest_endpoint_listens(
+    supervisor: Supervisor,
+    vm_id: VmId,
+    attest_port: int,
+    *,
+    timeout: float | None = None,
+    interval: float | None = None,
+) -> None:
+    """Gate a confidential create on the guest's RA-TLS attestation service
+    accepting a TCP connection.
+
+    RUNNING only proves the controller unit is active: an SNP launch can wedge
+    inside firmware while QEMU lives on, and the attestation endpoint is the
+    guest's sole consumer-facing contract. A guest that never listens is a
+    failed launch and must fail the create loudly (the caller tears down and
+    the scheduler retries), not survive as a zombie the owner can only watch.
+    """
+    if timeout is None:
+        timeout = _ATTEST_READY_TIMEOUT_SECONDS
+    if interval is None:
+        interval = _ATTEST_READY_POLL_INTERVAL_SECONDS
+    info = await supervisor.get_vm(vm_id)
+    address = info.ipv4.address
+    if not address:
+        msg = f"VM {vm_id} has no IPv4 assignment to reach its attestation endpoint"
+        raise VmStartupError(msg)
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        try:
+            _reader, writer = await asyncio.wait_for(asyncio.open_connection(address, attest_port), timeout=5.0)
+        except (OSError, asyncio.TimeoutError):
+            if asyncio.get_running_loop().time() >= deadline:
+                msg = (
+                    f"VM {vm_id} guest attestation endpoint {address}:{attest_port} did not "
+                    f"accept a TCP connection within {timeout}s: the guest likely failed to boot"
+                )
+                raise VmStartupError(msg) from None
+            await asyncio.sleep(interval)
+        else:
+            writer.close()
+            await writer.wait_closed()
+            return
+
+
 async def finish_instance_create(supervisor: Supervisor, vm_id: VmId, content) -> None:
     """Post-create completion shared by the normal create path and the migration
     import runner: wait until the instance reports RUNNING, then apply the
@@ -500,6 +548,7 @@ async def create_vm_execution(
                         protocol=Protocol.TCP,
                     )
                 )
+                await _wait_until_attest_endpoint_listens(supervisor, info.vm_id, attest_port)
         except Exception:
             # Readiness or port-forward setup failed: tear the half-started VM
             # down, but never let a teardown error mask the original failure.
@@ -559,6 +608,8 @@ async def create_vm_execution(
             # sole consumer, so failing the create loudly (and letting the
             # scheduler retry) beats keeping an unusable VM alive.
             await reconcile_vprogram_port_forwards(supervisor, info.vm_id, attest_port)
+            if attest_port is not None:
+                await _wait_until_attest_endpoint_listens(supervisor, info.vm_id, attest_port)
         except Exception:
             registry.forget(vm_hash)
             try:

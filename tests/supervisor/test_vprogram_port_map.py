@@ -121,6 +121,9 @@ async def test_vprogram_create_maps_attestation_port(mocker):
         return_value=(fake_spec, ATTEST_PORT),
     )
     mocker.patch("aleph.vm.agent.run.persist_record", new_callable=AsyncMock)
+    # The attest-gate itself is unit-tested in test_vprogram_launch.py; here
+    # only the port-forward reconciliation is under test.
+    mocker.patch("aleph.vm.agent.run._wait_until_attest_endpoint_listens", new_callable=AsyncMock)
 
     info = _running_vm_info(str(vm_hash))
     supervisor = FakeSupervisor(info)
