@@ -167,8 +167,8 @@ def _capability_from_facts(facts: QemuSnpFacts) -> SnpLaunchCapability:
         return SnpLaunchCapability(
             [],
             f"QEMU ({version}) has no '{SNP_GUEST_QOM_TYPE}' object and cannot launch "
-            f"SEV-SNP guests. QEMU >= 9.1 is required (of the packaged targets, only "
-            f"Debian 13 ships one).",
+            f"SEV-SNP guests. QEMU >= 9.1 is required (of the packaged targets, "
+            f"Debian 13 and Ubuntu 26.04 ship one).",
         )
     supported = filter_snp_vcpu_types(facts.cpu_definitions)
     if not supported:
