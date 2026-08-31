@@ -15,11 +15,21 @@ from aleph.vm.agent.resources import get_machine_capability, get_machine_propert
 from aleph.vm.agent.vcpu_probe import (
     NESTED_VIRT_FEATURES,
     PROBE_RETRY_SECONDS,
+    QemuSnpFacts,
     filter_snp_vcpu_types,
+    get_snp_launch_capability,
     get_supported_snp_vcpu_types,
     reset_snp_vcpu_probe_cache,
 )
 from aleph.vm.utils import async_cache
+
+
+def _facts(definitions, qom=("sev-snp-guest",), version="9.1.2"):
+    return QemuSnpFacts(
+        cpu_definitions=definitions,
+        qom_type_names=frozenset(qom),
+        qemu_version=version,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -74,7 +84,7 @@ def test_filter_ignores_every_nested_virt_feature():
 @pytest.mark.asyncio
 async def test_get_supported_snp_vcpu_types_no_snp(mocker):
     mocker.patch("aleph.vm.agent.vcpu_probe.check_amd_sev_snp_supported", return_value=False)
-    probe = mocker.patch("aleph.vm.agent.vcpu_probe.query_cpu_definitions", new_callable=AsyncMock)
+    probe = mocker.patch("aleph.vm.agent.vcpu_probe.query_qemu_snp_facts", new_callable=AsyncMock)
     assert await get_supported_snp_vcpu_types() == []
     probe.assert_not_awaited()
 
@@ -84,7 +94,7 @@ async def test_get_supported_snp_vcpu_types_probe_failure(mocker):
     # We never advertise what we cannot prove: a failed probe advertises nothing
     mocker.patch("aleph.vm.agent.vcpu_probe.check_amd_sev_snp_supported", return_value=True)
     mocker.patch(
-        "aleph.vm.agent.vcpu_probe.query_cpu_definitions",
+        "aleph.vm.agent.vcpu_probe.query_qemu_snp_facts",
         new_callable=AsyncMock,
         side_effect=OSError("qemu-system-x86_64 not found"),
     )
@@ -95,12 +105,14 @@ async def test_get_supported_snp_vcpu_types_probe_failure(mocker):
 async def test_get_supported_snp_vcpu_types_success(mocker):
     mocker.patch("aleph.vm.agent.vcpu_probe.check_amd_sev_snp_supported", return_value=True)
     mocker.patch(
-        "aleph.vm.agent.vcpu_probe.query_cpu_definitions",
+        "aleph.vm.agent.vcpu_probe.query_qemu_snp_facts",
         new_callable=AsyncMock,
-        return_value=[
-            {"name": "EPYC-Milan", "unavailable-features": []},
-            {"name": "EPYC-Genoa", "unavailable-features": ["flag"]},
-        ],
+        return_value=_facts(
+            [
+                {"name": "EPYC-Milan", "unavailable-features": []},
+                {"name": "EPYC-Genoa", "unavailable-features": ["flag"]},
+            ]
+        ),
     )
     assert await get_supported_snp_vcpu_types() == ["EPYC-Milan"]
 
@@ -189,7 +201,9 @@ def test_check_amd_sev_snp_requires_dev_sev(mocker):
 
 def _snp_host(mocker, probe):
     mocker.patch("aleph.vm.agent.vcpu_probe.check_amd_sev_snp_supported", return_value=True)
-    return mocker.patch("aleph.vm.agent.vcpu_probe.query_cpu_definitions", new_callable=AsyncMock, **probe)
+    if "return_value" in probe:
+        probe = {**probe, "return_value": _facts(probe["return_value"])}
+    return mocker.patch("aleph.vm.agent.vcpu_probe.query_qemu_snp_facts", new_callable=AsyncMock, **probe)
 
 
 def _clock(mocker, start: float = 1000.0):
@@ -227,7 +241,7 @@ async def test_a_failed_probe_is_retried_after_the_window_and_recovers(mocker):
     assert await get_supported_snp_vcpu_types() == []
 
     probe.side_effect = None
-    probe.return_value = [{"name": "EPYC-v4", "unavailable-features": []}]
+    probe.return_value = _facts([{"name": "EPYC-v4", "unavailable-features": []}])
     clock["t"] += PROBE_RETRY_SECONDS
     assert await get_supported_snp_vcpu_types() == ["EPYC-v4"]
     assert probe.await_count == 2
@@ -246,10 +260,10 @@ async def test_concurrent_first_callers_probe_once(mocker):
     async def slow_probe():
         started.set()
         await release.wait()
-        return [{"name": "EPYC-v4", "unavailable-features": []}]
+        return _facts([{"name": "EPYC-v4", "unavailable-features": []}])
 
     mocker.patch("aleph.vm.agent.vcpu_probe.check_amd_sev_snp_supported", return_value=True)
-    probe = mocker.patch("aleph.vm.agent.vcpu_probe.query_cpu_definitions", side_effect=slow_probe)
+    probe = mocker.patch("aleph.vm.agent.vcpu_probe.query_qemu_snp_facts", side_effect=slow_probe)
 
     first = asyncio.create_task(get_supported_snp_vcpu_types())
     await started.wait()
@@ -281,7 +295,7 @@ async def test_advertisement_recovers_after_a_failed_first_probe(mocker):
     assert (await get_machine_properties()).tee is None
 
     probe.side_effect = None
-    probe.return_value = [{"name": "EPYC-v4", "unavailable-features": []}]
+    probe.return_value = _facts([{"name": "EPYC-v4", "unavailable-features": []}])
     clock["t"] += PROBE_RETRY_SECONDS
     properties = await get_machine_properties()
     assert properties.tee is not None
@@ -304,7 +318,7 @@ async def test_capability_advertisement_recovers_after_a_failed_first_probe(mock
     assert (await get_machine_capability()).tee is None
 
     probe.side_effect = None
-    probe.return_value = [{"name": "EPYC-v4", "unavailable-features": []}]
+    probe.return_value = _facts([{"name": "EPYC-v4", "unavailable-features": []}])
     clock["t"] += PROBE_RETRY_SECONDS
     capability = await get_machine_capability()
     assert capability.tee is not None
@@ -320,3 +334,54 @@ async def test_static_properties_stay_cached_across_calls(mocker):
     await get_machine_properties()
     await get_machine_properties()
     assert hardware.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Gating on QEMU actually having the sev-snp-guest QOM type (report F2): a
+# QEMU build that probes EPYC models fine but cannot launch SNP guests must
+# not be advertised, and the gap must heal live when QEMU is upgraded.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_no_sev_snp_guest_object_advertises_nothing_with_reason(mocker):
+    # Ubuntu 24.04 ships QEMU 8.2.2: EPYC models probe fine but the binary
+    # has no sev-snp-guest object, so every launch would fail (report F2).
+    mocker.patch("aleph.vm.agent.vcpu_probe.check_amd_sev_snp_supported", return_value=True)
+    mocker.patch(
+        "aleph.vm.agent.vcpu_probe.query_qemu_snp_facts",
+        new_callable=AsyncMock,
+        return_value=_facts([{"name": "EPYC-v4", "unavailable-features": []}], qom=("sev-guest",), version="8.2.2"),
+    )
+    capability = await get_snp_launch_capability()
+    assert capability.supported_vcpu_types == []
+    assert "sev-snp-guest" in capability.unavailable_reason
+    assert "8.2.2" in capability.unavailable_reason
+
+
+@pytest.mark.asyncio
+async def test_empty_result_is_retried_and_heals_after_qemu_upgrade(mocker):
+    # The crabbz timeline: QEMU upgraded live from 8.2.2 to 9.1; the node
+    # must start advertising without an agent restart.
+    clock = _clock(mocker)
+    mocker.patch("aleph.vm.agent.vcpu_probe.check_amd_sev_snp_supported", return_value=True)
+    probe = mocker.patch(
+        "aleph.vm.agent.vcpu_probe.query_qemu_snp_facts",
+        new_callable=AsyncMock,
+        return_value=_facts([{"name": "EPYC-v4", "unavailable-features": []}], qom=("sev-guest",)),
+    )
+    assert (await get_snp_launch_capability()).supported_vcpu_types == []
+    probe.return_value = _facts([{"name": "EPYC-v4", "unavailable-features": []}])
+    # inside the retry window the empty result is served from cache
+    clock["t"] += PROBE_RETRY_SECONDS / 2
+    assert (await get_snp_launch_capability()).supported_vcpu_types == []
+    clock["t"] += PROBE_RETRY_SECONDS
+    assert (await get_snp_launch_capability()).supported_vcpu_types == ["EPYC-v4"]
+
+
+@pytest.mark.asyncio
+async def test_silicon_off_reason_names_the_kernel(mocker):
+    mocker.patch("aleph.vm.agent.vcpu_probe.check_amd_sev_snp_supported", return_value=False)
+    capability = await get_snp_launch_capability()
+    assert capability.supported_vcpu_types == []
+    assert "kvm_amd" in capability.unavailable_reason
