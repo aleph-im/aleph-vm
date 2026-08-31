@@ -16,6 +16,7 @@ from aleph.vm.agent.vcpu_probe import (
     NESTED_VIRT_FEATURES,
     PROBE_RETRY_SECONDS,
     QemuSnpFacts,
+    SnpLaunchCapability,
     filter_snp_vcpu_types,
     get_snp_launch_capability,
     get_supported_snp_vcpu_types,
@@ -324,6 +325,26 @@ async def test_capability_advertisement_recovers_after_a_failed_first_probe(mock
     assert capability.tee is not None
     assert capability.tee.sev_snp is not None
     assert capability.tee.sev_snp.supported_vcpu_types == ["EPYC-v4"]
+    assert capability.tee_unavailable_reason is None
+
+
+@pytest.mark.asyncio
+async def test_capability_carries_unavailability_reason(mocker):
+    # A node with SNP silicon but a QEMU that cannot launch it tells the
+    # operator why in /about/capability instead of a silent missing tee block.
+    _static_host(mocker)
+    mocker.patch(
+        "aleph.vm.agent.resources.get_memory_info",
+        return_value={"size": 64, "units": "GiB", "type": "DDR5", "clock": 4800},
+    )
+    mocker.patch(
+        "aleph.vm.agent.resources.get_snp_launch_capability",
+        new_callable=AsyncMock,
+        return_value=SnpLaunchCapability([], "QEMU (8.2.2) has no 'sev-snp-guest' object..."),
+    )
+    capability = await get_machine_capability()
+    assert capability.tee is None
+    assert "sev-snp-guest" in capability.tee_unavailable_reason
 
 
 @pytest.mark.asyncio
