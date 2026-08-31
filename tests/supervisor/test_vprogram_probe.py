@@ -13,6 +13,7 @@ import pytest
 from aleph.vm.agent import resources
 from aleph.vm.agent.resources import get_machine_capability, get_machine_properties
 from aleph.vm.agent.vcpu_probe import (
+    NESTED_VIRT_FEATURES,
     PROBE_RETRY_SECONDS,
     filter_snp_vcpu_types,
     get_supported_snp_vcpu_types,
@@ -56,6 +57,18 @@ def test_filter_still_rejects_genuinely_missing_features():
         {"name": "EPYC", "unavailable-features": []},
     ]
     assert filter_snp_vcpu_types(definitions) == ["EPYC"]
+
+
+def test_filter_ignores_every_nested_virt_feature():
+    # Guards the ignore list as a whole: every name in NESTED_VIRT_FEATURES
+    # must be tolerated, so a filter refactor cannot quietly start rejecting
+    # models over one of them. (Drift the other way, a nested-virt name QEMU
+    # adds that this list lacks, can only be caught against a live QEMU.)
+    definitions = [
+        {"name": "EPYC-Milan", "unavailable-features": sorted(NESTED_VIRT_FEATURES)},
+        {"name": "EPYC-Milan-v2", "unavailable-features": ["monitor"]},
+    ]
+    assert filter_snp_vcpu_types(definitions) == ["EPYC-Milan"]
 
 
 @pytest.mark.asyncio

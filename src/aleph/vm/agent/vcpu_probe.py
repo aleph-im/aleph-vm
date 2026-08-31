@@ -84,8 +84,10 @@ async def query_cpu_definitions() -> list[dict]:
 # guest never uses them, and the launch path passes -cpu without enforce, so
 # QEMU merely masks them with a warning. Disabling nested virt is a
 # legitimate host hardening posture and must not empty the advertisement.
-# The set is the SVM feature word (CPUID 0x8000_000A EDX) plus the svm bit
-# itself (0x8000_0001 ECX).
+# The set is every name QEMU gives to the SVM feature word (FEAT_SVM over
+# CPUID 0x8000_000A EDX in target/i386/cpu.c; gmet is on QEMU master and not
+# yet in a release) plus the svm bit itself (0x8000_0001 ECX): exactly the
+# features Linux KVM exposes only when kvm_amd runs with nested=1.
 NESTED_VIRT_FEATURES = frozenset(
     {
         "svm",
@@ -102,7 +104,7 @@ NESTED_VIRT_FEATURES = frozenset(
         "avic",
         "v-vmsave-vmload",
         "vgif",
-        "x2avic",
+        "gmet",
         "svme-addr-chk",
         "vnmi",
     }
