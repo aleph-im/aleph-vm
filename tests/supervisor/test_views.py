@@ -316,6 +316,24 @@ async def test_system_usage_mock(aiohttp_client, mocker, mock_app_with_pool):
 
 
 @pytest.mark.asyncio
+async def test_system_usage_counts_free_hugepages_as_available(aiohttp_client, mocker, mock_app_with_pool):
+    """A hugepage host must report the free pool as available memory: the
+    kernel's MemAvailable excludes the whole hugepage pool, but hugepage-backed
+    VMs draw their RAM from it, so psutil alone shows an empty node as full."""
+    mocker.patch("aleph.vm.agent.resources.get_hardware_info", return_value=MOCK_SYSTEM_INFO)
+    fake_mem = mock.Mock(total=64_000_000_000, available=6_000_000_000)
+    mocker.patch("psutil.virtual_memory", return_value=fake_mem)
+    mocker.patch("aleph.vm.agent.resources.hugepages_free_bytes", return_value=50_000_000_000)
+
+    client = await aiohttp_client(await mock_app_with_pool)
+    response: web.Response = await client.get("/about/usage/system")
+    assert response.status == 200
+    resp = await response.json()
+    assert resp["mem"]["total_kB"] == 64_000_000
+    assert resp["mem"]["available_kB"] == 56_000_000
+
+
+@pytest.mark.asyncio
 async def test_system_capability_mock(aiohttp_client, mocker):
     """Test that the capability system endpoints response value. No auth needed"""
     mocker.patch("aleph.vm.agent.resources.get_hardware_info", return_value=MOCK_SYSTEM_INFO)

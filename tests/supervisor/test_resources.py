@@ -1,6 +1,33 @@
+from pathlib import Path
 from unittest import mock
 
+from aleph.vm.agent.resources import hugepages_free_bytes
 from aleph.vm.resources import get_gpu_devices
+
+
+def _make_hugepage_pool(root: Path, name: str, free: str) -> None:
+    pool = root / name
+    pool.mkdir(parents=True)
+    (pool / "free_hugepages").write_text(free)
+
+
+def test_hugepages_free_bytes_sums_all_pool_sizes(tmp_path):
+    _make_hugepage_pool(tmp_path, "hugepages-2048kB", "1024\n")
+    _make_hugepage_pool(tmp_path, "hugepages-1048576kB", "2\n")
+    assert hugepages_free_bytes(tmp_path) == 1024 * 2048 * 1024 + 2 * 1048576 * 1024
+
+
+def test_hugepages_free_bytes_without_hugepage_sysfs_is_zero(tmp_path):
+    assert hugepages_free_bytes(tmp_path / "missing") == 0
+
+
+def test_hugepages_free_bytes_skips_unreadable_pools(tmp_path):
+    # A pool directory without the counter file, and one with garbage in it:
+    # both are skipped, the readable pool is still counted.
+    (tmp_path / "hugepages-2048kB").mkdir()
+    _make_hugepage_pool(tmp_path, "hugepages-1048576kB", "garbage\n")
+    _make_hugepage_pool(tmp_path, "hugepages-4096kB", "3\n")
+    assert hugepages_free_bytes(tmp_path) == 3 * 4096 * 1024
 
 
 def mock_is_kernel_enabled_gpu(pci_host: str) -> bool:

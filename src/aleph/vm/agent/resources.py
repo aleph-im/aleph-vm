@@ -1,5 +1,6 @@
 import math
 from datetime import datetime, timezone
+from pathlib import Path
 
 import psutil
 from aiohttp import web
@@ -291,6 +292,30 @@ async def get_machine_capability() -> MachineCapability:
     return static.model_copy(update={"tee": tee, "tee_unavailable_reason": reason})
 
 
+HUGEPAGES_SYSFS_PATH = Path("/sys/kernel/mm/hugepages")
+
+
+def hugepages_free_bytes(sysfs_path: Path = HUGEPAGES_SYSFS_PATH) -> int:
+    """Bytes held in free hugepages, summed across every pool size.
+
+    The kernel excludes the whole hugepage pool from MemAvailable, but on a
+    host with hugepage-backed VMs (ALEPH_VM_NUMA_HUGEPAGES) the free pages are
+    exactly the memory future VMs will draw from, so they must count as
+    available or an idle node reports itself full. Pool directories that are
+    missing or unreadable contribute 0 (a host without hugepages reports the
+    plain psutil figure).
+    """
+    free_bytes = 0
+    for pool in sysfs_path.glob("hugepages-*kB"):
+        try:
+            page_size_kib = int(pool.name.removeprefix("hugepages-").removesuffix("kB"))
+            free_pages = int((pool / "free_hugepages").read_text())
+        except (OSError, ValueError):
+            continue
+        free_bytes += free_pages * page_size_kib * 1024
+    return free_bytes
+
+
 def _disk_usage_from_pools(host_info) -> DiskUsage:
     """Aggregate capacity across every volume pool (same-filesystem pools
     counted once). Usage-aware available disk comes from the supervisor's
@@ -317,7 +342,9 @@ async def about_system_usage(request: web.Request):
         ),
         mem=MemoryUsage(
             total_kB=math.ceil(psutil.virtual_memory().total / 1000),
-            available_kB=math.floor(psutil.virtual_memory().available / 1000),
+            # Free hugepages are invisible to MemAvailable but are the very
+            # memory hugepage-backed VMs consume, so they count as available.
+            available_kB=math.floor((psutil.virtual_memory().available + hugepages_free_bytes()) / 1000),
         ),
         disk=_disk_usage_from_pools(host_info),
         period=UsagePeriod(
