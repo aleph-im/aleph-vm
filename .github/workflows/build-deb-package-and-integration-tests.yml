@@ -162,6 +162,13 @@ jobs:
             package_name: "aleph-vm.ubuntu-24.04.deb"
             concurrency_group: "droplet-aleph-vm-ubuntu-24-04"
 
+          - os_name: "Ubuntu 26.04"
+            os_image: "ubuntu-26-04-x64"
+            alias: "ubuntu-26-04"
+            package_build_command: "all-podman-ubuntu-2604"
+            package_name: "aleph-vm.ubuntu-26.04.deb"
+            concurrency_group: "droplet-aleph-vm-ubuntu-26-04"
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
