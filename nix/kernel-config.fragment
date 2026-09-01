@@ -58,6 +58,14 @@ CONFIG_IKCONFIG_PROC=y
 
 # ------------------------------------------------- confidential computing
 CONFIG_AMD_MEM_ENCRYPT=y
+# An SEV-SNP guest hangs before its first console line without PAT (MTRR is
+# PAT's Kconfig dependency). Found empirically on EPYC 8024P: the same kernel
+# boots fine as a non-SNP guest, which is why boot-smoke (deliberately
+# non-SNP) never caught it. Bisected 2026-09-01: of the whole distro-config
+# delta, X86_PAT+MTRR is the minimal pair that boots under SNP; MTRR alone
+# does not.
+CONFIG_MTRR=y
+CONFIG_X86_PAT=y
 CONFIG_VIRT_DRIVERS=y
 # /dev/sev-guest for the attest-agent.
 CONFIG_SEV_GUEST=y
