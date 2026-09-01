@@ -137,6 +137,17 @@ all-podman-ubuntu-2404: version
 	file target/aleph-vm.deb
 	mv target/aleph-vm.deb target/aleph-vm.ubuntu-24.04.deb
 
+all-podman-ubuntu-2604: version
+	cd .. && podman build -t localhost/aleph-vm-packaging-ubuntu-2604:latest -f ./packaging/ubuntu-26.04.dockerfile .
+	mkdir -p ./target
+	podman run --rm -ti \
+		-w /opt/packaging \
+		-v ./target:/opt/packaging/target \
+		localhost/aleph-vm-packaging-ubuntu-2604:latest \
+		make
+	file target/aleph-vm.deb
+	mv target/aleph-vm.deb target/aleph-vm.ubuntu-26.04.deb
+
 # extract Python requirements from Debian 12 container
 requirements-debian-12: all-podman-debian-12
 	podman run --rm -ti \
@@ -173,6 +184,15 @@ requirements-ubuntu-24.04: all-podman-ubuntu-2404
 		ubuntu:noble \
 		bash -c "/opt/extract_requirements.sh /mnt/requirements-ubuntu-24.04.txt"
 
+# extract Python requirements from Ubuntu 26.04 container
+requirements-ubuntu-26.04: all-podman-ubuntu-2604
+	podman run --rm -ti \
+		-v ./target/aleph-vm.ubuntu-26.04.deb:/opt/packaging/target/aleph-vm.deb:ro \
+		-v ./extract_requirements.sh:/opt/extract_requirements.sh:ro \
+		-v ./requirements-ubuntu-26.04.txt:/mnt/requirements-ubuntu-26.04.txt \
+		ubuntu:resolute \
+		bash -c "/opt/extract_requirements.sh /mnt/requirements-ubuntu-26.04.txt"
+
 # run on host in order to sign with GPG
 repository-bookworm:
 	cd ./repositories/bookworm && reprepro -Vb . includedeb bookworm ../../target/aleph-vm.debian-12.deb && cd ..
@@ -189,7 +209,11 @@ repository-trixie:
 repository-noble:
 	cd ./repositories/noble && reprepro -Vb . includedeb noble ../../target/aleph-vm.ubuntu-24.04.deb && cd ..
 
-repositories: repository-bookworm repository-trixie repository-jammy repository-noble
+# run on host in order to sign with GPG
+repository-resolute:
+	cd ./repositories/resolute && reprepro -Vb . includedeb resolute ../../target/aleph-vm.ubuntu-26.04.deb && cd ..
 
-all-podman: all-podman-debian-12 all-podman-debian-13 all-podman-ubuntu-2204 all-podman-ubuntu-2404 repositories
+repositories: repository-bookworm repository-trixie repository-jammy repository-noble repository-resolute
+
+all-podman: all-podman-debian-12 all-podman-debian-13 all-podman-ubuntu-2204 all-podman-ubuntu-2404 all-podman-ubuntu-2604 repositories
 
