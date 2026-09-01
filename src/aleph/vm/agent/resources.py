@@ -9,7 +9,10 @@ from pydantic import BaseModel, Field
 
 from aleph.vm.agent.aggregate import get_compatible_gpus, update_aggregate_settings
 from aleph.vm.agent.machine import get_cpu_info, get_hardware_info, get_memory_info
-from aleph.vm.agent.vcpu_probe import get_supported_snp_vcpu_types
+from aleph.vm.agent.vcpu_probe import (
+    get_snp_launch_capability,
+    get_supported_snp_vcpu_types,
+)
 from aleph.vm.conf import settings
 from aleph.vm.resources import GpuDevice
 from aleph.vm.sevclient import SevClient
@@ -139,6 +142,12 @@ class MachineCapability(BaseModel):
     cpu: ExtendedCpuProperties
     memory: MemoryProperties
     tee: TeeProperties | None = None
+    tee_unavailable_reason: str | None = Field(
+        default=None,
+        description="Why SEV-SNP is not advertised, for a node whose silicon supports it but "
+        "cannot currently launch (e.g. QEMU too old). Human-facing only: the scheduler reads "
+        "/about/usage/system, which does not carry this field.",
+    )
 
 
 async def _gpus_from_host_info(host_info) -> GpuProperties:
@@ -263,9 +272,23 @@ async def _get_static_machine_capability() -> MachineCapability:
 
 async def get_machine_capability() -> MachineCapability:
     """What ``/about/capability`` reports. Static part cached, TEE block
-    re-evaluated per call so a recovered probe is advertised again."""
+    re-evaluated per call so a recovered probe is advertised again.
+
+    Unlike ``get_machine_properties``, this also names *why* SNP is not
+    advertised when the silicon supports it but the current QEMU cannot
+    launch it (e.g. too old): human-facing only, so it is populated solely
+    when ``check_amd_sev_snp_supported()`` is true, to keep the non-TEE
+    fleet's response free of noise.
+    """
     static = await _get_static_machine_capability()
-    return static.model_copy(update={"tee": await _get_tee_properties()})
+    capability = await get_snp_launch_capability()
+    tee = (
+        TeeProperties(sev_snp=SevSnpProperties(supported_vcpu_types=capability.supported_vcpu_types))
+        if capability.supported_vcpu_types
+        else None
+    )
+    reason = capability.unavailable_reason if check_amd_sev_snp_supported() else None
+    return static.model_copy(update={"tee": tee, "tee_unavailable_reason": reason})
 
 
 def _disk_usage_from_pools(host_info) -> DiskUsage:
