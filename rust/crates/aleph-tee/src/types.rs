@@ -38,21 +38,106 @@ pub struct AttestationReport {
     pub data: Vec<u8>,
 }
 
+/// The measurement registers SEV-SNP pins: one launch digest.
+///
+/// Mirrors `LaunchMeasurement.registers` on the message side (aleph-message
+/// 1.3.0). A concrete struct rather than a per-platform enum because only
+/// SEV-SNP is defined today; a second platform turns it into an enum
+/// discriminated on TEE type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SevSnpRegisters {
+    /// 48-byte launch digest, from the signed report.
+    #[serde(with = "hex_serde")]
+    pub launch: Vec<u8>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "VerificationResultWire", into = "VerificationResultWire")]
 pub struct VerificationResult {
     pub valid: bool,
     pub tee_type: TeeType,
     pub summary: String,
-    /// Launch measurement, derived from the AMD-verified blob (NOT a
-    /// caller-supplied copy).
-    #[serde(with = "hex_serde")]
-    pub measurement: Vec<u8>,
+    /// Launch measurement registers, derived from the AMD-verified blob (NOT
+    /// a caller-supplied copy). Object rather than scalar because a TEE's
+    /// launch identity is not always one value; SEV-SNP pins `launch` only.
+    pub registers: SevSnpRegisters,
     /// The 64-byte `report_data`, derived from the AMD-verified blob (NOT a
     /// caller-supplied copy). Callers bind key/nonce commitments against THIS
     /// value, never against any unsigned copy.
     #[serde(with = "hex_serde_array")]
     pub report_data: [u8; 64],
     pub details: serde_json::Value,
+}
+
+/// Wire form of [`VerificationResult`], carrying both register formats.
+///
+/// aleph-vm 2.0 serialized a scalar hex `measurement`; 2.1 carries
+/// `registers`. Emitting both and accepting either keeps mixed-version
+/// peers interoperating across the change. The scalar is a deprecated
+/// duplicate of `registers.launch`; drop it after one release cycle.
+#[derive(Serialize, Deserialize)]
+struct VerificationResultWire {
+    valid: bool,
+    tee_type: TeeType,
+    summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    registers: Option<SevSnpRegisters>,
+    /// Deprecated scalar duplicate of `registers.launch`, hex-encoded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    measurement: Option<String>,
+    #[serde(with = "hex_serde_array")]
+    report_data: [u8; 64],
+    details: serde_json::Value,
+}
+
+impl From<VerificationResult> for VerificationResultWire {
+    fn from(result: VerificationResult) -> Self {
+        VerificationResultWire {
+            valid: result.valid,
+            tee_type: result.tee_type,
+            summary: result.summary,
+            measurement: Some(hex::encode(&result.registers.launch)),
+            registers: Some(result.registers),
+            report_data: result.report_data,
+            details: result.details,
+        }
+    }
+}
+
+impl TryFrom<VerificationResultWire> for VerificationResult {
+    type Error = anyhow::Error;
+
+    fn try_from(wire: VerificationResultWire) -> Result<Self, Self::Error> {
+        let registers = match (wire.registers, wire.measurement) {
+            (Some(registers), Some(measurement)) => {
+                // Both formats present: they must agree, or one of them is
+                // lying about the launch digest. Fail closed.
+                let scalar = hex::decode(&measurement)
+                    .map_err(|e| anyhow::anyhow!("legacy measurement is not hex: {e}"))?;
+                anyhow::ensure!(
+                    scalar == registers.launch,
+                    "legacy measurement does not match registers.launch"
+                );
+                registers
+            }
+            (Some(registers), None) => registers,
+            (None, Some(measurement)) => SevSnpRegisters {
+                launch: hex::decode(&measurement)
+                    .map_err(|e| anyhow::anyhow!("legacy measurement is not hex: {e}"))?,
+            },
+            (None, None) => anyhow::bail!(
+                "verification result carries neither registers nor the legacy measurement"
+            ),
+        };
+        Ok(VerificationResult {
+            valid: wire.valid,
+            tee_type: wire.tee_type,
+            summary: wire.summary,
+            registers,
+            report_data: wire.report_data,
+            details: wire.details,
+        })
+    }
 }
 
 /// Configuration for a disk attached to a VM.
@@ -165,6 +250,49 @@ mod hex_serde_array {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verification_result_speaks_both_register_formats() {
+        let launch = vec![0xAB; 48];
+        let result = VerificationResult {
+            valid: true,
+            tee_type: TeeType::SevSnp,
+            summary: String::new(),
+            registers: SevSnpRegisters {
+                launch: launch.clone(),
+            },
+            report_data: [0u8; 64],
+            details: serde_json::Value::Null,
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        // New format plus the deprecated scalar duplicate, so peers on
+        // either side of the aleph-vm 2.0 -> 2.1 change keep parsing.
+        assert_eq!(
+            json["registers"]["launch"],
+            serde_json::json!("ab".repeat(48))
+        );
+        assert_eq!(json["measurement"], json["registers"]["launch"]);
+
+        let back: VerificationResult = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(back.registers.launch, launch);
+
+        // A 2.0 peer's payload (scalar only) still deserializes.
+        let mut legacy = json.clone();
+        legacy.as_object_mut().unwrap().remove("registers");
+        let back: VerificationResult = serde_json::from_value(legacy).unwrap();
+        assert_eq!(back.registers.launch, launch);
+
+        // Registers-only (a future emitter that dropped the alias) works too.
+        let mut modern = json.clone();
+        modern.as_object_mut().unwrap().remove("measurement");
+        let back: VerificationResult = serde_json::from_value(modern).unwrap();
+        assert_eq!(back.registers.launch, launch);
+
+        // Disagreeing formats fail closed rather than silently pick one.
+        let mut lying = json;
+        lying["measurement"] = serde_json::json!("cd".repeat(48));
+        assert!(serde_json::from_value::<VerificationResult>(lying).is_err());
+    }
 
     #[test]
     fn test_tee_type_serialization() {
