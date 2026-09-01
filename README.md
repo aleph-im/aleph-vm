@@ -94,7 +94,7 @@ Unless your focus is developing the VM-Connector, using the Docker image is easi
    **On Ubuntu 26.04 (Resolute Raccoon)**, recommended for SEV-SNP hosts
    (ships QEMU 10.2, which can launch SEV-SNP guests):
    ```shell
-   sudo wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/2.0.1/aleph-vm.ubuntu-26.04.deb
+   sudo wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/1.2.0/aleph-vm.ubuntu-26.04.deb
    sudo apt install /opt/aleph-vm.ubuntu-26.04.deb
    ```
 
