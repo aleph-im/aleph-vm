@@ -39,6 +39,7 @@ authority this module exists to deny. The agent resolves those refs itself.
 
 import json
 import logging
+from copy import deepcopy
 from dataclasses import dataclass
 from enum import Enum
 
@@ -55,7 +56,11 @@ from eth_account.messages import encode_defunct
 
 logger = logging.getLogger(__name__)
 
-EVM_CHAINS = {"ETH", "AVAX", "BASE", "BSC"}
+# Chains whose signatures we currently recover, not every EVM chain aleph
+# supports. The enum also carries OP, ARB, POL, LINEA and more; a message on
+# one of those is UNVERIFIABLE, which costs a CCN fetch and nothing else, so
+# this set can grow whenever a chain is worth the fast path.
+VERIFIABLE_CHAINS = {"ETH", "AVAX", "BASE", "BSC"}
 
 
 class VerificationOutcome(Enum):
@@ -66,6 +71,13 @@ class VerificationOutcome(Enum):
 
 @dataclass(frozen=True)
 class VerifiedMessage:
+    """A message and an untouched copy of it.
+
+    ``original`` is a deep copy, not the same object: a caller that resolves
+    use_latest refs does so with update_message, which mutates the message in
+    place, and an aliased original would be rewritten along with it.
+    """
+
     message: ExecutableMessage
     original: ExecutableMessage
 
@@ -114,9 +126,14 @@ def verify_entry(entry: dict) -> tuple[VerificationOutcome, VerifiedMessage | No
     raw = entry.get("message")
     if not raw:
         return VerificationOutcome.UNVERIFIABLE, None, ""
+    if not isinstance(raw, dict):
+        # Everything else malformed answers REJECTED; a non-dict must not be
+        # the one shape that escapes with an AttributeError instead.
+        logger.warning("Refusing embedded message for %s: not an object", entry.get("item_hash"))
+        return VerificationOutcome.REJECTED, None, "message is not an object"
     if raw.get("item_type") != ItemType.inline.value:
         return VerificationOutcome.UNVERIFIABLE, None, ""
-    if raw.get("chain") not in EVM_CHAINS:
+    if raw.get("chain") not in VERIFIABLE_CHAINS:
         return VerificationOutcome.UNVERIFIABLE, None, ""
 
     try:
@@ -133,4 +150,4 @@ def verify_entry(entry: dict) -> tuple[VerificationOutcome, VerifiedMessage | No
         logger.warning("Embedded message %s is not signed by its sender", message.item_hash)
         return VerificationOutcome.REJECTED, None, "signature does not match the sender"
 
-    return VerificationOutcome.VERIFIED, VerifiedMessage(message=message, original=message), ""
+    return VerificationOutcome.VERIFIED, VerifiedMessage(message=message, original=deepcopy(message)), ""

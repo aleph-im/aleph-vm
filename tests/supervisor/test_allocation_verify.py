@@ -66,7 +66,7 @@ def test_a_correctly_signed_message_is_verified(account, instance_content):
 
     assert outcome is VerificationOutcome.VERIFIED
     assert verified.message.content.resources.vcpus == 2
-    assert verified.original is verified.message
+    assert verified.original is not verified.message
 
 
 def test_content_tampered_after_signing_is_rejected(account, instance_content):
@@ -153,7 +153,7 @@ def test_an_embedded_amended_message_is_ignored(account, instance_content):
 
     assert outcome is VerificationOutcome.VERIFIED
     assert verified.message.content.resources.vcpus == 2
-    assert verified.original is verified.message
+    assert verified.original is not verified.message
 
 
 def test_a_content_field_diverging_from_the_signed_item_content_is_ignored(account, instance_content):
@@ -175,3 +175,25 @@ def test_a_content_field_diverging_from_the_signed_item_content_is_ignored(accou
 
     assert outcome is VerificationOutcome.VERIFIED
     assert verified.message.content.resources.vcpus == 2
+
+
+def test_the_original_is_a_copy_so_resolving_refs_cannot_rewrite_it(account, instance_content):
+    """update_message mutates in place, so an aliased original would be
+    rewritten along with the message it is supposed to preserve."""
+    message = sign_message(instance_content, account)
+
+    _, verified, _ = verify_entry({"item_hash": message["item_hash"], "message": message})
+
+    verified.message.content.resources.vcpus = 64
+
+    assert verified.original.content.resources.vcpus == 2
+
+
+def test_a_message_that_is_not_an_object_is_rejected():
+    """Every other malformed shape answers REJECTED; this one used to escape
+    with an AttributeError from the raw.get() calls."""
+    outcome, verified, reason = verify_entry({"item_hash": "b" * 64, "message": "not-an-object"})
+
+    assert outcome is VerificationOutcome.REJECTED
+    assert verified is None
+    assert reason
