@@ -2,11 +2,25 @@
 
 Two gates, only meaningful together:
 
-1. aleph_message's own validators enforce item_hash == sha256(item_content)
-   and content == json(item_content) for inline messages, so parsing binds the
-   content to the hash.
+1. aleph_message's validators enforce item_hash == sha256(item_content), so
+   the hash binds the JSON the user actually signed.
 2. The sender's signature covers "chain\\nsender\\ntype\\nitem_hash", so a
-   valid signature proves the sender authorized exactly that content.
+   valid signature proves the sender authorized exactly that JSON.
+
+Those two gates bind item_content, and nothing else. A message also carries a
+separate ``content`` field, and that is the one a caller reads. aleph_message
+does not tie the two together for every type: ProgramMessage and
+VerifiableProgramMessage have a check_content validator, InstanceMessage does
+not. Left alone, a scheduler could therefore hand us a message carrying the
+user's genuine item_content and signature next to a ``content`` of its own
+choosing (more vCPUs, a different rootfs) and it would verify.
+
+So we do not read the ``content`` the scheduler sent: it is replaced with the
+JSON parsed out of item_content before the message is built. A divergent
+``content`` is ignored rather than rejected, because comparing a parsed
+pydantic model against raw JSON invites false rejections over defaults and
+type coercion, while re-deriving cannot be wrong: what comes out is the signed
+bytes or nothing.
 
 The result is that the scheduler picks WHICH user messages run here and never
 WHAT they contain, which is the authority it already had.
@@ -23,6 +37,7 @@ let it point a rootfs at content of its choosing, which is exactly the
 authority this module exists to deny. The agent resolves those refs itself.
 """
 
+import json
 import logging
 from dataclasses import dataclass
 from enum import Enum
@@ -72,10 +87,18 @@ def _signature_matches(message: ExecutableMessage) -> bool:
 def _parse(raw: dict) -> ExecutableMessage:
     """Parse and narrow to an executable message.
 
+    The content is re-derived from item_content rather than taken from the
+    ``content`` the sender of the plan supplied, so the parsed message can only
+    ever hold what the signature covers.
+
     parse_message returns the whole message union, so the type check is also
     what makes the narrowed return type honest.
     """
-    message = parse_message(raw)
+    item_content = raw.get("item_content")
+    if not isinstance(item_content, str):
+        msg = "inline message without item_content"
+        raise ValueError(msg)
+    message = parse_message({**raw, "content": json.loads(item_content)})
     if not isinstance(message, (InstanceMessage, ProgramMessage, VerifiableProgramMessage)):
         msg = f"message type {message.type} is not executable"
         raise ValueError(msg)
