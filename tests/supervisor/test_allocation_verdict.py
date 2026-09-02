@@ -177,3 +177,44 @@ def test_a_different_plan_produces_a_different_plan_id():
     second, _ = build_plan({"vms": [{"item_hash": str(HASH_B)}]}, now=NOW)
 
     assert first.plan_id != second.plan_id
+
+
+def test_an_entry_with_an_unusable_item_hash_is_rejected_not_raised():
+    """build_plan is the validation boundary for a body the scheduler controls,
+    so one bad entry must not take the whole push down with it."""
+    body = {"vms": [{"item_hash": "not-a-hash"}, {}, {"item_hash": str(HASH_A)}]}
+
+    plan, rejected = build_plan(body, now=NOW)
+
+    assert list(plan.entries) == [HASH_A]
+    assert rejected["not-a-hash"]["code"] == "invalid_message"
+    assert rejected["None"]["code"] == "invalid_message"
+
+
+def test_a_pinned_vm_is_not_refused_when_we_do_not_know_our_own_hash():
+    """Node identity not yet discovered is a retry, not a verdict: answering
+    node_mismatch would tell the scheduler to place it elsewhere for good."""
+    content = _make_qemu_instance_message()
+    content.requirements = SimpleNamespace(node=SimpleNamespace(node_hash="some-node"), gpu=None)
+
+    verdict = compute_verdict(
+        _plan(HASH_C, content=content), infos=[], registry=_registry({}), capacity=_capacity([]), node_hash=None
+    )
+
+    assert verdict.rejected[HASH_C]["code"] == "node_hash_unknown"
+
+
+def test_a_planned_vm_the_supervisor_holds_dead_is_not_judged_against_itself():
+    """A recreate: the stale registry record still counts as committed, so it
+    has to be discounted or the VM is admitted against its own resources. The
+    enforced path does this with check_capacity's exclude_vm_hash."""
+    capacity = _capacity([AdmissionVerdict(HASH_C, True)])
+
+    compute_verdict(
+        _plan(HASH_C),
+        infos=[_info(HASH_C, status=VmStatus.STOPPED)],
+        registry=_registry({HASH_C: _record()}),
+        capacity=capacity,
+    )
+
+    assert HASH_C in capacity.simulate.call_args.kwargs["releasing"]
