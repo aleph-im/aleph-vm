@@ -1,0 +1,3 @@
+# The SNP supervisor starts one dnsmasq process per VM and keeps its DHCP
+# leases here. This file is included from dnsmasq's site-local profile.
+/var/lib/aleph/vm/dhcp/*.leases rw,

@@ -5,6 +5,11 @@ if ! id -u jailman > /dev/null 2>&1; then
   useradd jailman
 fi
 
+# The distro dnsmasq profile supports site-local additions. Keep our rule in a
+# package-owned fragment and add only its include to the administrator-owned
+# local file.
+/usr/lib/aleph-vm/configure-dnsmasq-apparmor install
+
 rm -fr /srv/jailer  # Upgrade from < 0.1.11
 rm -fr /tmp/aleph   # Upgrade from < 0.1.11
 mkdir -p /var/lib/aleph/vm/jailer

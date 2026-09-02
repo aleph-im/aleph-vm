@@ -47,6 +47,9 @@ jobs:
       - name: Initialize git submodules
         run: git submodule init
 
+      - name: Test dnsmasq AppArmor package integration
+        run: packaging/tests/test_dnsmasq_apparmor.sh
+
       # Runner image 20260726.254 ships podman 5.8.4 but leaves a stale crun 1.14.1
       # at /usr/bin/crun, breaking every podman run/build with "unknown version
       # specified". Point podman at the current crun in /usr/local/bin.
@@ -69,6 +72,8 @@ jobs:
           dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/aleph-vm/bin/supervisor-launcher
           dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/aleph-vm/bin/aleph-vm-controller
           dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /opt/aleph-vm/bin/controller-launcher
+          dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /usr/lib/aleph-vm/configure-dnsmasq-apparmor
+          dpkg --contents packaging/target/${{ matrix.artifact_name }} | grep /usr/share/aleph-vm/apparmor/usr.sbin.dnsmasq
 
       - uses: actions/upload-artifact@v4
         with:
