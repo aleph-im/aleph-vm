@@ -15,6 +15,7 @@ from aiohttp import hdrs, web
 from aiohttp.web_exceptions import HTTPException
 from aiohttp_cors import ResourceOptions, setup
 
+from aleph.vm.agent.allocation.reconciler import AllocationReconciler
 from aleph.vm.agent.capacity import CapacityManager
 from aleph.vm.agent.expiry import ExpiryManager
 from aleph.vm.agent.migration.reaper import reap_orphan_migration_files
@@ -192,6 +193,9 @@ async def _reconcile_after_event_gap(app: web.Application) -> None:
         if status is None or status in (VmStatus.STOPPED, VmStatus.FAILED):
             logger.info("Reconcile after event-stream gap: dropping agent state for %s (status: %s)", vm_id, status)
             await _drop_vm_state(app, vm_id)
+            # Same nudge the live stream gives: a VM that died during the gap
+            # is still planned, and should not wait out the backstop interval.
+            app["allocation_reconciler"].notify_vm_down(vm_id)
 
 
 async def watch_supervisor_events(app: web.Application) -> None:
@@ -220,6 +224,9 @@ async def watch_supervisor_events(app: web.Application) -> None:
             async for event in supervisor.watch_events():
                 if event.new_status in (VmStatus.STOPPED, VmStatus.FAILED):
                     await _drop_vm_state(app, event.vm_id)
+                    # If the plan still wants this VM, converge now rather than
+                    # waiting out the reconciler's backstop interval.
+                    app["allocation_reconciler"].notify_vm_down(event.vm_id)
         except NotImplementedSupervisorError:
             logger.info("Supervisor does not implement WatchEvents; agent state relies on its own reaps only")
             return
@@ -289,6 +296,33 @@ def setup_webapp(supervisor: Supervisor):
 
     app["expiry"].on_reaped = _on_expiry_reaped
     app["update_watcher"].on_reaped = _on_update_reaped
+
+    app["allocation_reconciler"] = AllocationReconciler(
+        supervisor=app["supervisor"],
+        registry=app["vm_registry"],
+        capacity=app["capacity"],
+        expiry=app["expiry"],
+        update_watcher=app["update_watcher"],
+        # Lazy on purpose: app["pubsub"] is created by start_watch_for_messages_task,
+        # an on_startup hook registered in run_server (so after every hook appended
+        # here) and only when settings.WATCH_FOR_MESSAGES is on. Reading it now
+        # would KeyError, and caching it when the task starts would silently drop
+        # update-watching for reconciler-started VMs. start_persistent_vm accepts
+        # None and skips watching.
+        pubsub_getter=lambda: app.get("pubsub"),
+    )
+
+    async def _start_allocation_reconciler(app: web.Application) -> None:
+        app["_allocation_reconciler"] = asyncio.get_running_loop().create_task(app["allocation_reconciler"].run())
+
+    async def _stop_allocation_reconciler(app: web.Application) -> None:
+        task = app.get("_allocation_reconciler")
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    app.on_startup.append(_start_allocation_reconciler)  # type: ignore[arg-type]
+    app.on_cleanup.append(_stop_allocation_reconciler)  # type: ignore[arg-type]
 
     # The supervisor daemon owns the VMs, so its event stream is the only way
     # for the agent to learn that a VM went down without polling; feed the

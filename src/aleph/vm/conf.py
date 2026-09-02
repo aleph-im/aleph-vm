@@ -405,6 +405,23 @@ class Settings(BaseSettings):
     """Absolute time window (seconds) for the signed payload's `iat` relative
     to the supervisor's wall clock. Used by the Aleph-EIP191-V1 verifier."""
 
+    ALLOCATION_RECONCILE_INTERVAL: int = 60
+    """Backstop pass of the allocation reconciler, in seconds. The loop is
+    normally woken by a plan push or a supervisor event; this only bounds how
+    long a missed wake-up can delay a retry."""
+
+    ALLOCATION_RETRY_BASE_INTERVAL: int = 30
+    """First retry delay after a failed create, in seconds. Doubles per attempt."""
+
+    ALLOCATION_RETRY_MAX_INTERVAL: int = 900
+    """Cap on the allocation retry backoff, in seconds."""
+
+    ALLOCATION_DOWNLOAD_CONCURRENCY: int = 3
+    """How many VMs the reconciler may create at once. The expensive phase
+    (resource download) runs agent-side and outside the supervisor's creation
+    lock, so overlapping it is what makes a large plan converge in reasonable
+    time; create_vm itself is still serialized by that lock."""
+
     ENABLE_QEMU_SUPPORT: bool = Field(default=True)
     INSTANCE_DEFAULT_HYPERVISOR: HypervisorType | None = Field(
         default=HypervisorType.qemu,
