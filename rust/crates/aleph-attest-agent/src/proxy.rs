@@ -219,6 +219,30 @@ mod tests {
         })
     }
 
+    /// The plain-HTTP local mode runs the agent on aleph-tee's NoTeeBackend.
+    /// The proxy route must keep working while the attestation endpoint
+    /// fails closed with a 500 (never a fabricated report).
+    fn no_tee_state() -> web::Data<AppState> {
+        web::Data::new(AppState {
+            backend: Arc::new(aleph_tee::none::NoTeeBackend::new()),
+            served_public_key_raw: Vec::new(),
+            upstream: "http://127.0.0.1:1".to_string(),
+            http_client: reqwest::Client::new(),
+        })
+    }
+
+    #[actix_web::test]
+    async fn attestation_endpoint_fails_closed_without_a_tee() {
+        let resp = attestation_endpoint(
+            no_tee_state(),
+            web::Query(AttestationQuery {
+                nonce: "ab".to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
     async fn attest(nonce: &str) -> (StatusCode, String) {
         let resp = attestation_endpoint(
             state(),
