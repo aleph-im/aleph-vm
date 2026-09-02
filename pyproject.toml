@@ -35,7 +35,7 @@ dependencies = [
   "aiohttp-cors~=0.7.0",
   "aiosqlite==0.19",
   "alembic==1.13.1",
-  "aleph-message==1.3.1",
+  "aleph-message==1.4.0",
   "aleph-superfluid~=0.2.1",
   "eth-account~=0.10",
   "grpcio>=1.70,<1.71",                                                                                   # generated _pb2_grpc.py embeds GRPC_GENERATED_VERSION=1.70.0; older installs RuntimeError on import
