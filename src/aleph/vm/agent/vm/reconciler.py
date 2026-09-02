@@ -55,6 +55,7 @@ from aleph.vm.agent.vm.reclaimable import (
 )
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
+from aleph.vm.storage import MOUNT_ROOT  # /mnt/{namespace}_{volume name}
 from aleph.vm.storage_budget import parse_budget
 from aleph.vm.storage_pools import StoragePool, get_pools, iter_namespace_dirs
 from aleph.vm.supervisor_interface.abc import Supervisor
@@ -62,9 +63,6 @@ from aleph.vm.utils import create_task_log_exceptions
 
 logger = logging.getLogger(__name__)
 
-# Where create_devmapper mounts a volume while resizing it (storage.py mounts
-# /mnt/{namespace}_{volume name}).
-MOUNT_ROOT = Path("/mnt")
 STAGING_KINDS = ("vprogram", "snp-instance")
 
 _creating: set[str] = set()

@@ -214,3 +214,79 @@ async def test_a_failing_after_gone_hook_does_not_break_the_retire(env, monkeypa
     # The retire itself completed: the volumes are marked, not lost.
     assert read_marker(env["rootfs"].parent) is not None
     assert "pool on fire" in caplog.text
+
+
+def _parent_backed_volumes(record) -> None:
+    """One parent-backed volume named "data" and one plain volume."""
+    # `name` and `parent` are both MagicMock constructor keywords, so they
+    # have to be assigned after the fact to land on the mock as attributes.
+    parent_backed = MagicMock()
+    parent_backed.name = "data"
+    parent_backed.parent = MagicMock(ref="parent-ref")
+    plain = MagicMock()
+    plain.name = "plain"
+    plain.parent = None
+    record.message.volumes = [parent_backed, plain]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", [RetireReason.GONE, RetireReason.ERASE, RetireReason.FAILED_CREATE])
+async def test_purging_reasons_tear_down_parent_backed_volume_devices(env, monkeypatch, mocker, reason):
+    """A parent-backed volume is a loop device under a dm snapshot: its file
+    cannot be reclaimed while those are live."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    remove = mocker.patch.object(retire_module, "remove_devmapper", new_callable=AsyncMock)
+    _parent_backed_volumes(env["registry"].get(ItemHash(VM_HASH)))
+
+    await retire_vm(VM_HASH, reason, supervisor=env["supervisor"], registry=env["registry"])
+
+    remove.assert_awaited_once_with(VM_HASH, "data")
+
+
+@pytest.mark.asyncio
+async def test_recreate_leaves_devices_in_place(env, mocker):
+    remove = mocker.patch.object(retire_module, "remove_devmapper", new_callable=AsyncMock)
+
+    await retire_vm(VM_HASH, RetireReason.RECREATE, supervisor=env["supervisor"])
+
+    remove.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_failing_device_teardown_does_not_abort_the_retire(env, monkeypatch, mocker, caplog):
+    """dmsetup can refuse (device busy); the volume file then stays behind for
+    the next reconcile pass, but the rest of the retire still happens."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    mocker.patch.object(
+        retire_module, "remove_devmapper", new_callable=AsyncMock, side_effect=RuntimeError("device busy")
+    )
+    _parent_backed_volumes(env["registry"].get(ItemHash(VM_HASH)))
+
+    with caplog.at_level("ERROR"):
+        await retire_vm(VM_HASH, RetireReason.GONE, supervisor=env["supervisor"], registry=env["registry"])
+
+    assert "device busy" in caplog.text
+    assert ItemHash(VM_HASH) not in env["registry"]
+    assert not env["rootfs"].exists()
+
+
+@pytest.mark.asyncio
+async def test_devices_are_torn_down_after_the_quiesce_and_before_the_storage_pass(env, monkeypatch, mocker):
+    """The order is the point: the supervisor must have released the VM
+    before its devices go, and the devices must be gone before the storage
+    pass, which cannot usefully unlink a file a loop device still pins."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    order: list[str] = []
+    env["supervisor"].delete_vm.side_effect = lambda *args, **kwargs: order.append("delete_vm")
+    mocker.patch.object(
+        retire_module,
+        "remove_devmapper",
+        new_callable=AsyncMock,
+        side_effect=lambda *args: order.append("teardown"),
+    )
+    mocker.patch.object(retire_module, "_release_storage", side_effect=lambda *args: order.append("release_storage"))
+    _parent_backed_volumes(env["registry"].get(ItemHash(VM_HASH)))
+
+    await retire_vm(VM_HASH, RetireReason.GONE, supervisor=env["supervisor"], registry=env["registry"])
+
+    assert order == ["delete_vm", "teardown", "release_storage"]
