@@ -48,7 +48,9 @@ struct Cli {
     /// attestation endpoint answers 500. Selected by the guest init when the
     /// measured kernel cmdline carries `aleph_local=1` (which no production
     /// launch path can emit without changing the launch measurement).
-    #[arg(long)]
+    /// Rejected together with --owner: owner authentication binds
+    /// signatures to the served TLS key, which plain mode does not have.
+    #[arg(long, conflicts_with = "owner")]
     insecure_plain_http: bool,
 }
 
@@ -204,5 +206,14 @@ mod tests {
         assert!(!cli.insecure_plain_http);
         let cli = Cli::parse_from(["aleph-attest-agent", "--insecure-plain-http"]);
         assert!(cli.insecure_plain_http);
+        assert!(
+            Cli::try_parse_from([
+                "aleph-attest-agent",
+                "--insecure-plain-http",
+                "--owner",
+                "0x0000000000000000000000000000000000000000"
+            ])
+            .is_err()
+        );
     }
 }

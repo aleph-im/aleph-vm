@@ -12,7 +12,8 @@
 # SLIRP port forward.
 #
 # Usage: nix/boot-smoke.sh (curl and python3 are needed for phase 3)
-# Local tool, not a CI gate: it needs KVM (or a slow TCG boot).
+# Runs in CI on a KVM runner (.github/workflows/boot-smoke.yml) and locally
+# (needs KVM, or a slow TCG boot).
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

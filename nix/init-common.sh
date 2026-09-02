@@ -1,13 +1,15 @@
 #!/bin/busybox sh
-# /bin/init-common.sh - shared prologue sourced by both measured-guest inits
-# (nix/init.sh for the platform image, nix/init-instance.sh for instances).
+# /bin/init-common.sh - shared prologue sourced by the measured-guest inits
+# (nix/init.sh for the platform image, nix/init-instance.sh for instances,
+# nix/init-compose.sh for compose workloads).
 #
 # Sourced with `. /bin/init-common.sh` from busybox sh, so this runs in the
 # caller's own shell: everything below runs immediately, in order, at source
 # time, right through the DHCPv6 block, and plain (non-`local`) assignments
 # (e.g. $iface, $gateway) stay set in the caller after the source returns.
-# The functions defined at the end (wait_for_rootfs_blkdev, wait_for_dev, prepare_chroot,
-# mount_verified_volumes, start_attest_agent) are only defined here; the caller decides when to call them.
+# The functions defined at the end (wait_for_rootfs_blkdev, wait_for_dev,
+# prepare_chroot, mount_verified_volumes, start_attest_agent) are only
+# defined here; the caller decides when to call them.
 
 # Mount essential filesystems.
 /bin/busybox mount -t proc proc /proc

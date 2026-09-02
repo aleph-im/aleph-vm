@@ -201,11 +201,12 @@ if [ ! -x /mnt/root/sbin/init ]; then
     echo "init: FATAL: no /sbin/init found in rootfs"
     exec /bin/busybox poweroff -f
 fi
-echo "init: starting /sbin/init from rootfs"
 
 # Start the attestation agent (after rootfs mount). Plain HTTP in local
 # mode, see start_attest_agent in init-common.sh.
 start_attest_agent
+
+echo "init: starting /sbin/init from rootfs"
 
 # Fail-closed supervision (same as init.sh / init-instance.sh): wait
 # specifically on the guest's PID and power off as soon as it exits, so a

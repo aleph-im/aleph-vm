@@ -219,9 +219,9 @@ mod tests {
         })
     }
 
-    /// The plain-HTTP local mode runs the agent on aleph-tee's NoTeeBackend.
-    /// The proxy route must keep working while the attestation endpoint
-    /// fails closed with a 500 (never a fabricated report).
+    /// The plain-HTTP local mode runs the agent on aleph-tee's NoTeeBackend:
+    /// the attestation endpoint must fail closed with a 500 (never a
+    /// fabricated report).
     fn no_tee_state() -> web::Data<AppState> {
         web::Data::new(AppState {
             backend: Arc::new(aleph_tee::none::NoTeeBackend::new()),
