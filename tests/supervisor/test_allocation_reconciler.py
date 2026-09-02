@@ -284,3 +284,42 @@ async def test_the_event_watcher_nudges_the_reconciler_when_a_vm_goes_down():
     await asyncio.gather(task, return_exceptions=True)
 
     app["allocation_reconciler"].notify_vm_down.assert_called_once_with(vm_id)
+
+
+@pytest.mark.asyncio
+async def test_notify_vm_down_wakes_the_loop_only_for_a_planned_vm(reconciler):
+    """The watcher calls this for every VM that goes down, most of which this
+    reconciler has no opinion about. Waking on those is pure churn."""
+    reconciler.submit(_plan(HASH_C))
+    reconciler._wakeup.clear()
+
+    reconciler.notify_vm_down(str(HASH_B))
+    assert reconciler._wakeup.is_set() is False
+
+    reconciler.notify_vm_down(str(HASH_C))
+    assert reconciler._wakeup.is_set() is True
+
+
+@pytest.mark.asyncio
+async def test_a_dropped_vm_is_torn_down_even_if_it_already_died(reconciler, monkeypatch):
+    """A FAILED VM dropped from the plan still owns disks and a registry record
+    that keeps counting against capacity, so leaving it is a slow leak."""
+    _record_starts(reconciler, monkeypatch)
+    reconciler.supervisor.list_vms.return_value = [_info(HASH_B, status=VmStatus.FAILED)]
+    reconciler.submit(_plan())
+
+    await reconciler._converge_once()
+
+    assert reconciler_module.teardown_vm.await_args.args[0] == HASH_B
+
+
+@pytest.mark.asyncio
+async def test_a_vm_still_being_created_is_not_torn_down(reconciler, monkeypatch):
+    """DEFINED is mid-creation: deleting it races the create still in flight."""
+    _record_starts(reconciler, monkeypatch)
+    reconciler.supervisor.list_vms.return_value = [_info(HASH_B, status=VmStatus.DEFINED)]
+    reconciler.submit(_plan())
+
+    await reconciler._converge_once()
+
+    reconciler_module.teardown_vm.assert_not_awaited()

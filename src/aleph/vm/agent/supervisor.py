@@ -193,6 +193,9 @@ async def _reconcile_after_event_gap(app: web.Application) -> None:
         if status is None or status in (VmStatus.STOPPED, VmStatus.FAILED):
             logger.info("Reconcile after event-stream gap: dropping agent state for %s (status: %s)", vm_id, status)
             await _drop_vm_state(app, vm_id)
+            # Same nudge the live stream gives: a VM that died during the gap
+            # is still planned, and should not wait out the backstop interval.
+            app["allocation_reconciler"].notify_vm_down(vm_id)
 
 
 async def watch_supervisor_events(app: web.Application) -> None:
