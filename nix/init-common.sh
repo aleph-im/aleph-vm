@@ -6,8 +6,8 @@
 # caller's own shell: everything below runs immediately, in order, at source
 # time, right through the DHCPv6 block, and plain (non-`local`) assignments
 # (e.g. $iface, $gateway) stay set in the caller after the source returns.
-# The functions defined at the end (wait_for_rootfs_blkdev, wait_for_dev,
-# prepare_chroot) are only defined here; the caller decides when to call them.
+# The functions defined at the end (wait_for_rootfs_blkdev, wait_for_dev, prepare_chroot,
+# mount_verified_volumes, start_attest_agent) are only defined here; the caller decides when to call them.
 
 # Mount essential filesystems.
 /bin/busybox mount -t proc proc /proc
@@ -252,4 +252,34 @@ mount_verified_volumes() {
         volume_index=$((volume_index + 1))
     done
     echo "init: ${volume_index} verified volume(s) mounted under ${guest_root}/volumes"
+}
+
+# Local (non-confidential) test mode. Set only when the measured kernel
+# cmdline carries the literal token `aleph_local=1`, which the CLI's local
+# runner (`aleph vprogram run`) appends after materializing the manifest
+# template. No production path can emit it: the manifest template is
+# fixed, the CLI rejects unknown template tokens, and the daemon derives
+# the launch cmdline from a fixed base. A CRN that added it would change
+# the launch measurement, so every attested call would fail closed at the
+# RA-TLS handshake (and the plain listener below cannot even complete a
+# TLS handshake). Deliberately NOT keyed on a missing /dev/sev-guest: that
+# would fail open on any non-SNP host.
+#
+# Same \b reasoning as the roothash tokens: no other token ends in
+# "aleph_local", and the trailing \b pins the value to exactly "1".
+local_mode=$(/bin/busybox sed -n 's/.*\baleph_local=1\b.*/1/p' /proc/cmdline)
+
+# Start the in-guest attestation agent (the only externally reachable
+# listener, see setup_firewall in the callers). In local mode it serves
+# plain HTTP on the same port with the same proxy path to the loopback
+# upstream, so a host-side port forward exercises exactly what the attested
+# endpoint would serve. The marker line is what `aleph vprogram run` waits
+# for; keep it byte-stable.
+start_attest_agent() {
+    if [ -n "$local_mode" ]; then
+        echo "init: LOCAL MODE: attest agent serving plain HTTP without a TEE; tcp/8443 is unattested"
+        /bin/aleph-attest-agent --port 8443 --upstream http://127.0.0.1:8080 --insecure-plain-http &
+    else
+        /bin/aleph-attest-agent --port 8443 --upstream http://127.0.0.1:8080 &
+    fi
 }
