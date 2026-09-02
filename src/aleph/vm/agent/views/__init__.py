@@ -22,11 +22,11 @@ from pydantic import ValidationError
 from aleph.vm import haproxy
 from aleph.vm.agent import payment, status
 from aleph.vm.agent.aggregate import update_aggregate_settings
+from aleph.vm.agent.allocation.teardown import is_removable_by_allocation, teardown_vm
 from aleph.vm.agent.capacity import CapacityManager, requirements_from_message
 from aleph.vm.agent.custom_logs import set_vm_for_logging
 from aleph.vm.agent.haproxy_sync import sync_domain_mappings
 from aleph.vm.agent.messages import try_get_message
-from aleph.vm.agent.allocation.teardown import is_removable_by_allocation, teardown_vm
 from aleph.vm.agent.metrics import get_execution_records
 from aleph.vm.agent.node_identity import NodeIdentity
 from aleph.vm.agent.payment import (
@@ -72,12 +72,7 @@ from aleph.vm.supervisor_interface.errors import (
     SupervisorError,
     VmNotFoundError,
 )
-from aleph.vm.supervisor_interface.types import (
-    PortForwardInfo,
-    VmId,
-    VmInfo,
-    VmStatus,
-)
+from aleph.vm.supervisor_interface.types import PortForwardInfo, VmId, VmInfo, VmStatus
 from aleph.vm.utils import (
     HostNotFoundError,
     b32_to_b16,

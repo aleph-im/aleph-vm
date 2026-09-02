@@ -13,7 +13,7 @@ from aleph_message.models import ItemHash
 
 from aleph.vm.agent.allocation.teardown import is_removable_by_allocation, teardown_vm
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
-from aleph.vm.supervisor_interface.types import ConfidentialMode, GpuDevice, PciAddress, VmStatus
+from aleph.vm.supervisor_interface.types import ConfidentialMode, GpuDevice, PciAddress
 
 _HASH = ItemHash("deadbeef" * 8)
 
@@ -28,8 +28,8 @@ def _record(*, stream=False, credit=False, vprogram=False, persistent=True):
     )
 
 
-def _info(*, gpus=(), confidential=ConfidentialMode.NONE, status=VmStatus.RUNNING):
-    return SimpleNamespace(vm_id=str(_HASH), status=status, gpus=list(gpus), confidential_mode=confidential)
+def _info(*, gpus=(), confidential=ConfidentialMode.NONE):
+    return SimpleNamespace(vm_id=str(_HASH), gpus=list(gpus), confidential_mode=confidential)
 
 
 class TestRemovability:
@@ -83,12 +83,18 @@ class TestTeardown:
     async def test_a_vm_the_supervisor_does_not_know_is_still_cleaned_up(self, monkeypatch):
         """The supervisor forgetting first must not strand the agent's own
         state: the registry entry, the DB rows and the staging dirs are ours."""
-        monkeypatch.setattr("aleph.vm.agent.allocation.teardown.delete_records_for_vm", AsyncMock())
-        monkeypatch.setattr("aleph.vm.agent.allocation.teardown.remove_vprogram_staging", MagicMock())
-        monkeypatch.setattr("aleph.vm.agent.allocation.teardown.remove_snp_instance_staging", MagicMock())
+        delete_records = AsyncMock()
+        vprogram_staging = MagicMock()
+        snp_staging = MagicMock()
+        monkeypatch.setattr("aleph.vm.agent.allocation.teardown.delete_records_for_vm", delete_records)
+        monkeypatch.setattr("aleph.vm.agent.allocation.teardown.remove_vprogram_staging", vprogram_staging)
+        monkeypatch.setattr("aleph.vm.agent.allocation.teardown.remove_snp_instance_staging", snp_staging)
         supervisor = SimpleNamespace(delete_vm=AsyncMock(side_effect=VmNotFoundError(str(_HASH))))
         registry = MagicMock()
 
         await teardown_vm(_HASH, supervisor=supervisor, registry=registry)
 
         registry.forget.assert_called_once_with(_HASH)
+        delete_records.assert_awaited_once_with(str(_HASH))
+        vprogram_staging.assert_called_once_with(_HASH)
+        snp_staging.assert_called_once_with(_HASH)
