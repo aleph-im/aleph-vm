@@ -31,6 +31,12 @@ logger = logging.getLogger(__name__)
 # again would be a second VM under the same hash.
 LIVE_STATUSES = (VmStatus.RUNNING, VmStatus.BOOTING, VmStatus.DEFINED)
 
+# States a dropped VM can be torn down from. DEFINED and BOOTING are excluded
+# deliberately: those are mid-creation, and deleting one races the creation
+# that is still in flight. A VM stuck there is caught on a later pass once it
+# reaches one of these.
+TEARDOWN_STATUSES = (VmStatus.RUNNING, VmStatus.STOPPED, VmStatus.FAILED)
+
 
 class AllocationReconciler:
     """Holds the desired state and converges to it in the background."""
@@ -102,7 +108,10 @@ class AllocationReconciler:
                 logger.exception("Allocation reconcile pass failed; retrying at the next wake-up")
             try:
                 await asyncio.wait_for(self._wakeup.wait(), timeout=settings.ALLOCATION_RECONCILE_INTERVAL)
-            except TimeoutError:
+            except asyncio.TimeoutError:
+                # Not the builtin: the two are only the same class from 3.11,
+                # and pyproject still supports 3.10, where catching the builtin
+                # would let the first quiet interval kill the reconciler.
                 pass
             self._wakeup.clear()
 
@@ -123,7 +132,7 @@ class AllocationReconciler:
     async def _teardown_dropped(self, plan: AllocationPlan, infos: list[VmInfo]) -> None:
         for info in infos:
             vm_hash = ItemHash(info.vm_id)
-            if vm_hash in plan.entries or info.status is not VmStatus.RUNNING:
+            if vm_hash in plan.entries or info.status not in TEARDOWN_STATUSES:
                 continue
             record = self.registry.get(vm_hash)
             if record is None or not is_removable_by_allocation(record, info):
