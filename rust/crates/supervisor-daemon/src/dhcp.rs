@@ -72,8 +72,8 @@ pub struct DhcpConfig {
     /// The tap IPv6 prefix length (from the /124-per-VM scheme), the
     /// DHCPv6 `--dhcp-range` prefix and the RA on-link prefix.
     pub ipv6_prefix_len: u8,
-    /// The daemon's resolved nameservers, DHCP option 6. Empty omits the
-    /// option (the guest gets no DNS, the same as a nameserver-less host).
+    /// The daemon's resolved IPv4 nameservers, emitted in DHCPv4 option 6.
+    /// An empty list omits the option.
     pub nameservers: Vec<String>,
     /// The `--dhcp-range` lease-time literal (e.g. "1h").
     pub lease: String,
@@ -93,9 +93,10 @@ impl DhcpConfig {
     /// the VM hash.
     ///
     /// Fails (fail-closed) if the tap's IPv4 network CIDR carries no parseable
-    /// prefix length: silently falling back to `/32` would hand the guest an
-    /// unroutable single-host netmask, so the caller must surface the error
-    /// rather than boot an unreachable VM.
+    /// prefix length or if a nameserver is not a valid IP address: silently
+    /// falling back to `/32` would hand the guest an unroutable single-host
+    /// netmask, while silently dropping malformed DNS configuration would boot
+    /// a guest with no working resolver.
     pub fn for_snp(
         vm_hash: &str,
         tap: &TapAssignment,
@@ -104,6 +105,19 @@ impl DhcpConfig {
     ) -> Result<Self, DhcpError> {
         let prefix = cidr_prefix_len(&tap.ipv4.network_cidr, "IPv4")?;
         let ipv6_prefix_len = cidr_prefix_len(&tap.ipv6.network_cidr, "IPv6")?;
+        let mut ipv4_nameservers = Vec::new();
+        for server in nameservers {
+            match server.parse::<std::net::IpAddr>() {
+                Ok(std::net::IpAddr::V4(_)) => ipv4_nameservers.push(server.clone()),
+                Ok(std::net::IpAddr::V6(_)) => {}
+                Err(source) => {
+                    return Err(DhcpError::InvalidNameserver {
+                        nameserver: server.clone(),
+                        source,
+                    });
+                }
+            }
+        }
         Ok(Self {
             vm_hash: vm_hash.to_string(),
             device_name: tap.device_name.clone(),
@@ -112,7 +126,7 @@ impl DhcpConfig {
             netmask: netmask_for_prefix(prefix),
             guest_ipv6: tap.ipv6.address.clone(),
             ipv6_prefix_len,
-            nameservers: nameservers.to_vec(),
+            nameservers: ipv4_nameservers,
             lease: DEFAULT_LEASE.to_string(),
             lease_file: lease_file_path(lease_dir, vm_hash)
                 .to_string_lossy()
@@ -169,7 +183,8 @@ impl DhcpConfig {
             ),
             "--enable-ra".to_string(),
         ];
-        // Option 6: DNS servers, only when the daemon resolved some.
+        // `for_snp` mirrors conf.py's DNS_NAMESERVERS_IPV4 split so DHCPv4
+        // option 6 never receives an IPv6 address.
         if !self.nameservers.is_empty() {
             args.push(format!("--dhcp-option=6,{}", self.nameservers.join(",")));
         }
@@ -260,6 +275,12 @@ pub enum DhcpError {
         family: &'static str,
         cidr: String,
         source: ParseIntError,
+    },
+
+    #[error("DNS nameserver {nameserver:?} is not a valid IP address: {source}")]
+    InvalidNameserver {
+        nameserver: String,
+        source: std::net::AddrParseError,
     },
 
     #[error("cannot run {program}: {source}")]
@@ -571,6 +592,59 @@ mod tests {
         );
         // The gateway option is still handed out.
         assert!(args.contains(&"--dhcp-option=3,172.16.4.1".to_string()));
+    }
+
+    #[test]
+    fn dnsmasq_args_filter_ipv6_nameservers_from_option_6() {
+        let config = DhcpConfig::for_snp(
+            &"e".repeat(64),
+            &snp_tap(),
+            &[
+                "192.0.2.53".to_string(),
+                "2001:db8::53".to_string(),
+                "192.0.2.54".to_string(),
+                "2001:db8::54".to_string(),
+            ],
+            std::path::Path::new("/run/aleph/dhcp"),
+        )
+        .unwrap();
+        let args = config.dnsmasq_args();
+        let option_6 = args
+            .iter()
+            .filter(|arg| arg.starts_with("--dhcp-option=6"))
+            .collect::<Vec<_>>();
+        assert_eq!(option_6.len(), 1);
+        assert_eq!(option_6[0], "--dhcp-option=6,192.0.2.53,192.0.2.54");
+    }
+
+    #[test]
+    fn dnsmasq_args_omit_option_6_with_only_ipv6_nameservers() {
+        let config = DhcpConfig::for_snp(
+            &"e".repeat(64),
+            &snp_tap(),
+            &["2001:db8::53".to_string(), "2001:db8::54".to_string()],
+            std::path::Path::new("/run/aleph/dhcp"),
+        )
+        .unwrap();
+        let args = config.dnsmasq_args();
+        assert!(
+            !args.iter().any(|arg| arg.starts_with("--dhcp-option=6")),
+            "DHCPv4 option 6 must not contain IPv6 nameservers, got {args:?}"
+        );
+    }
+
+    #[test]
+    fn for_snp_rejects_a_malformed_nameserver() {
+        let result = DhcpConfig::for_snp(
+            &"e".repeat(64),
+            &snp_tap(),
+            &["192.0.2.53".to_string(), "1.1.1".to_string()],
+            std::path::Path::new("/run/aleph/dhcp"),
+        );
+        assert!(matches!(
+            result,
+            Err(DhcpError::InvalidNameserver { nameserver, .. }) if nameserver == "1.1.1"
+        ));
     }
 
     #[test]
