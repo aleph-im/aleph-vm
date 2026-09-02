@@ -15,13 +15,14 @@ from aiohttp import hdrs, web
 from aiohttp.web_exceptions import HTTPException
 from aiohttp_cors import ResourceOptions, setup
 
-from aleph.vm import storage_pools
+from aleph.vm import storage, storage_pools
 from aleph.vm.agent.capacity import CapacityManager
 from aleph.vm.agent.expiry import ExpiryManager
 from aleph.vm.agent.migration.reaper import reap_orphan_migration_files
 from aleph.vm.agent.update_watcher import UpdateWatcher
 from aleph.vm.agent.vcpu_probe import get_snp_launch_capability
 from aleph.vm.agent.vm.backup import BackupManager
+from aleph.vm.agent.vm.cache import admit_download
 from aleph.vm.agent.vm.program_client import ProgramGuestClient
 from aleph.vm.agent.vm.reconciler import (
     live_hashes,
@@ -518,6 +519,14 @@ def run():
         lambda pool, needed: make_room(pool, needed, live=live_hashes(app["vm_registry"])),
     )
     set_after_gone_hook(lambda: reconcile_now(app))
+    # And the third hook of the same kind: a download about to start asks the
+    # cache budget for room, so a create that would blow it is refused before
+    # the bytes land rather than after (spec section 4).
+    storage.set_cache_admission(
+        lambda tmp_path, content_length, max_bytes: admit_download(
+            app["vm_registry"], tmp_path, content_length, max_bytes
+        )
+    )
     app.on_startup.append(start_node_hash_discovery)
     app.on_cleanup.append(stop_node_hash_discovery)
 

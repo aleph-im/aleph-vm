@@ -333,14 +333,24 @@ registry alone is not enough, because it is refilled at boot from the agent
 DB and that rehydration skips any record with an empty or unparseable
 message. One pass does, in order:
 
+0. Tear down the device-mapper snapshots and loop devices of every namespace
+   `/dev/mapper` still names and no live VM owns
+   (`teardown_namespace_devices`). Before the walk, not inside it: a volume
+   file a dm target still holds cannot be unlinked usefully, so a directory
+   whose devices are still up is refused by step 1 and would be refused
+   again on every later pass. This runs on the event loop (dmsetup has to be
+   awaited) and only when the supervisor answered `list_vms`, since removing
+   the device of a VM that is merely unlisted takes that VM's disk with it.
 1. Walk `{pool}/*/`. Each directory is live (the registry or the supervisor
    knows its hash), reclaimable (a marker is present) or an orphan
    (neither). Orphans are purged under `reap` and marked `reason: orphan`
    under `keep`. Liveness is asked again immediately before anything is
    marked, purged or evicted, so a create that commits while the pass walks
    is not mistaken for an orphan.
-2. Delete `*.part` files older than the guard, in the four download caches
-   and in the pools (the downloader streams volumes in place).
+2. Delete `*.part` and `*.tmp` files older than the guard, in the four
+   download caches and in the pools (the downloader streams volumes in
+   place). Every write-then-rename in the agent uses one of the two suffixes,
+   and an interrupted one leaks the same way.
 3. Sweep the side directories keyed by VM hash: the confidential session
    directory, the SNP and V-PROGRAM staging directories, and
    `/mnt/{namespace}_{volume}` mount points. A directory that is still a
@@ -352,7 +362,12 @@ message. One pass does, in order:
    evict oldest-first (by `reclaimable_since`) until under
    `VOLUME_RETENTION_BUDGET`. Under `reap` everything marked is given back,
    which is how a node switched from `keep` to `reap` drains.
-5. Sweep expired backups.
+5. Bring the four download caches under `CACHE_BUDGET` (see below). Skipped
+   entirely, with an ERROR, when the supervisor could not be listed: what a
+   cache holds for a live VM is read from that VM's message, so a live set
+   that is the registry alone cannot answer the question, and evicting on it
+   would unlink a running VM's runtime.
+6. Sweep expired backups.
 
 Nothing a create is still building is touched. Two independent guards say
 so: a hash registered in the in-process "creating" set (every create path in
@@ -390,6 +405,111 @@ the whole transfer and records the imported VM in the registry (and the agent
 DB) once `CreateVm` returns. A namespace under the guard is skipped whole,
 `.part` files included: the directory mtime does not advance while a file
 inside it grows, so age is no evidence that a transfer has stopped.
+
+### The download caches
+
+The runtime, code, data and message caches are flat directories keyed by item
+hash and shared by every VM naming the same hash, and nothing used to remove
+anything from them. Two things now bound them
+(`src/aleph/vm/agent/vm/cache.py`).
+
+In the stream: `download_file_in_chunks` refuses a `Content-Length` above the
+cache's `MAX_*_ARCHIVE_SIZE` before it opens the file, and aborts the moment
+the bytes written pass it, so a lying `Content-Length` cannot fill a disk.
+
+Per root: each cache gets `CACHE_BUDGET` (20% of the filesystem it sits on by
+default), the message cache included. The spec suggested a smaller budget for
+it; it does not have one, and does not need one: its entries are a few
+kilobytes of JSON each, so it never approaches a budget sized for runtime
+images, and one setting is one thing for an operator to reason about. A root's
+usage is its finished entries plus what it owes to downloads that have not
+finished (`in_flight_bytes`): the allocated blocks of `.part` and `.tmp`
+files, and the size any admitted download was promised.
+
+The pass evicts least recently used first, mtime being a real
+signal because the downloader touches an entry on every cache hit
+(`_touch_cache_hit`, called by `download_file` for the caches it serves and
+by `get_runtime_path` / `get_rootfs_base_path`, which short-circuit a hit
+before reaching it). What it may not touch is the point:
+
+- Entries a **live VM** names. `reclaimable.iter_content_refs` is the single
+  enumeration of those, so the two questions asked of a message (what a
+  retained volume depends on, what a live VM still needs) cannot drift apart:
+  `runtime`, `code`, `data`, the rootfs parent, volume parents and immutable
+  volume `ref`s, a V-PROGRAM's `workload.ref` and `workload.hash_tree`, a TEE
+  instance's `trusted_execution.firmware` and `trusted_execution.runtime`, and
+  the VM's own message entry (`<vm_hash>.json`). The confidential ones are not
+  a detail: a V-PROGRAM's workload image and hash tree are attached as the
+  VM's disks straight out of `DATA_CACHE`, so evicting one unlinks a running
+  VM's disk. The runtime bundle tarball is the one ref no message carries
+  (only the manifest names it); it is protected whenever the manifest itself
+  is cached, and is otherwise a re-downloadable artifact, since nothing runs
+  off the tarball (it is verified and extracted into the VM's staging
+  directory at create time).
+  If live references alone exceed the budget the pass logs an
+  error and stops: that is a capacity problem admission should have refused,
+  and eviction cannot fix it. The referenced set is read from the registry's
+  messages, so a pass whose live set holds a hash the registry has no record
+  for skips the cache pass entirely rather than guess.
+- Entries a `.reclaimable` marker names in `depends_on`, the parent images
+  retained overlays are built on. Over budget with only those left, the
+  retained directories go first (oldest marker first, through
+  `purge_vm_storage`), and a parent is evicted only once every retained VM
+  that named it is gone and its purge actually removed the disks.
+
+The pass also sweeps what an earlier teardown left behind: a loop device
+still backed by a cache entry that is already unlinked (the kernel shows it as
+` (deleted)` in `/sys/block/loop*/loop/backing_file`). That is the recovery
+path for a teardown that crashed or failed, because once the entry is gone
+nothing else can name the loop that pins its blocks; the same holders check
+applies, so a leaked loop whose device is in use after all is left alone.
+
+Evicting a parent image also removes what `create_devmapper` builds once per
+image rather than once per VM: the `/dev/mapper/<ref>` target and the
+read-only loop device under it. A parent whose device still has holders (a
+VM's `<ns>_base` device is stacked on it) is not evicted at all, and an
+unanswerable question counts as held. The teardown runs on the event loop
+after the pass (`reconcile_now`), because the entry is already unlinked by
+then; `losetup -j` can no longer find the loop that pins its blocks, so the
+loop devices are found through sysfs, which keeps the backing path with a
+` (deleted)` suffix. An image a create downloaded again in the meantime is
+left alone: its devices belong to that create now.
+
+Admission is the same question one download ahead: `storage`'s cache
+admission hook (registered by the agent on `set_cache_admission`) runs inside
+`download_file_in_chunks` once the size is known and before the file is
+opened. It evicts what it can, and raises `InsufficientResourcesError`
+(mapped to 503 on the create path) when the download still would not fit,
+rather than writing bytes that trigger an eviction storm. A response with no
+`Content-Length` is a different question, and the hook is told the two
+figures separately (`content_length`, `max_bytes`) so it can tell them apart.
+A cap is not a measurement: `MAX_RUNTIME_ARCHIVE_SIZE` is 100 GiB, the
+ceiling for a runtime image and equally the ceiling for a few kilobytes of
+manifest, so charging it as a size would evict a whole cache root for a
+download that never needed the room. An unknown-length download therefore
+never evicts, is refused only when the root is already over its budget, and
+is charged `min(cap, budget)`: bounded, so a stream of them still runs the
+root over budget and the next one is refused, and never more than the budget
+itself. What is admitted is then charged to
+the download's `.part` path (`reserve_download`) until `download_file`
+releases it, so a second create arriving while the first is still writing
+sees the room the first was promised rather than only the bytes it has
+managed to write. Directories that
+are not cache roots are none of its business: the downloader streams per-VM
+volumes in place, and those are admitted by the capacity checks and the pool
+budget.
+
+It is deliberately weaker than the pass, because it runs on the event loop
+inside a create. It unlinks unreferenced cache entries and nothing else: it
+never reclaims a retained VM directory (that is an `rmtree`, which belongs in
+the reconciler's worker thread), so what it cannot free it refuses and leaves
+to the next pass. And it evicts nothing at all unless the live set can be
+trusted: a pass publishes the live set only when both halves agree (the
+registry and a supervisor that answered `list_vms`), and admission additionally
+requires that every hash in it has a registry record, since a live VM without a
+message means the referenced set is incomplete. Before the first pass there is
+no live set, so admission evicts nothing and simply admits or refuses on the
+budget as it stands.
 
 ### Settings
 
@@ -443,6 +563,10 @@ pass against an empty registry would call every running VM an orphan.
   and a placement that does not fit evicts them (oldest first) before it is
   refused (`src/aleph/vm/agent/capacity.py`,
   `src/aleph/vm/agent/resources.py`, `src/aleph/vm/storage_pools.py`).
+- A cache entry a live VM's message names is never evicted, and a parent
+  image whose device-mapper device still has holders is never evicted; both
+  questions fail closed when they cannot be answered
+  (`src/aleph/vm/agent/vm/cache.py`).
 - Every agent-side deletion goes through `retire_vm` with an explicit
   reason; nothing else under `src/aleph/vm/agent/` calls
   `supervisor.delete_vm` (`src/aleph/vm/agent/vm/retire.py`).
@@ -485,7 +609,12 @@ pass against an empty registry would call every running VM an orphan.
 - `src/aleph/vm/agent/vm/retire.py`: `retire_vm` and `RetireReason`, the one
   way a VM's storage is released.
 - `src/aleph/vm/agent/vm/reclaimable.py`: the `.reclaimable` marker
-  (`mark_reclaimable`, `adopt`, `iter_reclaimable`, `reclaimable_bytes`).
+  (`mark_reclaimable`, `adopt`, `iter_reclaimable`, `reclaimable_bytes`) and
+  the one enumeration of the cache entries a message names
+  (`iter_content_refs`, `refs_from_content`, `depends_on_from_content`).
+- `src/aleph/vm/agent/vm/cache.py`: the cache budget, LRU eviction
+  (`evict_caches`), the download admission hook (`admit_download`) and the
+  parent image's device teardown (`remove_parent_device`).
 - `src/aleph/vm/agent/vm/reconciler.py`: `reconcile_storage`, the create
   guard (`creating`), the evictor (`make_room`) and the startup/periodic
   hooks the agent registers in `src/aleph/vm/agent/supervisor.py`.

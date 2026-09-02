@@ -107,35 +107,36 @@ never survives on disk, so there is nothing to reattach to.
 Admission happens in two layers that never overlap in what they check:
 
 - **Agent-side policy** (`src/aleph/vm/agent/capacity.py`,
-  `CapacityManager.check_capacity`) runs before every `create_vm` call, after
-  the spec is built (so a failed download or bundle fetch never consumes
-  capacity). It enforces two-bucket memory accounting: instances (and
-  V-PROGRAMs, which are full SNP VMs admitted against the instance bucket)
-  share `physical - HOST_MEMORY_RESERVED_MIB - PROGRAM_MEMORY_RESERVED_MIB`;
+  `CapacityManager.check_message`) runs on every create path before a byte is
+  allocated: the sizes come from the message (rootfs and each volume's
+  `size_mib`), so a host with no room refuses before the downloader runs
+  rather than after it has written the volumes. It enforces two-bucket memory
+  accounting: instances (and V-PROGRAMs, which are full SNP VMs admitted
+  against the instance bucket) share
+  `physical - HOST_MEMORY_RESERVED_MIB - PROGRAM_MEMORY_RESERVED_MIB`;
   programs share `PROGRAM_MEMORY_RESERVED_MIB` alone. vCPUs are capped at
-  `physical_cores * VCPU_OVERCOMMIT_FACTOR` across both buckets. Every real
-  create-path caller in `src/aleph/vm/agent/run.py` (`create_vm_execution`,
-  which covers instances, programs and V-PROGRAMs, and `_ensure_program_vm`,
-  the on-demand program path) passes `disk_mib=0` and no `max_volume_mib`,
-  so `check_capacity`'s disk checks no-op on create: disk is not actually
-  gated at create time. `check_capacity` also implements an
-  aggregate-free-space check and a single-largest-volume-fits-the-roomiest-
-  pool check (`_check_max_volume`), but the only caller that exercises them
-  with real figures is the separate `/control/reserve_resources` dry-run
+  `physical_cores * VCPU_OVERCOMMIT_FACTOR` across both buckets. Disk is
+  checked twice over, in aggregate free space and against the roomiest pool
+  for the largest single volume (`_check_max_volume`), and what the VM
+  already holds for each declared volume is discounted volume by volume
+  (`held_volumes`), so a re-create or an adoption is never refused for space
+  it already occupies. There is no second, post-build check: judging disk
+  after the build would measure the space this very VM has just taken. The
+  same `check_message` answers the `/control/reserve_resources` dry-run
   endpoint (`operate_reserve_resources` in
   `src/aleph/vm/agent/views/__init__.py`), which reports capacity ahead of a
   scheduler placement decision without creating anything. The VM's own
   early registry record (recorded before the spec build, to make owner-auth
   answerable during a slow confidential download) is excluded from the
   committed memory/vCPU sums via `exclude_vm_hash`, or a create would count
-  its own request against itself. GPU admission is a separate reservation
+  its own request against itself. Cache downloads are admitted separately,
+  against `CACHE_BUDGET`, inside the downloader itself (see
+  [storage.md](storage.md)). GPU admission is a separate reservation
   ledger (`CapacityManager.holds`, keyed by concrete `pci_host`) with a
   short-lived hold/resolve two-step: `reserve_gpus` (used by the same
   dry-run endpoint) holds a card for a user for `RESERVATION_TTL_SECONDS`,
   `resolve_gpus` (called from the create path) consumes the caller's own
-  holds and skips cards held by another user. So create-time admission is,
-  in practice, memory plus vCPUs plus GPU holds; disk admission is a
-  dry-run-only feature of the same `CapacityManager`.
+  holds and skips cards held by another user.
 - **Supervisor mechanism backstops** (`check_memory_backstop`,
   `validate_spec_gpus` in `lifecycle.rs`) run under `creation_lock` inside
   `create_vm_inner` itself: committed memory (summed from every tracked
@@ -405,8 +406,13 @@ path); `purge_vm_storage` removes those directories, the confidential
 session directory and the SNP/V-PROGRAM staging directory. A `.btrfs`
 volume whose device-mapper target is still present is refused with an
 error rather than unlinked (the loop device would pin the inode and
-`create_devmapper` would skip the rebuild), until dm teardown on stop
-exists.
+`create_devmapper` would skip the rebuild). That refusal is a backstop
+rather than a dead end: `retire_vm` tears the VM's dm snapshots and loop
+devices down before the storage pass (`teardown_vm_devices`, from the
+message's volumes, or `teardown_namespace_devices` off `/dev/mapper` when
+no record is left), and the reconciler does the same for every namespace
+no live VM owns before its walk, so a refused directory is reclaimed on
+the pass after its devices go.
 
 What `DeleteVm` does: stop the VM (tearing down its network state exactly
 as `StopVm` would, and releasing every handle the daemon holds on the VM's

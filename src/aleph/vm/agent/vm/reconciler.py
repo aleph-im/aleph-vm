@@ -10,6 +10,14 @@ plausible item hash.
 the registry is refilled at boot from the agent DB alone, so it can be empty
 or incomplete while VMs are running, and the startup pass refuses to purge
 anything when that union cannot be established (see ``_startup_refusal``).
+A live set the supervisor could not confirm also stops the cache pass (see
+``_enforce_cache_budget``) and the device teardown below.
+
+Two parts of a pass run on the event loop rather than in the walk's worker
+thread, because both shell out to dmsetup: ``_teardown_orphan_devices``
+before it (a volume a dm target still holds cannot be reclaimed, so the
+devices go first) and ``_release_cache_devices`` after it (the devices of
+the parent images the cache pass evicted).
 
 Loop-triggered passes are serialized, not coalesced: a sweep that retires N
 VMs GONE under ``keep`` queues N passes behind the lock, each re-reading the
@@ -43,6 +51,13 @@ from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash
 
 from aleph.vm.agent.vm.backup import sweep_expired_backups
+from aleph.vm.agent.vm.cache import (
+    evict_caches,
+    parent_refs_of,
+    record_live_snapshot,
+    remove_parent_device,
+    sweep_leaked_cache_loops,
+)
 from aleph.vm.agent.vm.purge import _ITEM_HASH_PATTERN, purge_vm_storage
 from aleph.vm.agent.vm.reclaimable import (
     ReclaimableMarker,
@@ -53,9 +68,12 @@ from aleph.vm.agent.vm.reclaimable import (
     mark_reclaimable,
     read_marker,
 )
+from aleph.vm.agent.vm.retire import teardown_namespace_devices
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
-from aleph.vm.storage import MOUNT_ROOT  # /mnt/{namespace}_{volume name}
+
+# MOUNT_ROOT is /mnt, where a volume's mount point is {namespace}_{volume name}.
+from aleph.vm.storage import DEVICE_MAPPER_DIRECTORY, MOUNT_ROOT
 from aleph.vm.storage_budget import parse_budget
 from aleph.vm.storage_pools import StoragePool, get_pools, iter_namespace_dirs
 from aleph.vm.supervisor_interface.abc import Supervisor
@@ -73,6 +91,7 @@ class ReconcileReport:
     purged_orphans: list[str] = field(default_factory=list)
     marked_orphans: list[str] = field(default_factory=list)
     evicted: list[str] = field(default_factory=list)
+    cache_evicted: list[Path] = field(default_factory=list)
     parts_removed: int = 0
     side_dirs_removed: int = 0
     backups_removed: int = 0
@@ -82,6 +101,7 @@ class ReconcileReport:
         return (
             f"orphans purged={len(self.purged_orphans)} marked={len(self.marked_orphans)}, "
             f"evicted={len(self.evicted)}, parts={self.parts_removed}, side dirs={self.side_dirs_removed}, "
+            f"cache entries={len(self.cache_evicted)}, "
             f"backups={self.backups_removed}, freed={self.bytes_freed} bytes"
         )
 
@@ -184,6 +204,11 @@ async def _live_set(app: web.Application) -> tuple[set[str], int | None]:
     The returned count is ``None`` when the supervisor could not be asked,
     which is not the same answer as "it runs nothing" (see
     ``_startup_refusal``).
+
+    A live set both halves agree on is published for the admission hook,
+    which runs on the create path and cannot ask the supervisor itself (see
+    ``cache.admit_download``). A half-known one is not: admission would then
+    evict against a set that may be missing a running VM.
     """
     registry_live = live_hashes(app["vm_registry"])
     supervisor = app.get("supervisor")
@@ -195,7 +220,9 @@ async def _live_set(app: web.Application) -> tuple[set[str], int | None]:
     except Exception as error:
         logger.warning("Could not list the supervisor's VMs (%s); the live set is the agent registry alone", error)
         return registry_live, None
-    return registry_live | running, len(running)
+    live = registry_live | running
+    record_live_snapshot(live)
+    return live, len(running)
 
 
 def _startup_refusal(registry: AgentVmRegistry, running: int | None) -> str | None:
@@ -245,9 +272,10 @@ def reconcile_storage(
     dry_run: bool = False,
     live: Collection[str] | None = None,
     is_live: Callable[[str], bool] | None = None,
+    live_known: bool = True,
 ) -> ReconcileReport:
     """One reconciliation pass: namespaces, .part files, side directories,
-    the retention budget, then the backups.
+    the retention budget, the download caches, then the backups.
 
     ``live`` is the set of hashes a live VM owns. Pass it when the caller
     runs this off the event loop (see ``live_hashes``); it defaults to
@@ -258,6 +286,11 @@ def reconcile_storage(
     an orphan (see ``registry_is_live``). It defaults to the ``live``
     snapshot alone, which is what a caller holding no loop reference can
     offer.
+
+    ``live_known`` is False when ``live`` is the agent registry alone because
+    the supervisor could not be asked. The cache pass is skipped then (see
+    ``_enforce_cache_budget``); everything else still runs on the registry's
+    own answer plus the create guard.
     """
     now = now or datetime.now(tz=timezone.utc)
     guard = timedelta(seconds=settings.VOLUME_CREATE_GUARD)
@@ -268,6 +301,7 @@ def reconcile_storage(
     _sweep_parts(now, guard, report, dry_run=dry_run)
     _sweep_side_dirs(live, now, guard, report, dry_run=dry_run)
     _enforce_retention_budget(report, dry_run=dry_run, is_live=is_live)
+    _enforce_cache_budget(registry, live, report, dry_run=dry_run, is_live=is_live, live_known=live_known)
     if not dry_run:
         report.backups_removed = sweep_expired_backups(now)
     logger.info("Storage reconcile%s: %s", " (dry run)" if dry_run else "", report.summary())
@@ -368,9 +402,15 @@ def _part_roots() -> Iterator[Path]:
 
 
 def _sweep_parts(now: datetime, guard: timedelta, report: ReconcileReport, *, dry_run: bool) -> None:
+    """Remove the half-written files of a download or a write that stopped.
+
+    ``.tmp`` goes with ``.part``: every write-then-rename in the agent uses
+    one (``storage.get_message``, ``create_ext4``, the marker writer), and an
+    interrupted one leaks exactly the same way.
+    """
     for root in _part_roots():
         try:
-            parts = list(root.glob("*.part"))
+            parts = [path for pattern in ("*.part", "*.tmp") for path in root.glob(pattern)]
         except OSError:
             continue
         for part in parts:
@@ -510,9 +550,15 @@ def _evict(
     is_live: Callable[[str], bool] | None = None,
 ) -> int:
     if is_live is not None and is_live(namespace):
-        # A stale marker on a live VM, or a create that adopted the directory
-        # since this pass started listing it.
+        # A stale marker on a live VM, or a create that committed since this
+        # pass started listing it.
         logger.warning("Not evicting %s: a live VM owns it despite its reclaimable marker", namespace)
+        return 0
+    if is_creating(namespace):
+        # A create that adopted the directory after the markers were listed:
+        # ``creating`` cleared the marker this list still carries, and the VM
+        # has no registry record yet for ``is_live`` to find.
+        logger.warning("Not evicting %s: a create is using it despite its reclaimable marker", namespace)
         return 0
     if not _still_on_disk(namespace):
         logger.debug("Not evicting %s: its directories are already gone", namespace)
@@ -555,6 +601,50 @@ def _enforce_retention_budget(
                 # A VM spanning two pools is purged whole on the first one.
                 continue
             _evict(directory.name, report, dry_run=dry_run, is_live=is_live)
+
+
+def _enforce_cache_budget(
+    registry: AgentVmRegistry,
+    live: Collection[str],
+    report: ReconcileReport,
+    *,
+    dry_run: bool,
+    is_live: Callable[[str], bool],
+    live_known: bool = True,
+) -> None:
+    """Bring the download caches under CACHE_BUDGET.
+
+    Which cache entries are in use is read from the registry's messages, and
+    from there alone: a hash is not enough, the message is what names the
+    runtime, the code and the parent images. So a live VM the registry does
+    not know makes the referenced set incomplete, and this pass refuses to
+    run rather than evict the runtime of a VM that is running on it. That is
+    the same fail-closed rule the startup pass applies to purging, for the
+    same reason: the registry is rehydrated from the agent DB and can be
+    empty or partial while the supervisor still runs VMs.
+
+    ``live_known`` is the harder version of the same doubt: the supervisor
+    could not be listed at all, so ``live`` is the registry alone and the
+    check below has nothing to compare against. Every VM the registry has
+    forgotten would then read as "not live and not referenced", which is
+    exactly the set this pass unlinks.
+    """
+    if not live_known:
+        logger.error(
+            "Skipping the cache pass: the supervisor could not be listed, so the VMs it runs are unknown, "
+            "what they reference is unknown with them, and the caches are unbounded until this is resolved"
+        )
+        return
+    unknown = sorted(namespace for namespace in live if namespace not in registry)
+    if unknown:
+        logger.error(
+            "Skipping the cache pass: %d live VM(s) have no registry record (%s), so what they reference is "
+            "unknown and the caches are unbounded until this is resolved",
+            len(unknown),
+            ", ".join(unknown[:3]),
+        )
+        return
+    report.cache_evicted = evict_caches(registry, dry_run=dry_run, is_live=is_live)
 
 
 def make_room(pool: StoragePool, needed_bytes: int, *, live: Collection[str] | None = None) -> int:
@@ -622,11 +712,85 @@ async def reconcile_now(app: web.Application, *, dry_run: bool = False) -> Recon
     """
     registry = app["vm_registry"]
     async with _pass_lock(app):
-        live, _running = await _live_set(app)
-        return await _pass(registry, live, dry_run=dry_run)
+        live, running = await _live_set(app)
+        if not dry_run and running is not None:
+            await _teardown_orphan_devices(live)
+        report = await _pass(registry, live, dry_run=dry_run, live_known=running is not None)
+    await _release_cache_devices(report, dry_run=dry_run)
+    return report
 
 
-async def _pass(registry: AgentVmRegistry, live: set[str], *, dry_run: bool) -> ReconcileReport:
+def orphan_device_namespaces(live: Collection[str]) -> list[str]:
+    """The VM hashes device-mapper still holds devices for and nothing owns.
+
+    The inverse of the naming ``create_devmapper`` uses,
+    ``<namespace>_<volume name>``, read straight out of /dev/mapper. Anything
+    that is not a plausible item hash is not a VM device and is not this
+    pass's business.
+    """
+    namespaces: set[str] = set()
+    try:
+        devices = list(Path(DEVICE_MAPPER_DIRECTORY).glob("*_*"))
+    except OSError:
+        logger.warning("Could not list %s", DEVICE_MAPPER_DIRECTORY, exc_info=True)
+        return []
+    for device in devices:
+        namespace = device.name.split("_", 1)[0]
+        if not _plausible(namespace) or namespace in live or is_creating(namespace):
+            continue
+        namespaces.add(namespace)
+    return sorted(namespaces)
+
+
+async def _teardown_orphan_devices(live: Collection[str]) -> list[str]:
+    """Tear down the devices of the VMs the walk is about to find unowned.
+
+    ``retire_vm`` is the normal inverse of ``create_devmapper``, and it reads
+    the volumes to remove from the VM's message. Two paths have no message: a
+    create that failed before its registry commit, and a GONE for a VM the
+    registry never knew. What they leave is a dm target holding a volume file,
+    which ``purge_vm_storage`` then refuses to unlink on every pass, forever.
+
+    So it runs before the walk, not inside it: the purge that follows can only
+    reclaim a directory whose devices are already gone. On the event loop for
+    the same reason the cache pass's teardown is, dmsetup has to be awaited,
+    and only when the live set is trustworthy: removing the device of a VM
+    that is merely unlisted takes that VM's disk with it.
+    """
+    namespaces = orphan_device_namespaces(live)
+    for namespace in namespaces:
+        logger.warning("Tearing down the device-mapper devices of %s: no live VM owns them", namespace)
+        try:
+            await teardown_namespace_devices(namespace)
+        except Exception:
+            logger.exception("Device teardown of the orphan %s failed", namespace)
+    return namespaces
+
+
+async def _release_cache_devices(report: ReconcileReport, *, dry_run: bool) -> None:
+    """Tear down the devices of the parent images the pass evicted, then sweep
+    the ones an earlier teardown left behind.
+
+    The pass itself runs in a worker thread and dmsetup has to be awaited, so
+    this is the loop side of the cache pass. A dry run reaches none of it: it
+    evicted nothing, and the sweep removes devices.
+    """
+    if dry_run:
+        return
+    for ref in parent_refs_of(report.cache_evicted):
+        try:
+            await remove_parent_device(ref)
+        except Exception:
+            logger.exception("Removing the device of the evicted parent image %s failed", ref)
+    try:
+        await sweep_leaked_cache_loops()
+    except Exception:
+        logger.exception("Sweeping the loop devices of evicted cache entries failed")
+
+
+async def _pass(
+    registry: AgentVmRegistry, live: set[str], *, dry_run: bool, live_known: bool = True
+) -> ReconcileReport:
     """One walk in a worker thread, against a live set already established."""
     return await asyncio.to_thread(
         reconcile_storage,
@@ -634,6 +798,7 @@ async def _pass(registry: AgentVmRegistry, live: set[str], *, dry_run: bool) -> 
         dry_run=dry_run,
         live=live,
         is_live=registry_is_live(registry, live),
+        live_known=live_known,
     )
 
 
@@ -702,9 +867,13 @@ async def reconcile_at_startup(app: web.Application) -> None:
     async with _pass_lock(app):
         live, running = await _live_set(app)
         refusal = _startup_refusal(registry, running)
-        _log_startup_preview(await _pass(registry, live, dry_run=True), refusal=refusal)
-        if refusal is None:
-            await _pass(registry, live, dry_run=False)
+        live_known = running is not None
+        _log_startup_preview(await _pass(registry, live, dry_run=True, live_known=live_known), refusal=refusal)
+        if refusal is not None:
+            return
+        await _teardown_orphan_devices(live)
+        report = await _pass(registry, live, dry_run=False, live_known=live_known)
+    await _release_cache_devices(report, dry_run=False)
 
 
 async def periodic_reconcile(app: web.Application) -> None:

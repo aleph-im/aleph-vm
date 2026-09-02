@@ -12,6 +12,7 @@ import pytest
 from aleph_message.models import ItemHash
 from reclaim_fixtures import OTHER_HASH, VM_HASH, pools, volume  # noqa: F401
 
+import aleph.vm.agent.vm.cache as cache_module
 import aleph.vm.agent.vm.reconciler as reconciler_module
 from aleph.vm.agent.vm.reclaimable import mark_reclaimable, read_marker
 from aleph.vm.agent.vm.reconciler import (
@@ -72,6 +73,12 @@ def _app(registry, supervisor=None):
 
 
 @pytest.fixture(autouse=True)
+def _no_live_snapshot(monkeypatch):
+    """The live-set snapshot the admission hook reads is module state."""
+    monkeypatch.setattr(cache_module, "_live_snapshot", None)
+
+
+@pytest.fixture(autouse=True)
 def _no_backups(mocker):
     mocker.patch.object(reconciler_module, "sweep_expired_backups", return_value=0)
 
@@ -80,6 +87,14 @@ def _no_backups(mocker):
 def _mount_root(tmp_path, monkeypatch):
     """Never let a test walk the host's real /mnt."""
     monkeypatch.setattr(reconciler_module, "MOUNT_ROOT", tmp_path / "unused-mnt")
+
+
+@pytest.fixture(autouse=True)
+def _no_device_mapper(tmp_path, monkeypatch):
+    """Nor its real /dev/mapper: the orphan device pass reads it."""
+    empty = tmp_path / "empty-mapper"
+    empty.mkdir()
+    monkeypatch.setattr(reconciler_module, "DEVICE_MAPPER_DIRECTORY", str(empty))
 
 
 def test_live_dirs_are_left_alone(pools, registry):  # noqa: F811
@@ -534,3 +549,230 @@ async def test_two_reconcile_passes_do_not_overlap(pools, registry, monkeypatch)
     await asyncio.gather(reconcile_now(app), reconcile_now(app))
 
     assert order == ["enter", "exit", "enter", "exit"]
+
+
+def test_reconcile_runs_the_cache_pass(pools, registry, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
+    stale = pools["runtime"] / "stale"
+    stale.write_bytes(b"x" * 4096)
+
+    report = reconcile_storage(registry, now=NOW)
+
+    assert report.cache_evicted == [stale]
+    assert not stale.exists()
+
+
+def test_the_cache_pass_is_skipped_when_a_live_vm_has_no_record(pools, registry, monkeypatch, caplog):  # noqa: F811
+    """Cache references are read from the registry's messages alone, so a VM
+    the supervisor runs but the registry does not know makes the referenced
+    set incomplete. Fail closed rather than evict a running VM's runtime."""
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
+    stale = pools["runtime"] / "stale"
+    stale.write_bytes(b"x" * 4096)
+
+    report = reconcile_storage(registry, now=NOW, live={LIVE, VM_HASH})
+
+    assert report.cache_evicted == []
+    assert stale.exists()
+    assert any(record.levelname == "ERROR" and "cache pass" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_the_cache_pass_is_skipped_when_the_supervisor_cannot_be_listed(pools, registry, monkeypatch, caplog):  # noqa: F811
+    """No answer from list_vms leaves the live set as the registry alone, and
+    the cache pass reads what is referenced from the registry's messages: a VM
+    the registry does not know would then look like nothing at all, and its
+    runtime would be evicted under it. Same doubt, same refusal as the startup
+    pass and the admission hook."""
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
+    stale = pools["runtime"] / "stale"
+    stale.write_bytes(b"x" * 4096)
+
+    report = await reconcile_now(_app(registry, _supervisor(fails=True)))
+
+    assert report.cache_evicted == []
+    assert stale.exists()
+    assert any(record.levelname == "ERROR" and "unbounded" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_the_rest_of_the_pass_still_runs_without_the_supervisor(pools, registry, monkeypatch):  # noqa: F811
+    """Only the cache pass depends on the messages of every live VM; the
+    namespace pass has the registry's own answer plus the create guard."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    old = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    _age(old.parent, 10_000)
+
+    report = await reconcile_now(_app(registry, _supervisor(fails=True)))
+
+    assert report.purged_orphans == [VM_HASH]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_now_removes_the_devices_of_evicted_parents(pools, registry, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
+    (pools["runtime"] / "stale").write_bytes(b"x" * 4096)
+    removed = []
+    monkeypatch.setattr(reconciler_module, "remove_parent_device", AsyncMock(side_effect=removed.append))
+
+    report = await reconcile_now(_app(registry))
+
+    assert [path.name for path in report.cache_evicted] == ["stale"]
+    assert removed == ["stale"]
+
+
+def test_old_tmp_files_are_removed_alongside_the_parts(pools, registry):  # noqa: F811
+    """get_message writes <ref>.json.tmp before renaming, create_ext4 and the
+    marker writer do the same: an interrupted one leaks exactly like a .part."""
+    old_tmp = pools["message"] / "abc.json.tmp"
+    old_tmp.write_bytes(b"x")
+    _age(old_tmp, 10_000)
+    young_tmp = pools["code"] / "def.tmp"
+    young_tmp.write_bytes(b"x")
+    _age(young_tmp, 10)
+
+    report = reconcile_storage(registry, now=NOW)
+
+    assert not old_tmp.exists()
+    assert young_tmp.exists()
+    assert report.parts_removed == 1
+
+
+@pytest.mark.asyncio
+async def test_the_pass_records_the_live_set_for_the_admission_hook(pools, registry):  # noqa: F811
+    await reconcile_now(_app(registry, _supervisor(VM_HASH)))
+
+    assert cache_module.live_snapshot() == frozenset({LIVE, VM_HASH})
+
+
+@pytest.mark.asyncio
+async def test_a_half_known_live_set_is_never_published(pools, registry):  # noqa: F811
+    """Admission evicts against this set; a set missing whatever the
+    supervisor would have listed is not one it may use."""
+    await reconcile_now(_app(registry, _supervisor(fails=True)))
+
+    assert cache_module.live_snapshot() is None
+
+
+@pytest.mark.asyncio
+async def test_a_dry_run_never_touches_a_device(pools, registry, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
+    stale = pools["runtime"] / "stale"
+    stale.write_bytes(b"x" * 4096)
+    removed = []
+    monkeypatch.setattr(reconciler_module, "remove_parent_device", AsyncMock(side_effect=removed.append))
+    swept = AsyncMock(return_value=[])
+    monkeypatch.setattr(reconciler_module, "sweep_leaked_cache_loops", swept)
+
+    report = await reconcile_now(_app(registry), dry_run=True)
+
+    assert [path.name for path in report.cache_evicted] == ["stale"]
+    assert stale.exists()
+    assert removed == []
+    swept.assert_not_awaited()
+
+
+def _fake_mapper(monkeypatch, tmp_path, *names: str) -> Path:
+    """A /dev/mapper holding ``names``, for the pass to read."""
+    mapper = tmp_path / "mapper"
+    mapper.mkdir(exist_ok=True)
+    for name in names:
+        (mapper / name).touch()
+    monkeypatch.setattr(reconciler_module, "DEVICE_MAPPER_DIRECTORY", str(mapper))
+    return mapper
+
+
+@pytest.mark.asyncio
+async def test_the_pass_tears_down_the_devices_of_a_vm_nothing_owns(pools, registry, monkeypatch, tmp_path):  # noqa: F811
+    """A create that failed before its registry commit leaves a dm snapshot
+    holding the volume file. purge_vm_storage refuses such a directory, so
+    without a teardown the orphan is refused on every pass, forever."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    _age(volume(pools["pool0"], VM_HASH, "rootfs.btrfs").parent, 10_000)
+    _fake_mapper(monkeypatch, tmp_path, f"{VM_HASH}_rootfs", f"{LIVE}_rootfs", "control", "lost+found_1")
+    torn: list[str] = []
+    monkeypatch.setattr(reconciler_module, "teardown_namespace_devices", AsyncMock(side_effect=torn.append))
+
+    await reconcile_now(_app(registry, _supervisor()))
+
+    assert torn == [VM_HASH]
+
+
+@pytest.mark.asyncio
+async def test_a_create_in_flight_keeps_its_devices(pools, registry, monkeypatch, tmp_path):  # noqa: F811
+    _fake_mapper(monkeypatch, tmp_path, f"{VM_HASH}_rootfs")
+    torn: list[str] = []
+    monkeypatch.setattr(reconciler_module, "teardown_namespace_devices", AsyncMock(side_effect=torn.append))
+
+    with creating(VM_HASH):
+        await reconcile_now(_app(registry, _supervisor()))
+
+    assert torn == []
+
+
+@pytest.mark.asyncio
+async def test_no_device_is_torn_down_when_the_supervisor_cannot_be_listed(pools, registry, monkeypatch, tmp_path):  # noqa: F811
+    """A VM the supervisor would have listed is live; removing its dm device
+    takes its disk with it."""
+    _fake_mapper(monkeypatch, tmp_path, f"{VM_HASH}_rootfs")
+    torn: list[str] = []
+    monkeypatch.setattr(reconciler_module, "teardown_namespace_devices", AsyncMock(side_effect=torn.append))
+
+    await reconcile_now(_app(registry, _supervisor(fails=True)))
+    await reconcile_at_startup(_app(registry, _supervisor(fails=True)))
+
+    assert torn == []
+
+
+@pytest.mark.asyncio
+async def test_a_dry_run_tears_down_no_device(pools, registry, monkeypatch, tmp_path):  # noqa: F811
+    _fake_mapper(monkeypatch, tmp_path, f"{VM_HASH}_rootfs")
+    torn: list[str] = []
+    monkeypatch.setattr(reconciler_module, "teardown_namespace_devices", AsyncMock(side_effect=torn.append))
+
+    await reconcile_now(_app(registry, _supervisor()), dry_run=True)
+
+    assert torn == []
+
+
+@pytest.mark.asyncio
+async def test_a_failing_device_teardown_does_not_stop_the_pass(pools, registry, monkeypatch, tmp_path):  # noqa: F811
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    old = volume(pools["pool0"], OTHER_HASH, "rootfs.qcow2")
+    _age(old.parent, 10_000)
+    _fake_mapper(monkeypatch, tmp_path, f"{VM_HASH}_rootfs")
+    monkeypatch.setattr(
+        reconciler_module, "teardown_namespace_devices", AsyncMock(side_effect=RuntimeError("device busy"))
+    )
+
+    report = await reconcile_now(_app(registry, _supervisor()))
+
+    assert report.purged_orphans == [OTHER_HASH]
+
+
+def test_evict_never_touches_a_directory_a_create_is_using(pools, caplog):  # noqa: F811
+    """A re-create adopts a retained directory and clears its marker, but a
+    pass that listed the markers first still carries it, and the VM has no
+    registry record yet for the live check to find."""
+    retained = volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=8192)
+    report = reconciler_module.ReconcileReport()
+
+    with creating(VM_HASH):
+        freed = reconciler_module._evict(VM_HASH, report, dry_run=False)
+
+    assert freed == 0
+    assert retained.exists()
+    assert report.evicted == []
+
+
+def test_make_room_never_evicts_a_directory_a_create_is_using(pools, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    retained = volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=8192)
+    mark_reclaimable(VM_HASH, "gone", now=NOW - timedelta(days=2))
+    monkeypatch.setattr(reconciler_module, "_creating", {VM_HASH})
+    _fake_disk_usage(monkeypatch, 0)
+
+    freed = make_room(get_pools()[0], needed_bytes=8192)
+
+    assert freed == 0
+    assert retained.exists()

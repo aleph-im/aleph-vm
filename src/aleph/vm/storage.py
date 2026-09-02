@@ -8,8 +8,10 @@ In the future, it should connect to an Aleph node and retrieve the code from the
 import asyncio
 import json
 import logging
+import os
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from shutil import make_archive
 from subprocess import CalledProcessError
@@ -33,6 +35,7 @@ from aleph_message.models.execution.volume import (
 
 from aleph.vm.conf import settings
 from aleph.vm.storage_pools import find_existing_volume, volume_path_for
+from aleph.vm.supervisor_interface.errors import FileTooLargeError
 from aleph.vm.utils import fix_message_validation, run_in_subprocess
 
 logger = logging.getLogger(__name__)
@@ -78,7 +81,52 @@ async def file_downloaded_by_another_task(final_path: Path) -> None:
         await asyncio.sleep(0.1)
 
 
-async def download_file_in_chunks(url: str, tmp_path: Path) -> None:
+# What the caches admit, set by the agent (agent.vm.cache.admit_download):
+# the download caches are budgeted, and a download that cannot fit is refused
+# before a byte is written rather than after the disk is full. A module hook
+# because storage.py knows nothing of the VM registry the budget is computed
+# against, and the agent cannot make the downloader import it. It is handed
+# the ``.part`` path, not its directory: the room a download was admitted for
+# is charged to that path until the download ends.
+#
+# ``(tmp_path, content_length, max_bytes)``, and the middle one is None when
+# the server did not say. The two are not interchangeable: a Content-Length
+# is a measurement of this download, a cap is a ceiling on every download of
+# that kind, and admission has to treat them differently (see
+# ``cache.admit_download``). Deciding that here, by handing over one number,
+# is what made a chunked-encoding response ask for the whole runtime cap.
+CacheAdmission = Callable[[Path, int | None, int | None], None]
+_cache_admission: CacheAdmission | None = None
+
+# Downloads that have been admitted and are still being written, by ``.part``
+# path. Nothing on disk says how big one is going to be, so an in-flight
+# download would otherwise be invisible to the next admission, and two
+# concurrent creates would both be told there is room only one of them can
+# have. Kept here rather than in the agent's cache module because this is
+# where the download ends, in ``download_file``'s finally.
+_reserved_downloads: dict[Path, int] = {}
+
+
+def set_cache_admission(fn: CacheAdmission | None) -> None:
+    global _cache_admission
+    _cache_admission = fn
+
+
+def reserve_download(tmp_path: Path, size_bytes: int) -> None:
+    """Charge ``size_bytes`` to ``tmp_path`` until the download ends."""
+    _reserved_downloads[Path(tmp_path)] = size_bytes
+
+
+def release_download(tmp_path: Path) -> None:
+    _reserved_downloads.pop(Path(tmp_path), None)
+
+
+def reserved_downloads() -> dict[Path, int]:
+    """What admission has charged for and not yet seen written."""
+    return dict(_reserved_downloads)
+
+
+async def download_file_in_chunks(url: str, tmp_path: Path, *, max_bytes: int | None = None) -> None:
     # No total timeout: a 500+ MiB image over a slow gateway is a legitimate multi-minute
     # download. sock_read makes the request fail fast only if the transfer truly stalls.
     timeout = aiohttp.ClientTimeout(
@@ -90,12 +138,30 @@ async def download_file_in_chunks(url: str, tmp_path: Path) -> None:
         resp = await session.get(url)
         resp.raise_for_status()
 
+        if max_bytes is not None and resp.content_length is not None and resp.content_length > max_bytes:
+            msg = f"{url} is {resp.content_length} bytes, above the {max_bytes} byte limit"
+            raise FileTooLargeError(msg)
+
+        if _cache_admission is not None:
+            # Before the open: a refused download must leave nothing behind,
+            # and it may evict, so the room it is admitted against is the
+            # room it will actually find. What it was admitted for stays
+            # charged to the .part until download_file releases it. Both
+            # figures go over, whether the server measured the body or only
+            # this call's cap bounds it.
+            _cache_admission(tmp_path, resp.content_length, max_bytes)
+
         with open(tmp_path, "wb") as cache_file:
             counter = 0
+            written = 0
             while True:
                 chunk = await resp.content.read(65536)
                 if not chunk:
                     break
+                written += len(chunk)
+                if max_bytes is not None and written > max_bytes:
+                    msg = f"{url} exceeded the {max_bytes} byte limit while downloading"
+                    raise FileTooLargeError(msg)
                 cache_file.write(chunk)
                 counter += 1
                 if not (counter % 20):
@@ -106,11 +172,33 @@ async def download_file_in_chunks(url: str, tmp_path: Path) -> None:
         sys.stdout.flush()
 
 
-async def download_file(url: str, local_path: Path) -> None:
-    # TODO: Limit max size of download to the message specification
+def _touch_cache_hit(local_path: Path) -> bool:
+    """Bump the mtime of a cache hit for the LRU signal; False if it is gone.
+
+    A cache hit served by a user without ownership or write access
+    (chown_to_jailman ran on the original download) must still be returned:
+    the mtime touch is an LRU nicety, not a precondition. A file that
+    vanished is the opposite case and the caller has to know: the cache pass
+    evicts entries, and it can take this one between the is_file() check and
+    this touch.
+    """
+    try:
+        os.utime(local_path, None)
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        logger.warning(f"Could not update mtime of cached file {local_path}: {error}")
+    return True
+
+
+async def download_file(url: str, local_path: Path, *, max_bytes: int | None = None) -> None:
     if local_path.is_file():
-        logger.debug(f"File already exists: {local_path}")
-        return
+        if _touch_cache_hit(local_path) and local_path.is_file():
+            logger.debug(f"File already exists: {local_path}")
+            return
+        # Evicted while it was being served: fall through and fetch it again
+        # rather than hand back a path that is no longer there.
+        logger.info(f"Cached file {local_path} vanished while it was being read; downloading it again")
 
     # Avoid partial downloads and incomplete files by only moving the file when it's complete.
     tmp_path = Path(f"{local_path}.part")
@@ -125,7 +213,7 @@ async def download_file(url: str, local_path: Path) -> None:
             tmp_path.touch(exist_ok=False)
             owns_tmp = True
 
-            await download_file_in_chunks(url, tmp_path)
+            await download_file_in_chunks(url, tmp_path, max_bytes=max_bytes)
             tmp_path.rename(local_path)
             logger.debug(f"Download complete, moved {tmp_path} -> {local_path}")
             return
@@ -158,8 +246,11 @@ async def download_file(url: str, local_path: Path) -> None:
                 logger.warning(f"Download of {url} failed, aborting...")
                 raise error
         finally:
-            # Only clean up the .part file if this task created it
+            # Only clean up the .part file if this task created it, and with
+            # it the room admission charged to that path: the bytes are either
+            # a cache entry now or gone.
             if owns_tmp:
+                release_download(tmp_path)
                 tmp_path.unlink(missing_ok=True)
 
 
@@ -269,7 +360,7 @@ async def get_code_path(ref: str) -> Path:
 
     cache_path = Path(settings.CODE_CACHE) / ref
     url = await _get_content_url(ref)
-    await download_file(url, cache_path)
+    await download_file(url, cache_path, max_bytes=settings.MAX_PROGRAM_ARCHIVE_SIZE)
     return cache_path
 
 
@@ -281,7 +372,7 @@ async def get_data_path(ref: str) -> Path:
 
     cache_path = Path(settings.DATA_CACHE) / ref
     url = await _get_content_url(ref)
-    await download_file(url, cache_path)
+    await download_file(url, cache_path, max_bytes=settings.MAX_DATA_ARCHIVE_SIZE)
     return cache_path
 
 
@@ -302,9 +393,14 @@ async def get_runtime_path(ref: str) -> Path:
 
     cache_path = Path(settings.RUNTIME_CACHE) / ref
 
-    if not cache_path.is_file():
+    # The touch is what makes the runtime cache's LRU a use signal rather than
+    # download order (download_file does it for a hit it serves itself, but a
+    # hit never reaches it: asking for the URL of an image already on disk is
+    # a message lookup for nothing). A touch that finds the entry gone means
+    # the cache pass took it between the two calls: download it again.
+    if not cache_path.is_file() or not _touch_cache_hit(cache_path):
         url = await _get_content_url(ref)
-        await download_file(url, cache_path)
+        await download_file(url, cache_path, max_bytes=settings.MAX_RUNTIME_ARCHIVE_SIZE)
 
     await check_squashfs_integrity(cache_path)
     await chown_to_jailman(cache_path)
@@ -318,9 +414,11 @@ async def get_rootfs_base_path(ref: ItemHash) -> Path:
         return Path(settings.FAKE_INSTANCE_BASE)
 
     cache_path = Path(settings.RUNTIME_CACHE) / ref
-    if not cache_path.is_file():
+    # Same as get_runtime_path: a cache hit is touched here, since it never
+    # reaches download_file's own touch.
+    if not cache_path.is_file() or not _touch_cache_hit(cache_path):
         url = await _get_content_url(ref)
-        await download_file(url, cache_path)
+        await download_file(url, cache_path, max_bytes=settings.MAX_RUNTIME_ARCHIVE_SIZE)
     await chown_to_jailman(cache_path)
     return cache_path
 
@@ -566,13 +664,43 @@ async def remove_devmapper(namespace: str, volume_name: str) -> None:
         logger.info("Removed device-mapper base %s", base_name)
 
 
+async def remove_base_device(namespace: str) -> None:
+    """Remove ``<namespace>_base`` when no snapshot of this VM is left.
+
+    ``create_devmapper`` builds the base device before the snapshot stacked on
+    it, so a create that died between the two leaves a base device with
+    nothing above it. ``remove_devmapper`` removes the base as the last step
+    of removing a snapshot, which is exactly the step that never runs in that
+    case, and the base holds the parent image's device, and through it the
+    runtime cache entry, for good (``cache.parent_device_is_free`` sees a
+    holder and keeps the image).
+    """
+    if not NAMESPACE_PATTERN.match(namespace):
+        logger.error("Refusing to remove an implausible device-mapper base: %r", namespace)
+        return
+    mapper = Path(DEVICE_MAPPER_DIRECTORY)
+    base_name = f"{namespace}_base"
+    siblings = [path for path in mapper.glob(f"{namespace}_*") if path.name != base_name and path.is_block_device()]
+    if siblings:
+        return
+    if (mapper / base_name).is_block_device():
+        await run_in_subprocess(["dmsetup", "remove", "--retry", base_name])
+        logger.info("Removed the orphan device-mapper base %s", base_name)
+
+
 async def get_existing_file(ref: str) -> Path:
     if settings.FAKE_DATA_PROGRAM and settings.FAKE_DATA_VOLUME:
         return Path(settings.FAKE_DATA_VOLUME)
 
     cache_path = Path(settings.DATA_CACHE) / ref
     url = await _get_content_url(ref)
-    await download_file(url, cache_path)
+    # Not MAX_DATA_ARCHIVE_SIZE: that setting has only ever gated a program's
+    # `data` archive (get_data_path), and this function serves immutable
+    # volumes, the SNP and V-PROGRAM runtime bundle tarballs and a V-PROGRAM's
+    # workload image plus its hash tree. None of those was ever bounded by 10
+    # MB and all of them are routinely far larger, so the image cap is the
+    # only one that fits.
+    await download_file(url, cache_path, max_bytes=settings.MAX_RUNTIME_ARCHIVE_SIZE)
     await chown_to_jailman(cache_path)
     return cache_path
 
