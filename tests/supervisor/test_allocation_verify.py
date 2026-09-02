@@ -154,3 +154,24 @@ def test_an_embedded_amended_message_is_ignored(account, instance_content):
     assert outcome is VerificationOutcome.VERIFIED
     assert verified.message.content.resources.vcpus == 2
     assert verified.original is verified.message
+
+
+def test_a_content_field_diverging_from_the_signed_item_content_is_ignored(account, instance_content):
+    """The attack the two gates do not stop on their own.
+
+    item_content, item_hash and the signature are all genuinely the user's, and
+    only the separate content field is the scheduler's. InstanceMessage has no
+    validator binding the two (ProgramMessage and VerifiableProgramMessage do),
+    so before content was re-derived this verified and handed the agent 64
+    vCPUs the user never signed for.
+    """
+    message = sign_message(instance_content, account)
+    tampered = json.loads(message["item_content"])
+    tampered["resources"]["vcpus"] = 64
+    message["content"] = tampered
+    entry = {"item_hash": message["item_hash"], "message": message}
+
+    outcome, verified, _ = verify_entry(entry)
+
+    assert outcome is VerificationOutcome.VERIFIED
+    assert verified.message.content.resources.vcpus == 2
