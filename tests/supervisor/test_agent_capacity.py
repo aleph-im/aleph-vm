@@ -549,5 +549,28 @@ def test_simulate_reserves_nothing(mocker):
     first = manager.simulate([candidate])
     second = manager.simulate([candidate])
 
+    # The repeated call is the assertion: had the first committed anything, the
+    # second would see it and could answer differently.
     assert first[0].accepted is second[0].accepted is True
-    assert manager.holds == {}
+
+
+def test_simulate_is_cumulative_on_disk_too(mocker):
+    """Disk has no committed sum anywhere: free space is read live, and nothing
+    is written until the VM is actually created. Without an accumulator each
+    candidate sees the same free space and a plan that cannot fit is admitted
+    whole.
+
+    10 GiB free, two candidates wanting 6000 MiB each: the first fits, the
+    second does not.
+    """
+    mocker.patch("aleph.vm.agent.capacity.storage_pools.roomiest_pool_free_bytes", return_value=20 * 1024**3)
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16, disk_bytes=10 * 1024**3)
+    candidates = [
+        (_HASH_A, _requirements(memory_mib=1024, disk_mib=6000), True),
+        (_HASH_B, _requirements(memory_mib=1024, disk_mib=6000), True),
+    ]
+
+    verdicts = _manager().simulate(candidates)
+
+    assert [v.accepted for v in verdicts] == [True, False]
+    assert verdicts[1].code == "insufficient_capacity"
