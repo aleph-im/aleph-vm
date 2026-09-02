@@ -13,6 +13,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aleph_message.models import ItemHash
+from aleph_message.models.execution.instance import InstanceContent
 from test_supervisor_translate import _make_qemu_instance_message
 
 from aleph.vm.agent.capacity import (
@@ -21,7 +23,6 @@ from aleph.vm.agent.capacity import (
     GpuHold,
     requirements_from_message,
 )
-from aleph.vm.agent.run import _admit
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
 from aleph.vm.resources import GpuDevice, GpuDeviceClass, InsufficientResourcesError
@@ -521,12 +522,13 @@ def test_a_phantom_record_never_blocks_the_retry_of_its_own_create(mocker):
     orphan. The record then describes a VM that is not running and counts in
     the committed sums until the next allocation cycle. The one thing that
     must not happen is the retry being refused by its own phantom, and it is
-    not: the create path admits through _admit, which excludes the VM's own
-    record."""
+    not: the create path admits through check_message, which excludes the VM's
+    own record."""
     _patch_host(mocker, memory_bytes=16 * 1024 * 1024 * 1024, cores=16)
     mocker.patch.object(settings, "HOST_MEMORY_RESERVED_MIB", 2048)
     mocker.patch.object(settings, "PROGRAM_MEMORY_RESERVED_MIB", 4096)
     mocker.patch.object(CapacityManager, "_check_max_volume", return_value=None)
+    mocker.patch("aleph.vm.agent.capacity.existing_volume_files", return_value={})
 
     vm_hash = "i" * 64
     message = _make_qemu_instance_message(vcpus=2, memory=8192)
@@ -535,9 +537,316 @@ def test_a_phantom_record_never_blocks_the_retry_of_its_own_create(mocker):
     registry.record(vm_hash, message=message, original=message, persistent=True)
     manager = _manager(registry=registry)
 
-    assert _admit(manager, message, vm_hash, is_instance=True) is None
+    assert manager.check_message(message, exclude_vm_hash=vm_hash) is None
 
     # The phantom is not free: it still counts against every *other* VM until
     # the next allocation cycle drops it.
     with pytest.raises(InsufficientResourcesError):
-        _admit(manager, message, "j" * 64, is_instance=True)
+        manager.check_message(message, exclude_vm_hash="j" * 64)
+
+
+# ── check_message: one admission path, ahead of any allocation ─────────────
+
+_VM_HASH = ItemHash("ab" * 32)
+
+
+def _volume(name: str, size_mib: int) -> MagicMock:
+    """A persistent volume declaration. ``name`` is set after construction:
+    passing it to MagicMock() would name the mock, not the attribute."""
+    volume = MagicMock(size_mib=size_mib)
+    volume.name = name
+    return volume
+
+
+def _instance_content(*, rootfs_mib: int | None = 20_000, volumes: tuple[MagicMock, ...] = ()) -> MagicMock:
+    """An InstanceContent stand-in with the sizes admission reads."""
+    content = MagicMock(spec=InstanceContent)
+    content.resources = MagicMock(vcpus=2, memory=2048)
+    content.rootfs = MagicMock(size_mib=rootfs_mib) if rootfs_mib is not None else None
+    content.volumes = list(volumes)
+    content.requirements = None
+    return content
+
+
+def _hold_nothing(mocker) -> None:
+    """No file on disk for this VM."""
+    mocker.patch("aleph.vm.agent.capacity.existing_volume_files", return_value={})
+
+
+def _stage_volume_files(mocker, pool: Path, files: dict[str, int]) -> Path:
+    """Create ``{pool}/{vm_hash}/`` holding ``{filename: allocated bytes}``.
+
+    The files are real (so the stem matching, the symlink skip and the pool
+    layout are exercised for real); only the allocated-bytes measurement is
+    stubbed, since a test cannot cheaply allocate 20 GiB.
+    """
+    directory = pool / str(_VM_HASH)
+    directory.mkdir(parents=True, exist_ok=True)
+    sizes = {}
+    for name, size_bytes in files.items():
+        (directory / name).write_bytes(b"")
+        sizes[directory / name] = size_bytes
+    mocker.patch("aleph.vm.agent.capacity.file_size_bytes", side_effect=lambda path: sizes.get(path, 0))
+    return directory
+
+
+def _patch_namespace_dirs(mocker, *directories: Path) -> None:
+    mocker.patch("aleph.vm.agent.capacity.storage_pools.iter_namespace_dirs", return_value=list(directories))
+
+
+def _patch_eligible_pools(mocker, *pools: tuple[Path, int]) -> None:
+    """Eligible pools, given as (path, free bytes), with nothing reclaimable."""
+    entries = [(SimpleNamespace(path=path, index=index), free) for index, (path, free) in enumerate(pools)]
+    mocker.patch("aleph.vm.agent.capacity.storage_pools.eligible_pool_free_bytes", return_value=entries)
+    mocker.patch("aleph.vm.agent.capacity.reclaimable_bytes", return_value=0)
+
+
+def test_check_message_admits_disk_from_the_message(mocker):
+    manager = _manager()
+    check = mocker.patch.object(manager, "check_capacity")
+    _hold_nothing(mocker)
+    content = _instance_content(rootfs_mib=20_000, volumes=(_volume("data", 5_000),))
+
+    manager.check_message(content, exclude_vm_hash=_VM_HASH)
+
+    kwargs = check.call_args.kwargs
+    assert kwargs["disk_mib"] == 25_000
+    assert kwargs["max_volume_mib"] == 20_000
+    assert kwargs["is_instance"] is True
+    assert kwargs["memory_mib"] == 2048
+    assert kwargs["vcpus"] == 2
+    assert kwargs["exclude_vm_hash"] == _VM_HASH
+
+
+def test_check_message_discounts_bytes_the_vm_already_holds(mocker, tmp_path):
+    """A RECREATE of a VM whose disks are still on the host must not be
+    refused for space it already occupies: creating() adopted the directory,
+    so those bytes are neither free nor reclaimable any more."""
+    manager = _manager()
+    check = mocker.patch.object(manager, "check_capacity")
+    directory = _stage_volume_files(mocker, tmp_path / "pool0", {"rootfs.qcow2": 20_000 * 1024 * 1024})
+    _patch_namespace_dirs(mocker, directory)
+    content = _instance_content(rootfs_mib=20_000)
+
+    manager.check_message(content, exclude_vm_hash=_VM_HASH)
+
+    assert check.call_args.kwargs["disk_mib"] == 0
+
+
+def test_check_message_caps_a_volumes_discount_at_what_it_declares(mocker, tmp_path):
+    """A file that outgrew its declaration credits only the declared size,
+    and the total never goes negative."""
+    manager = _manager()
+    check = mocker.patch.object(manager, "check_capacity")
+    directory = _stage_volume_files(mocker, tmp_path / "pool0", {"rootfs.qcow2": 90_000 * 1024 * 1024})
+    _patch_namespace_dirs(mocker, directory)
+    content = _instance_content(rootfs_mib=20_000, volumes=(_volume("data", 5_000),))
+
+    manager.check_message(content, exclude_vm_hash=_VM_HASH)
+
+    # 25 000 declared, the rootfs discounts its declared 20 000 and not the
+    # 90 000 it occupies, so the unallocated data volume is still required.
+    assert check.call_args.kwargs["disk_mib"] == 5_000
+
+
+def test_check_message_ignores_a_file_no_declared_volume_claims(mocker, tmp_path):
+    """The discount is per declared volume, not per directory. A user who
+    renames or drops a persistent volume in an updated message leaves the old
+    file behind; it must not pay for the new one."""
+    manager = _manager()
+    check = mocker.patch.object(manager, "check_capacity")
+    directory = _stage_volume_files(mocker, tmp_path / "pool0", {"old.ext4": 10_000 * 1024 * 1024})
+    _patch_namespace_dirs(mocker, directory)
+    content = _instance_content(rootfs_mib=None, volumes=(_volume("new", 10_000),))
+
+    manager.check_message(content, exclude_vm_hash=_VM_HASH)
+
+    kwargs = check.call_args.kwargs
+    assert kwargs["disk_mib"] == 10_000
+    assert kwargs["max_volume_mib"] == 10_000
+    assert kwargs["max_volume_credit"] is None
+
+
+def test_two_spellings_of_a_name_discount_one_file_once(mocker, tmp_path):
+    """Two declared volumes can look up the same file: "a b" is sanitized to
+    "a_b" by storage.get_volume_path, so a message declaring both names has
+    two volumes claiming a_b.ext4. One file backs one volume, so it discounts
+    once and the second volume is still required whole."""
+    manager = _manager()
+    check = mocker.patch.object(manager, "check_capacity")
+    directory = _stage_volume_files(mocker, tmp_path / "pool0", {"a_b.ext4": 10_000 * 1024 * 1024})
+    _patch_namespace_dirs(mocker, directory)
+    content = _instance_content(rootfs_mib=None, volumes=(_volume("a b", 10_000), _volume("a_b", 10_000)))
+
+    manager.check_message(content, exclude_vm_hash=_VM_HASH)
+
+    assert check.call_args.kwargs["disk_mib"] == 10_000
+
+
+def test_the_boot_disk_is_credited_its_own_file(mocker, tmp_path):
+    """Matching on the stem alone let rootfs.ext4 shadow rootfs.qcow2 (they
+    share a stem, and the ext4 sorts first), crediting the boot disk a file it
+    will not use. The suffix decides: a QEMU boot disk is a qcow2."""
+    manager = _manager()
+    check = mocker.patch.object(manager, "check_capacity")
+    directory = _stage_volume_files(
+        mocker,
+        tmp_path / "pool0",
+        {"rootfs.ext4": 1_000 * 1024 * 1024, "rootfs.qcow2": 20_000 * 1024 * 1024},
+    )
+    _patch_namespace_dirs(mocker, directory)
+    content = _instance_content(rootfs_mib=20_000)
+
+    manager.check_message(content, exclude_vm_hash=_VM_HASH)
+
+    kwargs = check.call_args.kwargs
+    assert kwargs["disk_mib"] == 0
+    assert kwargs["max_volume_credit"].path == directory / "rootfs.qcow2"
+
+
+def test_check_message_without_a_hash_discounts_nothing(mocker):
+    """The reserve endpoint admits a message no VM owns yet: there is no
+    directory to discount, and none is looked for."""
+    manager = _manager()
+    check = mocker.patch.object(manager, "check_capacity")
+    existing = mocker.patch("aleph.vm.agent.capacity.existing_volume_files")
+    content = _instance_content(rootfs_mib=20_000)
+
+    manager.check_message(content)
+
+    existing.assert_not_called()
+    assert check.call_args.kwargs["disk_mib"] == 20_000
+    assert check.call_args.kwargs["exclude_vm_hash"] is None
+
+
+def test_check_message_buckets_a_vprogram_as_an_instance(mocker):
+    """A V-PROGRAM is a full SNP VM: it belongs in the instance memory
+    bucket, which is where _committed_resources already counts it. Bucketing
+    it as a program would both starve the small program bucket and hide its
+    memory from instance admission."""
+    from aleph_message.models import VerifiableProgramContent
+
+    manager = _manager()
+    check = mocker.patch.object(manager, "check_capacity")
+    _hold_nothing(mocker)
+    content = MagicMock(spec=VerifiableProgramContent)
+    content.resources = MagicMock(vcpus=2, memory=4096)
+    content.volumes = []
+    content.requirements = None
+
+    manager.check_message(content, exclude_vm_hash=_VM_HASH)
+
+    assert check.call_args.kwargs["is_instance"] is True
+
+
+# ── the stale-file counter-example, end to end through check_capacity ───────
+
+
+def test_a_stale_file_never_admits_a_volume_the_node_cannot_hold(mocker, tmp_path):
+    """The reviewer's counter-example. A directory holding a stale 10 GiB
+    old.ext4, a message declaring only a fresh 10 GiB "new" volume, and a
+    node with 5 GiB free: refused. A discount summed over the directory would
+    have floored the total to 0 and the per-pool figure with it, switching
+    both disk guards off for exactly the create that needs the space."""
+    manager = _manager()
+    _patch_host(mocker, memory_bytes=64 * 1024**3, cores=16, disk_bytes=5 * 1024**3)
+    pool = tmp_path / "pool0"
+    directory = _stage_volume_files(mocker, pool, {"old.ext4": 10 * 1024**3})
+    _patch_namespace_dirs(mocker, directory)
+    _patch_eligible_pools(mocker, (pool, 5 * 1024**3))
+    content = _instance_content(rootfs_mib=None, volumes=(_volume("new", 10 * 1024),))
+
+    with pytest.raises(InsufficientResourcesError) as excinfo:
+        manager.check_message(content, exclude_vm_hash=_VM_HASH)
+
+    detail = str(excinfo.value)
+    assert "Disk: required 10240 MiB" in detail
+    assert "single volume" in detail
+
+
+def test_a_plain_recreate_is_admitted_with_its_own_pool_credited(mocker, tmp_path):
+    """The other side of the same coin: the file backing the declared volume
+    is on pool0, so pool0 does not have to find that room again even though
+    its free space alone could never fit the volume."""
+    manager = _manager()
+    _patch_host(mocker, memory_bytes=64 * 1024**3, cores=16, disk_bytes=1 * 1024**3)
+    pool = tmp_path / "pool0"
+    directory = _stage_volume_files(mocker, pool, {"rootfs.qcow2": 20 * 1024**3})
+    _patch_namespace_dirs(mocker, directory)
+    _patch_eligible_pools(mocker, (pool, 1 * 1024**3))
+    content = _instance_content(rootfs_mib=20 * 1024)
+
+    assert manager.check_message(content, exclude_vm_hash=_VM_HASH) is None
+
+
+def test_the_credit_goes_only_to_the_pool_that_holds_the_file(mocker, tmp_path):
+    """Crediting globally (by shrinking max_volume_mib) would excuse every
+    pool. The file sits on a pool that is not eligible for new volumes, so
+    no eligible pool may claim its bytes."""
+    manager = _manager()
+    _patch_host(mocker, memory_bytes=64 * 1024**3, cores=16, disk_bytes=1 * 1024**3)
+    directory = _stage_volume_files(mocker, tmp_path / "pool0", {"rootfs.qcow2": 20 * 1024**3})
+    _patch_namespace_dirs(mocker, directory)
+    _patch_eligible_pools(mocker, (tmp_path / "pool1", 1 * 1024**3))
+    content = _instance_content(rootfs_mib=20 * 1024)
+
+    with pytest.raises(InsufficientResourcesError, match="single volume"):
+        manager.check_message(content, exclude_vm_hash=_VM_HASH)
+
+
+def test_a_colliding_stem_never_discounts_one_file_twice(mocker, tmp_path):
+    """A schema-valid message can declare a rootfs AND a persistent volume
+    named "rootfs": both look up the same stem. The directory holds one file,
+    which may pay for one of them and never for both. Here the node still has
+    to allocate a 20 GiB volume with 5 GiB free, so the create is refused;
+    letting the single qcow2 discount both declarations would have floored the
+    total to 0 and admitted it."""
+    manager = _manager()
+    _patch_host(mocker, memory_bytes=64 * 1024**3, cores=16, disk_bytes=5 * 1024**3)
+    pool = tmp_path / "pool0"
+    directory = _stage_volume_files(mocker, pool, {"rootfs.qcow2": 20 * 1024**3})
+    _patch_namespace_dirs(mocker, directory)
+    _patch_eligible_pools(mocker, (pool, 5 * 1024**3))
+    content = _instance_content(rootfs_mib=20 * 1024, volumes=(_volume("rootfs", 20 * 1024),))
+
+    with pytest.raises(InsufficientResourcesError) as excinfo:
+        manager.check_message(content, exclude_vm_hash=_VM_HASH)
+
+    assert "Disk: required 20480 MiB" in str(excinfo.value)
+
+
+# ── existing_volume_files ───────────────────────────────────────────────────
+
+
+def test_existing_volume_files_refuses_an_implausible_hash():
+    """The namespace reaches a bare ``pool.path / namespace`` join, so it is
+    validated like every other iter_namespace_dirs caller: without this,
+    "../.." resolves, its bytes are summed as space the VM already holds, and
+    the inflated discount relaxes admission."""
+    from aleph.vm.agent.capacity import existing_volume_files
+
+    with pytest.raises(ValueError, match="implausible VM hash"):
+        existing_volume_files("../..")
+
+
+def test_existing_volume_files_spans_pools_and_skips_what_is_not_a_volume(mocker, tmp_path):
+    from aleph.vm.agent.capacity import existing_volume_files
+
+    first = tmp_path / "pool0" / str(_VM_HASH)
+    second = tmp_path / "pool1" / str(_VM_HASH)
+    for directory in (first, second):
+        directory.mkdir(parents=True)
+    (first / "rootfs.qcow2").write_bytes(b"x")
+    (first / ".reclaimable").write_text("{}")
+    (first / "elsewhere.ext4").symlink_to(tmp_path / "somewhere-else")
+    (second / "data.ext4").write_bytes(b"x")
+    _patch_namespace_dirs(mocker, first, second)
+
+    found = existing_volume_files(_VM_HASH)
+
+    # The marker is not a volume, and a symlink is not this directory's space.
+    # Files are keyed by name, suffix included: rootfs.qcow2 and rootfs.ext4
+    # share a stem but are different volumes.
+    assert set(found) == {"rootfs.qcow2", "data.ext4"}
+    assert found["rootfs.qcow2"] == first / "rootfs.qcow2"
+    assert found["data.ext4"] == second / "data.ext4"

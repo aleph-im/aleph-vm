@@ -10,6 +10,7 @@ regression check.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -88,7 +89,13 @@ def _info(status: VmStatus = VmStatus.RUNNING, *, awaiting_confidential_init: bo
 
 
 def _fake_capacity():
-    return MagicMock(check_capacity=MagicMock(), resolve_gpus=AsyncMock())
+    """Admission stub exposing only ``check_message``.
+
+    A SimpleNamespace, not a MagicMock: run.py must reach capacity through
+    the single message-driven admission path, and a MagicMock would answer a
+    stray ``check_capacity`` call instead of failing on it.
+    """
+    return SimpleNamespace(check_message=MagicMock(), resolve_gpus=AsyncMock(return_value=[]))
 
 
 def _fake_supervisor(*, create_status: VmStatus = VmStatus.RUNNING, get_status: VmStatus = VmStatus.RUNNING):

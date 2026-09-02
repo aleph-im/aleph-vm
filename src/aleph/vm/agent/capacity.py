@@ -15,15 +15,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import psutil
 from aleph_message.models import ExecutableContent, ItemHash, VerifiableProgramContent
 from aleph_message.models.execution.instance import InstanceContent
 
 from aleph.vm import storage_pools
-from aleph.vm.agent.vm.reclaimable import reclaimable_bytes
+from aleph.vm.agent.vm.purge import ROOTFS_STEM, _checked_namespace
+from aleph.vm.agent.vm.reclaimable import (
+    MARKER_NAME,
+    file_size_bytes,
+    reclaimable_bytes,
+)
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
 from aleph.vm.resources import GpuDevice, InsufficientResourcesError
@@ -50,22 +57,181 @@ class ResourceRequirements:
     gpu_device_ids: list[str] = field(default_factory=list)
 
 
-def requirements_from_message(content: ExecutableContent) -> ResourceRequirements:
-    """Extract the resources a message requests into a message-free DTO."""
-    is_instance = isinstance(content, InstanceContent)
-    volume_sizes_mib: list[int] = []
-    if isinstance(content, InstanceContent) and content.rootfs:
-        volume_sizes_mib.append(content.rootfs.size_mib)
+# The filename suffixes a volume's file carries in ``{pool}/{vm_hash}/``. A
+# QEMU boot disk is the qcow2 ``downloader._make_writable_volume`` creates; a
+# Firecracker one is the ``.btrfs`` device-mapper base of
+# ``storage.create_devmapper``. An extra persistent volume is an ``.ext4``
+# (``storage.get_volume_path``), a ``.btrfs`` when it has a parent, or a qcow2
+# when it goes through the writable-volume path.
+BOOT_DISK_SUFFIXES = (".qcow2", ".btrfs")
+VOLUME_SUFFIXES = (".ext4", ".btrfs", ".qcow2")
+
+
+@dataclass(frozen=True)
+class DeclaredVolume:
+    """One volume a message asks the node to allocate.
+
+    ``filenames`` are the names the volume's file can carry inside
+    ``{pool}/{vm_hash}/``: a stem ("rootfs" for the boot disk, the volume's
+    name for an extra persistent volume, see ``purge.ROOTFS_STEM`` and the
+    naming convention it documents) joined to each suffix that kind of volume
+    can take. The suffix is part of the match because a stem alone is not
+    unique: ``rootfs.qcow2`` and ``rootfs.ext4`` can sit side by side in one
+    directory and belong to different volumes.
+
+    Both spellings of a name are listed because ``storage.get_volume_path``
+    sanitizes a name that is not already ``[\\w\\-_/]+`` while
+    ``downloader._make_writable_volume`` does not.
+    """
+
+    filenames: tuple[str, ...]
+    size_mib: int
+
+
+@dataclass(frozen=True)
+class HeldVolume:
+    """An existing file that already backs a declared volume.
+
+    ``size_bytes`` is what the file allocates on disk, capped at the size the
+    volume declares: a file cannot discount more than the message asks for.
+    """
+
+    path: Path
+    size_bytes: int
+
+    @property
+    def pool_path(self) -> Path:
+        """The pool holding the file (``{pool}/{vm_hash}/{name.ext}``)."""
+        return self.path.parent.parent
+
+
+def _volume_stems(name: str) -> tuple[str, ...]:
+    """The filename stems a declared volume's file can carry on disk."""
+    sanitized = name if re.match(r"^[\w\-_/]+$", name) else re.sub(r"[^\w\-_]", "_", name)
+    return (name,) if sanitized == name else (name, sanitized)
+
+
+def _volume_filenames(stems: tuple[str, ...], suffixes: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(f"{stem}{suffix}" for stem in stems for suffix in suffixes)
+
+
+def declared_volumes(content: ExecutableContent) -> list[DeclaredVolume]:
+    """The per-VM volumes a message asks the node to allocate.
+
+    Every entry of ``content.volumes`` is listed, in message order, plus the
+    boot disk of an instance. A volume that owns no file in the VM's directory
+    carries no filenames and so can never discount anything: an immutable
+    volume resolves to a shared cache entry rather than to a file this VM
+    owns, and it declares no size either, so it adds nothing to the total.
+
+    A persistent volume named "rootfs" does not claim the "rootfs" stem when
+    the message also declares a boot disk: that stem belongs to the boot disk,
+    and letting both claim it would discount one file twice.
+    """
+    volumes: list[DeclaredVolume] = []
+    boot_disk = content.rootfs if isinstance(content, InstanceContent) else None
+    if boot_disk:
+        volumes.append(
+            DeclaredVolume(
+                filenames=_volume_filenames((ROOTFS_STEM,), BOOT_DISK_SUFFIXES),
+                size_mib=boot_disk.size_mib,
+            )
+        )
     for volume in content.volumes or []:
-        volume_sizes_mib.append(getattr(volume, "size_mib", 0) or 0)
+        size_mib = getattr(volume, "size_mib", 0) or 0
+        name = getattr(volume, "name", "") or ""
+        stems = _volume_stems(name) if name else ()
+        if boot_disk:
+            stems = tuple(stem for stem in stems if stem != ROOTFS_STEM)
+        volumes.append(DeclaredVolume(filenames=_volume_filenames(stems, VOLUME_SUFFIXES), size_mib=size_mib))
+    return volumes
+
+
+def requirements_from_message(
+    content: ExecutableContent, volumes: list[DeclaredVolume] | None = None
+) -> ResourceRequirements:
+    """Extract the resources a message requests into a message-free DTO.
+
+    ``volumes`` is ``declared_volumes(content)``, which a caller that already
+    has that list (``check_message``) passes in rather than deriving it twice.
+
+    A V-PROGRAM is a full SEV-SNP VM, not a Firecracker program, so it is
+    bucketed as an instance even though it is not an InstanceContent. That
+    matches ``CapacityManager._committed_resources``, which already counts it
+    against the instance bucket: bucketing it as a program here would both
+    starve the small program bucket and hide its memory from instance
+    admission (silent over-commit).
+    """
+    volume_sizes_mib = [volume.size_mib for volume in (declared_volumes(content) if volumes is None else volumes)]
     return ResourceRequirements(
         vcpus=content.resources.vcpus,
         memory_mib=content.resources.memory,
         disk_mib=sum(volume_sizes_mib),
         max_volume_mib=max(volume_sizes_mib, default=0),
-        is_instance=is_instance,
+        is_instance=isinstance(content, InstanceContent | VerifiableProgramContent),
         gpu_device_ids=requested_gpu_ids(content),
     )
+
+
+def existing_volume_files(vm_hash: ItemHash | str) -> dict[str, Path]:
+    """``{filename: path}`` of the VM's existing volume files, on every pool.
+
+    Keyed by the whole name, suffix included: ``rootfs.qcow2`` and
+    ``rootfs.ext4`` share a stem but are two different volumes, and keying by
+    stem would let one shadow the other and be credited in its place.
+
+    The namespace is validated before it reaches a path join, like every
+    other caller of ``iter_namespace_dirs``: ``pool.path / namespace`` is a
+    bare join, so an unchecked hash lets "../.." resolve and be counted as
+    space the VM already holds, and an inflated discount relaxes admission.
+
+    Symlinks and the marker are skipped, and pools are walked in order with
+    the first match winning, so the result does not depend on iteration luck.
+    """
+    namespace = _checked_namespace(vm_hash)
+    files: dict[str, Path] = {}
+    for directory in storage_pools.iter_namespace_dirs(namespace):
+        try:
+            entries = sorted(directory.iterdir())
+        except OSError:
+            logger.warning("Volume directory %s not readable, not discounting it", directory)
+            continue
+        for entry in entries:
+            if entry.name == MARKER_NAME or entry.is_symlink() or not entry.is_file():
+                continue
+            files.setdefault(entry.name, entry)
+    return files
+
+
+def held_volumes(vm_hash: ItemHash | str, volumes: list[DeclaredVolume]) -> list[HeldVolume | None]:
+    """What the VM already holds for each declared volume, positionally.
+
+    The discount is per declared volume, never per directory: a file that
+    backs no declared volume (a volume the updated message renamed or
+    dropped, left behind on a node the VM is re-scheduled to) discounts
+    nothing. Summing the directory instead would let such a leftover cancel
+    the space a genuinely new volume still needs, turning the disk check off
+    for exactly the create that needs it.
+
+    A matched file is consumed, so one file discounts at most one volume.
+    Two declared volumes can name the same file (two spellings of one name,
+    one of which storage sanitizes into the other), and a file the node holds
+    once cannot pay for two volumes it is about to allocate.
+
+    Each hit is capped at the size its volume declares, so a file that grew
+    past its declaration cannot credit the difference either.
+    """
+    existing = existing_volume_files(vm_hash)
+    held: list[HeldVolume | None] = []
+    for volume in volumes:
+        filename = next((name for name in volume.filenames if name in existing), None)
+        if filename is None:
+            held.append(None)
+            continue
+        path = existing.pop(filename)
+        size_bytes = min(file_size_bytes(path), volume.size_mib * 1024 * 1024)
+        held.append(HeldVolume(path=path, size_bytes=size_bytes))
+    return held
 
 
 def requested_gpu_ids(content: ExecutableContent) -> list[str]:
@@ -101,6 +267,50 @@ class CapacityManager:
         self.holds: dict[str, GpuHold] = {}
         self._lock = asyncio.Lock()
 
+    def check_message(self, content: ExecutableContent, *, exclude_vm_hash: ItemHash | None = None) -> None:
+        """Admission from the message alone, before a byte is allocated.
+
+        The single admission path of every create path: the sizes come from
+        the message (rootfs and volume ``size_mib``), so a host with no room
+        refuses before the downloader runs rather than after it has already
+        written the volumes. Judging disk after the build would measure space
+        this very VM has just taken, which is why there is no second check.
+
+        What the VM already holds for each volume the message declares is
+        subtracted, so an existing VM is never refused for space it already
+        occupies. This matters for a RECREATE and for an adoption:
+        ``creating()`` adopts the retained directory on entry, which drops its
+        ``.reclaimable`` marker, so those bytes stop counting as free in
+        ``_available_disk_bytes`` at the very moment the VM asks for them
+        again.
+
+        The discount is matched volume by volume (see ``held_volumes``), never
+        summed over the directory: a leftover file from a volume the message
+        no longer declares must not pay for a new one, and a file that backs
+        one declared volume must not pay for a second one too.
+        """
+        volumes = declared_volumes(content)
+        held = held_volumes(exclude_vm_hash, volumes) if exclude_vm_hash is not None else [None] * len(volumes)
+        declared_mib = sum(volume.size_mib for volume in volumes)
+        held_mib = sum(hit.size_bytes for hit in held if hit is not None) // (1024 * 1024)
+        # The largest declared volume decides the per-pool check, and it is
+        # judged at its declared size: shrinking that figure by what is held
+        # elsewhere would let a discount from one volume excuse the placement
+        # of another. What the VM already holds *for that volume* is instead
+        # credited to the pool its file sits on, which is the only pool that
+        # would have to find room for it again.
+        largest = max(range(len(volumes)), key=lambda index: volumes[index].size_mib, default=None)
+        requirements = requirements_from_message(content, volumes)
+        self.check_capacity(
+            memory_mib=requirements.memory_mib,
+            vcpus=requirements.vcpus,
+            disk_mib=max(declared_mib - held_mib, 0),
+            max_volume_mib=volumes[largest].size_mib if largest is not None else 0,
+            max_volume_credit=held[largest] if largest is not None else None,
+            is_instance=requirements.is_instance,
+            exclude_vm_hash=exclude_vm_hash,
+        )
+
     def check_capacity(
         self,
         *,
@@ -108,6 +318,7 @@ class CapacityManager:
         vcpus: int,
         disk_mib: int,
         max_volume_mib: int = 0,
+        max_volume_credit: HeldVolume | None = None,
         is_instance: bool,
         exclude_vm_hash: ItemHash | None = None,
     ) -> None:
@@ -117,7 +328,16 @@ class CapacityManager:
         physical - HOST_MEMORY_RESERVED_MIB - PROGRAM_MEMORY_RESERVED_MIB,
         programs share PROGRAM_MEMORY_RESERVED_MIB. vCPUs are capped at
         physical cores times VCPU_OVERCOMMIT_FACTOR. Disk is only checked for
-        disk_mib > 0 (the reserve path; the create path passes 0).
+        disk_mib > 0, so a caller with nothing left to allocate (a recreate
+        whose volumes are all on disk already) skips it.
+
+        ``max_volume_credit`` is the file already backing the largest declared
+        volume, if any: see ``_check_max_volume``, which credits it to the one
+        pool that holds it.
+
+        Callers that hold a message should go through ``check_message``, which
+        derives every figure here from it; the scalars are the seam for the
+        paths that build a request themselves (the migration import).
 
         ``exclude_vm_hash`` skips that VM's own registry record from the
         committed sums: the create paths record the VM before admission (the
@@ -181,7 +401,7 @@ class CapacityManager:
         if required_disk_mib > 0 and required_disk_mib > available_disk_mib:
             errors.append(f"Disk: required {required_disk_mib} MiB, " f"available {available_disk_mib} MiB")
 
-        max_volume_error = self._check_max_volume(max_volume_mib)
+        max_volume_error = self._check_max_volume(max_volume_mib, max_volume_credit)
         if max_volume_error:
             errors.append(max_volume_error)
 
@@ -239,7 +459,7 @@ class CapacityManager:
         return committed_instance_memory_mib, committed_program_memory_mib, committed_vcpus
 
     @staticmethod
-    def _check_max_volume(max_volume_mib: int) -> str | None:
+    def _check_max_volume(max_volume_mib: int, credit: HeldVolume | None = None) -> str | None:
         """None when ``max_volume_mib`` fits the roomiest eligible pool, else
         an error string describing the shortfall. No pool holds a volume
         split across disks, so this catches a request the aggregate free
@@ -248,11 +468,25 @@ class CapacityManager:
         A pool's room is its free bytes plus the reclaimable bytes it holds,
         for the same reason the aggregate figure counts them: placement
         evicts that pool's retained directories before it refuses the volume.
+
+        ``credit`` is the file that already backs this very volume, if there
+        is one. Its bytes are added to the room of the one pool that holds it
+        and to no other: that pool does not have to find the space again,
+        while a pool that has never seen this volume still has to fit it whole.
+        Crediting it globally (by shrinking ``max_volume_mib``) would instead
+        excuse every pool, which is how a stale file could switch this check
+        off entirely.
         """
         if max_volume_mib <= 0:
             return None
+        credited_pool = credit.pool_path if credit is not None else None
         roomiest_bytes = max(
-            (free + reclaimable_bytes(pool.path) for pool, free in storage_pools.eligible_pool_free_bytes()),
+            (
+                free
+                + reclaimable_bytes(pool.path)
+                + (credit.size_bytes if credit is not None and pool.path == credited_pool else 0)
+                for pool, free in storage_pools.eligible_pool_free_bytes()
+            ),
             default=0,
         )
         roomiest_mib = roomiest_bytes // (1024 * 1024)
