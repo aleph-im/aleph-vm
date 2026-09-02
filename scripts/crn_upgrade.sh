@@ -41,6 +41,7 @@ detect_os() {
         debian-12*)  echo "debian-12" ;;
         ubuntu-22*)  echo "ubuntu-22.04" ;;
         ubuntu-24*)  echo "ubuntu-24.04" ;;
+        ubuntu-26*)  echo "ubuntu-26.04" ;;
         *)
             echo "Unsupported OS: ${ID} ${VERSION_ID}" >&2
             echo "Supported: Debian 12, Ubuntu 22.04, Ubuntu 24.04" >&2
