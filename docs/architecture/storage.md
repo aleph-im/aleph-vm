@@ -526,6 +526,74 @@ and an attacker does not need to stop paying to create them (create, forget,
 repeat). It means "kept as long as the budget and live demand allow, oldest
 goes first", which is the only promise a node can honestly sell.
 
+### CLI
+
+Storage is agent-side and readable from the filesystem plus the agent DB, so
+`aleph-vm storage ...` (`src/aleph/vm/agent/storage_cli.py`, dispatched by
+`agent/cli.py` before its own argument parser, which points at
+`storage --help` in its own `--help` epilog) needs no running *agent
+process*:
+
+- `storage status`: per pool, live / reclaimable / cache / free bytes
+  against the budgets. Read-only, registry live set only.
+- `storage list [--reclaimable]`: hash, pool, size, reason, age. Read-only,
+  registry live set only.
+- `storage reclaim <hash> [--trust-registry]`: purge one reclaimable
+  directory now. Checks the `.reclaimable` marker first, purely locally, so
+  a typo or an unrelated hash fails instantly rather than waiting on a
+  supervisor dial that could only ever confirm what the marker check already
+  knows; a directory with no marker (it may belong to a live VM) is refused
+  the same way. Then refuses a hash the agent registry or the supervisor
+  considers live (see below), and refuses outright, without
+  `--trust-registry`, when the supervisor cannot be asked. Finally, if the
+  purge itself leaves the directory behind (a device-mapper target still
+  holds one of its volumes, the same guard `purge_vm_storage` always
+  applies), reclaim reports that and exits non-zero rather than claiming
+  success.
+- `storage reconcile [--dry-run] [--trust-registry]`: run one
+  `reconcile_storage()` pass with the daemon's two device steps around it,
+  or the CLI would keep refusing what the daemon reclaims. Before the pass,
+  `_teardown_orphan_devices` removes the dm devices of every namespace no
+  live VM owns, so the purge that follows is not refused on a volume file a
+  target still holds; that step needs the supervisor's answer and is skipped
+  under `--dry-run` and when the supervisor is unreachable, `--trust-registry`
+  included (it buys a purge on the registry's word, not a teardown). After
+  the pass, and printing what it removed (or, under `--dry-run`, what it
+  would remove), it tears down the devices of any evicted runtime cache
+  parent the same way `reconcile_now` / `reconcile_at_startup` do
+  (`remove_parent_device` per evicted ref, then `sweep_leaked_cache_loops`),
+  so an evicted entry never leaves `/dev/mapper/<ref>` and its loop device
+  pinning the deleted inode.
+
+`reconcile` and `reclaim` can purge, so they apply the same fail-closed rule
+`reconciler._startup_refusal` applies to the daemon's own startup pass: a
+live set built from the registry alone purges the disks of VMs the
+supervisor still runs, since a fresh or partly-lost agent DB rehydrates into
+an incomplete registry (this was PR A's Critical 1). A CLI process holding
+only the registry is exactly that state, so both commands dial the
+supervisor over the same gRPC socket the agent uses
+(`settings.SUPERVISOR_GRPC_SOCKET`, a few seconds' timeout) and union its
+`list_vms()` answer into the live set (`reconciler.supervisor_hashes`, the
+same id-to-hash mapping the daemon pass uses). When the supervisor cannot be
+reached and an explicit `--dry-run` was not requested, `reconcile` still
+runs as a dry run (a preview, nothing removed) but treats this as an error:
+it prints a warning to stderr (`"registry-only"`, not `"trusted"`: the
+report on stdout stays parseable, uninterrupted by the warning) and exits
+`2`, unless `--trust-registry` says to purge on the registry alone. An
+explicit `--dry-run` always stays exit `0`, whether or not the supervisor
+answered: nothing was silently downgraded, the caller asked for a preview
+and got one. `reclaim` refuses outright unless `--trust-registry` is given.
+`status` and `list` are read-only and never dial the supervisor.
+
+Neither command can see a create the daemon is in the middle of:
+`reconciler.is_creating()` is in-process state of the running agent, so a
+CLI invocation (a separate process) never sees it. A create that has
+outlived `VOLUME_CREATE_GUARD` and has not yet landed in the registry or in
+`list_vms` looks exactly like an orphan to a real `reconcile` run from the
+CLI, which can then remove it out from under the daemon. `reconcile --help`
+says so; the daemon's own pass (startup, periodic, at-GONE) is preferred
+whenever the daemon is up, and this command is mainly for when it is not.
+
 ### First start on an existing node
 
 The first pass on an upgraded node finds every directory leaked by the bugs
