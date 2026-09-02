@@ -162,6 +162,7 @@ class CapacityManager:
         committed_instance_memory_mib: int,
         committed_program_memory_mib: int,
         committed_vcpus: int,
+        committed_disk_mib: int = 0,
     ) -> None:
         """The admission arithmetic, against caller-supplied commitments.
 
@@ -197,7 +198,9 @@ class CapacityManager:
             committed_memory_mib = committed_program_memory_mib
             memory_cap_mib = program_memory_cap_mib
 
-        available_disk_mib = self._available_disk_bytes() // (1024 * 1024)
+        # Free space is a live figure, not a committed sum, so a batch caller
+        # passes what it has already promised to the candidates before this one.
+        available_disk_mib = max(self._available_disk_bytes() // (1024 * 1024) - committed_disk_mib, 0)
 
         errors: list[str] = []
 
@@ -254,13 +257,31 @@ class CapacityManager:
         """Judge a whole plan at once.
 
         Cumulative: each accepted candidate is committed before the next is
-        judged, so three VMs that only fit twice get two yeses and one no.
+        judged, so three VMs that only fit twice get two yeses and one no. This
+        covers memory, vCPUs and disk. Disk needs the accumulator because free
+        space is read live and no record of it exists until the volumes are
+        actually written.
 
         Release-aware: hashes the plan is about to stop are subtracted from the
         committed sums, so "allocate C, delete B" admits C against B's memory.
+        Their disk is not credited back: nothing has been deleted yet, so the
+        space is genuinely still occupied, and guessing otherwise would make
+        the advisory answer stronger than the enforced one.
 
         Side-effect free: nothing here reserves or holds anything, which is
         what makes it safe for the speculative capacity-check endpoint.
+
+        GPUs are out of scope. Card availability comes from the supervisor's
+        async host info and is claimed through stateful holds, neither of which
+        fits a synchronous side-effect-free call, so a GPU plan needs a
+        separate answer.
+
+        The third element of a candidate is the caller's memory-bucket choice,
+        NOT ResourceRequirements.is_instance. The two disagree for V-PROGRAMs:
+        requirements_from_message reports is_instance=False (the content is not
+        an InstanceContent) while a V-PROGRAM is committed to the instance
+        bucket, which is what _committed_resources and _admit both do. Pass
+        isinstance(content, (InstanceContent, VerifiableProgramContent)).
         """
         committed_instance, committed_program, committed_vcpus = self._committed_resources(None)
         for vm_hash in releasing:
@@ -273,8 +294,14 @@ class CapacityManager:
             else:
                 committed_program -= resources.memory
             committed_vcpus -= resources.vcpus
+        # A registry inconsistency must not make admission more permissive than
+        # an empty node.
+        committed_instance = max(committed_instance, 0)
+        committed_program = max(committed_program, 0)
+        committed_vcpus = max(committed_vcpus, 0)
 
         verdicts: list[AdmissionVerdict] = []
+        committed_disk = 0
         for vm_hash, requirements, is_instance in candidates:
             try:
                 self._check_against(
@@ -286,6 +313,7 @@ class CapacityManager:
                     committed_instance_memory_mib=committed_instance,
                     committed_program_memory_mib=committed_program,
                     committed_vcpus=committed_vcpus,
+                    committed_disk_mib=committed_disk,
                 )
             except InsufficientResourcesError as error:
                 logger.info("Plan candidate %s refused: %s", vm_hash, error)
@@ -298,6 +326,7 @@ class CapacityManager:
             else:
                 committed_program += requirements.memory_mib
             committed_vcpus += requirements.vcpus
+            committed_disk += requirements.disk_mib
             verdicts.append(AdmissionVerdict(vm_hash, True))
         return verdicts
 
