@@ -49,6 +49,20 @@ class ResourceRequirements:
     gpu_device_ids: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class AdmissionVerdict:
+    """One candidate's admission answer.
+
+    ``code`` and ``detail`` are safe to hand back to the scheduler; the full
+    error text stays in the logs.
+    """
+
+    vm_hash: ItemHash
+    accepted: bool
+    code: str = ""
+    detail: str = ""
+
+
 def requirements_from_message(content: ExecutableContent) -> ResourceRequirements:
     """Extract the resources a message requests into a message-free DTO."""
     is_instance = isinstance(content, InstanceContent)
@@ -115,21 +129,51 @@ class CapacityManager:
         Two-bucket memory accounting: instances share
         physical - HOST_MEMORY_RESERVED_MIB - PROGRAM_MEMORY_RESERVED_MIB,
         programs share PROGRAM_MEMORY_RESERVED_MIB. vCPUs are capped at
-        physical cores times VCPU_OVERCOMMIT_FACTOR. Disk is only checked for
-        disk_mib > 0 (the reserve path; the create path passes 0).
+        physical cores times VCPU_OVERCOMMIT_FACTOR. Disk is checked whenever
+        disk_mib > 0, which every create path now passes (#1153).
 
         ``exclude_vm_hash`` skips that VM's own registry record from the
         committed sums: the create paths record the VM before admission (the
         early owner record, or a leftover record on a recreate), and its own
         record must not count against its own request.
         """
-        required_memory_mib = memory_mib
-        required_vcpus = vcpus
-        required_disk_mib = disk_mib
-
         committed_instance_memory_mib, committed_program_memory_mib, committed_vcpus = self._committed_resources(
             exclude_vm_hash
         )
+        self._check_against(
+            memory_mib=memory_mib,
+            vcpus=vcpus,
+            disk_mib=disk_mib,
+            max_volume_mib=max_volume_mib,
+            is_instance=is_instance,
+            committed_instance_memory_mib=committed_instance_memory_mib,
+            committed_program_memory_mib=committed_program_memory_mib,
+            committed_vcpus=committed_vcpus,
+        )
+
+    def _check_against(
+        self,
+        *,
+        memory_mib: int,
+        vcpus: int,
+        disk_mib: int,
+        max_volume_mib: int,
+        is_instance: bool,
+        committed_instance_memory_mib: int,
+        committed_program_memory_mib: int,
+        committed_vcpus: int,
+        committed_disk_mib: int = 0,
+    ) -> None:
+        """The admission arithmetic, against caller-supplied commitments.
+
+        Split out so simulate() can judge a candidate against sums it is
+        accumulating itself, while check_capacity keeps judging against the
+        registry as it stands. One implementation, so an advisory answer can
+        never be stronger or weaker than the enforced one.
+        """
+        required_memory_mib = memory_mib
+        required_vcpus = vcpus
+        required_disk_mib = disk_mib
 
         physical_memory_mib = psutil.virtual_memory().total // (1024 * 1024)
         physical_cores = psutil.cpu_count() or 1
@@ -154,7 +198,9 @@ class CapacityManager:
             committed_memory_mib = committed_program_memory_mib
             memory_cap_mib = program_memory_cap_mib
 
-        available_disk_mib = self._available_disk_bytes() // (1024 * 1024)
+        # Free space is a live figure, not a committed sum, so a batch caller
+        # passes what it has already promised to the candidates before this one.
+        available_disk_mib = max(self._available_disk_bytes() // (1024 * 1024) - committed_disk_mib, 0)
 
         errors: list[str] = []
 
@@ -201,6 +247,88 @@ class CapacityManager:
                     "disk_mib": available_disk_mib,
                 },
             )
+
+    def simulate(
+        self,
+        candidates: list[tuple[ItemHash, ResourceRequirements, bool]],
+        *,
+        releasing: frozenset[ItemHash] = frozenset(),
+    ) -> list[AdmissionVerdict]:
+        """Judge a whole plan at once.
+
+        Cumulative: each accepted candidate is committed before the next is
+        judged, so three VMs that only fit twice get two yeses and one no. This
+        covers memory, vCPUs and disk. Disk needs the accumulator because free
+        space is read live and no record of it exists until the volumes are
+        actually written.
+
+        Release-aware: hashes the plan is about to stop are subtracted from the
+        committed sums, so "allocate C, delete B" admits C against B's memory.
+        Their disk is not credited back: nothing has been deleted yet, so the
+        space is genuinely still occupied, and guessing otherwise would make
+        the advisory answer stronger than the enforced one.
+
+        Side-effect free: nothing here reserves or holds anything, which is
+        what makes it safe for the speculative capacity-check endpoint.
+
+        GPUs are out of scope. Card availability comes from the supervisor's
+        async host info and is claimed through stateful holds, neither of which
+        fits a synchronous side-effect-free call, so a GPU plan needs a
+        separate answer.
+
+        The third element of a candidate is the caller's memory-bucket choice,
+        NOT ResourceRequirements.is_instance. The two disagree for V-PROGRAMs:
+        requirements_from_message reports is_instance=False (the content is not
+        an InstanceContent) while a V-PROGRAM is committed to the instance
+        bucket, which is what _committed_resources and _admit both do. Pass
+        isinstance(content, (InstanceContent, VerifiableProgramContent)).
+        """
+        committed_instance, committed_program, committed_vcpus = self._committed_resources(None)
+        for vm_hash in releasing:
+            record = self.registry.get(vm_hash)
+            if record is None or not record.message.resources:
+                continue
+            resources = record.message.resources
+            if isinstance(record.message, InstanceContent) or record.is_vprogram:
+                committed_instance -= resources.memory
+            else:
+                committed_program -= resources.memory
+            committed_vcpus -= resources.vcpus
+        # A registry inconsistency must not make admission more permissive than
+        # an empty node.
+        committed_instance = max(committed_instance, 0)
+        committed_program = max(committed_program, 0)
+        committed_vcpus = max(committed_vcpus, 0)
+
+        verdicts: list[AdmissionVerdict] = []
+        committed_disk = 0
+        for vm_hash, requirements, is_instance in candidates:
+            try:
+                self._check_against(
+                    memory_mib=requirements.memory_mib,
+                    vcpus=requirements.vcpus,
+                    disk_mib=requirements.disk_mib,
+                    max_volume_mib=requirements.max_volume_mib,
+                    is_instance=is_instance,
+                    committed_instance_memory_mib=committed_instance,
+                    committed_program_memory_mib=committed_program,
+                    committed_vcpus=committed_vcpus,
+                    committed_disk_mib=committed_disk,
+                )
+            except InsufficientResourcesError as error:
+                logger.info("Plan candidate %s refused: %s", vm_hash, error)
+                verdicts.append(
+                    AdmissionVerdict(vm_hash, False, "insufficient_capacity", "not enough capacity on this CRN")
+                )
+                continue
+            if is_instance:
+                committed_instance += requirements.memory_mib
+            else:
+                committed_program += requirements.memory_mib
+            committed_vcpus += requirements.vcpus
+            committed_disk += requirements.disk_mib
+            verdicts.append(AdmissionVerdict(vm_hash, True))
+        return verdicts
 
     def _committed_resources(self, exclude_vm_hash: ItemHash | None) -> tuple[int, int, int]:
         """(committed_instance_memory_mib, committed_program_memory_mib,
