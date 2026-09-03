@@ -47,6 +47,8 @@ async def build_create_vm_spec(
     Validation is performed before any I/O. Raises InvalidBackendError for:
     - non-instance messages
     - non-QEMU hypervisor (instances are QEMU-only)
+    - measured TEE modes: sev_snp belongs to build_snp_instance_spec, and
+      tdx has no launch path on this CRN yet
 
     Confidential (trusted_execution set) instances ARE supported: the firmware
     ref is resolved to a host path and ``spec.tee`` is populated so the engine
@@ -71,6 +73,22 @@ async def build_create_vm_spec(
     if effective_hypervisor != HypervisorType.qemu:
         raise InvalidBackendError(f"instances are QEMU-only, got hypervisor {effective_hypervisor!r}")
 
+    trusted_execution = getattr(message.environment, "trusted_execution", None)
+    if trusted_execution is not None:
+        if getattr(trusted_execution, "is_snp", False):
+            # SNP instances are built by build_snp_instance_spec
+            # (snp_instance_launch.py), which supplies the measured runtime
+            # bundle (OVMF/kernel/initrd/cmdline). This path has none of
+            # that: a routing mistake that reached here would silently build
+            # a SEV spec with no firmware. Fail loudly instead.
+            raise InvalidBackendError("SNP instances are built by build_snp_instance_spec, not this path")
+        if getattr(trusted_execution, "is_measured", False):
+            # Other measured modes (tdx) have no launch path on this CRN yet.
+            # Their messages carry no firmware ref (measured modes forbid it),
+            # so falling through would crash on the firmware resolve with an
+            # error that hides the real cause. Reject with the real cause.
+            raise InvalidBackendError(f"{trusted_execution.mode} instances are not supported by this CRN")
+
     # --- Materialise resources ---
 
     resources = QemuDownloader(message, namespace=str(vm_hash))
@@ -86,15 +104,7 @@ async def build_create_vm_spec(
     # AMDSEVPolicy.NO_DBG, so it is always present; the supervisor applies it
     # verbatim and holds no opinion of its own.
     tee: TeeConfig | None = None
-    trusted_execution = getattr(message.environment, "trusted_execution", None)
     if trusted_execution is not None:
-        if getattr(trusted_execution, "is_snp", False):
-            # SNP instances are built by build_snp_instance_spec
-            # (snp_instance_launch.py), which supplies the measured runtime
-            # bundle (OVMF/kernel/initrd/cmdline). This path has none of
-            # that: a routing mistake that reached here would silently build
-            # a SEV spec with no firmware. Fail loudly instead.
-            raise InvalidBackendError("SNP instances are built by build_snp_instance_spec, not this path")
         firmware_path = await get_existing_file(trusted_execution.firmware)
         tee = TeeConfig(
             backend=TeeBackend.SEV,
