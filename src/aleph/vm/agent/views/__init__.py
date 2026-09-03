@@ -1085,6 +1085,15 @@ async def operate_update(request: web.Request) -> web.Response:
         # Configuration will be fetched when the VM starts; not an error.
         return web.json_response({"status": "ok", "msg": "VM not starting yet"}, dumps=dumps_for_json, status=200)
 
-    await reconcile_port_forwards(supervisor, vm_id, record.message)
+    try:
+        # strict: the caller asked for a refresh of forwards that already
+        # exist; failing the request beats silently converging the VM onto
+        # the SSH-only fallback and deleting the user's forwards.
+        await reconcile_port_forwards(supervisor, vm_id, record.message, strict=True)
+    except Exception:
+        logger.warning("Port-forward refresh for %s could not fetch its inputs", vm_hash, exc_info=True)
+        raise web.HTTPServiceUnavailable(
+            reason="Could not fetch the port-forwarding settings; forwards left unchanged, retry shortly"
+        ) from None
     await sync_domain_mappings(request.app["supervisor"])
     return web.json_response({}, dumps=dumps_for_json, status=200)
