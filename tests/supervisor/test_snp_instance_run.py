@@ -113,6 +113,7 @@ async def test_snp_instance_create_uses_snp_builder(monkeypatch):
     spec = _snp_spec()
     build_snp = AsyncMock(return_value=(spec, _ATTEST_PORT))
     monkeypatch.setattr(run_module, "build_snp_instance_spec", build_snp)
+    monkeypatch.setattr(run_module, "resolve_instance_attestation_port", AsyncMock(return_value=_ATTEST_PORT))
     build_sev = AsyncMock()
     monkeypatch.setattr(run_module, "build_create_vm_spec", build_sev)
     monkeypatch.setattr(run_module, "get_user_settings", AsyncMock(return_value={}))
@@ -158,6 +159,7 @@ async def test_snp_instance_never_awaits_confidential_init(monkeypatch):
     )
     spec = _snp_spec()
     monkeypatch.setattr(run_module, "build_snp_instance_spec", AsyncMock(return_value=(spec, _ATTEST_PORT)))
+    monkeypatch.setattr(run_module, "resolve_instance_attestation_port", AsyncMock(return_value=_ATTEST_PORT))
     monkeypatch.setattr(run_module, "get_user_settings", AsyncMock(return_value={}))
     monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
     persist = AsyncMock()
@@ -204,6 +206,7 @@ async def test_snp_instance_with_gpus_rejected(monkeypatch):
     )
     build_snp = AsyncMock()
     monkeypatch.setattr(run_module, "build_snp_instance_spec", build_snp)
+    monkeypatch.setattr(run_module, "resolve_instance_attestation_port", AsyncMock(return_value=_ATTEST_PORT))
 
     supervisor = _fake_supervisor()
     registry = AgentVmRegistry()
@@ -253,6 +256,7 @@ async def test_legacy_sev_instance_path_untouched(monkeypatch):
     monkeypatch.setattr(run_module, "build_create_vm_spec", build_sev)
     build_snp = AsyncMock()
     monkeypatch.setattr(run_module, "build_snp_instance_spec", build_snp)
+    monkeypatch.setattr(run_module, "resolve_instance_attestation_port", AsyncMock(return_value=_ATTEST_PORT))
     monkeypatch.setattr(run_module, "persist_record", AsyncMock())
 
     awaiting = _info(VmStatus.BOOTING, awaiting_confidential_init=True)
@@ -284,6 +288,7 @@ async def test_snp_instance_failure_cleans_staging(monkeypatch):
     )
     spec = _snp_spec()
     monkeypatch.setattr(run_module, "build_snp_instance_spec", AsyncMock(return_value=(spec, _ATTEST_PORT)))
+    monkeypatch.setattr(run_module, "resolve_instance_attestation_port", AsyncMock(return_value=_ATTEST_PORT))
     remove_staging = MagicMock()
     monkeypatch.setattr(run_module, "remove_snp_instance_staging", remove_staging)
 
@@ -302,10 +307,10 @@ async def test_snp_instance_failure_cleans_staging(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_snp_instance_port_forward_failure_cleans_staging(monkeypatch):
-    """The second teardown path: create_vm succeeds but a later port-forward
-    fails. The half-started VM must be deleted and its staging removed, mirroring
-    the create-failure branch (run.py's finish_instance_create/port-forward
-    except block)."""
+    """The second teardown path: create_vm succeeds but the port-forward
+    application inside finish_instance_create fails. The half-started VM must
+    be deleted and its staging removed, mirroring the create-failure branch
+    (run.py's finish_instance_create/attest-gate except block)."""
     content = snp_instance_content()
     message = MagicMock(content=content)
     monkeypatch.setattr(
@@ -313,9 +318,10 @@ async def test_snp_instance_port_forward_failure_cleans_staging(monkeypatch):
     )
     spec = _snp_spec()
     monkeypatch.setattr(run_module, "build_snp_instance_spec", AsyncMock(return_value=(spec, _ATTEST_PORT)))
-    # finish_instance_create succeeds; the attestation-port forward that follows
-    # raises, so the failure lands in the second except block.
-    monkeypatch.setattr(run_module, "finish_instance_create", AsyncMock())
+    monkeypatch.setattr(run_module, "resolve_instance_attestation_port", AsyncMock(return_value=_ATTEST_PORT))
+    monkeypatch.setattr(run_module, "get_user_settings", AsyncMock(return_value={}))
+    monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(run_module, "_wait_until_attest_endpoint_listens", AsyncMock())
     remove_staging = MagicMock()
     monkeypatch.setattr(run_module, "remove_snp_instance_staging", remove_staging)
 

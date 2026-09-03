@@ -103,6 +103,39 @@ async def fetch_instance_runtime_manifest(runtime_ref: str) -> InstanceRuntimeMa
         raise VmSetupError(msg) from error
 
 
+def select_attestation_port(manifest: InstanceRuntimeManifest) -> int:
+    """The guest attestation port, ordered by preference over
+    ``manifest.attestation``: the ``aleph.ra-tls`` descriptor's port, falling
+    back to the first descriptor for a runtime that only implements another
+    protocol.
+
+    Deliberately NOT the same contract as the V-PROGRAM's
+    ``_select_attestation_port`` (vprogram_launch.py), which returns None
+    when no ``aleph.ra-tls`` tcp descriptor exists: instance manifests pin
+    ``attestation`` to at least one entry with a tcp transport, so this
+    selector always has a port to return. Do not "harmonize" the two."""
+    for descriptor in manifest.attestation:
+        if descriptor.protocol == "aleph.ra-tls":
+            return descriptor.transport.port
+    return manifest.attestation[0].transport.port
+
+
+async def resolve_instance_attestation_port(content: InstanceContent) -> int:
+    """Re-derive the RA-TLS attestation port from the runtime manifest alone.
+
+    The port-forward reconcilers (the aggregate watcher and the re-adoption
+    healing path) need the port to keep the host DNAT mapping in their
+    desired set, but must not pay for ``build_snp_instance_spec``: that
+    stages the whole runtime bundle, which the running VM already booted
+    from. The manifest is a small STORE file: one message-metadata lookup,
+    with the file itself coming from the local download cache after the
+    first create. Raises VmSetupError when the manifest cannot be fetched or
+    parsed; the caller decides whether that is fatal.
+    """
+    manifest = await fetch_instance_runtime_manifest(str(content.environment.trusted_execution.runtime))
+    return select_attestation_port(manifest)
+
+
 async def build_snp_instance_spec(vm_hash: ItemHash, content: InstanceContent) -> tuple[CreateVmSpec, int]:
     """Validate, fetch/stage the runtime bundle, and build the SNP CreateVmSpec
     for a confidential instance with its own LUKS-encrypted rootfs. Returns
@@ -155,14 +188,7 @@ async def build_snp_instance_spec(vm_hash: ItemHash, content: InstanceContent) -
     initrd_path = snp_staging.member_path(bundle_dir, members.initrd, "initrd")
     kernel_cmdline = manifest.boot.cmdline_template.format(owner=owner)
 
-    # Ordered by preference (manifest.attestation): prefer the aleph.ra-tls
-    # descriptor's port; fall back to the first descriptor for a runtime that
-    # only implements another protocol.
-    attest_port = manifest.attestation[0].transport.port
-    for descriptor in manifest.attestation:
-        if descriptor.protocol == "aleph.ra-tls":
-            attest_port = descriptor.transport.port
-            break
+    attest_port = select_attestation_port(manifest)
 
     resources = QemuDownloader(content, namespace=str(vm_hash))
     await resources.download_all()
