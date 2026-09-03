@@ -473,6 +473,22 @@ mod tests {
     }
 
     #[test]
+    fn padding_tolerance_starts_exactly_at_the_signature_data_end() {
+        // The v4 fixture carries zero padding after the signature data.
+        // Derive the boundary from the length field instead of hardcoding
+        // it: the largest prefix ending inside the signature data must
+        // fail, and the prefix ending exactly at its end must parse.
+        let sig_len = u32::from_le_bytes(QUOTE_V4[632..636].try_into().unwrap()) as usize;
+        let sig_end = 636 + sig_len;
+        assert!(
+            sig_end < QUOTE_V4.len(),
+            "fixture must carry trailing padding"
+        );
+        assert!(parse_tdx_quote(&QUOTE_V4[..sig_end - 1]).is_err());
+        assert!(parse_tdx_quote(&QUOTE_V4[..sig_end]).is_ok());
+    }
+
+    #[test]
     fn parses_v5_quote_at_descriptor_offset() {
         // The v5 body sits at offset 54, after the body descriptor. A parser
         // that reads it at the v4 offset (48) shifts every register by six
@@ -494,6 +510,28 @@ mod tests {
             hex::encode(v15.mrservicetd),
             "383c87d3bbb047b2d171eaca95312ede99f258088dc788f6ae2ccf8b6dd848fe8d47629e08b3f6cbd4a00dd47a5a033d"
         );
+    }
+
+    #[test]
+    fn parses_v5_quote_with_td_report_10_body() {
+        // The one accepted format combination no public fixture carries (a
+        // TDX 1.0 platform emitting a v5 quote), so splice one: the same
+        // header, a descriptor declaring TD report 1.0, the first 584 body
+        // bytes, and the original signature section. Structure only; its
+        // signature cannot verify.
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&QUOTE_V5[..48]);
+        raw.extend_from_slice(&BODY_TYPE_TD_REPORT10.to_le_bytes());
+        raw.extend_from_slice(&(TD_REPORT10_SIZE as u32).to_le_bytes());
+        raw.extend_from_slice(&QUOTE_V5[54..54 + 584]);
+        raw.extend_from_slice(&QUOTE_V5[54 + 648..]);
+        let quote = parse_tdx_quote(&raw).expect("v5 quote with TD report 1.0 parses");
+        assert_eq!(quote.header.version, 5);
+        assert!(quote.body.v15.is_none());
+        assert_eq!(quote.signed_region.len(), 54 + 584);
+        let full = parse_tdx_quote(QUOTE_V5).expect("baseline");
+        assert_eq!(quote.body.mrtd, full.body.mrtd);
+        assert_eq!(quote.body.report_data, full.body.report_data);
     }
 
     #[test]
@@ -559,19 +597,7 @@ mod tests {
         // Any prefix of a valid quote must fail with an error, never panic
         // or return a partial parse. Step through representative lengths in
         // every region: header, body, length fields, signature data.
-        for len in [
-            0,
-            1,
-            47,
-            48,
-            100,
-            631,
-            632,
-            635,
-            700,
-            1500,
-            QUOTE_V4.len() - 71,
-        ] {
+        for len in [0, 1, 47, 48, 100, 631, 632, 635, 700, 1500] {
             let result = parse_tdx_quote(&QUOTE_V4[..len]);
             assert!(result.is_err(), "prefix of {len} bytes must not parse");
         }
