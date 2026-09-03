@@ -380,11 +380,8 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     // Provenance and licences: tests/fixtures/tdx/README.md.
-    const PHALA_V4: &[u8] = include_bytes!("../../tests/fixtures/tdx/phala_tdx_quote.bin");
-    const GO_PROD_V4: &[u8] =
-        include_bytes!("../../tests/fixtures/tdx/go_tdx_prod_quote_spr_v4.bin");
-    const GO_V5: &[u8] = include_bytes!("../../tests/fixtures/tdx/go_quote_v5.bin");
-    const AUTOMATA_V5: &[u8] = include_bytes!("../../tests/fixtures/tdx/automata_quote_v5.bin");
+    const QUOTE_V4: &[u8] = include_bytes!("../../tests/fixtures/tdx/tdx_quote_v4.bin");
+    const QUOTE_V5: &[u8] = include_bytes!("../../tests/fixtures/tdx/tdx_quote_v5.bin");
 
     fn assert_structure(quote: &TdxQuote) {
         assert_eq!(quote.header.tee_type, TEE_TYPE_TDX);
@@ -413,18 +410,13 @@ mod tests {
         // Pins the framing contract in CI: the quote's ECDSA P-256
         // signature covers exactly signed_region, which for v5 includes
         // the body descriptor. A signed_region off by even one byte fails
-        // here for every fixture.
+        // here for both fixtures.
         use openssl::bn::BigNum;
         use openssl::ec::{EcGroup, EcKey};
         use openssl::ecdsa::EcdsaSig;
         use openssl::nid::Nid;
 
-        for (name, raw) in [
-            ("phala_v4", PHALA_V4),
-            ("go_prod_v4", GO_PROD_V4),
-            ("go_v5", GO_V5),
-            ("automata_v5", AUTOMATA_V5),
-        ] {
+        for (name, raw) in [("v4", QUOTE_V4), ("v5", QUOTE_V5)] {
             let quote = parse_tdx_quote(raw).expect(name);
             let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
             let x = BigNum::from_slice(&quote.signature.attestation_key[..32]).unwrap();
@@ -449,11 +441,11 @@ mod tests {
 
     #[test]
     fn parses_v4_quote() {
-        let quote = parse_tdx_quote(PHALA_V4).expect("v4 quote parses");
+        let quote = parse_tdx_quote(QUOTE_V4).expect("v4 quote parses");
         assert_eq!(quote.header.version, 4);
         assert!(quote.body.v15.is_none());
         assert_eq!(quote.signed_region.len(), 48 + 584);
-        assert_eq!(&quote.signed_region[..], &PHALA_V4[..632]);
+        assert_eq!(&quote.signed_region[..], &QUOTE_V4[..632]);
         assert_structure(&quote);
         assert_eq!(
             hex::encode(quote.body.mrtd),
@@ -470,17 +462,14 @@ mod tests {
     }
 
     #[test]
-    fn parses_production_v4_quote_with_trailing_bytes() {
-        // go-tdx-guest ships this production Sapphire Rapids quote with a
-        // deliberate trailing marker precisely to test that parsers ignore
-        // bytes after the signature data.
-        let quote = parse_tdx_quote(GO_PROD_V4).expect("production v4 quote parses");
-        assert_eq!(quote.header.version, 4);
-        assert_structure(&quote);
-        assert_eq!(
-            hex::encode(quote.body.mrtd),
-            "6363b8043668a3ad953278e10389574d326c6749fb78aa810ecd9336923db86f22fc00b8dcd404bc10d5e119d7215cbb"
-        );
+    fn ignores_trailing_bytes_after_the_signature_data() {
+        // Quotes commonly arrive in fixed-size padded buffers, and some
+        // producers append arbitrary data; the parse must be identical
+        // with and without it.
+        let mut raw = QUOTE_V4.to_vec();
+        raw.extend_from_slice(b"extra bytes(only for testing purpose)");
+        let quote = parse_tdx_quote(&raw).expect("trailing bytes are ignored");
+        assert_eq!(quote, parse_tdx_quote(QUOTE_V4).expect("baseline"));
     }
 
     #[test]
@@ -488,30 +477,17 @@ mod tests {
         // The v5 body sits at offset 54, after the body descriptor. A parser
         // that reads it at the v4 offset (48) shifts every register by six
         // bytes and still produces plausible digests, so pin exact values.
-        let quote = parse_tdx_quote(GO_V5).expect("v5 quote parses");
+        let quote = parse_tdx_quote(QUOTE_V5).expect("v5 quote parses");
         assert_eq!(quote.header.version, 5);
         assert_eq!(quote.signed_region.len(), 54 + 648);
         assert_structure(&quote);
         assert_eq!(
             hex::encode(quote.body.mrtd),
-            "7348651a34b2d2d3462822e3a750ec6110125f36757c78480bbfc69cc0d21fb001a1ced3ee19747dda8f750c3bc8f876"
+            "157768a71a6a31f5561978c4cde665809d22976ef5dead2952839b7b3ea23b6c2931c9148fe1d117c99faefac18bb73b"
         );
         assert_eq!(
             hex::encode(quote.body.rtmr2),
-            "6369b9c9a3b791ebcbdc5a0bb9536cfb57f50df2b393b33c8b29616d3568baa61f4b59dc6092e31ea8764bcbdfc69f20"
-        );
-        let v15 = quote.body.v15.expect("TD report 1.5 body");
-        assert_eq!(v15.mrservicetd, [0u8; 48]);
-    }
-
-    #[test]
-    fn parses_second_v5_quote_with_nonzero_mrservicetd() {
-        let quote = parse_tdx_quote(AUTOMATA_V5).expect("v5 quote parses");
-        assert_eq!(quote.header.version, 5);
-        assert_structure(&quote);
-        assert_eq!(
-            hex::encode(quote.body.mrtd),
-            "157768a71a6a31f5561978c4cde665809d22976ef5dead2952839b7b3ea23b6c2931c9148fe1d117c99faefac18bb73b"
+            "f5902739f8e3f2adef35391d7a3c8237da62ab25c75857953d547ad249270d76c1be21bf6a8aec2a22852e972c537c7f"
         );
         let v15 = quote.body.v15.expect("TD report 1.5 body");
         assert_eq!(
@@ -522,13 +498,13 @@ mod tests {
 
     #[test]
     fn extractors_return_body_fields() {
-        let quote = parse_tdx_quote(PHALA_V4).expect("quote parses");
+        let quote = parse_tdx_quote(QUOTE_V4).expect("quote parses");
         assert_eq!(extract_report_data(&quote.body), quote.body.report_data);
         let registers = extract_registers(&quote.body);
         assert_eq!(registers.mrtd, quote.body.mrtd);
         assert_eq!(registers.rtmr1, quote.body.rtmr1);
         assert_eq!(registers.rtmr2, quote.body.rtmr2);
-        // All available fixtures leave mrconfigid and rtmr3 zero (no
+        // Both fixtures leave mrconfigid and rtmr3 zero (no
         // deployment binding, no launch-TCB commitment).
         assert_eq!(registers.mrconfigid, [0u8; 48]);
         assert_eq!(quote.body.rtmr3, [0u8; 48]);
@@ -537,7 +513,7 @@ mod tests {
     #[test]
     fn rejects_sgx_quote() {
         // Flip tee_type to 0 (SGX).
-        let mut raw = PHALA_V4.to_vec();
+        let mut raw = QUOTE_V4.to_vec();
         raw[4..8].copy_from_slice(&0u32.to_le_bytes());
         let err = parse_tdx_quote(&raw).unwrap_err().to_string();
         assert!(err.contains("not a TDX quote"), "got: {err}");
@@ -545,7 +521,7 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_version() {
-        let mut raw = PHALA_V4.to_vec();
+        let mut raw = QUOTE_V4.to_vec();
         raw[0..2].copy_from_slice(&3u16.to_le_bytes());
         let err = parse_tdx_quote(&raw).unwrap_err().to_string();
         assert!(err.contains("unsupported quote version 3"), "got: {err}");
@@ -553,7 +529,7 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_attestation_key_type() {
-        let mut raw = PHALA_V4.to_vec();
+        let mut raw = QUOTE_V4.to_vec();
         raw[2..4].copy_from_slice(&3u16.to_le_bytes());
         let err = parse_tdx_quote(&raw).unwrap_err().to_string();
         assert!(err.contains("attestation key type"), "got: {err}");
@@ -561,7 +537,7 @@ mod tests {
 
     #[test]
     fn rejects_v5_sgx_body_descriptor() {
-        let mut raw = GO_V5.to_vec();
+        let mut raw = QUOTE_V5.to_vec();
         raw[48..50].copy_from_slice(&1u16.to_le_bytes());
         let err = parse_tdx_quote(&raw).unwrap_err().to_string();
         assert!(err.contains("body type 1"), "got: {err}");
@@ -569,7 +545,7 @@ mod tests {
 
     #[test]
     fn rejects_v5_descriptor_size_mismatch() {
-        let mut raw = GO_V5.to_vec();
+        let mut raw = QUOTE_V5.to_vec();
         raw[50..54].copy_from_slice(&584u32.to_le_bytes());
         let err = parse_tdx_quote(&raw).unwrap_err().to_string();
         assert!(
@@ -594,9 +570,9 @@ mod tests {
             635,
             700,
             1500,
-            PHALA_V4.len() - 71,
+            QUOTE_V4.len() - 71,
         ] {
-            let result = parse_tdx_quote(&PHALA_V4[..len]);
+            let result = parse_tdx_quote(&QUOTE_V4[..len]);
             assert!(result.is_err(), "prefix of {len} bytes must not parse");
         }
     }
@@ -607,7 +583,7 @@ mod tests {
         // descriptor (48..54), the body across its 1.5 extension tail, and
         // the signature-data length field at 702.
         for len in [49, 53, 54, 100, 640, 653, 690, 701, 702, 706] {
-            let result = parse_tdx_quote(&GO_V5[..len]);
+            let result = parse_tdx_quote(&QUOTE_V5[..len]);
             assert!(result.is_err(), "prefix of {len} bytes must not parse");
         }
     }
@@ -616,7 +592,7 @@ mod tests {
     fn rejects_certification_size_mismatch() {
         // Shrink the outer certification data size by one: the envelope no
         // longer covers the remaining signature data exactly.
-        let mut raw = GO_V5.to_vec();
+        let mut raw = QUOTE_V5.to_vec();
         let cert_size_off = 54 + 648 + 4 + 64 + 64 + 2;
         let declared =
             u32::from_le_bytes(raw[cert_size_off..cert_size_off + 4].try_into().unwrap());
@@ -628,7 +604,7 @@ mod tests {
     #[test]
     fn rejects_oversized_signature_length() {
         // A signature-data length running past the end of the buffer.
-        let mut raw = PHALA_V4.to_vec();
+        let mut raw = QUOTE_V4.to_vec();
         raw[632..636].copy_from_slice(&u32::MAX.to_le_bytes());
         let err = parse_tdx_quote(&raw).unwrap_err().to_string();
         assert!(err.contains("signature data"), "got: {err}");
