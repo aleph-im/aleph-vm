@@ -4,21 +4,31 @@ Revision ID: f1a2b3c4d5e6
 Revises: a1b2c3d4e5f6
 Create Date: 2026-06-24 00:00:00.000000
 
-DO NOT MERGE/DEPLOY until the agent/supervisor DB split has shipped to ALL
-nodes. Port mappings moved to the supervisor's own database; on first start
-after the split the supervisor copies the rows OUT of this agent-DB table
-(see supervisor.networking_db.migrate_port_mappings_from_legacy_db). This
-migration drops that source table, so deploying it before every node has run
-the copy would destroy live VMs' host-port forwards. It is the second phase of
-a two-phase migration: copy in the split release, drop here in a later one.
+Port mappings moved to the supervisor's own database. On its first start
+after that split, the supervisor daemon copies the active rows OUT of this
+agent-DB table (networking_db.migrate_port_mappings_from_legacy_db and its
+Rust counterpart). The copy skips itself for good once the supervisor table
+holds any row, so from that point the legacy rows are dead data and the table
+can go.
+
+The drop is gated on that same condition rather than on release ordering: it
+only happens when the copy can no longer need the legacy rows, and it FAILS
+otherwise. A failed startup migration exits the agent non-zero, systemd
+restarts it, and the next attempt re-checks. So an agent that comes up before
+its daemon has run the copy simply waits for it instead of destroying live
+VMs' host-port forwards. This also makes the migration safe on any upgrade
+path, including a node skipping releases straight past the split.
 """
+
+import sqlite3
+from contextlib import closing
+from pathlib import Path
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy import create_engine
-from sqlalchemy.engine import reflection
+from sqlalchemy import text
 
-from aleph.vm.conf import make_db_url
+from aleph.vm.conf import settings
 
 revision = "f1a2b3c4d5e6"
 down_revision = "a1b2c3d4e5f6"
@@ -26,20 +36,50 @@ branch_labels = None
 depends_on = None
 
 
+def _supervisor_store_is_populated(path: Path) -> bool:
+    """True once the supervisor DB holds any port_mappings row: the copy has
+    run (or new mappings exist), and it will never read the legacy table again."""
+    if not path.exists():
+        return False
+    # Read-only: this is the supervisor's file, the agent only peeks at it.
+    with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as conn:
+        try:
+            return conn.execute("SELECT 1 FROM port_mappings LIMIT 1").fetchone() is not None
+        except sqlite3.OperationalError:
+            return False  # schema not created yet
+
+
+def _legacy_has_active_rows(bind: sa.engine.Connection) -> bool:
+    row = bind.execute(text("SELECT 1 FROM port_mappings WHERE deleted_at IS NULL LIMIT 1")).fetchone()
+    return row is not None
+
+
 def upgrade() -> None:
-    engine = create_engine(make_db_url())
-    inspector = reflection.Inspector.from_engine(engine)
-    if "port_mappings" not in inspector.get_table_names():
+    bind = op.get_bind()
+    if "port_mappings" not in sa.inspect(bind).get_table_names():
         return
+
+    legacy = Path(settings.EXECUTION_DATABASE)
+    supervisor = Path(settings.SUPERVISOR_DATABASE)
+    if legacy == supervisor:
+        # Single shared file: this table IS the supervisor's live store.
+        return
+
+    if _legacy_has_active_rows(bind) and not _supervisor_store_is_populated(supervisor):
+        raise RuntimeError(
+            f"refusing to drop the legacy port_mappings table from {legacy}: it still holds active "
+            f"host-port forwards and the supervisor store {supervisor} has not received them yet. "
+            "Start the aleph-vm-supervisor daemon (it copies them on startup), then start the agent again."
+        )
+
     # The supervisor DB is the authority now; this agent-DB copy is unused.
     # No explicit drop_index: on SQLite, DROP TABLE also drops the table's indexes.
     op.drop_table("port_mappings")
 
 
 def downgrade() -> None:
-    engine = create_engine(make_db_url())
-    inspector = reflection.Inspector.from_engine(engine)
-    if "port_mappings" in inspector.get_table_names():
+    bind = op.get_bind()
+    if "port_mappings" in sa.inspect(bind).get_table_names():
         return
     # Mirror the table creation from 0004_create_port_mappings_table.py exactly,
     # so that upgrade then downgrade round-trips to the canonical schema.
