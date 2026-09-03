@@ -477,8 +477,10 @@ mod tests {
         // Derive the boundary from the length field instead of hardcoding
         // it: the largest prefix ending inside the signature data must
         // fail, and the prefix ending exactly at its end must parse.
-        let sig_len = u32::from_le_bytes(QUOTE_V4[632..636].try_into().unwrap()) as usize;
-        let sig_end = 636 + sig_len;
+        let len_off = HEADER_SIZE + TD_REPORT10_SIZE;
+        let sig_len =
+            u32::from_le_bytes(QUOTE_V4[len_off..len_off + 4].try_into().unwrap()) as usize;
+        let sig_end = len_off + 4 + sig_len;
         assert!(
             sig_end < QUOTE_V4.len(),
             "fixture must carry trailing padding"
@@ -593,9 +595,11 @@ mod tests {
 
     #[test]
     fn rejects_truncation_everywhere() {
-        // Any prefix of a valid quote must fail with an error, never panic
-        // or return a partial parse. Step through representative lengths in
-        // every region: header, body, length fields, signature data.
+        // Any prefix ending before the signature-data end must fail with
+        // an error, never panic or return a partial parse (at the end
+        // itself, parsing succeeds: padding tolerance begins there). Step
+        // through representative lengths in every region: header, body,
+        // length fields, signature data.
         for len in [0, 1, 47, 48, 100, 631, 632, 635, 700, 1500] {
             let result = parse_tdx_quote(&QUOTE_V4[..len]);
             assert!(result.is_err(), "prefix of {len} bytes must not parse");
@@ -618,7 +622,7 @@ mod tests {
         // Shrink the outer certification data size by one: the envelope no
         // longer covers the remaining signature data exactly.
         let mut raw = QUOTE_V5.to_vec();
-        let cert_size_off = 54 + 648 + 4 + 64 + 64 + 2;
+        let cert_size_off = HEADER_SIZE + 6 + TD_REPORT15_SIZE + 4 + 64 + 64 + 2;
         let declared =
             u32::from_le_bytes(raw[cert_size_off..cert_size_off + 4].try_into().unwrap());
         raw[cert_size_off..cert_size_off + 4].copy_from_slice(&(declared - 1).to_le_bytes());
@@ -630,7 +634,8 @@ mod tests {
     fn rejects_oversized_signature_length() {
         // A signature-data length running past the end of the buffer.
         let mut raw = QUOTE_V4.to_vec();
-        raw[632..636].copy_from_slice(&u32::MAX.to_le_bytes());
+        let len_off = HEADER_SIZE + TD_REPORT10_SIZE;
+        raw[len_off..len_off + 4].copy_from_slice(&u32::MAX.to_le_bytes());
         let err = parse_tdx_quote(&raw).unwrap_err().to_string();
         assert!(err.contains("signature data"), "got: {err}");
     }
