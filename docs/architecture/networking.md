@@ -238,7 +238,7 @@ only ever lease precisely that address (there is no MAC to key a
 `--dhcp-hostsdir` reservation on, since the SNP NIC has no fixed MAC).
 `DhcpConfig::for_snp` derives the config from the VM's `TapAssignment`
 (guest IP, gateway as DHCP option 3, tap-prefix netmask, the daemon's
-resolved nameservers as option 6 when any were found); `--port=0` disables
+resolved IPv4 nameservers as option 6 when any were found); `--port=0` disables
 dnsmasq's own DNS server so per-tap instances never collide on port 53.
 Each server runs as a transient systemd unit named
 `aleph-vm-dhcp-{vm_hash}.service`, launched via `systemd-run --collect -p

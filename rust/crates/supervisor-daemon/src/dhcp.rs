@@ -92,6 +92,9 @@ impl DhcpConfig {
     /// lease file lives under `lease_dir` (created by the backend), named by
     /// the VM hash.
     ///
+    /// Only IPv4 nameservers are forwarded in DHCPv4 option 6. Valid IPv6
+    /// nameservers are omitted; an IPv6-only list therefore emits no option 6.
+    ///
     /// Fails (fail-closed) if the tap's IPv4 network CIDR carries no parseable
     /// prefix length or if a nameserver is not a valid IP address: silently
     /// falling back to `/32` would hand the guest an unroutable single-host
