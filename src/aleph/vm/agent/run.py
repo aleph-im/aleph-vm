@@ -34,6 +34,7 @@ from aleph.vm.agent.snp_instance_launch import (
     build_snp_instance_spec,
     is_snp_instance,
     remove_snp_instance_staging,
+    resolve_instance_attestation_port,
 )
 from aleph.vm.agent.translate import build_create_vm_spec, build_program_create_vm_spec
 from aleph.vm.agent.update_watcher import UpdateWatcher
@@ -155,6 +156,38 @@ async def resolve_port_forwards(vm_id: VmId, content, *, strict: bool = False) -
     return forwards
 
 
+async def resolve_instance_desired_forwards(vm_id: VmId, content, *, strict: bool = False) -> list[PortForwardSpec]:
+    """The full desired forward set for an instance: the user's aggregate
+    settings plus always-SSH (``resolve_port_forwards``), and, for a SEV-SNP
+    confidential instance, the runtime manifest's RA-TLS attestation port.
+
+    Every instance forward computation must go through here: a reconciler
+    that diffs against a set missing the attestation port tears its host
+    mapping down (this is how SNP instances lost their 8443 mapping in the
+    field: the aggregate watcher and the re-adoption healing path converged
+    on the aggregate+SSH set). The CLI discovers the guest's attestation
+    endpoint through that mapping.
+
+    A manifest fetch failure raises (VmSetupError) instead of returning the
+    reduced set, for the same reason ``strict=`` exists on the aggregate
+    fetch: a convergence caller must skip healing rather than converge onto
+    a set that strips the attestation mapping.
+    """
+    forwards = await resolve_port_forwards(vm_id, content, strict=strict)
+    if is_snp_instance(content):
+        attest_port = int(await resolve_instance_attestation_port(content))
+        if not any(int(f.vm_port) == attest_port and f.protocol is Protocol.TCP for f in forwards):
+            forwards.append(
+                PortForwardSpec(
+                    vm_id=vm_id,
+                    host_port=HostPort(0),
+                    vm_port=GuestPort(attest_port),
+                    protocol=Protocol.TCP,
+                )
+            )
+    return forwards
+
+
 async def _reconcile_forwards(supervisor: Supervisor, vm_id: VmId, desired_specs: list[PortForwardSpec]) -> None:
     """Diff `desired_specs` against what the hypervisor currently reports for
     `vm_id` and issue add/remove calls so the two converge. The hypervisor
@@ -178,7 +211,7 @@ async def reconcile_port_forwards(supervisor: Supervisor, vm_id: VmId, content) 
     Agent policy half of the old fetch_port_redirect_config_and_setup: compute
     the desired set, then converge through ``_reconcile_forwards``.
     """
-    await _reconcile_forwards(supervisor, vm_id, await resolve_port_forwards(vm_id, content))
+    await _reconcile_forwards(supervisor, vm_id, await resolve_instance_desired_forwards(vm_id, content))
 
 
 def resolve_vprogram_port_forwards(vm_id: VmId, attest_port: int | None) -> list[PortForwardSpec]:
@@ -242,7 +275,11 @@ async def reconcile_adopted_port_forwards(supervisor: Supervisor, registry: Agen
             # strict: a failed aggregate fetch must skip healing, not converge
             # the VM onto the SSH-only fallback set (which would remove the
             # user's aggregate-declared forwards on a transient CCN error).
-            await _reconcile_forwards(supervisor, vm_id, await resolve_port_forwards(vm_id, content, strict=True))
+            # A failed runtime-manifest fetch (SNP instances) skips the same
+            # way, so healing never strips the attestation mapping either.
+            await _reconcile_forwards(
+                supervisor, vm_id, await resolve_instance_desired_forwards(vm_id, content, strict=True)
+            )
         # Programs get no agent-side forwards: nothing to heal.
     except Exception:
         logger.warning("Could not reconcile port forwards for adopted VM %s; left as found", vm_hash, exc_info=True)
@@ -352,7 +389,8 @@ async def finish_instance_create(supervisor: Supervisor, vm_id: VmId, content) -
     """Post-create completion shared by the normal create path and the migration
     import runner: wait until the instance reports RUNNING, then apply the
     agent's resolved port forwards (always-22 plus the user's port-forwarding
-    aggregate) through supervisor.add_port_forward.
+    aggregate, plus the attestation port for SNP instances) through
+    supervisor.add_port_forward.
 
     create_vm_from_spec only reloads *persisted* host port mappings, so a fresh
     destination (migration) would otherwise come up with no port forward at all
@@ -360,7 +398,7 @@ async def finish_instance_create(supervisor: Supervisor, vm_id: VmId, content) -
     instance identical to a freshly created one.
     """
     await _wait_until_running(supervisor, vm_id)
-    for forward in await resolve_port_forwards(vm_id, content):
+    for forward in await resolve_instance_desired_forwards(vm_id, content):
         await supervisor.add_port_forward(forward)
 
 
@@ -543,17 +581,10 @@ async def create_vm_execution(
         try:
             await finish_instance_create(supervisor, info.vm_id, content)
             if attest_port is not None:
-                # The guest attestation service (aleph.ra-tls) the runtime
-                # manifest pinned: forward it alongside SSH and the user's
-                # own aggregate so the owner can attest post-boot.
-                await supervisor.add_port_forward(
-                    PortForwardSpec(
-                        vm_id=info.vm_id,
-                        host_port=HostPort(0),
-                        vm_port=GuestPort(attest_port),
-                        protocol=Protocol.TCP,
-                    )
-                )
+                # finish_instance_create mapped the attestation port already
+                # (it is part of the instance's desired forward set); wait
+                # until the guest service (aleph.ra-tls) behind it listens
+                # before declaring the create done.
                 await _wait_until_attest_endpoint_listens(supervisor, info.vm_id, attest_port)
         except Exception:
             # Readiness or port-forward setup failed: tear the half-started VM
