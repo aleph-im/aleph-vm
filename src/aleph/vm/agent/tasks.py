@@ -233,7 +233,10 @@ async def _handle_port_forwarding_aggregate(
         if info.status is not VmStatus.RUNNING:
             continue
         try:
-            await reconcile_port_forwards(supervisor, vm_id, record.message)
+            # strict: this VM's forwards already exist; a transient aggregate
+            # failure must skip this pass (logged below), not converge the VM
+            # onto the SSH-only fallback and delete the user's forwards.
+            await reconcile_port_forwards(supervisor, vm_id, record.message, strict=True)
         except Exception:
             logger.exception("Failed to update port redirects for %s", vm_hash)
 

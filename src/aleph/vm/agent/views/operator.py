@@ -629,6 +629,10 @@ async def operate_confidential_inject_secret(request: web.Request, authenticated
         # port 22 and is unreachable.
         from aleph.vm.agent.run import reconcile_port_forwards
 
+        # Deliberately NOT strict: this is the VM's first forward setup (it
+        # was awaiting init until now), so there is nothing to tear down and
+        # the SSH-only fallback at least makes the VM reachable, mirroring
+        # the create path's rationale.
         await reconcile_port_forwards(supervisor, vm_id, record.message)
 
         # inject_secret only returns on the success path (a QMP failure raises),
