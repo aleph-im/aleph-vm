@@ -356,11 +356,13 @@ async def test_rejects_attestation_port_set(staged_instance_bundle):
 
 
 @pytest.mark.asyncio
-async def test_rejects_non_evm_sender(snp_supported):
+@pytest.mark.parametrize("address", [OWNER_LOWER, NON_EVM_ADDRESS])
+async def test_rejects_non_evm_sender(snp_supported, address):
     """The unlock authority is the message sender; a non-EVM sender cannot
-    sign EIP-191 injections and is rejected regardless of content.address."""
+    sign EIP-191 injections and is rejected regardless of content.address
+    (exercised with both an EVM and a non-EVM owner)."""
     with pytest.raises(VmSetupError, match="EVM"):
-        await build_snp_instance_spec(VM_HASH, snp_instance_content(), NON_EVM_ADDRESS)
+        await build_snp_instance_spec(VM_HASH, snp_instance_content(address=address), NON_EVM_ADDRESS)
 
 
 @pytest.mark.asyncio
@@ -386,6 +388,7 @@ async def test_delegated_create_binds_the_sender_not_the_owner(staged_instance_b
 async def test_sender_is_lowercased_into_the_cmdline(staged_instance_bundle):
     """EIP-55 checksum case must not leak into the measured slot: the guest
     compares lowercase-to-lowercase."""
+    # Lowercases exactly to DELEGATE_LOWER, hence the assertion below.
     checksummed = "0xFeedFaceFeedFaceFeedFaceFeedFaceFeedFace"
     spec, _ = await build_snp_instance_spec(VM_HASH, snp_instance_content(), checksummed)
     assert spec.tee is not None

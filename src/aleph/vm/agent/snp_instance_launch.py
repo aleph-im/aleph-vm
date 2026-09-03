@@ -54,7 +54,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # A lowercased 0x-prefixed 20-byte hex address: v1 confidential instances are
-# EVM-keyed only (owner-auth is EIP-191; see build_snp_instance_spec).
+# EVM-keyed only (the unlock authority signs EIP-191; see build_snp_instance_spec).
 _EVM_ADDRESS_PATTERN = re.compile(r"0x[0-9a-f]{40}")
 
 
@@ -148,7 +148,8 @@ async def build_snp_instance_spec(vm_hash: ItemHash, content: InstanceContent, s
     an on-behalf-of deployment the delegate (whose authorization from the
     owner the CCN already enforced) is the one that holds the passphrase and
     unlocks. content.address stays the billing/ownership identity and may be
-    non-EVM; the sender must be EVM-keyed (owner-auth is EIP-191).
+    non-EVM; the sender must be EVM-keyed (the unlock authority signs
+    EIP-191).
 
     Rejections fire in this order, all before any staging I/O: an
     attestation_port override, a host without SNP support, a policy above 32
@@ -171,7 +172,10 @@ async def build_snp_instance_spec(vm_hash: ItemHash, content: InstanceContent, s
         raise VmSetupError(msg)
     unlock_address = str(sender).lower()
     if not _EVM_ADDRESS_PATTERN.fullmatch(unlock_address):
-        msg = "SNP confidential instances require an EVM-keyed sender in v1 (owner-auth is EIP-191)"
+        msg = (
+            "SNP confidential instances require an EVM-keyed sender in v1 "
+            "(the EIP-191 unlock authority must be an EVM key)"
+        )
         raise VmSetupError(msg)
 
     if content.authorized_keys or content.variables:
