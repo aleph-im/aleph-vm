@@ -26,6 +26,7 @@ on:
       - "rust/crates/aleph-tee/**"
       - ".github/workflows/boot-smoke.yml"
 
+
 jobs:
   boot-smoke:
     name: "build image, boot under plain QEMU, probe local mode"
