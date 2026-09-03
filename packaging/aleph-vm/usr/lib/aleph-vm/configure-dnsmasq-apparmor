@@ -67,8 +67,8 @@ rewrite_local_file() {
     content_tmp="$(mktemp "$(dirname "$target")/.aleph-vm-dnsmasq-content.XXXXXX")"
     # Remove only lines owned by this helper. Any administrator additions,
     # including additions placed between our markers, remain intact.
-    awk -v begin="$BEGIN_MARKER" -v include="$INCLUDE_LINE" -v end="$END_MARKER" \
-      '$0 != begin && $0 != include && $0 != end { print }' \
+    awk -v begin="$BEGIN_MARKER" -v managed_include="$INCLUDE_LINE" -v end="$END_MARKER" \
+      '$0 != begin && $0 != managed_include && $0 != end { print }' \
       "$target" > "$content_tmp"
     cat "$content_tmp" > "$tmp"
     rm -f "$content_tmp"
