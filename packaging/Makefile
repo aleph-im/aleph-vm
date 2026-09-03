@@ -39,7 +39,7 @@ debian-package-code:
 	# Versions below MUST mirror pyproject.toml so the .deb ships what the code is tested against.
 	# protobuf is pinned to 5.29.6: 5.29.0 has a compilation issue; 6.x needs grpcio/tools 1.71+.
 	# legacy-cgi is packaging-only: it backfills the `cgi` module removed from the Python 3.13+ stdlib.
-	build_venv/bin/pip install --no-cache-dir  --progress-bar off --target ./aleph-vm/opt/aleph-vm/ 'aleph-message==1.3.1' 'eth-account~=0.10' 'sentry-sdk==2.8' 'aleph-superfluid~=0.2.1' 'sqlalchemy[asyncio]>=2' 'aiosqlite==0.19' 'alembic==1.13.1' 'aiohttp-cors~=0.7.0' 'pydantic-settings~=2.6.1' 'solathon==1.0.7' 'protobuf==5.29.6' 'grpcio>=1.70,<1.71' 'redis>=4.2' 'legacy-cgi>=1.0'
+	build_venv/bin/pip install --no-cache-dir  --progress-bar off --target ./aleph-vm/opt/aleph-vm/ 'aleph-message==1.4' 'eth-account~=0.10' 'sentry-sdk==2.8' 'aleph-superfluid~=0.2.1' 'sqlalchemy[asyncio]>=2' 'aiosqlite==0.19' 'alembic==1.13.1' 'aiohttp-cors~=0.7.0' 'pydantic-settings~=2.6.1' 'solathon==1.0.7' 'protobuf==5.29.6' 'grpcio>=1.70,<1.71' 'redis>=4.2' 'legacy-cgi>=1.0'
 	build_venv/bin/python3 -m compileall ./aleph-vm/opt/aleph-vm/
 
 debian-package-resources: firecracker-bins vmlinux target/bin/sevctl
