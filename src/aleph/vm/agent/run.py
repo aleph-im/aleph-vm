@@ -175,7 +175,7 @@ async def resolve_instance_desired_forwards(vm_id: VmId, content, *, strict: boo
     """
     forwards = await resolve_port_forwards(vm_id, content, strict=strict)
     if is_snp_instance(content):
-        attest_port = int(await resolve_instance_attestation_port(content))
+        attest_port = await resolve_instance_attestation_port(content)
         if not any(int(f.vm_port) == attest_port and f.protocol is Protocol.TCP for f in forwards):
             forwards.append(
                 PortForwardSpec(

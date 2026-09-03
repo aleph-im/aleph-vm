@@ -62,6 +62,10 @@ class FakeSupervisor:
                 del self._forwards[key]
 
     async def list_port_forwards(self, vm_id=None) -> list[PortForwardInfo]:
+        # Single-VM fake: honor the filter explicitly so a caller asking for
+        # another VM gets nothing rather than this VM's forwards.
+        if vm_id is not None and VmId(str(vm_id)) != VM_ID:
+            return []
         return [
             PortForwardInfo(vm_id=VM_ID, host_port=HostPort(host), vm_port=GuestPort(port), protocol=protocol)
             for (port, protocol), host in self._forwards.items()
@@ -139,6 +143,26 @@ async def test_manifest_fetch_failure_skips_healing(snp_content, _no_aggregate, 
     registry.record(VM_HASH, message=snp_content, original=snp_content, persistent=True)
 
     await run_module.reconcile_adopted_port_forwards(supervisor, registry, VM_HASH)
+
+    assert supervisor.ports() == {22, ATTEST_PORT}
+    assert supervisor.removed == []
+    assert supervisor.added == []
+
+
+@pytest.mark.asyncio
+async def test_watcher_reconcile_propagates_manifest_failure(snp_content, _no_aggregate, monkeypatch):
+    """The watcher entry point itself must fail closed: a manifest fetch
+    failure propagates (for the caller's per-VM try/except) with no forwards
+    touched, rather than converging onto a set without the attest port."""
+    monkeypatch.setattr(
+        run_module,
+        "resolve_instance_attestation_port",
+        AsyncMock(side_effect=VmSetupError("manifest unavailable")),
+    )
+    supervisor = FakeSupervisor([22, ATTEST_PORT])
+
+    with pytest.raises(VmSetupError):
+        await run_module.reconcile_port_forwards(supervisor, VM_ID, snp_content)
 
     assert supervisor.ports() == {22, ATTEST_PORT}
     assert supervisor.removed == []

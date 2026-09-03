@@ -107,7 +107,13 @@ def select_attestation_port(manifest: InstanceRuntimeManifest) -> int:
     """The guest attestation port, ordered by preference over
     ``manifest.attestation``: the ``aleph.ra-tls`` descriptor's port, falling
     back to the first descriptor for a runtime that only implements another
-    protocol."""
+    protocol.
+
+    Deliberately NOT the same contract as the V-PROGRAM's
+    ``_select_attestation_port`` (vprogram_launch.py), which returns None
+    when no ``aleph.ra-tls`` tcp descriptor exists: instance manifests pin
+    ``attestation`` to at least one entry with a tcp transport, so this
+    selector always has a port to return. Do not "harmonize" the two."""
     for descriptor in manifest.attestation:
         if descriptor.protocol == "aleph.ra-tls":
             return descriptor.transport.port
