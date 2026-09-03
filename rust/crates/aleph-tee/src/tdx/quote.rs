@@ -163,8 +163,11 @@ impl<'a> Cursor<'a> {
     fn take(&mut self, n: usize, what: &str) -> Result<&'a [u8]> {
         let end = self.pos.checked_add(n).context("length overflow")?;
         if end > self.buf.len() {
+            // "input", not "quote": this cursor also walks the nested
+            // signature-data buffer, where offsets are relative to that
+            // buffer rather than the quote.
             bail!(
-                "truncated quote: {what} needs {n} bytes at offset {}, only {} remain",
+                "truncated input: {what} needs {n} bytes at offset {}, only {} remain",
                 self.pos,
                 self.buf.len() - self.pos
             );
@@ -594,6 +597,17 @@ mod tests {
             PHALA_V4.len() - 71,
         ] {
             let result = parse_tdx_quote(&PHALA_V4[..len]);
+            assert!(result.is_err(), "prefix of {len} bytes must not parse");
+        }
+    }
+
+    #[test]
+    fn rejects_truncation_everywhere_v5() {
+        // v5-specific offsets the v4 sweep never reaches: inside the body
+        // descriptor (48..54), the body across its 1.5 extension tail, and
+        // the signature-data length field at 702.
+        for len in [49, 53, 54, 100, 640, 653, 690, 701, 702, 706] {
+            let result = parse_tdx_quote(&GO_V5[..len]);
             assert!(result.is_err(), "prefix of {len} bytes must not parse");
         }
     }
