@@ -136,10 +136,19 @@ async def resolve_instance_attestation_port(content: InstanceContent) -> int:
     return select_attestation_port(manifest)
 
 
-async def build_snp_instance_spec(vm_hash: ItemHash, content: InstanceContent) -> tuple[CreateVmSpec, int]:
+async def build_snp_instance_spec(vm_hash: ItemHash, content: InstanceContent, sender: str) -> tuple[CreateVmSpec, int]:
     """Validate, fetch/stage the runtime bundle, and build the SNP CreateVmSpec
     for a confidential instance with its own LUKS-encrypted rootfs. Returns
     the spec and the guest attestation port.
+
+    ``sender`` is the address that signed the INSTANCE message, and it is what
+    fills the measured cmdline's unlock-authority slot: the guest accepts a
+    secret injection only from the key that signed the deployment. For a
+    directly-signed message sender == content.address, so nothing changes; for
+    an on-behalf-of deployment the delegate (whose authorization from the
+    owner the CCN already enforced) is the one that holds the passphrase and
+    unlocks. content.address stays the billing/ownership identity and may be
+    non-EVM; the sender must be EVM-keyed (owner-auth is EIP-191).
 
     Rejections fire in this order, all before any staging I/O: an
     attestation_port override, a host without SNP support, a policy above 32
@@ -160,8 +169,8 @@ async def build_snp_instance_spec(vm_hash: ItemHash, content: InstanceContent) -
     if int(trusted_execution.policy) >= 2**32:
         msg = "SNP guest policy above 32 bits is not supported yet"
         raise VmSetupError(msg)
-    owner = str(content.address).lower()
-    if not _EVM_ADDRESS_PATTERN.fullmatch(owner):
+    unlock_address = str(sender).lower()
+    if not _EVM_ADDRESS_PATTERN.fullmatch(unlock_address):
         msg = "SNP confidential instances require an EVM-keyed sender in v1 (owner-auth is EIP-191)"
         raise VmSetupError(msg)
 
@@ -186,7 +195,9 @@ async def build_snp_instance_spec(vm_hash: ItemHash, content: InstanceContent) -
     ovmf_path = snp_staging.member_path(bundle_dir, members.ovmf, "ovmf")
     kernel_path = snp_staging.member_path(bundle_dir, members.kernel, "kernel")
     initrd_path = snp_staging.member_path(bundle_dir, members.initrd, "initrd")
-    kernel_cmdline = manifest.boot.cmdline_template.format(owner=owner)
+    # The template's slot is named {owner} (a frozen runtime-manifest
+    # contract); the value it binds is the unlock authority above.
+    kernel_cmdline = manifest.boot.cmdline_template.format(owner=unlock_address)
 
     attest_port = select_attestation_port(manifest)
 
