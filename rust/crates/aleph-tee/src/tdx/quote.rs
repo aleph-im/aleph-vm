@@ -406,6 +406,45 @@ mod tests {
     }
 
     #[test]
+    fn quote_signature_verifies_over_signed_region() {
+        // Pins the framing contract in CI: the quote's ECDSA P-256
+        // signature covers exactly signed_region, which for v5 includes
+        // the body descriptor. A signed_region off by even one byte fails
+        // here for every fixture.
+        use openssl::bn::BigNum;
+        use openssl::ec::{EcGroup, EcKey};
+        use openssl::ecdsa::EcdsaSig;
+        use openssl::nid::Nid;
+
+        for (name, raw) in [
+            ("phala_v4", PHALA_V4),
+            ("go_prod_v4", GO_PROD_V4),
+            ("go_v5", GO_V5),
+            ("automata_v5", AUTOMATA_V5),
+        ] {
+            let quote = parse_tdx_quote(raw).expect(name);
+            let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+            let x = BigNum::from_slice(&quote.signature.attestation_key[..32]).unwrap();
+            let y = BigNum::from_slice(&quote.signature.attestation_key[32..]).unwrap();
+            let key = EcKey::from_public_key_affine_coordinates(&group, &x, &y).unwrap();
+            let r = BigNum::from_slice(&quote.signature.quote_signature[..32]).unwrap();
+            let s = BigNum::from_slice(&quote.signature.quote_signature[32..]).unwrap();
+            let sig = EcdsaSig::from_private_components(r, s).unwrap();
+            let digest: [u8; 32] = Sha256::digest(&quote.signed_region).into();
+            assert!(
+                sig.verify(&digest, &key).unwrap(),
+                "{name}: signature must verify over signed_region"
+            );
+            let truncated: [u8; 32] =
+                Sha256::digest(&quote.signed_region[..quote.signed_region.len() - 1]).into();
+            assert!(
+                !sig.verify(&truncated, &key).unwrap(),
+                "{name}: any other framing must not verify"
+            );
+        }
+    }
+
+    #[test]
     fn parses_v4_quote() {
         let quote = parse_tdx_quote(PHALA_V4).expect("v4 quote parses");
         assert_eq!(quote.header.version, 4);
