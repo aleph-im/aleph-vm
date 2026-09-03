@@ -50,7 +50,7 @@ const CERT_DATA_QE_REPORT: u16 = 6;
 const CERT_DATA_PCK_CHAIN: u16 = 5;
 
 /// Size of an SGX enclave report (the QE report embedded in the quote).
-const QE_REPORT_SIZE: usize = 384;
+pub const QE_REPORT_SIZE: usize = 384;
 
 /// The 48-byte quote header, common to versions 4 and 5.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,8 +109,8 @@ pub struct SignatureData {
     /// The attestation public key, an uncompressed P-256 point (x || y)
     /// without the 0x04 prefix.
     pub attestation_key: [u8; 64],
-    /// The QE report (SGX enclave report, 384 bytes), opaque at this layer.
-    pub qe_report: Vec<u8>,
+    /// The QE report (SGX enclave report), opaque at this layer.
+    pub qe_report: [u8; QE_REPORT_SIZE],
     /// ECDSA signature over the QE report, under the PCK key.
     pub qe_report_signature: [u8; 64],
     /// QE authentication data, hashed together with the attestation key
@@ -327,7 +327,7 @@ fn parse_signature_data(data: &[u8]) -> Result<SignatureData> {
         );
     }
 
-    let qe_report = cur.take(QE_REPORT_SIZE, "QE report")?.to_vec();
+    let qe_report = cur.array::<QE_REPORT_SIZE>("QE report")?;
     let qe_report_signature = cur.array::<64>("QE report signature")?;
     let auth_len = cur.u16_le("QE auth data length")? as usize;
     let qe_auth_data = cur.take(auth_len, "QE auth data")?.to_vec();
@@ -390,7 +390,6 @@ mod tests {
             ATTESTATION_KEY_TYPE_ECDSA_P256
         );
         assert_eq!(quote.header.qe_vendor_id, INTEL_QE_VENDOR_ID);
-        assert_eq!(quote.signature.qe_report.len(), QE_REPORT_SIZE);
         // The PCK chain is three PEM certificates: leaf, intermediate, root.
         let pem = String::from_utf8_lossy(&quote.signature.pck_chain_pem);
         assert_eq!(pem.matches("-----BEGIN CERTIFICATE-----").count(), 3);
