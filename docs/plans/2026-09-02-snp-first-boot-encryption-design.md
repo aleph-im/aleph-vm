@@ -426,6 +426,42 @@ expiry fields (optional in v1's object) enforceable without SecureTSC.
 Consciously deferred: it stands up new key-managed infrastructure and only
 becomes load-bearing when the consumed-secret set needs to grow.
 
+**Considered: direct on-chain verification (feasible, disproportionate).**
+Managing grants in an Ethereum mainnet contract and having the guest
+verify chain state directly was worked through and set aside. Forgery is
+solvable (beacon light client: sync-committee signatures, then a
+Merkle-Patricia proof of the contract storage slot against the verified
+state root), and even the staleness attack — the operator serving a
+perfectly valid *old* chain from before a revocation, which a host-fed
+clock cannot detect — has a clockless fix: the guest issues a nonce, the
+unlocking delegate lands it on-chain (calldata/event), and the guest
+requires a proof of a nonce-bearing block, reading permission state at or
+after it. A nonce cannot appear in a block minted before it existed, so
+freshness comes from chain irreversibility, no trusted time anywhere.
+Rejected on costs, not soundness: thousands of lines of
+consensus-critical code (BLS12-381 pairings, light-client protocol, SSZ,
+MPT proofs) inside the measured init versus a page of signature checks;
+a weak-subjectivity checkpoint baked into the measured image — the
+pinned-key problem in stricter clothing, with a harder refresh
+obligation; a gas-paying transaction and inclusion latency on the
+critical path of every post-reboot unlock; and owner grant/revoke UX
+regressing from free aggregate updates to on-chain calls that split the
+source of truth away from the security aggregate. All to harden a
+channel whose total failure already degrades only to v1.
+
+**Retained refinement: the oracle as an accountable notary.** The v3
+quorum attests over a *public, append-only registry* (the security
+aggregate as anchored by the message chain, or an on-chain mirror) rather
+than over private state. Every statement it signs — `(nonce, time, "the
+registry currently authorizes O→D")` — is then auditable after the fact
+against registry history: an oracle that ever attests contrary to the
+registry has produced portable, self-signed proof of its own
+equivocation, verifiable by anyone. This converts the quorum from a
+trusted party into an accountable one without adding a line to the guest:
+the in-guest interface stays "verify k-of-n pinned signatures over my
+nonce," fail closed, and governance reduces from "whom do we trust
+blindly" to "whom do we remove on proof of equivocation."
+
 ## 8. Component changes and sequencing
 
 1. **aleph-message**: `rootfs_encryption` field + validators (incl. the
