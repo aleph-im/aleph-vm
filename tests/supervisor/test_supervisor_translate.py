@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from aleph_message.models import ItemHash
+from aleph_message.models import ItemHash, Payment, PaymentType
 from aleph_message.models.execution.environment import (
     HypervisorType,
     InstanceEnvironment,
@@ -41,12 +41,14 @@ def _make_qemu_instance_message(
     authorized_keys: list[str] | None = None,
     hypervisor: HypervisorType | None = HypervisorType.qemu,
     trusted_execution: TrustedExecutionEnvironment | None = None,
+    payment: Payment | None = None,
 ) -> InstanceContent:
     return InstanceContent(
         address="0x1234567890abcdef1234567890abcdef12345678",
         time=1.0,
         allow_amend=False,
         authorized_keys=authorized_keys,
+        payment=payment,
         environment=InstanceEnvironment(
             internet=internet,
             aleph_api=False,
@@ -272,6 +274,79 @@ async def test_confidential_instance_populates_tee(monkeypatch: pytest.MonkeyPat
     assert requested_policy != int(AMDSEVPolicy.NO_DBG)
     assert spec.tee.session_dir == settings.CONFIDENTIAL_SESSION_DIRECTORY / _VM_HASH
     assert spec.tee.firmware_path == firmware_path
+
+
+@pytest.mark.asyncio
+async def test_snp_instance_rejected_before_any_download(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An SEV-SNP instance reaching this path is a routing mistake (run.py
+    sends it to build_snp_instance_spec): rejected loudly, before any I/O."""
+    from aleph_message.models.execution.environment import (
+        LaunchMeasurement,
+        SevSnpRegisters,
+        TeePlatform,
+    )
+
+    async def fail_download_all(self: Any) -> None:
+        raise AssertionError("download must not run for a rejected message")
+
+    monkeypatch.setattr(QemuDownloader, "download_all", fail_download_all)
+
+    message = _make_qemu_instance_message(
+        trusted_execution=TrustedExecutionEnvironment(
+            mode="sev_snp",
+            runtime=_FAKE_HASH,
+            measurements=[
+                LaunchMeasurement(
+                    platform=TeePlatform.sev_snp,
+                    registers=SevSnpRegisters(launch="aa" * 48),
+                    vcpu_type="EPYC-v4",
+                )
+            ],
+            policy=0x30000,
+        ),
+        payment=Payment(type=PaymentType.credit),
+    )
+
+    with pytest.raises(InvalidBackendError, match="build_snp_instance_spec"):
+        await build_create_vm_spec(_VM_HASH, message)
+
+
+@pytest.mark.asyncio
+async def test_tdx_instance_rejected_before_any_download(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A TDX instance has no launch path on this CRN: rejected with the mode
+    named, before any I/O (its message carries no firmware to resolve)."""
+    from aleph_message.models.execution.environment import (
+        LaunchMeasurement,
+        TdxRegisters,
+        TeePlatform,
+    )
+
+    async def fail_download_all(self: Any) -> None:
+        raise AssertionError("download must not run for a rejected message")
+
+    monkeypatch.setattr(QemuDownloader, "download_all", fail_download_all)
+
+    message = _make_qemu_instance_message(
+        trusted_execution=TrustedExecutionEnvironment(
+            mode="tdx",
+            runtime=_FAKE_HASH,
+            measurements=[
+                LaunchMeasurement(
+                    platform=TeePlatform.tdx,
+                    registers=TdxRegisters(
+                        mrtd="11" * 48,
+                        rtmr1="22" * 48,
+                        rtmr2="33" * 48,
+                        mrconfigid="44" * 48,
+                    ),
+                )
+            ],
+        ),
+        payment=Payment(type=PaymentType.credit),
+    )
+
+    with pytest.raises(InvalidBackendError, match="tdx instances are not supported"):
+        await build_create_vm_spec(_VM_HASH, message)
 
 
 # ---------------------------------------------------------------------------
