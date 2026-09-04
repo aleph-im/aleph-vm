@@ -13,6 +13,7 @@ Design: docs/plans/2026-07-09-vprogram-runtime-bundle-design.md
 from __future__ import annotations
 
 import json
+import re
 import string
 from typing import Literal
 
@@ -34,6 +35,34 @@ CMDLINE_PLACEHOLDERS_V1 = frozenset({"platform_roothash", "workload_roothash", "
 # /proc/cmdline, so that is the only slot a manifest may fill.
 CMDLINE_PLACEHOLDERS_LUKS_V1 = frozenset({"owner"})
 
+# The closed set of purely-literal (non-placeholder) tokens a format-version-1
+# v-program cmdline template may carry, beyond `key={placeholder}` pairs
+# (whose placeholder name is already restricted by CMDLINE_PLACEHOLDERS_V1).
+# swiotlb=262144 is the gpu runtime's fixed IOMMU bounce-buffer size; nothing
+# else may ride along (e.g. init=/bin/sh), same rationale as the placeholder
+# allowlist above.
+CMDLINE_FIXED_TOKENS_V1 = frozenset({"console=ttyS0", "root=/dev/mapper/verity-root", "ro", "swiotlb=262144"})
+# The closed set of purely-literal tokens for the aleph-instance-runtime luks
+# cmdline template.
+CMDLINE_FIXED_TOKENS_LUKS_V1 = frozenset({"console=ttyS0", "luks=1"})
+
+# The one legal spelling of each closed-set placeholder inside a cmdline
+# token: `<key>={<placeholder>}`, nothing glued before or after it, and no
+# other key. Without this, a placeholder-bearing token was only checked for
+# its placeholder *name* being allowed, so `evil{platform_roothash}`,
+# `roothash={platform_roothash}evil`, or `rdinit={platform_roothash}` all
+# validated: the placeholder name alone said nothing about what surrounds
+# it in the actual booted cmdline.
+CMDLINE_PLACEHOLDER_KEYS = {
+    "platform_roothash": "roothash",
+    "workload_roothash": "workload_roothash",
+    "verified_volumes": "verified_volumes",
+    "owner": "owner",
+}
+_CMDLINE_KV_TOKEN = re.compile(r"^([a-z_]+)=\{([a-z_]+)\}$")
+
+DRIVER_VERSION_PATTERN = r"^\d+\.\d+(\.\d+)?$"
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -52,12 +81,9 @@ def _validate_member_path(value: str) -> str:
     return value
 
 
-def _validate_cmdline_template(value: str, allowed: frozenset[str], required: str) -> str:
-    """Shared cmdline-template validator: parses `value` as a str.format
-    template, rejects positional/format-spec/conversion placeholders, and
-    checks the placeholder set against `allowed` (closed set) with `required`
-    mandatory. Used by both BootSpec (v-program) and InstanceBootSpec so the
-    two formats cannot drift apart."""
+def _parse_cmdline_placeholders(value: str) -> set[str]:
+    """Parse `value` as a str.format template and return its placeholder
+    names, rejecting positional/format-spec/conversion placeholders."""
     placeholders: set[str] = set()
     try:
         parsed = list(string.Formatter().parse(value))
@@ -74,6 +100,40 @@ def _validate_cmdline_template(value: str, allowed: frozenset[str], required: st
             msg = f"cmdline placeholder must be plain (no format spec / conversion): {field_name}"
             raise ValueError(msg)
         placeholders.add(field_name)
+    return placeholders
+
+
+def _check_cmdline_tokens(value: str, fixed_tokens: frozenset[str]) -> None:
+    """Check every whitespace-separated token in `value`: a token with no
+    placeholder must be one of `fixed_tokens` (closed set); a token that
+    carries a placeholder must be exactly `key={placeholder}`, with the key
+    pinned per placeholder by CMDLINE_PLACEHOLDER_KEYS, and nothing glued
+    onto either side."""
+    for token in value.split():
+        if "{" not in token and "}" not in token:
+            if token not in fixed_tokens:
+                msg = f"unknown fixed cmdline token {token!r}; allowed: {sorted(fixed_tokens)}"
+                raise ValueError(msg)
+            continue
+        match = _CMDLINE_KV_TOKEN.fullmatch(token)
+        if match is None:
+            msg = f"cmdline token must be exactly key={{placeholder}}, with nothing else glued onto it: {token!r}"
+            raise ValueError(msg)
+        key, placeholder = match.groups()
+        if CMDLINE_PLACEHOLDER_KEYS.get(placeholder) != key:
+            msg = f"cmdline token {token!r} must pair {{{placeholder}}} with its pinned key, not {key!r}"
+            raise ValueError(msg)
+
+
+def _validate_cmdline_template(value: str, allowed: frozenset[str], required: str, fixed_tokens: frozenset[str]) -> str:
+    """Shared cmdline-template validator: checks the template's placeholder
+    set against `allowed` (closed set) with `required` mandatory, and checks
+    every token (see `_check_cmdline_tokens`) so a manifest cannot smuggle an
+    arbitrary kernel parameter such as `init=/bin/sh`, or arbitrary text
+    glued onto a legitimate placeholder such as `rdinit={platform_roothash}`.
+    Used by both BootSpec (v-program) and InstanceBootSpec so the two
+    formats cannot drift apart."""
+    placeholders = _parse_cmdline_placeholders(value)
     unknown = placeholders - allowed
     if unknown:
         msg = f"unknown cmdline placeholders {sorted(unknown)}; allowed: {sorted(allowed)}"
@@ -81,6 +141,7 @@ def _validate_cmdline_template(value: str, allowed: frozenset[str], required: st
     if required not in placeholders:
         msg = f"cmdline template must contain {{{required}}}"
         raise ValueError(msg)
+    _check_cmdline_tokens(value, fixed_tokens)
     return value
 
 
@@ -135,7 +196,7 @@ class BootSpec(StrictModel):
     @field_validator("cmdline_template")
     @classmethod
     def check_cmdline_template(cls, value: str) -> str:
-        return _validate_cmdline_template(value, CMDLINE_PLACEHOLDERS_V1, "platform_roothash")
+        return _validate_cmdline_template(value, CMDLINE_PLACEHOLDERS_V1, "platform_roothash", CMDLINE_FIXED_TOKENS_V1)
 
 
 class AttestationTransport(StrictModel):
@@ -162,6 +223,22 @@ class SourceInfo(StrictModel):
     build: str = Field(min_length=1)
 
 
+class GpuRuntimeSpec(StrictModel):
+    """What a client pins about the confidential GPU this runtime drives.
+    Properties of the measured runtime (the driver is inside the image), so
+    they live here, pinned through runtime.ref, and never in the message."""
+
+    vendor: Literal["nvidia"]
+    arch: Literal["blackwell", "hopper"]
+    driver_version: str = Field(pattern=DRIVER_VERSION_PATTERN)
+    accepted_models: list[str] = Field(
+        min_length=1, description="Hardware model strings NVIDIA device certificates carry"
+    )
+    library_path: str = Field(
+        pattern=r"^/[a-z0-9/_-]+$", description="Where the driver userland is mounted in the workload chroot"
+    )
+
+
 class RuntimeManifest(StrictModel):
     format: Literal["aleph-vprogram-runtime"]
     format_version: Literal[1]
@@ -174,12 +251,16 @@ class RuntimeManifest(StrictModel):
     # V-PROGRAM messages (rejected as denormalization in the protocol design).
     attestation: list[AttestationProtocol] = Field(min_length=1)
     workload: WorkloadSpec
+    gpu: GpuRuntimeSpec | None = None
     source: SourceInfo
 
     def to_canonical_json(self) -> str:
         """The exact bytes to publish: compact separators, sorted keys, so
-        independently regenerated manifests hash identically."""
-        return json.dumps(self.model_dump(mode="json"), separators=(",", ":"), sort_keys=True)
+        independently regenerated manifests hash identically. `gpu` is
+        omitted entirely (not published as null) when the runtime has no
+        gpu facts, so a non-gpu manifest hashes exactly as it did before
+        the field existed."""
+        return json.dumps(self.model_dump(mode="json", exclude_none=True), separators=(",", ":"), sort_keys=True)
 
 
 class InstanceRuntimeBundle(StrictModel):
@@ -202,7 +283,7 @@ class InstanceBootSpec(StrictModel):
     @field_validator("cmdline_template")
     @classmethod
     def check_cmdline_template(cls, value: str) -> str:
-        return _validate_cmdline_template(value, CMDLINE_PLACEHOLDERS_LUKS_V1, "owner")
+        return _validate_cmdline_template(value, CMDLINE_PLACEHOLDERS_LUKS_V1, "owner", CMDLINE_FIXED_TOKENS_LUKS_V1)
 
 
 class InstanceRuntimeManifest(StrictModel):

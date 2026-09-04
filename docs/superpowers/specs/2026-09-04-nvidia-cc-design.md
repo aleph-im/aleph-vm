@@ -245,9 +245,10 @@ it is trusted beyond what the measured image implies, and the client never
 skips a cryptographic check because a claim says it passed.
 
 Errors: 400 on an over-long or non-hex nonce (same bound as the SNP route),
-503 with `{"error": "gpu not attested"}` when boot-time verification did not
-complete (unreachable in practice, since init powers off), 500 with a bare
-message when NVML fails; detail stays in the guest log.
+404 with `{"error": "no gpu attestation on this runtime"}` when the agent
+was started without the GPU flags (a runtime without a verified GPU; init
+only passes the flags after verification succeeded), 500 with a bare
+message when the collector fails; detail stays in the guest log.
 
 The existing `AttestationReport` and the `/.well-known/attestation` response
 are untouched. A separate route keeps older clients parsing exactly what they
@@ -441,7 +442,7 @@ golden values do not move.
 ### 6.2 Measured cmdline
 
 The GPU runtime's cmdline template is
-`console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash} workload_roothash={workload_roothash} swiotlb=262144 {verified_volumes}`.
+`console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash} workload_roothash={workload_roothash} swiotlb=262144 verified_volumes={verified_volumes}`.
 `swiotlb=262144` (512 MiB of bounce buffer) is NVIDIA's recommendation for
 CC guests; it is a fixed part of the runtime, not a placeholder, so the
 manifest's closed placeholder set is unchanged. The daemon derives the
@@ -490,10 +491,12 @@ interpreters deterministically.
 
 ### 6.4 Init: boot-time GPU verification
 
-`nix/init-gpu.sh`, sourced by `init.sh` after the verity mounts and before
-`prepare_chroot`, runs only when a GPU is present on the PCI bus (the
-platform image without one is unaffected). Steps, each failing to
-`poweroff -f`:
+`nix/init-gpu.sh` is the GPU flavor's own init (a sibling of `init.sh`, the
+way the compose flavor has one). After the verity mounts and before
+`prepare_chroot` it requires an NVIDIA device on the PCI bus and powers off
+without one: a GPU runtime exists only for GPU V-PROGRAMs, and a boot
+without the card would otherwise carry the same launch measurement as a
+verified one. Steps, each failing to `poweroff -f`:
 
 1. `insmod nvidia.ko` with `NVreg_EnableGpuFirmware=1` (GSP is mandatory
    for CC), then `nvidia-uvm.ko`; create device nodes.
@@ -547,10 +550,11 @@ of reference values was init's (6.4).
 `flake.nix` gains `gpuKernel`, `gpuInitrd`, `gpuRootfs`, `gpuVerity`,
 `gpuImage`, `gpuMeasurement`, and `gpuMeasurementFor`. The bundle builder
 emits a runtime manifest with the `gpu` block (5.2). `golden-measurements.json`
-gains the `gpu` entry; the CI golden check covers it. `boot-smoke.sh` gets a
+gains the `gpu` entry; the CI golden check covers it in a separate, gated
+job so base changes do not pay for the GPU chain. `boot-smoke.sh` gets a
 `--gpu` mode that boots `gpuImage` under plain QEMU with no device and
-expects init to skip the GPU step, which is the only smoke a GPU-less CI
-runner can do.
+expects init to power the VM off with `no NVIDIA GPU on the bus`, which is
+the only smoke a GPU-less CI runner can do and proves the fail-closed path.
 
 ---
 
@@ -572,11 +576,15 @@ not NVIDIA or the probe could not run). The probe (`gpu_cc_mode.rs`):
    bits `[1:0]` are `0b01` on, `0b11` devtools, `0b00` off.
 4. Unmap.
 
-The probe runs only for cards that no VM in the world view owns, at
-inventory refresh, and its result is cached per card until the card's
-attachment state changes. Reading a register of a card a guest is driving
-is never done. A probe error is logged and yields `None`, which advertises
-nothing.
+The probe runs only for cards that no VM in the world view owns, reading
+the attached set inside the same blocking task that probes so a concurrent
+create cannot slip a card in between. Results are cached: a refresh
+re-probes only when the attached set changed or the last probe is older
+than 60 seconds, so the public `/about` endpoints cannot drive an unbounded
+rate of register reads. The create-time gate probes a cold card on demand
+once (it is provably unattached there). Reading a register of a card a
+guest is driving is never done. A probe error is logged and yields `None`,
+which advertises nothing.
 
 The proto `GpuDevice` gains `string cc_mode = 5` (empty when unknown).
 `available_gpus_json` carries it through to the agent.
@@ -601,10 +609,12 @@ the CPU model is a measurement input. `fw_cfg` values are not measured, so
 the MMIO window does not move the launch digest, which is what lets the
 window follow the card.
 
-`snp_config_slice` accepts GPUs when every card in the spec reports
-`cc_mode == On` and the spec's runtime manifest declares a `gpu` block; any
-other GPU on an SNP spec stays `InvalidBackend`, with the message naming
-which condition failed. The controller keeps its conformance oracle test:
+`snp_config_slice` accepts GPUs only on the measured verity arm (a
+V-PROGRAM), never on the opaque-cmdline arm confidential instances use, and
+only when every card in the spec reports `cc_mode == On`; any other GPU on
+an SNP spec stays `InvalidBackend`, with the message naming which condition
+failed. The manifest `gpu` block requirement is enforced by the agent,
+which is the layer that reads the manifest (section 7.3). The controller keeps its conformance oracle test:
 with no GPU, the SNP argv is byte-identical to today.
 
 Hugepage and NUMA placement are unchanged; a GPU V-PROGRAM is placed like

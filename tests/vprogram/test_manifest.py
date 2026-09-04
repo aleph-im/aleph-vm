@@ -114,6 +114,30 @@ REJECTION_CASES: list[tuple[str, Callable[[dict[str, Any]], None]]] = [
     ("extra bundle field", lambda d: d["bundle"].update(mirror="x")),
     ("extra boot field", lambda d: d["boot"].update(ip="dhcp")),
     ("extra transport field", lambda d: d["attestation"][0]["transport"].update(host="x")),
+    (
+        "unknown fixed cmdline token",
+        lambda d: d["boot"].update(
+            cmdline_template="console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash} init=/bin/sh"
+        ),
+    ),
+    (
+        "placeholder with text glued before it",
+        lambda d: d["boot"].update(
+            cmdline_template="console=ttyS0 root=/dev/mapper/verity-root ro evil{platform_roothash}"
+        ),
+    ),
+    (
+        "placeholder with text glued after it",
+        lambda d: d["boot"].update(
+            cmdline_template="console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash}evil"
+        ),
+    ),
+    (
+        "placeholder paired with the wrong key",
+        lambda d: d["boot"].update(
+            cmdline_template="console=ttyS0 root=/dev/mapper/verity-root ro rdinit={platform_roothash}"
+        ),
+    ),
 ]
 
 
@@ -123,6 +147,41 @@ def test_rejections(description: str, mutate: Callable[[dict[str, Any]], None]) 
     mutate(data)
     with pytest.raises(ValidationError):
         RuntimeManifest.model_validate(data)
+
+
+def test_gpu_block_is_optional_and_strict() -> None:
+    manifest = RuntimeManifest.model_validate(REFERENCE_MANIFEST)
+    assert manifest.gpu is None
+    with_gpu = deepcopy(REFERENCE_MANIFEST)
+    with_gpu["gpu"] = {
+        "vendor": "nvidia",
+        "arch": "blackwell",
+        "driver_version": "595.71.05",
+        "accepted_models": ["NVIDIA RTX PRO 6000 Blackwell Server Edition"],
+        "library_path": "/opt/nvidia/lib",
+    }
+    assert RuntimeManifest.model_validate(with_gpu).gpu.driver_version == "595.71.05"
+    for bad in (
+        {"vendor": "amd"},
+        {"driver_version": "r595"},
+        {"accepted_models": []},
+        {"library_path": "opt/nvidia"},
+        {"extra": 1},
+    ):
+        broken = deepcopy(with_gpu)
+        broken["gpu"] = with_gpu["gpu"] | bad
+        with pytest.raises(ValidationError):
+            RuntimeManifest.model_validate(broken)
+
+
+def test_gpu_cmdline_template_keeps_swiotlb_as_fixed_text() -> None:
+    from aleph.vm.vprogram.bundle import CMDLINE_TEMPLATE_GPU_V1
+
+    assert "swiotlb=262144" in CMDLINE_TEMPLATE_GPU_V1
+    assert "{swiotlb" not in CMDLINE_TEMPLATE_GPU_V1
+    manifest = deepcopy(REFERENCE_MANIFEST)
+    manifest["boot"]["cmdline_template"] = CMDLINE_TEMPLATE_GPU_V1
+    RuntimeManifest.model_validate(manifest)  # the closed placeholder set still validates
 
 
 def test_vprogram_manifest_rejects_instance_format() -> None:
@@ -215,5 +274,20 @@ def test_instance_manifest_rejects_platform_roothash_field(minimal_instance_mani
 def test_instance_manifest_rejects_extra_bundle_member(minimal_instance_manifest_dict: dict[str, Any]) -> None:
     bad = deepcopy(minimal_instance_manifest_dict)
     bad["bundle"]["members"]["platform_rootfs"] = "image/rootfs.ext4"
+    with pytest.raises(ValidationError):
+        InstanceRuntimeManifest.model_validate(bad)
+
+
+def test_luks_template_still_validates_with_pinned_keys(minimal_instance_manifest_dict: dict[str, Any]) -> None:
+    """console=ttyS0 and luks=1 stay legal as base/fixed literal tokens, and
+    owner={owner} is the one legal spelling of the owner placeholder, even
+    after pinning every placeholder token to its required key."""
+    manifest = InstanceRuntimeManifest.model_validate(minimal_instance_manifest_dict)
+    assert manifest.boot.cmdline_template == "console=ttyS0 luks=1 owner={owner}"
+
+
+def test_instance_template_rejects_owner_with_wrong_key(minimal_instance_manifest_dict: dict[str, Any]) -> None:
+    bad = deepcopy(minimal_instance_manifest_dict)
+    bad["boot"]["cmdline_template"] = "console=ttyS0 luks=1 user={owner}"
     with pytest.raises(ValidationError):
         InstanceRuntimeManifest.model_validate(bad)

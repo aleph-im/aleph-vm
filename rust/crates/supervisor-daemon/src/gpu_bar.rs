@@ -13,6 +13,13 @@ const IORESOURCE_MEM: u64 = 0x0000_0200;
 const IORESOURCE_PREFETCH: u64 = 0x0000_2000;
 const IORESOURCE_MEM_64: u64 = 0x0010_0000;
 const MIN_WINDOW_MB: u64 = 1024;
+/// The largest window the daemon will ever ask OVMF for, in MiB (4 TiB). The
+/// doubling above is unbounded on its own, so a card (or a kernel that
+/// reports nonsense in its `resource` file) with absurd BARs would otherwise
+/// hand fw_cfg a window no firmware can lay out, and the VM would fail deep
+/// inside OVMF instead of here. Far above any real card: today's largest is
+/// 128 GiB of BAR1, which asks for 512 GiB.
+const MAX_WINDOW_MB: u64 = 4 * 1024 * 1024;
 
 /// Sum the sizes of the 64-bit prefetchable memory BARs listed in a sysfs
 /// `resource` file (`start end flags` per line, hex).
@@ -40,10 +47,25 @@ pub fn parse_resource_file(contents: &str) -> Result<u64, DaemonError> {
 }
 
 /// Window size in MiB: the BAR total rounded up to a power of two, doubled
-/// so OVMF has alignment slack, never below 1 GiB.
+/// so OVMF has alignment slack, never below 1 GiB and never above 4 TiB.
 pub fn mmio64_window_mb(bar_bytes: u64) -> u64 {
     let mb = bar_bytes.div_ceil(1 << 20).max(1);
-    (mb.next_power_of_two() * 2).max(MIN_WINDOW_MB)
+    // Saturating rather than wrapping: a BAR total near u64::MAX must clamp
+    // to the ceiling below, not wrap around to a tiny window.
+    let window = mb
+        .checked_next_power_of_two()
+        .and_then(|rounded| rounded.checked_mul(2))
+        .unwrap_or(u64::MAX)
+        .max(MIN_WINDOW_MB);
+    if window > MAX_WINDOW_MB {
+        tracing::warn!(
+            window_mb = window,
+            max_window_mb = MAX_WINDOW_MB,
+            "GPU BARs ask for an MMIO64 window past the ceiling; clamping"
+        );
+        return MAX_WINDOW_MB;
+    }
+    window
 }
 
 /// The window for a set of cards attached to one VM.
@@ -91,6 +113,16 @@ mod tests {
         assert_eq!(mmio64_window_mb(0), 1024);
         assert_eq!(mmio64_window_mb(256 * (1 << 20)), 1024);
         assert_eq!(mmio64_window_mb(3 * (1 << 30)), 8 * 1024);
+    }
+
+    #[test]
+    fn the_window_is_clamped_to_the_ceiling() {
+        // Just under the ceiling still passes through untouched.
+        assert_eq!(mmio64_window_mb(1024 * (1 << 30)), 2 * 1024 * 1024);
+        // 4 TiB of BARs would ask for 8 TiB; the ceiling holds.
+        assert_eq!(mmio64_window_mb(4 * (1u64 << 40)), MAX_WINDOW_MB);
+        // And the rounding cannot overflow into a tiny window.
+        assert_eq!(mmio64_window_mb(u64::MAX), MAX_WINDOW_MB);
     }
 
     #[test]

@@ -9,10 +9,10 @@
 # proves the positional device binding (vde/vdf) and the /volumes mount.
 #
 # `--gpu` instead boots the confidential-GPU image (gpuImage) on a host with
-# no NVIDIA device, which is the flavor's own no-GPU path: init-gpu.sh must
-# find no 0x10de PCI device, say so, and boot on exactly like the base image.
-# It does not exercise the driver, the verifier or the ready state; those
-# need real Blackwell hardware.
+# no NVIDIA device, which is that flavor's fail-closed path: init-gpu.sh must
+# find no 0x10de PCI device, say so, and power the VM off rather than serve an
+# attested endpoint with no GPU behind it. It does not exercise the driver,
+# the verifier or the ready state; those need real Blackwell hardware.
 #
 # Usage: nix/boot-smoke.sh [--gpu]
 # Local tool, not a CI gate: it needs KVM (or a slow TCG boot).
@@ -49,8 +49,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-run_phase() {
-  local phase="$1"; shift
+start_qemu() {
   local append="$1"; shift
   local -a extra_drives=("$@")
   # Drop the previous phase's log before reassigning the global, or the
@@ -69,6 +68,12 @@ run_phase() {
     -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
     > "$log" 2>&1 &
   qemu_pid=$!
+}
+
+run_phase() {
+  local phase="$1"; shift
+  local append="$1"; shift
+  start_qemu "$append" "$@"
 
   deadline=$((SECONDS + 120))
   while [ "$SECONDS" -lt "$deadline" ]; do
@@ -92,18 +97,42 @@ run_phase() {
 }
 
 # GPU mode: the confidential-GPU image, platform-only cmdline, no NVIDIA
-# device attached. The GPU stage must take its no-GPU branch and the rest of
-# the boot must be indistinguishable from the base image's phase 1.
+# device attached. Unlike every other phase there is no readiness marker to
+# wait for: the run is a success only when the VM POWERS OFF, so this waits
+# for QEMU to exit on its own and then reads what the console said.
+run_gpu_no_device_phase() {
+  local append="$1"
+  start_qemu "$append"
+  local deadline=$((SECONDS + 120))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    kill -0 "$qemu_pid" 2>/dev/null || break
+    sleep 1
+  done
+  if kill -0 "$qemu_pid" 2>/dev/null; then
+    echo "boot smoke FAILED (gpu): the VM is still up; a GPU-less host must power it off. Serial log follows:" >&2
+    cat "$log" >&2
+    exit 1
+  fi
+  wait "$qemu_pid" 2>/dev/null || true
+  qemu_pid=""
+  if ! grep -qF "init: FATAL: gpu attestation failed: no NVIDIA GPU on the bus" "$log"; then
+    echo "boot smoke FAILED (gpu): the console never reported the missing GPU. Serial log follows:" >&2
+    cat "$log" >&2
+    exit 1
+  fi
+  # The whole point of the fail-closed path: nothing the client could attest
+  # may come up. /sbin/init is the last thing init-gpu.sh starts.
+  if grep -qF "init: starting /sbin/init from " "$log"; then
+    echo "boot smoke FAILED (gpu): the workload started without a GPU. Serial log follows:" >&2
+    cat "$log" >&2
+    exit 1
+  fi
+}
+
 if [ "$gpu_mode" -eq 1 ]; then
   mem=2048
-  markers=(
-    "init: no NVIDIA GPU present; running without GPU attestation"
-    "init: mounting /dev/mapper/verity-root"
-    "init: firewall active"
-    "init: starting /sbin/init from "
-  )
-  run_phase "gpu" "console=ttyS0 root=/dev/mapper/verity-root ro roothash=$roothash swiotlb=262144"
-  echo "boot smoke --gpu OK: GPU image booted with no GPU, rootfs verified and mounted, firewall up, /sbin/init started" >&2
+  run_gpu_no_device_phase "console=ttyS0 root=/dev/mapper/verity-root ro roothash=$roothash swiotlb=262144"
+  echo "boot smoke --gpu OK: GPU image found no GPU, refused to serve, and powered the VM off" >&2
   exit 0
 fi
 

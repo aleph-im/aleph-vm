@@ -26,6 +26,7 @@ from aleph.vm.vprogram.manifest import (
     AttestationTransport,
     BootSpec,
     BundleMembers,
+    GpuRuntimeSpec,
     InstanceBootSpec,
     InstanceBundleMembers,
     InstanceRuntimeBundle,
@@ -53,6 +54,14 @@ MEMBER_FILES = {
 ROOTHASH_FILE = "rootfs.ext4.roothash"
 MEASUREMENT_FILE = "measurement.hex"
 
+# The nix `gpuImage` output directory has the identical byte layout to the
+# vprogram `image` output (the gpu flavor differs only in the extra gpu.json
+# facts sidecar read below), so it packages from MEMBER_FILES too.
+#
+# The gpu flavor's build-time facts about the confidential GPU this runtime
+# drives, written by the nix build alongside the usual image members.
+GPU_JSON_FILE = "gpu.json"
+
 # Role -> file name inside the nix `instanceImage` output directory: OVMF,
 # kernel, initrd only. No rootfs, no hash tree, no verity sidecars: the
 # instance init has no verity branch (the guest supplies its own LUKS rootfs
@@ -74,6 +83,8 @@ class BundleInfo(StrictModel):
     platform_roothash: str = Field(pattern=SHA256_HEX_PATTERN)
     # The measurement baked by the nix build (fixed CI shape); informational.
     measurement: str = Field(min_length=1)
+    # Recorded only by a `flavor="gpu"` build, from the image's gpu.json.
+    gpu: GpuRuntimeSpec | None = None
     source: SourceInfo
 
 
@@ -131,10 +142,13 @@ def build_bundle(
     layout exactly. `flavor="compose"` packages the nix `composeImage`
     output, which has the exact same byte layout (the flavors differ only in
     which derivations fill the member slots), so it shares the vprogram
-    path below. `flavor="instance"` expects only OVMF/kernel/initrd (the
-    nix `instanceImage` output) and never reads a verity sidecar.
+    path below. `flavor="gpu"` packages the nix `gpuImage` output, same byte
+    layout again, plus an extra `gpu.json` facts sidecar (read into
+    `BundleInfo.gpu`, never added to the tarball). `flavor="instance"`
+    expects only OVMF/kernel/initrd (the nix `instanceImage` output) and
+    never reads a verity sidecar.
     """
-    if flavor not in ("vprogram", "instance", "compose"):
+    if flavor not in ("vprogram", "instance", "compose", "gpu"):
         msg = f"unknown bundle flavor: {flavor!r}"
         raise ValueError(msg)
 
@@ -167,6 +181,14 @@ def build_bundle(
             msg = f"expected image file missing: {image_dir / name}"
             raise FileNotFoundError(msg)
 
+    gpu_spec: GpuRuntimeSpec | None = None
+    if flavor == "gpu":
+        gpu_path = image_dir / GPU_JSON_FILE
+        if not gpu_path.is_file():
+            msg = f"expected gpu facts file missing: {gpu_path}"
+            raise FileNotFoundError(msg)
+        gpu_spec = GpuRuntimeSpec.model_validate_json(gpu_path.read_text())
+
     platform_roothash = _read_sidecar(image_dir, ROOTHASH_FILE, SHA256_HEX_PATTERN)
     measurement = _read_sidecar(image_dir, MEASUREMENT_FILE, None)
 
@@ -180,6 +202,7 @@ def build_bundle(
         members=BundleMembers(**{role: f"{TAR_PREFIX}/{name}" for role, name in MEMBER_FILES.items()}),
         platform_roothash=platform_roothash,
         measurement=measurement,
+        gpu=gpu_spec,
         source=source,
     )
     info_path = out_dir / BUNDLE_INFO_NAME
@@ -204,6 +227,20 @@ CMDLINE_TEMPLATE_EXEC_V1 = (
     " workload_roothash={workload_roothash}"
     " verified_volumes={verified_volumes}"
 )
+# Gpu-runtime flavor: same placeholder order and the same
+# verified_volumes={verified_volumes} spelling as CMDLINE_TEMPLATE_EXEC_V1
+# (the aleph-rs CLI renders {verified_volumes} as the joined roothashes and
+# drops the whole verified_volumes= token when there are none; a bare
+# {verified_volumes} slot would render an unmeasurable cmdline), with a
+# fixed swiotlb=262144 token inserted before it to size the IOMMU bounce
+# buffer for the passed-through confidential GPU. Byte-identity with what
+# the daemon emits matters the same way CMDLINE_TEMPLATE_EXEC_V1's does.
+CMDLINE_TEMPLATE_GPU_V1 = (
+    "console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash}"
+    " workload_roothash={workload_roothash}"
+    " swiotlb=262144"
+    " verified_volumes={verified_volumes}"
+)
 DEFAULT_CPU_MODELS = ["EPYC-v4"]
 DEFAULT_ATTESTATION = [
     AttestationProtocol(protocol="aleph.ra-tls", version="1", transport=AttestationTransport(type="tcp", port=8443))
@@ -222,7 +259,7 @@ COMPOSE_WORKLOAD = WorkloadSpec(contract="aleph.compose/1", upstream_port=8080)
 CMDLINE_TEMPLATE_LUKS_V1 = "console=ttyS0 luks=1 owner={owner}"
 
 
-def make_manifest(
+def make_manifest(  # noqa: PLR0913 -- one flag per mutually exclusive workload flavor, kept explicit over a mode enum
     info: BundleInfo,
     bundle_ref: str,
     name: str,
@@ -230,6 +267,7 @@ def make_manifest(
     *,
     exec_runtime: bool = False,
     compose_runtime: bool = False,
+    gpu_runtime: bool = False,
 ) -> RuntimeManifest:
     """Build the manifest for an uploaded bundle. Validation is the
     constructor: any inconsistency raises pydantic ValidationError.
@@ -240,14 +278,26 @@ def make_manifest(
     `compose_runtime=True` to select the `aleph.compose/1` workload
     contract; both use the same `{platform_roothash}`/`{workload_roothash}`
     cmdline template, since both boot a separate measured workload rootfs.
-    The two are mutually exclusive.
+    Pass `gpu_runtime=True` to select the `aleph.exec/1` workload contract
+    with the gpu cmdline template (adds the fixed swiotlb=262144 token) and
+    to carry `info.gpu` onto the manifest; it requires `info.gpu` to be set,
+    i.e. `info` must come from a `flavor="gpu"` build. The three are
+    mutually exclusive.
     """
-    if exec_runtime and compose_runtime:
-        msg = "exec_runtime and compose_runtime are mutually exclusive"
+    if sum((exec_runtime, compose_runtime, gpu_runtime)) > 1:
+        msg = "exec_runtime, compose_runtime and gpu_runtime are mutually exclusive"
         raise ValueError(msg)
-    workload_runtime = exec_runtime or compose_runtime
-    cmdline_template = CMDLINE_TEMPLATE_EXEC_V1 if workload_runtime else CMDLINE_TEMPLATE_V1
-    if exec_runtime:
+    if gpu_runtime and info.gpu is None:
+        msg = "gpu_runtime needs the gpu facts recorded by the gpu flavor build"
+        raise ValueError(msg)
+    workload_runtime = exec_runtime or compose_runtime or gpu_runtime
+    if gpu_runtime:
+        cmdline_template = CMDLINE_TEMPLATE_GPU_V1
+    elif workload_runtime:
+        cmdline_template = CMDLINE_TEMPLATE_EXEC_V1
+    else:
+        cmdline_template = CMDLINE_TEMPLATE_V1
+    if exec_runtime or gpu_runtime:
         workload = EXEC_WORKLOAD
     elif compose_runtime:
         workload = COMPOSE_WORKLOAD
@@ -269,6 +319,7 @@ def make_manifest(
         ),
         attestation=[protocol.model_copy(deep=True) for protocol in DEFAULT_ATTESTATION],
         workload=workload.model_copy(deep=True),
+        gpu=info.gpu.model_copy(deep=True) if gpu_runtime and info.gpu is not None else None,
         source=info.source,
     )
 

@@ -201,6 +201,9 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
         numa,
         numa_ledger,
         gpu_cc_modes: std::sync::Mutex::new(std::collections::HashMap::new()),
+        gpu_cc_probe_state: std::sync::Mutex::new(
+            supervisor_daemon::service::CcProbeState::default(),
+        ),
     });
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
