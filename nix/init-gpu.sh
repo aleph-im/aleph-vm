@@ -10,7 +10,10 @@
 # to init.sh, so the two files diff cleanly.
 #
 # Fail-closed: every GPU error powers the VM off. A GPU runtime that could not
-# prove its GPU must never present an attested endpoint.
+# prove its GPU must never present an attested endpoint. Finding no GPU at all
+# is one of those errors: this image exists to serve a confidential GPU, and a
+# client attesting it would otherwise get a valid-looking endpoint with no GPU
+# behind it. The GPU-less host runs the base image instead.
 #
 # The mounts/networking prologue and the wait_for_rootfs_blkdev/wait_for_dev/
 # prepare_chroot helpers live in init-common.sh, shared with init-instance.sh.
@@ -169,8 +172,8 @@ fi
 
 # Confidential GPU: load the driver, verify the GPU against NVIDIA's
 # reference manifests, set the ready state, and record the claims for the
-# attest-agent. Every failure powers the VM off: a GPU runtime without a
-# verified GPU must never present an attested endpoint.
+# attest-agent. Every failure powers the VM off, an absent GPU included: a GPU
+# runtime without a verified GPU must never present an attested endpoint.
 #
 # nvattest and nvidia-smi are dynamically linked and live in the verity
 # rootfs (nvattest at its nix store path, nvidia-smi as the raw, unpatched
@@ -251,7 +254,10 @@ if gpu_present; then
     # on its own line. result_message follows result_code today, hence the
     # trailing comma, but the match does not depend on it: a future build that
     # drops or reorders result_message must not silently stop verifying this.
-    /bin/busybox grep -qE '"result_code" *: *0 *,?$' /run/aleph/gpu-attest.json \
+    # The pattern is anchored to the TOP-LEVEL indent (four spaces at dump(4)):
+    # a per-device "result_code": 0 nested deeper in the document must never
+    # satisfy the check for an overall result that failed.
+    /bin/busybox grep -qE '^    "result_code" *: *0 *,?$' /run/aleph/gpu-attest.json \
         || gpu_fatal "result_code != 0"
     # Extract the claims array for the attest-agent (the EAT is not served).
     # "claims" sorts first, so its value spans from the `    "claims": [` line
@@ -308,7 +314,7 @@ if gpu_present; then
     fi
     echo "init: GPU verified and ready"
 else
-    echo "init: no NVIDIA GPU present; running without GPU attestation"
+    gpu_fatal "no NVIDIA GPU on the bus: this runtime requires one"
 fi
 
 # Prepare only the chroot that will actually run its /sbin/init: when a
