@@ -54,11 +54,10 @@ MEMBER_FILES = {
 ROOTHASH_FILE = "rootfs.ext4.roothash"
 MEASUREMENT_FILE = "measurement.hex"
 
-# Role -> file name inside the nix `gpuImage` output directory: identical
-# byte layout to the vprogram `image` output (the gpu flavor differs only in
-# the extra gpu.json facts sidecar read below), so it shares the vprogram
-# packaging path.
-GPU_MEMBER_FILES = dict(MEMBER_FILES)
+# The nix `gpuImage` output directory has the identical byte layout to the
+# vprogram `image` output (the gpu flavor differs only in the extra gpu.json
+# facts sidecar read below), so it packages from MEMBER_FILES too.
+#
 # The gpu flavor's build-time facts about the confidential GPU this runtime
 # drives, written by the nix build alongside the usual image members.
 GPU_JSON_FILE = "gpu.json"
@@ -176,8 +175,7 @@ def build_bundle(
         info_path.write_text(json.dumps(instance_info.model_dump(mode="json"), indent=2, sort_keys=True) + "\n")
         return instance_info
 
-    member_files = GPU_MEMBER_FILES if flavor == "gpu" else MEMBER_FILES
-    file_names = sorted({*member_files.values(), ROOTHASH_FILE, MEASUREMENT_FILE})
+    file_names = sorted({*MEMBER_FILES.values(), ROOTHASH_FILE, MEASUREMENT_FILE})
     for name in file_names:
         if not (image_dir / name).is_file():
             msg = f"expected image file missing: {image_dir / name}"
@@ -201,7 +199,7 @@ def build_bundle(
     info = BundleInfo(
         sha256=hashlib.sha256(data).hexdigest(),
         size=len(data),
-        members=BundleMembers(**{role: f"{TAR_PREFIX}/{name}" for role, name in member_files.items()}),
+        members=BundleMembers(**{role: f"{TAR_PREFIX}/{name}" for role, name in MEMBER_FILES.items()}),
         platform_roothash=platform_roothash,
         measurement=measurement,
         gpu=gpu_spec,

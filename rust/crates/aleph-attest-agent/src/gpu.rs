@@ -39,6 +39,13 @@ pub trait GpuEvidenceSource: Send + Sync {
 /// driver is wedged and the request should fail rather than pile up.
 pub const COLLECT_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// An upper bound on what one collection may print. A real evidence document
+/// is a few hundred KiB (the SPDM response plus a base64 certificate chain),
+/// so 8 MiB is generous, and the agent runs in a guest whose whole RAM the
+/// workload also needs: a collector that runs away must not be able to grow
+/// the agent's heap without limit, once per request.
+pub const MAX_COLLECTOR_OUTPUT: u64 = 8 * 1024 * 1024;
+
 #[derive(Deserialize)]
 struct CollectorOutput {
     evidences: Vec<GpuEvidence>,
@@ -94,6 +101,24 @@ impl CollectorProcess {
     }
 }
 
+/// Read one pipe to end of file, but never buffer more than
+/// [`MAX_COLLECTOR_OUTPUT`]. Returns the bytes read and whether the cap was
+/// reached. Past the cap the rest is drained into a sink rather than left in
+/// the pipe: a writer blocked on a full pipe would never exit, and the run
+/// would then fail on the timeout instead of saying the output was too big.
+fn drain_capped(pipe: &mut impl Read) -> (Vec<u8>, bool) {
+    let mut buf = Vec::new();
+    let _ = pipe
+        .by_ref()
+        .take(MAX_COLLECTOR_OUTPUT)
+        .read_to_end(&mut buf);
+    let capped = buf.len() as u64 >= MAX_COLLECTOR_OUTPUT;
+    if capped {
+        let _ = std::io::copy(pipe, &mut std::io::sink());
+    }
+    (buf, capped)
+}
+
 impl GpuEvidenceSource for CollectorProcess {
     fn collect(&self, nonce: &[u8; 32]) -> Result<Vec<GpuEvidence>> {
         let nonce_hex = hex::encode(nonce);
@@ -112,17 +137,12 @@ impl GpuEvidenceSource for CollectorProcess {
         let mut stdout = child.stdout.take().context("expected piped stdout")?;
         let mut stderr = child.stderr.take().context("expected piped stderr")?;
 
-        let stdout_handle = std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = stdout.read_to_end(&mut buf);
-            buf
-        });
-
-        let stderr_handle = std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = stderr.read_to_end(&mut buf);
-            buf
-        });
+        // Each reader stops at MAX_COLLECTOR_OUTPUT, so neither pipe can grow
+        // the agent's heap without bound. A buffer that comes back at the cap
+        // is a truncated read, and a truncated document must never be parsed
+        // as if it were the whole answer, so it fails below.
+        let stdout_handle = std::thread::spawn(move || drain_capped(&mut stdout));
+        let stderr_handle = std::thread::spawn(move || drain_capped(&mut stderr));
 
         let started = std::time::Instant::now();
         loop {
@@ -142,12 +162,18 @@ impl GpuEvidenceSource for CollectorProcess {
         }
 
         // Join reader threads
-        let stdout_buf = stdout_handle
+        let (stdout_buf, stdout_capped) = stdout_handle
             .join()
             .map_err(|_| anyhow::anyhow!("stdout reader thread panicked"))?;
-        let stderr_buf = stderr_handle
+        let (stderr_buf, stderr_capped) = stderr_handle
             .join()
             .map_err(|_| anyhow::anyhow!("stderr reader thread panicked"))?;
+        if stdout_capped {
+            bail!("collector output exceeded {MAX_COLLECTOR_OUTPUT} bytes");
+        }
+        if stderr_capped {
+            bail!("collector stderr exceeded {MAX_COLLECTOR_OUTPUT} bytes");
+        }
 
         let status = child
             .wait()
@@ -283,5 +309,39 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].arch, "HOPPER");
         assert_eq!(out[0].nonce, "ab".repeat(32));
+    }
+
+    /// A collector that never stops printing must not grow the agent's heap
+    /// with it: the read stops at the cap and the request fails, promptly
+    /// (the drain lets the writer finish instead of hanging until the
+    /// collection timeout).
+    #[test]
+    fn collect_rejects_output_over_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("runaway.sh");
+        // 16 MiB of stdout, twice the cap, without holding it all in the
+        // script: 1024 writes of 16 KiB.
+        std::fs::write(
+            &script,
+            "chunk=$(dd if=/dev/zero bs=16384 count=1 2>/dev/null | tr '\\0' 'x')\n\
+             i=0\nwhile [ $i -lt 1024 ]; do printf '%s' \"$chunk\"; i=$((i + 1)); done\n",
+        )
+        .unwrap();
+        // Run it as an argument to /bin/sh rather than exec'ing the file: a
+        // fork from another test thread can still hold the just-written
+        // script open, and exec would then fail ETXTBSY.
+        let collector =
+            CollectorProcess::from_command_line(&format!("/bin/sh {}", script.display())).unwrap();
+        let started = std::time::Instant::now();
+        let err = collector.collect(&[0x11u8; 32]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains(&format!("exceeded {MAX_COLLECTOR_OUTPUT} bytes")),
+            "{err}"
+        );
+        assert!(
+            started.elapsed() < COLLECT_TIMEOUT,
+            "the oversized run must fail on the cap, not on the timeout"
+        );
     }
 }

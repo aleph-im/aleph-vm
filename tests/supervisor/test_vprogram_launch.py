@@ -783,6 +783,46 @@ async def test_gpu_vprogram_spec_leaves_gpus_for_run_to_resolve(tmp_path, storag
     assert (rootfs.parent / f"{rootfs.name}.cmdline_extra").read_text() == "swiotlb=262144\n"
 
 
+@requires_gpu_field
+@pytest.mark.asyncio
+async def test_gpu_vprogram_rejects_a_second_gpu(tmp_path, storage_files, snp_vcpu_types):
+    # One card per VM: the measured cmdline reserves a single swiotlb window
+    # and the guest verifies one device. The schema caps the list at one, so
+    # the two-GPU content is built with model_copy to prove the launch path
+    # has its own guard rather than trusting the sender's message.
+    from aleph_message.models.execution.vprogram import ConfidentialGpu
+
+    _stage_bundle(tmp_path, storage_files, gpu=GPU_BLOCK)
+    message = _with_gpu(load_vprogram_message())
+    content = message.content.model_copy(
+        update={
+            "gpus": [
+                ConfidentialGpu(vendor="nvidia", device_id="10de:2b85"),
+                ConfidentialGpu(vendor="nvidia", device_id="10de:2b85"),
+            ]
+        }
+    )
+    with pytest.raises(VmSetupError, match="one confidential GPU"):
+        await build_vprogram_spec(message.item_hash, content)
+
+
+@requires_gpu_field
+@pytest.mark.asyncio
+async def test_gpu_vprogram_rejects_a_foreign_vendor(tmp_path, storage_files, snp_vcpu_types):
+    # The runtime drives NVIDIA cards; a message asking for another vendor
+    # would be launched against a driver that cannot attest it. Again built
+    # with model_copy, since the schema itself would reject the vendor.
+    from aleph_message.models.execution.vprogram import ConfidentialGpu
+
+    _stage_bundle(tmp_path, storage_files, gpu=GPU_BLOCK)
+    message = _with_gpu(load_vprogram_message())
+    content = message.content.model_copy(
+        update={"gpus": [ConfidentialGpu.model_construct(vendor="amd", device_id="1002:744c")]}
+    )
+    with pytest.raises(VmSetupError, match="amd"):
+        await build_vprogram_spec(message.item_hash, content)
+
+
 @pytest.mark.asyncio
 async def test_non_gpu_vprogram_leaves_no_cmdline_extra_sidecar(tmp_path, storage_files, snp_vcpu_types):
     _stage_bundle(
