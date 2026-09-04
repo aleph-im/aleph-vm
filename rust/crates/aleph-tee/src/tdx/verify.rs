@@ -29,7 +29,8 @@ use sha2::{Digest, Sha256};
 
 use super::certs::verify_pck_chain;
 use super::collateral::TdxCollateral;
-use super::quote::{INTEL_QE_VENDOR_ID, TdxQuote};
+use super::quote::{INTEL_QE_VENDOR_ID, TdxQuote, TdxRegisters, extract_registers};
+use super::tcb::{TdxTcbOutcome, TdxTcbPolicy, evaluate_tcb};
 
 /// Offset of `report_data` inside an SGX enclave report (the QE report).
 const QE_REPORT_DATA_OFFSET: usize = 320;
@@ -121,6 +122,39 @@ pub fn verify_tdx_quote_chain(
     verify_quote_signature(quote)?;
 
     Ok(pck_leaf)
+}
+
+/// A fully verified TDX quote: genuine, at an accepted TCB level, with the
+/// registers and `report_data` a caller pins and binds freshness against.
+///
+/// A `TdxVerification` is NOT on its own a decision to trust a guest. It
+/// says the TD is a genuine Intel-attested platform at an acceptable TCB.
+/// The caller must still compare `registers` against the message's declared
+/// `LaunchMeasurement`, bind freshness through `report_data`, and (once the
+/// guest-side extend ships) check the derived `rtmr3` commitment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TdxVerification {
+    pub tcb: TdxTcbOutcome,
+    pub registers: TdxRegisters,
+    pub report_data: [u8; 64],
+}
+
+/// Fully verify a parsed TDX quote: chain and signatures, then TCB
+/// appraisal and the platform gates under `policy`.
+pub fn verify_tdx_quote(
+    quote: &TdxQuote,
+    collateral: &TdxCollateral,
+    now: SystemTime,
+    policy: &TdxTcbPolicy,
+) -> Result<TdxVerification> {
+    let pck_leaf = verify_tdx_quote_chain(quote, collateral, now)?;
+    let tcb =
+        evaluate_tcb(quote, collateral, &pck_leaf, now, policy).context("TCB appraisal failed")?;
+    Ok(TdxVerification {
+        tcb,
+        registers: extract_registers(&quote.body),
+        report_data: quote.body.report_data,
+    })
 }
 
 #[cfg(test)]
@@ -265,6 +299,30 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("quote signature"), "got: {err}");
+    }
+
+    #[test]
+    fn full_verify_accepts_genuine_quote() {
+        use crate::tdx::tcb::{TcbStatus, TdxTcbPolicy};
+        let quote = parse_tdx_quote(QUOTE_V4).expect("quote parses");
+        let collateral = TdxCollateral::from_json(COLLATERAL_V4).expect("collateral parses");
+        let verified = verify_tdx_quote(&quote, &collateral, now_v4(), &TdxTcbPolicy::default())
+            .expect("full verification succeeds");
+        assert_eq!(verified.tcb.status, TcbStatus::UpToDate);
+        assert_eq!(verified.registers, extract_registers(&quote.body));
+        assert_eq!(verified.report_data, quote.body.report_data);
+    }
+
+    #[test]
+    fn full_verify_rejects_bad_tcb_before_returning_registers() {
+        use crate::tdx::tcb::TdxTcbPolicy;
+        // Genuine chain, but a debuggable TD: the composed verify must fail
+        // rather than hand back registers for a rejected quote.
+        let mut raw = QUOTE_V4.to_vec();
+        raw[48 + 120] |= 0x01;
+        let quote = parse_tdx_quote(&raw).expect("parses");
+        let collateral = TdxCollateral::from_json(COLLATERAL_V4).expect("collateral parses");
+        assert!(verify_tdx_quote(&quote, &collateral, now_v4(), &TdxTcbPolicy::default()).is_err());
     }
 
     #[test]
