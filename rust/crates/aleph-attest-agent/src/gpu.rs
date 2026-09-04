@@ -9,8 +9,6 @@
 //! and parses what comes back. The trait keeps the route testable with a
 //! fake collector script.
 
-#![allow(dead_code)]
-
 use std::io::Read;
 use std::process::Command;
 use std::time::Duration;

@@ -2,10 +2,12 @@ use std::sync::Arc;
 
 use actix_web::web::{self, Bytes};
 use actix_web::{HttpRequest, HttpResponse};
+use aleph_tee::report_data::gpu_nonce;
 use aleph_tee::traits::TeeBackend;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::attestation::get_fresh_report;
+use crate::gpu::{GpuEvidence, GpuEvidenceSource};
 
 /// Hop-by-hop headers (RFC 7230 6.1, plus the `Proxy-*` family). These are
 /// connection-scoped and MUST NOT be forwarded by a proxy: relaying a client's
@@ -42,6 +44,21 @@ pub struct AppState {
     pub upstream: String,
     /// HTTP client for proxying requests to the upstream application.
     pub http_client: reqwest::Client,
+    /// GPU evidence source and boot claims; `None` on runtimes without a GPU.
+    pub gpu: Option<Arc<GpuState>>,
+}
+
+/// GPU attestation state, present only when init handed the agent the
+/// claims its boot-time verification produced (`--gpu-claims`) and the
+/// collector command (`--gpu-collector`).
+pub struct GpuState {
+    pub source: Box<dyn GpuEvidenceSource>,
+    /// The per-GPU claims NVIDIA's local verifier produced at boot. Served
+    /// as information for the client; nothing in it replaces a client-side
+    /// cryptographic check.
+    pub boot_claims: serde_json::Value,
+    /// One SPDM exchange at a time: concurrent callers queue.
+    pub lock: tokio::sync::Mutex<()>,
 }
 
 /// Upper bound on the decoded nonce accepted by the attestation endpoint.
@@ -71,20 +88,9 @@ pub async fn attestation_endpoint(
     state: web::Data<AppState>,
     query: web::Query<AttestationQuery>,
 ) -> HttpResponse {
-    // Bound the nonce before decoding so an oversized query string is
-    // rejected without being hex-decoded first.
-    if query.nonce.len() > MAX_NONCE_LEN * 2 {
-        return HttpResponse::BadRequest().json(serde_json::json!({
-            "error": format!("nonce too long: at most {MAX_NONCE_LEN} bytes ({} hex chars)", MAX_NONCE_LEN * 2)
-        }));
-    }
-    // Decode the hex nonce.
-    let nonce = match hex::decode(&query.nonce) {
+    let nonce = match decode_nonce(&query.nonce) {
         Ok(n) => n,
-        Err(e) => {
-            return HttpResponse::BadRequest()
-                .json(serde_json::json!({"error": format!("invalid hex nonce: {e}")}));
-        }
+        Err(resp) => return resp,
     };
 
     // Request a fresh report bound to the agent's real served key and the nonce.
@@ -96,6 +102,71 @@ pub async fn attestation_endpoint(
             tracing::error!("attestation report failed: {e:#}");
             HttpResponse::InternalServerError()
                 .json(serde_json::json!({"error": "attestation report failed"}))
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct GpuAttestationResponse {
+    pub tee_type: &'static str,
+    pub client_nonce: String,
+    pub gpus: Vec<GpuEvidence>,
+    pub boot_claims: serde_json::Value,
+}
+
+/// Decode and bound the hex nonce shared by both attestation routes.
+fn decode_nonce(nonce_hex: &str) -> Result<Vec<u8>, HttpResponse> {
+    if nonce_hex.len() > MAX_NONCE_LEN * 2 {
+        return Err(HttpResponse::BadRequest().json(serde_json::json!({
+            "error": format!("nonce too long: at most {MAX_NONCE_LEN} bytes ({} hex chars)", MAX_NONCE_LEN * 2)
+        })));
+    }
+    hex::decode(nonce_hex).map_err(|e| {
+        HttpResponse::BadRequest()
+            .json(serde_json::json!({"error": format!("invalid hex nonce: {e}")}))
+    })
+}
+
+/// GET `/.well-known/attestation/gpu?nonce=<hex>`
+///
+/// Returns fresh GPU evidence for every attached GPU, each answering the
+/// SPDM nonce `gpu_nonce(served_key, client_nonce)`. The client recomputes
+/// that nonce, so a report relayed from another channel or another request
+/// cannot match. Served over the same attested TLS channel as the SNP
+/// report, which is what makes the document guest-authored.
+pub async fn gpu_attestation_endpoint(
+    state: web::Data<AppState>,
+    query: web::Query<AttestationQuery>,
+) -> HttpResponse {
+    let Some(gpu) = state.gpu.as_ref() else {
+        return HttpResponse::NotFound()
+            .json(serde_json::json!({"error": "no gpu attestation on this runtime"}));
+    };
+    let client_nonce = match decode_nonce(&query.nonce) {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+    let nonce = gpu_nonce(&state.served_public_key_raw, &client_nonce);
+    let _serialized = gpu.lock.lock().await;
+    // The collector is a blocking child process; keep it off the async workers.
+    let gpu_for_task = Arc::clone(gpu);
+    let collected = web::block(move || gpu_for_task.source.collect(&nonce)).await;
+    match collected {
+        Ok(Ok(gpus)) => HttpResponse::Ok().json(GpuAttestationResponse {
+            tee_type: "nvidia-cc",
+            client_nonce: query.nonce.clone(),
+            gpus,
+            boot_claims: gpu.boot_claims.clone(),
+        }),
+        Ok(Err(e)) => {
+            tracing::error!("gpu evidence collection failed: {e:#}");
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "gpu evidence collection failed"}))
+        }
+        Err(e) => {
+            tracing::error!("gpu evidence task failed: {e:#}");
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "gpu evidence collection failed"}))
         }
     }
 }
@@ -216,6 +287,7 @@ mod tests {
             served_public_key_raw: vec![0x42; 97],
             upstream: "http://127.0.0.1:1".to_string(),
             http_client: reqwest::Client::new(),
+            gpu: None,
         })
     }
 
@@ -253,5 +325,81 @@ mod tests {
         let (status, body) = attest("zz").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(body.contains("invalid hex nonce"), "{body}");
+    }
+
+    struct FakeGpu;
+    impl crate::gpu::GpuEvidenceSource for FakeGpu {
+        fn collect(&self, nonce: &[u8; 32]) -> anyhow::Result<Vec<crate::gpu::GpuEvidence>> {
+            Ok(vec![crate::gpu::GpuEvidence {
+                arch: "BLACKWELL".into(),
+                nonce: hex::encode(nonce),
+                evidence: "ZXZpZGVuY2U=".into(),
+                certificate: "Y2VydA==".into(),
+            }])
+        }
+    }
+
+    fn gpu_state(gpu: Option<Arc<GpuState>>) -> web::Data<AppState> {
+        web::Data::new(AppState {
+            backend: Arc::new(MockBackend),
+            served_public_key_raw: b"served-key".to_vec(),
+            upstream: "http://127.0.0.1:1".into(),
+            http_client: reqwest::Client::new(),
+            gpu,
+        })
+    }
+
+    async fn gpu_attest(
+        state: web::Data<AppState>,
+        nonce: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        let query = web::Query(AttestationQuery {
+            nonce: nonce.to_string(),
+        });
+        let resp = gpu_attestation_endpoint(state, query).await;
+        let status = resp.status();
+        let body = to_bytes(resp.into_body()).await.unwrap();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    #[actix_web::test]
+    async fn gpu_route_derives_the_nonce_from_key_and_client_nonce() {
+        let state = gpu_state(Some(Arc::new(GpuState {
+            source: Box::new(FakeGpu),
+            boot_claims: serde_json::json!([{"measres": "Success"}]),
+            lock: tokio::sync::Mutex::new(()),
+        })));
+        let client_nonce = hex::encode(b"client-nonce");
+        let (status, body) = gpu_attest(state, &client_nonce).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["tee_type"], "nvidia-cc");
+        assert_eq!(body["client_nonce"], client_nonce);
+        // Pinned in aleph-tee's report_data tests: gpu_nonce(b"served-key", b"client-nonce").
+        assert_eq!(
+            body["gpus"][0]["nonce"],
+            "20e597c53ba9506fc210a99757a7aef042b6d907c5492fa4b3ae91497d5dc71b"
+        );
+        assert_eq!(body["gpus"][0]["arch"], "BLACKWELL");
+        assert_eq!(body["boot_claims"][0]["measres"], "Success");
+    }
+
+    #[actix_web::test]
+    async fn gpu_route_is_404_on_a_runtime_without_gpu_attestation() {
+        let (status, body) = gpu_attest(gpu_state(None), "00").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"], "no gpu attestation on this runtime");
+    }
+
+    #[actix_web::test]
+    async fn gpu_route_bounds_and_decodes_the_nonce_like_the_snp_route() {
+        let state = gpu_state(Some(Arc::new(GpuState {
+            source: Box::new(FakeGpu),
+            boot_claims: serde_json::Value::Null,
+            lock: tokio::sync::Mutex::new(()),
+        })));
+        let (status, _) = gpu_attest(state.clone(), &"a".repeat(MAX_NONCE_LEN * 2 + 2)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = gpu_attest(state, "zz").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 }
