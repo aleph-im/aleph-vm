@@ -2042,7 +2042,7 @@ if gpu_present; then
     $gpu_smi conf-compute -grs 2>/dev/null | /bin/busybox grep -qi "ready" || gpu_fatal "ready state did not stick"
     echo "init: GPU verified and ready"
 else
-    echo "init: no NVIDIA GPU present; running without GPU attestation"
+    gpu_fatal "no NVIDIA GPU on the bus: this runtime requires one"
 fi
 ```
 
@@ -2185,7 +2185,7 @@ EOF
 
 - [ ] **Step 6: Build, smoke, seed**
 
-Run: `nix build ./nix#gpuImage --print-build-logs` then `nix/boot-smoke.sh` with the base image (must still boot) and add a `--gpu` mode to `boot-smoke.sh` that boots `gpuImage` under plain QEMU with no device and expects the console line `init: no NVIDIA GPU present; running without GPU attestation` followed by the usual readiness line. Then `nix/check-golden-measurements.sh --update` and inspect the diff: every entry moves (the `init-common.sh` edit) plus the new `gpuMeasurement`. Commit the new golden file.
+Run: `nix build ./nix#gpuImage --print-build-logs` then `nix/boot-smoke.sh` with the base image (must still boot) and add a `--gpu` mode to `boot-smoke.sh` that boots `gpuImage` under plain QEMU with no device and expects the VM to power off with `init: FATAL: gpu attestation failed: no NVIDIA GPU on the bus` (a GPU runtime requires the card; the smoke proves the fail-closed path). Then `nix/check-golden-measurements.sh --update` and inspect the diff: every entry moves (the `init-common.sh` edit) plus the new `gpuMeasurement`. Commit the new golden file.
 
 - [ ] **Step 7: Commit**
 
