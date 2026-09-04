@@ -126,10 +126,12 @@ fn integer_u16(tlv: &Tlv<'_>) -> Result<u16> {
     }
     // DER integers are big-endian two's complement; PCESVN is small and
     // non-negative, so a leading 0x00 padding byte is the only width past
-    // two bytes we accept.
+    // two bytes we accept, and a sign bit set without that padding means a
+    // negative value we must reject (it would otherwise inflate the SVN).
     let bytes = match tlv.content {
         [] => bail!("empty PCESVN integer"),
         [0x00, rest @ ..] => rest,
+        all if all[0] & 0x80 != 0 => bail!("PCESVN is a negative DER integer"),
         all => all,
     };
     if bytes.len() > 2 {
