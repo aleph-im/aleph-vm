@@ -11,8 +11,17 @@
 # unintended reproducibility regression (investigate before merging).
 #
 # Usage:
-#   nix/check-golden-measurements.sh           # verify (CI mode)
-#   nix/check-golden-measurements.sh --update  # regenerate the golden file
+#   nix/check-golden-measurements.sh              # verify every output
+#   nix/check-golden-measurements.sh --base-only  # verify all but the GPU flavor
+#   nix/check-golden-measurements.sh --gpu-only   # verify only the GPU flavor
+#   nix/check-golden-measurements.sh --update     # regenerate the golden file
+#
+# The GPU flavor is split out because its chain shares almost nothing with the
+# others: a second guest kernel, the NVIDIA open kernel modules, the raw driver
+# userland and NVIDIA's verifier (nvat, a CMake + Rust build). Building it on
+# every nix/** change would multiply this job's cost for changes that cannot
+# move it. --update always rewrites the WHOLE file and therefore always builds
+# everything: writing a subset would drop the other entries.
 
 set -euo pipefail
 
@@ -24,18 +33,48 @@ golden="$repo_root/nix/golden-measurements.json"
 # confidential-instance chain through its fixed placeholder owner address;
 # real per-deployment instance measurements vary by owner but share every
 # other measured input with it.
-outputs=(
+base_outputs=(
   measurement
   composeMeasurement
   workloadMeasurement
   instanceMeasurementSmoke
+)
+# The confidential-GPU flavor, built from gpuKernel + gpuInitrd + gpuVerity.
+gpu_outputs=(
   gpuMeasurement
 )
 
-echo "Building ${#outputs[@]} measurement outputs (a cold build compiles the full measured boot chain and takes a while)..." >&2
+mode="all"
+update=0
+for arg in "$@"; do
+  case "$arg" in
+    --update) update=1 ;;
+    --base-only) mode="base" ;;
+    --gpu-only) mode="gpu" ;;
+    *)
+      echo "usage: $0 [--update] [--base-only|--gpu-only]" >&2
+      exit 2
+      ;;
+  esac
+done
+
+# --update rewrites the whole golden file, so it must compute every output no
+# matter which selection flag came with it.
+if [ "$update" -eq 1 ]; then
+  mode="all"
+fi
+
+case "$mode" in
+  all) outputs=("${base_outputs[@]}" "${gpu_outputs[@]}") ;;
+  base) outputs=("${base_outputs[@]}") ;;
+  gpu) outputs=("${gpu_outputs[@]}") ;;
+esac
+
+echo "Building ${#outputs[@]} measurement output(s) (${mode}); a cold build compiles the whole measured boot chain and takes a while..." >&2
 
 current="$(mktemp)"
-trap 'rm -f "$current"' EXIT
+expected="$(mktemp)"
+trap 'rm -f "$current" "$expected"' EXIT
 {
   echo "{"
   for i in "${!outputs[@]}"; do
@@ -50,7 +89,7 @@ trap 'rm -f "$current"' EXIT
   echo "}"
 } > "$current"
 
-if [ "${1:-}" = "--update" ]; then
+if [ "$update" -eq 1 ]; then
   cp "$current" "$golden"
   echo "Updated $golden" >&2
   exit 0
@@ -61,7 +100,33 @@ if [ ! -f "$golden" ]; then
   exit 1
 fi
 
-if diff -u "$golden" "$current"; then
+if [ "$mode" = "all" ]; then
+  # Compare the file itself, so an entry that is in the golden file but no
+  # longer produced (or the other way round) still shows up as a diff.
+  cp "$golden" "$expected"
+else
+  # Subset run: rebuild the golden's side of the comparison from just the
+  # selected entries, in the same order and format.
+  {
+    echo "{"
+    for i in "${!outputs[@]}"; do
+      name="${outputs[$i]}"
+      value="$(sed -n "s/^  \"${name}\": \"\([0-9a-f]*\)\".*\$/\1/p" "$golden")"
+      if [ -z "$value" ]; then
+        echo "No \"${name}\" entry in $golden; run $0 --update and commit the result." >&2
+        exit 1
+      fi
+      sep=","
+      if [ "$i" -eq $((${#outputs[@]} - 1)) ]; then
+        sep=""
+      fi
+      printf '  "%s": "%s"%s\n' "$name" "$value" "$sep"
+    done
+    echo "}"
+  } > "$expected"
+fi
+
+if diff -u "$expected" "$current"; then
   echo "Golden measurements match." >&2
 else
   seeded_at="$(git -C "$repo_root" log -1 --format=%h -- nix/golden-measurements.json 2>/dev/null || echo unknown)"
