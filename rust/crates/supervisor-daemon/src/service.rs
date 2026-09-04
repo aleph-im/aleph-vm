@@ -180,7 +180,25 @@ pub struct DaemonState {
     /// every NVIDIA card no VM currently owns; a card never probed, or
     /// whose last probe failed, has no entry.
     pub gpu_cc_modes: std::sync::Mutex<HashMap<String, crate::gpu_cc::CcMode>>,
+    /// What the last CC-mode probe sweep saw, so `GetHostInfo` (which every
+    /// unauthenticated `/about` caller reaches) does not mmap a BAR on every
+    /// request. See [`CcProbeState`].
+    pub gpu_cc_probe_state: std::sync::Mutex<CcProbeState>,
 }
+
+/// The bookkeeping that lets a probe sweep be skipped: the attached set the
+/// last sweep ran against, and when it ran. A sweep repeats when the attached
+/// set changes (a card just came back from a guest and its mode may differ) or
+/// when [`CC_PROBE_TTL`] has passed (an operator can toggle CC mode out of
+/// band), and is skipped otherwise.
+#[derive(Default)]
+pub struct CcProbeState {
+    attached: HashSet<String>,
+    probed_at: Option<std::time::Instant>,
+}
+
+/// How long a CC-mode sweep stays fresh for an unchanged attached set.
+pub const CC_PROBE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// See [`DaemonState::log_follows`].
 pub const MAX_CONCURRENT_LOG_FOLLOWS: usize = 64;
@@ -219,6 +237,7 @@ impl DaemonState {
                 crate::numa::NumaTopology::empty(),
             )),
             gpu_cc_modes: std::sync::Mutex::new(HashMap::new()),
+            gpu_cc_probe_state: std::sync::Mutex::new(CcProbeState::default()),
         }
     }
 
@@ -418,18 +437,24 @@ pub fn cc_mode_of(state: &DaemonState, pci_host: &str) -> Option<crate::gpu_cc::
 /// advertises nothing. Runs on the blocking pool: mmap of a BAR is a
 /// syscall against device memory.
 fn refresh_cc_modes(state: &DaemonState) {
-    refresh_cc_modes_with(state, crate::gpu_cc::probe_cc_mode);
+    refresh_cc_modes_with(state, crate::gpu_cc::probe_cc_mode, CC_PROBE_TTL);
 }
 
-/// `refresh_cc_modes`, with the probe injected for testing. The attached
-/// set is read fresh from the world view here, on the blocking task,
-/// immediately before use: `host_info`'s own snapshot (taken before this
-/// task was spawned) can go stale the instant a concurrent CreateVm
-/// registers a new attachment, and probing a card the guest is about to
-/// own would violate "never read under a guest".
+/// `refresh_cc_modes`, with the probe and the freshness window injected for
+/// testing. The attached set is read fresh from the world view here, on the
+/// blocking task, immediately before use: `host_info`'s own snapshot (taken
+/// before this task was spawned) can go stale the instant a concurrent
+/// CreateVm registers a new attachment, and probing a card the guest is about
+/// to own would violate "never read under a guest".
+///
+/// The sweep is skipped outright while the recorded answer is still good for
+/// the current attached set: `GetHostInfo` is reachable unauthenticated, and
+/// an mmap of every idle card's BAR per request is real device work an
+/// anonymous caller must not be able to drive.
 fn refresh_cc_modes_with(
     state: &DaemonState,
     probe: impl Fn(&str, &str) -> Result<Option<crate::gpu_cc::CcMode>, DaemonError>,
+    ttl: std::time::Duration,
 ) {
     let attached: HashSet<String> = {
         let world = state.world.blocking_read();
@@ -439,24 +464,45 @@ fn refresh_cc_modes_with(
             .flat_map(|entry| entry.config.gpus.iter().map(|gpu| gpu.pci_host.clone()))
             .collect()
     };
+    {
+        let recorded = state
+            .gpu_cc_probe_state
+            .lock()
+            .expect("gpu_cc_probe_state poisoned");
+        if let Some(probed_at) = recorded.probed_at
+            && recorded.attached == attached
+            && probed_at.elapsed() < ttl
+        {
+            return;
+        }
+    }
     for gpu in &state.host.gpus {
         if attached.contains(&gpu.pci_host) || gpu.vendor != "NVIDIA" {
             continue;
         }
         match probe(&gpu.pci_host, &gpu.device_id) {
-            Ok(Some(mode)) => {
-                state
-                    .gpu_cc_modes
-                    .lock()
-                    .expect("gpu_cc_modes poisoned")
-                    .insert(gpu.pci_host.clone(), mode);
-            }
+            Ok(Some(mode)) => record_cc_mode(state, &gpu.pci_host, mode),
             Ok(None) => {}
             Err(error) => {
                 tracing::warn!(pci_host = %gpu.pci_host, %error, "GPU CC mode probe failed")
             }
         }
     }
+    let mut recorded = state
+        .gpu_cc_probe_state
+        .lock()
+        .expect("gpu_cc_probe_state poisoned");
+    recorded.attached = attached;
+    recorded.probed_at = Some(std::time::Instant::now());
+}
+
+/// Remember one card's probed CC mode.
+pub fn record_cc_mode(state: &DaemonState, pci_host: &str, mode: crate::gpu_cc::CcMode) {
+    state
+        .gpu_cc_modes
+        .lock()
+        .expect("gpu_cc_modes poisoned")
+        .insert(pci_host.to_string(), mode);
 }
 
 // ── World view to wire mapping ──────────────────────────────────────────
@@ -1443,6 +1489,42 @@ mod tests {
         )
     }
 
+    /// Hermetic state with two NVIDIA cards, the listed ones attached to a
+    /// VM's config in the world view.
+    fn state_with_two_nvidia_cards(attached: &[&str]) -> DaemonState {
+        let card = |pci_host: &str| GpuDevice {
+            vendor: "NVIDIA".to_string(),
+            device_name: "GB202 [GeForce RTX 5090]".to_string(),
+            device_class: "0300".to_string(),
+            pci_host: pci_host.to_string(),
+            device_id: "10de:2b85".to_string(),
+            cc_mode: None,
+        };
+        let host = HostState {
+            settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
+            host_ipv4: String::new(),
+            network_interface: None,
+            gpus: vec![card("06:00.0"), card("07:00.0")],
+            dns_nameservers: None,
+        };
+        let mut entry = fixture_entry(test_fixtures::QEMU_HASH, true);
+        entry.config.gpus = attached
+            .iter()
+            .map(|pci_host| crate::controller_config::QemuGpu {
+                pci_host: (*pci_host).to_string(),
+                supports_x_vga: true,
+            })
+            .collect();
+        let mut world = WorldView::default();
+        world.insert_entry(entry);
+        DaemonState::hermetic(
+            host,
+            world,
+            Arc::new(crate::units::StaticUnitStates::default()),
+            Arc::new(crate::logs::StaticLogSource::new(Vec::new())),
+        )
+    }
+
     #[test]
     fn refresh_cc_modes_gates_the_probe_on_a_fresh_attached_set() {
         // Two NVIDIA cards in the inventory; one is attached to a VM's
@@ -1451,49 +1533,17 @@ mod tests {
         // view read inside the function, not a caller-supplied snapshot
         // (a concurrent CreateVm can attach a card between a snapshot
         // taken before spawn_blocking and the probe running on it).
-        let host = HostState {
-            settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
-            host_ipv4: String::new(),
-            network_interface: None,
-            gpus: vec![
-                GpuDevice {
-                    vendor: "NVIDIA".to_string(),
-                    device_name: "GB202 [GeForce RTX 5090]".to_string(),
-                    device_class: "0300".to_string(),
-                    pci_host: "06:00.0".to_string(),
-                    device_id: "10de:2b85".to_string(),
-                    cc_mode: None,
-                },
-                GpuDevice {
-                    vendor: "NVIDIA".to_string(),
-                    device_name: "GB202 [GeForce RTX 5090]".to_string(),
-                    device_class: "0300".to_string(),
-                    pci_host: "07:00.0".to_string(),
-                    device_id: "10de:2b85".to_string(),
-                    cc_mode: None,
-                },
-            ],
-            dns_nameservers: None,
-        };
-        let mut entry = fixture_entry(test_fixtures::QEMU_HASH, true);
-        entry.config.gpus = vec![crate::controller_config::QemuGpu {
-            pci_host: "06:00.0".to_string(),
-            supports_x_vga: true,
-        }];
-        let mut world = WorldView::default();
-        world.insert_entry(entry);
-        let state = DaemonState::hermetic(
-            host,
-            world,
-            Arc::new(crate::units::StaticUnitStates::default()),
-            Arc::new(crate::logs::StaticLogSource::new(Vec::new())),
-        );
+        let state = state_with_two_nvidia_cards(&["06:00.0"]);
 
         let probed: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-        refresh_cc_modes_with(&state, |pci_host, _device_id| {
-            probed.lock().unwrap().push(pci_host.to_string());
-            Ok(Some(crate::gpu_cc::CcMode::On))
-        });
+        refresh_cc_modes_with(
+            &state,
+            |pci_host, _device_id| {
+                probed.lock().unwrap().push(pci_host.to_string());
+                Ok(Some(crate::gpu_cc::CcMode::On))
+            },
+            CC_PROBE_TTL,
+        );
 
         assert_eq!(
             probed.into_inner().unwrap(),
@@ -1504,6 +1554,74 @@ mod tests {
         assert_eq!(cache.len(), 1);
         assert_eq!(cache.get("07:00.0"), Some(&crate::gpu_cc::CcMode::On));
         assert_eq!(cache.get("06:00.0"), None);
+    }
+
+    #[test]
+    fn refresh_cc_modes_probes_once_within_the_ttl() {
+        // GetHostInfo is reachable unauthenticated: two calls in a row against
+        // the same attached set must touch the hardware once.
+        let state = state_with_two_nvidia_cards(&["06:00.0"]);
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let probe = |_pci_host: &str, _device_id: &str| {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Some(crate::gpu_cc::CcMode::On))
+        };
+        refresh_cc_modes_with(&state, probe, CC_PROBE_TTL);
+        refresh_cc_modes_with(&state, probe, CC_PROBE_TTL);
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the second sweep within the TTL is served from the recorded answer"
+        );
+    }
+
+    #[test]
+    fn refresh_cc_modes_probes_again_when_the_attached_set_changes() {
+        // A card coming back from a guest can have a different mode, so a
+        // changed attached set re-probes immediately, TTL or not.
+        let state = state_with_two_nvidia_cards(&["06:00.0"]);
+        let probed: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let probe = |pci_host: &str, _device_id: &str| {
+            probed.lock().unwrap().push(pci_host.to_string());
+            Ok(Some(crate::gpu_cc::CcMode::On))
+        };
+        refresh_cc_modes_with(&state, probe, CC_PROBE_TTL);
+        {
+            let mut world = state.world.blocking_write();
+            let entry = world.entries.values_mut().next().unwrap();
+            entry.config.gpus.clear();
+        }
+        refresh_cc_modes_with(&state, probe, CC_PROBE_TTL);
+        assert_eq!(
+            probed.into_inner().unwrap(),
+            vec![
+                "07:00.0".to_string(),
+                "06:00.0".to_string(),
+                "07:00.0".to_string()
+            ],
+            "the freed card is probed on the next sweep"
+        );
+    }
+
+    #[test]
+    fn refresh_cc_modes_probes_again_once_the_ttl_expires() {
+        // An operator can toggle CC mode out of band, so the recorded answer
+        // ages out even when nothing about the attached set moved.
+        let state = state_with_two_nvidia_cards(&["06:00.0"]);
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let probe = |_pci_host: &str, _device_id: &str| {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Some(crate::gpu_cc::CcMode::On))
+        };
+        refresh_cc_modes_with(&state, probe, CC_PROBE_TTL);
+        // A zero TTL is an already-expired one: nothing can be fresher than
+        // "no time at all".
+        refresh_cc_modes_with(&state, probe, std::time::Duration::ZERO);
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "an expired record sweeps again"
+        );
     }
 
     #[test]
