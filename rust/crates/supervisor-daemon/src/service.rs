@@ -273,10 +273,13 @@ impl SupervisorService {
         // Probe every unattached NVIDIA card's CC mode before reporting the
         // inventory, so a freshly-idled card's mode is current. mmap of a
         // BAR is a blocking syscall; run it off the tokio worker.
+        // refresh_cc_modes reads the attached set itself, fresh, on the
+        // blocking task: the `attached` snapshot above can go stale between
+        // here and the probe (a concurrent CreateVm can attach a card in
+        // between), and the probe gate must never trust a stale snapshot.
         {
             let state = self.state.clone();
-            let attached = attached.clone();
-            tokio::task::spawn_blocking(move || refresh_cc_modes(&state, &attached))
+            tokio::task::spawn_blocking(move || refresh_cc_modes(&state))
                 .await
                 .map_err(|error| {
                     DaemonError::Internal(format!("the GPU CC probe task failed: {error}"))
@@ -414,12 +417,33 @@ pub fn cc_mode_of(state: &DaemonState, pci_host: &str) -> Option<crate::gpu_cc::
 /// a guest); a probe error is logged and leaves the card unknown, which
 /// advertises nothing. Runs on the blocking pool: mmap of a BAR is a
 /// syscall against device memory.
-fn refresh_cc_modes(state: &DaemonState, attached: &HashSet<String>) {
+fn refresh_cc_modes(state: &DaemonState) {
+    refresh_cc_modes_with(state, crate::gpu_cc::probe_cc_mode);
+}
+
+/// `refresh_cc_modes`, with the probe injected for testing. The attached
+/// set is read fresh from the world view here, on the blocking task,
+/// immediately before use: `host_info`'s own snapshot (taken before this
+/// task was spawned) can go stale the instant a concurrent CreateVm
+/// registers a new attachment, and probing a card the guest is about to
+/// own would violate "never read under a guest".
+fn refresh_cc_modes_with(
+    state: &DaemonState,
+    probe: impl Fn(&str, &str) -> Result<Option<crate::gpu_cc::CcMode>, DaemonError>,
+) {
+    let attached: HashSet<String> = {
+        let world = state.world.blocking_read();
+        world
+            .entries
+            .values()
+            .flat_map(|entry| entry.config.gpus.iter().map(|gpu| gpu.pci_host.clone()))
+            .collect()
+    };
     for gpu in &state.host.gpus {
         if attached.contains(&gpu.pci_host) || gpu.vendor != "NVIDIA" {
             continue;
         }
-        match crate::gpu_cc::probe_cc_mode(&gpu.pci_host, &gpu.device_id) {
+        match probe(&gpu.pci_host, &gpu.device_id) {
             Ok(Some(mode)) => {
                 state
                     .gpu_cc_modes
@@ -1417,6 +1441,69 @@ mod tests {
             Arc::new(crate::units::StaticUnitStates::default()),
             Arc::new(crate::logs::StaticLogSource::new(Vec::new())),
         )
+    }
+
+    #[test]
+    fn refresh_cc_modes_gates_the_probe_on_a_fresh_attached_set() {
+        // Two NVIDIA cards in the inventory; one is attached to a VM's
+        // config in the world view. The probe must never run against the
+        // attached card, and the attached set must come from the world
+        // view read inside the function, not a caller-supplied snapshot
+        // (a concurrent CreateVm can attach a card between a snapshot
+        // taken before spawn_blocking and the probe running on it).
+        let host = HostState {
+            settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
+            host_ipv4: String::new(),
+            network_interface: None,
+            gpus: vec![
+                GpuDevice {
+                    vendor: "NVIDIA".to_string(),
+                    device_name: "GB202 [GeForce RTX 5090]".to_string(),
+                    device_class: "0300".to_string(),
+                    pci_host: "06:00.0".to_string(),
+                    device_id: "10de:2b85".to_string(),
+                    cc_mode: None,
+                },
+                GpuDevice {
+                    vendor: "NVIDIA".to_string(),
+                    device_name: "GB202 [GeForce RTX 5090]".to_string(),
+                    device_class: "0300".to_string(),
+                    pci_host: "07:00.0".to_string(),
+                    device_id: "10de:2b85".to_string(),
+                    cc_mode: None,
+                },
+            ],
+            dns_nameservers: None,
+        };
+        let mut entry = fixture_entry(test_fixtures::QEMU_HASH, true);
+        entry.config.gpus = vec![crate::controller_config::QemuGpu {
+            pci_host: "06:00.0".to_string(),
+            supports_x_vga: true,
+        }];
+        let mut world = WorldView::default();
+        world.insert_entry(entry);
+        let state = DaemonState::hermetic(
+            host,
+            world,
+            Arc::new(crate::units::StaticUnitStates::default()),
+            Arc::new(crate::logs::StaticLogSource::new(Vec::new())),
+        );
+
+        let probed: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        refresh_cc_modes_with(&state, |pci_host, _device_id| {
+            probed.lock().unwrap().push(pci_host.to_string());
+            Ok(Some(crate::gpu_cc::CcMode::On))
+        });
+
+        assert_eq!(
+            probed.into_inner().unwrap(),
+            vec!["07:00.0".to_string()],
+            "only the unattached card is probed"
+        );
+        let cache = state.gpu_cc_modes.lock().unwrap();
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.get("07:00.0"), Some(&crate::gpu_cc::CcMode::On));
+        assert_eq!(cache.get("06:00.0"), None);
     }
 
     #[test]
