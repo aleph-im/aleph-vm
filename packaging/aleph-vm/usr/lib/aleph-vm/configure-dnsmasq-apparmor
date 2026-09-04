@@ -1,0 +1,116 @@
+#!/bin/bash
+set -eu
+umask 022
+
+APPARMOR_DIR="${ALEPH_VM_APPARMOR_DIR:-/etc/apparmor.d}"
+POLICY_FILE="${ALEPH_VM_DNSMASQ_APPARMOR_POLICY:-/usr/share/aleph-vm/apparmor/usr.sbin.dnsmasq}"
+PROFILE="$APPARMOR_DIR/usr.sbin.dnsmasq"
+LOCAL="$APPARMOR_DIR/local/usr.sbin.dnsmasq"
+BEGIN_MARKER="# BEGIN aleph-vm managed dnsmasq AppArmor rules"
+INCLUDE_LINE="include if exists \"$POLICY_FILE\""
+END_MARKER="# END aleph-vm managed dnsmasq AppArmor rules"
+
+warn() {
+  echo "aleph-vm: $*" >&2
+}
+
+reload_profile() {
+  [ -f "$PROFILE" ] || return 0
+  command -v aa-enabled >/dev/null 2>&1 || return 0
+  command -v apparmor_parser >/dev/null 2>&1 || return 0
+  aa-enabled --quiet 2>/dev/null || return 0
+
+  if ! apparmor_parser -r -W -T "$PROFILE"; then
+    # Match dh_apparmor behavior: a transient or pre-existing parser failure
+    # must not leave the application package unconfigured.
+    warn "could not reload the dnsmasq AppArmor profile"
+  fi
+}
+
+profile_includes_local_file() {
+  grep -Eq \
+    '^[[:space:]]*(#include|include)([[:space:]]+if[[:space:]]+exists)?[[:space:]]+<local/usr\.sbin\.dnsmasq>[[:space:]]*$' \
+    "$PROFILE"
+}
+
+resolve_local_file() {
+  if [ -L "$LOCAL" ]; then
+    readlink -f "$LOCAL" 2>/dev/null || true
+  else
+    printf '%s\n' "$LOCAL"
+  fi
+}
+
+rewrite_local_file() {
+  action="$1"
+  target="$(resolve_local_file)"
+
+  if [ -z "$target" ]; then
+    warn "leaving dangling symlink untouched: $LOCAL"
+    return 0
+  fi
+  if [ -e "$target" ] && [ ! -f "$target" ]; then
+    warn "leaving non-regular local profile untouched: $LOCAL"
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$target")"
+  tmp="$(mktemp "$(dirname "$target")/.aleph-vm-dnsmasq.XXXXXX")"
+  content_tmp=""
+  trap 'rm -f "$tmp" ${content_tmp:+"$content_tmp"}' RETURN
+
+  if [ -f "$target" ]; then
+    # Package targets use GNU coreutils, where --preserve=all retains owner,
+    # mode, ACLs and extended attributes. The fallback keeps this fixture
+    # runnable on non-GNU development hosts.
+    cp --preserve=all -- "$target" "$tmp" 2>/dev/null || cp -p "$target" "$tmp"
+    content_tmp="$(mktemp "$(dirname "$target")/.aleph-vm-dnsmasq-content.XXXXXX")"
+    # Remove only lines owned by this helper. Any administrator additions,
+    # including additions placed between our markers, remain intact.
+    awk -v begin="$BEGIN_MARKER" -v managed_include="$INCLUDE_LINE" -v end="$END_MARKER" \
+      '$0 != begin && $0 != managed_include && $0 != end { print }' \
+      "$target" > "$content_tmp"
+    cat "$content_tmp" > "$tmp"
+    rm -f "$content_tmp"
+    content_tmp=""
+  else
+    : > "$tmp"
+    chmod 0644 "$tmp"
+  fi
+
+  if [ "$action" = install ]; then
+    if [ -s "$tmp" ] && [ -n "$(tail -n 1 "$tmp")" ]; then
+      printf '\n' >> "$tmp"
+    fi
+    printf '%s\n%s\n%s\n' \
+      "$BEGIN_MARKER" "$INCLUDE_LINE" "$END_MARKER" >> "$tmp"
+  fi
+
+  mv -f "$tmp" "$target"
+  trap - RETURN
+}
+
+case "${1:-}" in
+  install)
+    if [ ! -f "$POLICY_FILE" ]; then
+      warn "AppArmor policy fragment is missing: $POLICY_FILE"
+      exit 0
+    fi
+    if [ -f "$PROFILE" ] && ! profile_includes_local_file; then
+      warn "dnsmasq AppArmor profile does not include <local/usr.sbin.dnsmasq>; policy fragment was not enabled"
+      exit 0
+    fi
+    rewrite_local_file install
+    reload_profile
+    ;;
+  remove)
+    if [ -e "$LOCAL" ] || [ -L "$LOCAL" ]; then
+      rewrite_local_file remove
+      reload_profile
+    fi
+    ;;
+  *)
+    echo "Usage: $0 {install|remove}" >&2
+    exit 2
+    ;;
+esac

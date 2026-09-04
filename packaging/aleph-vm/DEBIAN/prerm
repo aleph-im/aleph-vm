@@ -6,3 +6,10 @@ for unit in aleph-vm-agent.service aleph-vm-supervisor.service; do
   systemctl stop "$unit" || true
   systemctl reset-failed "$unit" 2>/dev/null || true
 done
+
+# On removal, drop only aleph-vm's managed include after stopping its services
+# but while the package-owned policy fragment is still present. Keep it across
+# upgrades; postinst refreshes the include and reloads the new policy.
+if [ "${1:-}" = "remove" ] && [ -x /usr/lib/aleph-vm/configure-dnsmasq-apparmor ]; then
+  /usr/lib/aleph-vm/configure-dnsmasq-apparmor remove || true
+fi
