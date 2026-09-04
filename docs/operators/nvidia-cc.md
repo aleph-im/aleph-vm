@@ -77,10 +77,18 @@ curl -s http://<crn>/about/capability | jq .tee
 ```
 
 The response's `tee.nvidia_cc.devices` lists every card currently probed
-`on` and free (not held or attached to a running VM); `tee.sev_snp` must
-also be present, since `nvidia_cc` is only advertised alongside a working
-SNP launch capability. For the full per-card picture including cards that
-are attached, held, or in `devtools`/`off`, check:
+`on` and not attached to a running VM; `tee.sev_snp` must also be present,
+since `nvidia_cc` is only advertised alongside a working SNP launch
+capability. This list can still include a card another user's in-flight
+request already reserved: reservations are an agent-side, in-memory,
+TTL-bound ledger (`CapacityManager.holds`,
+`src/aleph/vm/agent/capacity.py`) that never reaches the daemon's
+`HostInfo` or `get_machine_capability()`, so the capability advertisement
+is not proof a listed card is free to take right this instant. A request
+that loses that race is only rejected at create time, with the
+`InsufficientResourcesError` naming `confidential_gpu_device_id` covered in
+section 5. For the full per-card picture including cards attached to a VM
+or in `devtools`/`off`, check:
 
 ```bash
 curl -s http://<crn>/about/usage/system | jq '.gpu.devices[] | {device_id, cc_mode}'
