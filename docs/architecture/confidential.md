@@ -1,6 +1,6 @@
 # Confidential computing
 
-> Verified against: b2b31381 (2026-08-14)
+> Verified against: 4be87456 (2026-09-04)
 
 ## What this covers
 
@@ -284,6 +284,91 @@ hugepage size, the QEMU argv builders
 the confidential or SNP memory-backend object; an unplaced VM's argv stays
 byte-identical to the pre-NUMA baseline.
 
+### Confidential GPUs (NVIDIA CC)
+
+A V-PROGRAM can declare it needs one NVIDIA GPU in confidential-computing
+mode (`ConfidentialGpu` in aleph-message, `content.gpus`, capped at one
+entry). The chain from probe to verified evidence has four stages.
+
+**Probe.** `rust/crates/supervisor-daemon/src/gpu_cc.rs` reads the same
+BAR0 register NVIDIA's `gpu-admin-tools` reads (offset `0x590` on
+Blackwell, `0x1182cc` on Hopper, bits `[1:0]`), through the card's sysfs
+`resource0` file, needing no driver on the host. The probe
+(`refresh_cc_modes_with`, `rust/crates/supervisor-daemon/src/service.rs`)
+runs only against cards no VM's world-view entry currently attaches, reads
+the attached set fresh on the blocking task immediately before probing (a
+stale snapshot could otherwise race a concurrent `CreateVm`), and caches
+each card's mode until its attachment state changes; a card a guest owns is
+never read. A probe error or an unrecognized device id leaves the card's
+mode unknown, which advertises nothing.
+
+**Gate.** `snp_config_slice` (`rust/crates/supervisor-daemon/src/lifecycle.rs`)
+admits a GPU onto an SEV-SNP spec only when the probed mode is exactly `On`
+for every card requested; `devtools`, `off`, unknown, or a card outside the
+host inventory all fail closed as `InvalidBackend`, naming which condition
+failed. The runtime manifest must also declare a `gpu` block
+(`GpuRuntimeSpec`, `src/aleph/vm/vprogram/manifest.py`); a GPU V-PROGRAM
+whose runtime has no `gpu` block is refused before staging
+(`src/aleph/vm/agent/vprogram_launch.py`). Resolution against the host's
+available CC-mode cards, and the placement hold, happen in
+`resolve_confidential_gpus` (`src/aleph/vm/agent/capacity.py`), which fails
+with an `InsufficientResourcesError` naming `confidential_gpu_device_id`
+distinctly from a plain GPU shortage.
+
+**Argv.** `snp_gpu_args` (`rust/crates/supervisor-controller/src/qemu.rs`)
+emits, per card, a `pcie-root-port` and a `vfio-pci` device with no
+`x-vga` (a compute GPU in an SNP guest has no display), plus one
+`X-PciMmio64Mb` fw_cfg entry sized by
+`rust/crates/supervisor-daemon/src/gpu_bar.rs` from the card's real 64-bit
+prefetchable BAR sizes (never a hardcoded constant, since BAR1 sizes vary
+by SKU). `fw_cfg` values are not measurement inputs, so this window can
+vary per card without moving the launch digest. The measured cmdline gains
+a fixed `swiotlb=262144` token (NVIDIA's recommended bounce-buffer size for
+CC guests), carried from the runtime manifest's cmdline template through a
+`{rootfs}.cmdline_extra` sidecar the daemon validates against a closed
+allowlist (`swiotlb=<digits>` only) before splicing it in
+(`snp_config_slice`); no GPU on the spec means no sidecar and no token.
+
+**In-guest verification.** `nix/init-gpu.sh` runs between the verity mounts
+and chroot preparation, only when an NVIDIA device is present on the PCI
+bus. It loads the open `nvidia.ko`/`nvidia-uvm.ko` modules, runs NVIDIA's
+`nvattest attest --device gpu --verifier local` against
+`rim.attestation.nvidia.com` and `ocsp.ndis.nvidia.com` with a boot nonce
+from `/dev/urandom`, checks `result_code == 0` and every claim's `measres`
+is `success`, sets the GPU ready state with `nvidia-smi conf-compute -srs 1`
+and reads it back with `-grs` before continuing, and writes the claims to
+`/run/aleph/gpu-boot-claims.json`. Every one of those steps fails to
+`poweroff -f` on any error: a GPU runtime that could not prove its GPU
+never presents an attested endpoint. At request time, the attest-agent
+(`rust/crates/aleph-attest-agent/src/gpu.rs`, `proxy.rs`) serves
+`GET /.well-known/attestation/gpu?nonce=<hex>` by deriving a fresh SPDM
+nonce, `SHA-256(DOMAIN_GPU_NONCE || served_public_key || client_nonce)`
+(`gpu_nonce`, `rust/crates/aleph-tee/src/report_data.rs`), and running
+NVIDIA's `nvattest collect-evidence` as a chrooted child process (the agent
+is a static musl binary and cannot load NVIDIA's glibc NVML library
+in-process), refusing any evidence that answers a different nonce. The
+route only exists when init passed `--gpu-claims`/`--gpu-collector`; on a
+runtime with no GPU it answers 404.
+
+Two properties follow from this and matter to anyone building a client:
+
+- The guest verifies its own GPU against NVIDIA's RIM/OCSP chain at boot
+  and powers off on any failure; the client then independently re-checks
+  the evidence's certificate chain, signature and nonce binding over the
+  attested channel. The client trusts the guest's RIM verdict specifically
+  because the verifier binary and its pinned roots are inside the SNP
+  launch measurement, and init's fail-closed behavior means a guest that
+  reached a running, attested state necessarily passed that check.
+- A `gpuImage` boot with no GPU device attached has the **same** launch
+  measurement as one with a verified GPU: PCI device attachment is not a
+  measurement input, and `swiotlb=262144` is a fixed part of the GPU
+  runtime's cmdline regardless of whether a card shows up on the bus. A
+  client must therefore never infer GPU presence from the launch
+  measurement alone; it must require GPU evidence whenever the runtime
+  manifest it pinned declares a `gpu` block, and treat a 404 from
+  `/.well-known/attestation/gpu` on such a runtime as a verification
+  failure, not as "no GPU requested".
+
 ## Key invariants
 
 - Cold migration refuses every confidential mode at two independent gates,
@@ -376,6 +461,11 @@ byte-identical to the pre-NUMA baseline.
   `rust/crates/supervisor-daemon/src/confidential.rs`,
   `rust/crates/supervisor-daemon/src/lifecycle.rs` (`snp_config_slice`),
   `rust/crates/supervisor-daemon/src/qmp.rs`.
+- Confidential-GPU probe, MMIO sizing and in-guest verification:
+  `rust/crates/supervisor-daemon/src/gpu_cc.rs`,
+  `rust/crates/supervisor-daemon/src/gpu_bar.rs`,
+  `rust/crates/aleph-attest-agent/src/gpu.rs`, `nix/init-gpu.sh`,
+  `nix/nvidia.nix`, `nix/nvat.nix`.
 - NUMA and hugepages: `rust/crates/supervisor-daemon/src/numa.rs`,
   `rust/crates/supervisor-daemon/src/hugepages.rs`.
 - Wire surface: `proto/supervisor.proto` (`TeeBackend`, `TeeConfig`,
