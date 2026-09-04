@@ -228,6 +228,12 @@ pub struct QemuConfig {
     #[serde(default)]
     pub hugepage_size: Option<String>,
 
+    // The 64-bit PCI MMIO window (MiB) OVMF should reserve for passthrough
+    // BARs, Rust-only, SNP+GPU only. The daemon sizes it from the card's
+    // sysfs BARs; absent (and so omitted) on every other config.
+    #[serde(default)]
+    pub pci_mmio64_mb: Option<u64>,
+
     // Opaque-cmdline SEV-SNP rootfs override, Rust-only. Written TOGETHER (or
     // not at all, `extra="ignore"` on the Python side means an old-controller
     // config simply never carries them) for an SNP VM whose measured cmdline
