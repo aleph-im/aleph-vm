@@ -59,6 +59,10 @@
         fileset = pkgs.lib.fileset.unions [
           ../rust/Cargo.toml
           (craneToolchain.fileset.commonCargoSources ../rust/crates/aleph-tee)
+          # commonCargoSources keeps only .rs/.toml/lockfiles; the pinned
+          # Intel root CA is include_bytes!'d into aleph-tee, so it must be
+          # added explicitly or the measured build fails to compile.
+          ../rust/crates/aleph-tee/src/tdx/intel_sgx_root_ca.pem
           (craneToolchain.fileset.commonCargoSources ../rust/crates/aleph-attest-agent)
         ];
       };
