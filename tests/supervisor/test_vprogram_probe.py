@@ -7,6 +7,7 @@ list must reflect what this exact QEMU + kernel + silicon can launch.
 
 import asyncio
 import logging
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -285,6 +286,10 @@ def _static_host(mocker):
     return hardware
 
 
+def _supervisor(available_gpus=()):
+    return SimpleNamespace(get_host_info=AsyncMock(return_value=SimpleNamespace(available_gpus=list(available_gpus))))
+
+
 @pytest.mark.asyncio
 async def test_advertisement_recovers_after_a_failed_first_probe(mocker):
     # End to end through the usage endpoint's view: the tee block reappears
@@ -314,18 +319,22 @@ async def test_capability_advertisement_recovers_after_a_failed_first_probe(mock
         "aleph.vm.agent.resources.get_memory_info",
         return_value={"size": 64, "units": "GiB", "type": "DDR5", "clock": 4800},
     )
+    mocker.patch("aleph.vm.agent.resources.update_aggregate_settings", new_callable=AsyncMock)
+    mocker.patch("aleph.vm.agent.resources.get_compatible_gpus", return_value=[])
     clock = _clock(mocker)
     probe = _snp_host(mocker, {"side_effect": OSError("qemu-system-x86_64 not found")})
+    supervisor = _supervisor()
 
-    assert (await get_machine_capability()).tee is None
+    assert (await get_machine_capability(supervisor)).tee is None
 
     probe.side_effect = None
     probe.return_value = _facts([{"name": "EPYC-v4", "unavailable-features": []}])
     clock["t"] += PROBE_RETRY_SECONDS
-    capability = await get_machine_capability()
+    capability = await get_machine_capability(supervisor)
     assert capability.tee is not None
     assert capability.tee.sev_snp is not None
     assert capability.tee.sev_snp.supported_vcpu_types == ["EPYC-v4"]
+    assert capability.tee.nvidia_cc is None
     assert capability.tee_unavailable_reason is None
 
 
@@ -343,7 +352,7 @@ async def test_capability_carries_unavailability_reason(mocker):
         new_callable=AsyncMock,
         return_value=SnpLaunchCapability([], "QEMU (8.2.2) has no 'sev-snp-guest' object..."),
     )
-    capability = await get_machine_capability()
+    capability = await get_machine_capability(_supervisor())
     assert capability.tee is None
     assert "sev-snp-guest" in capability.tee_unavailable_reason
 
