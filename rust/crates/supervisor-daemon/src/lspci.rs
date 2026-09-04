@@ -29,6 +29,12 @@ pub struct GpuDevice {
     pub pci_host: String,
     /// vendor:device ids, e.g. "10de:2b85".
     pub device_id: String,
+    /// NVIDIA confidential-computing mode, probed from BAR0 for idle
+    /// NVIDIA cards (gpu_cc.rs); `None` when not NVIDIA, not probed yet, or
+    /// the probe failed. Skipped when absent so a fleet without CC cards
+    /// keeps today's inventory bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cc_mode: Option<crate::gpu_cc::CcMode>,
 }
 
 impl GpuDevice {
@@ -125,6 +131,7 @@ pub fn parse_gpu_device_info(
         device_class: device_class.to_string(),
         pci_host: pci_host.to_string(),
         device_id: format!("{vendor_id}:{model_id}"),
+        cc_mode: None,
     }))
 }
 
@@ -275,6 +282,32 @@ mod tests {
         assert_eq!(
             json,
             r#"[{"vendor":"NVIDIA","device_name":"GB202 [GeForce RTX 5090]","device_class":"0300","pci_host":"06:00.0","device_id":"10de:2b85"}]"#
+        );
+    }
+
+    #[test]
+    fn a_card_without_a_probed_cc_mode_serializes_exactly_as_before() {
+        let device = parse_gpu_device_info(NVIDIA_VGA_LINE, &mut vfio_everywhere)
+            .unwrap()
+            .unwrap();
+        assert_eq!(device.cc_mode, None);
+        let json = serde_json::to_string(&device).unwrap();
+        assert!(
+            !json.contains("cc_mode"),
+            "absent mode must not change the inventory bytes: {json}"
+        );
+    }
+
+    #[test]
+    fn a_probed_cc_mode_is_appended_last() {
+        let mut device = parse_gpu_device_info(NVIDIA_VGA_LINE, &mut vfio_everywhere)
+            .unwrap()
+            .unwrap();
+        device.cc_mode = Some(crate::gpu_cc::CcMode::On);
+        let json = serde_json::to_string(&device).unwrap();
+        assert!(
+            json.ends_with(r#""device_id":"10de:2b85","cc_mode":"on"}"#),
+            "{json}"
         );
     }
 }

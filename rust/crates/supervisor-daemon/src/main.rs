@@ -200,6 +200,7 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
         frozen_guests: supervisor_daemon::quiesce::FrozenGuests::default(),
         numa,
         numa_ledger,
+        gpu_cc_modes: std::sync::Mutex::new(std::collections::HashMap::new()),
     });
 
     let runtime = tokio::runtime::Builder::new_multi_thread()

@@ -3906,7 +3906,7 @@ mod tests {
         // branch); the reported status is awaiting_confidential_init.
         assert_ne!(entry.times.starting_at_ns, 0);
         assert_ne!(entry.times.started_at_ns, 0);
-        let info = crate::service::vm_info_message(&entry, false, now_ns());
+        let info = crate::service::vm_info_message(state, &entry, false, now_ns());
         assert!(info.awaiting_confidential_init);
         assert_eq!(info.confidential_mode, pb::ConfidentialMode::SevEs as i32);
 
@@ -4277,7 +4277,7 @@ mod tests {
         );
 
         // Reported as SEV-SNP and NOT awaiting init.
-        let info = crate::service::vm_info_message(&entry, running, now_ns());
+        let info = crate::service::vm_info_message(state, &entry, running, now_ns());
         assert_eq!(info.confidential_mode, pb::ConfidentialMode::SevSnp as i32);
         assert!(!info.awaiting_confidential_init);
 
@@ -5685,7 +5685,7 @@ mod tests {
             "mapped_ports are not reloaded on this path"
         );
         // _status_of checks stopped_at first: still STOPPED on the wire.
-        let info = crate::service::vm_info_message(&entry, running, now_ns());
+        let info = crate::service::vm_info_message(state, &entry, running, now_ns());
         assert_eq!(info.status, pb::VmStatus::Stopped as i32);
         // The tap was NOT recreated (restart-without-network, both daemons).
         assert!(!harness.taps.interface_exists("vmtap4"));
@@ -7057,7 +7057,7 @@ mod tests {
         assert_eq!(entry.numa_node, Some(0));
 
         // VmInfo carries the effective placement.
-        let info = crate::service::vm_info_message(&entry, running, now_ns());
+        let info = crate::service::vm_info_message(state, &entry, running, now_ns());
         assert_eq!(info.numa_node, Some(0));
 
         // The AllowedCPUs drop-in was written with node 0's cpuset.
@@ -7626,7 +7626,7 @@ mod tests {
         assert!(running);
         assert_eq!(entry.numa_node, None, "no placement on a single-node host");
 
-        let info = crate::service::vm_info_message(&entry, running, now_ns());
+        let info = crate::service::vm_info_message(state, &entry, running, now_ns());
         assert_eq!(info.numa_node, None);
 
         // No AllowedCPUs drop-in, no reservation.
