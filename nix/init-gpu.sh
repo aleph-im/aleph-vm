@@ -227,6 +227,12 @@ if gpu_present; then
     /bin/busybox mkdir -p /run/aleph
     gpu_claims=/run/aleph/gpu-boot-claims.json
     boot_nonce=$(/bin/busybox head -c 32 /dev/urandom | /bin/busybox hexdump -ve '1/1 "%02x"')
+    # Exactly 32 bytes of hex, or stop: a short read from /dev/urandom, or a
+    # busybox built without the hexdump applet, would otherwise hand nvattest
+    # a truncated or empty nonce and the report would not be bound to this
+    # boot at all.
+    echo "$boot_nonce" | /bin/busybox grep -qE '^[0-9a-f]{64}$' \
+        || gpu_fatal "could not generate a 32-byte boot nonce"
     # nvattest and nvidia-smi need /proc, /sys and /dev inside /mnt/root now,
     # before the workload chroot is prepared. prepare_chroot is idempotent on
     # the mount-point directories but not on the bind mounts, so it runs once
@@ -240,18 +246,13 @@ if gpu_present; then
         /bin/busybox cat /run/aleph/gpu-attest.log
         gpu_fatal "nvattest exited non-zero"
     fi
-    # result_code 0 and every device's measres "success", or power off. The
-    # CLI pretty-prints its JSON (nlohmann dump(4)) with the top-level keys
-    # in alphabetical order, so each of these is its own line.
-    /bin/busybox grep -q '"result_code" *: *0 *,' /run/aleph/gpu-attest.json || gpu_fatal "result_code != 0"
-    # Count rather than pattern-match a failure value: "fail", "not-run" and
-    # "absent" are all non-success, and a value nobody anticipated must fail
-    # too. The detached EAT is a bag of base64 JWTs, so it cannot contribute
-    # a stray "measres" line.
-    measres_total=$(/bin/busybox grep -c '"measres"' /run/aleph/gpu-attest.json)
-    measres_ok=$(/bin/busybox grep -c '"measres" *: *"success"' /run/aleph/gpu-attest.json)
-    [ "$measres_total" -gt 0 ] || gpu_fatal "no measurement claim"
-    [ "$measres_total" = "$measres_ok" ] || gpu_fatal "measurement comparison failed"
+    # result_code 0, or power off. The CLI pretty-prints its JSON (nlohmann
+    # dump(4)) with the top-level keys in alphabetical order, so every key is
+    # on its own line. result_message follows result_code today, hence the
+    # trailing comma, but the match does not depend on it: a future build that
+    # drops or reorders result_message must not silently stop verifying this.
+    /bin/busybox grep -qE '"result_code" *: *0 *,?$' /run/aleph/gpu-attest.json \
+        || gpu_fatal "result_code != 0"
     # Extract the claims array for the attest-agent (the EAT is not served).
     # "claims" sorts first, so its value spans from the `    "claims": [` line
     # to the matching `    ],` line; nothing nested can sit at that indent.
@@ -259,12 +260,52 @@ if gpu_present; then
     /bin/busybox sed -n '/^    "claims": \[$/,/^    \],$/p' /run/aleph/gpu-attest.json \
         | /bin/busybox sed -e '1s/^    "claims": //' -e '$s/^    \],$/]/' > "$gpu_claims"
     [ -s "$gpu_claims" ] || gpu_fatal "could not extract claims"
+    # Every claim object must carry a measres, and every measres must be
+    # "success". The object count is what makes the first half enforceable: a
+    # bare "all the measres lines say success" count silently accepts a claim
+    # that carries NO measres at all. Each array element is printed as a bare
+    # "{" at the array's own indent (8 spaces inside the extracted document);
+    # an object that is a key's value is printed on that key's line, and
+    # objects nested deeper are indented further, so this counts exactly the
+    # claim objects. Comparing against the count also covers "fail",
+    # "not-run", "absent" and any value nobody anticipated.
+    claims_count=$(/bin/busybox grep -c '^        {$' "$gpu_claims")
+    measres_total=$(/bin/busybox grep -c '"measres"' "$gpu_claims")
+    measres_ok=$(/bin/busybox grep -cE '"measres" *: *"success"' "$gpu_claims")
+    [ "$claims_count" -gt 0 ] || gpu_fatal "no GPU claim in the attestation result"
+    [ "$measres_total" = "$claims_count" ] || gpu_fatal "a claim carries no measurement result"
+    [ "$measres_ok" = "$claims_count" ] || gpu_fatal "measurement comparison failed"
     /bin/busybox chmod 0600 "$gpu_claims"
     # Ready state: the driver refuses CUDA work until it is set, and only a
     # verified GPU may be marked ready. nvidia-smi is the raw driver userland
-    # in the rootfs; the agent is static and cannot drive NVML itself.
-    gpu_smi conf-compute -srs 1 > /dev/null 2>&1 || gpu_fatal "setting the ready state"
-    gpu_smi conf-compute -grs 2>/dev/null | /bin/busybox grep -qi "ready" || gpu_fatal "ready state did not stick"
+    # in the rootfs; the agent is static and cannot drive NVML itself. Both
+    # calls' output is kept under /run/aleph and printed on failure, so the
+    # console says what nvidia-smi actually reported instead of only the
+    # reason string.
+    #
+    # The readback is two greps and the NEGATIVE one runs FIRST on purpose:
+    # "not ready" contains "ready", so a positive-only match accepts exactly
+    # the state this check exists to catch. Only stdout is matched (stderr
+    # goes to its own file) so a driver warning cannot decide the outcome.
+    # The exact wording of `nvidia-smi conf-compute -grs` is to be confirmed
+    # on the first Blackwell host; until then both patterns are deliberately
+    # broad and every ambiguous reading is fatal.
+    if ! gpu_smi conf-compute -srs 1 > /run/aleph/gpu-srs.log 2>&1; then
+        /bin/busybox cat /run/aleph/gpu-srs.log
+        gpu_fatal "setting the ready state"
+    fi
+    if ! gpu_smi conf-compute -grs > /run/aleph/gpu-grs.log 2> /run/aleph/gpu-grs.err; then
+        /bin/busybox cat /run/aleph/gpu-grs.log /run/aleph/gpu-grs.err
+        gpu_fatal "reading back the ready state"
+    fi
+    if /bin/busybox grep -qiE 'not[ -]?ready|disabled|off' /run/aleph/gpu-grs.log; then
+        /bin/busybox cat /run/aleph/gpu-grs.log /run/aleph/gpu-grs.err
+        gpu_fatal "ready state did not stick"
+    fi
+    if ! /bin/busybox grep -qiE '(^|[^a-z])ready([^a-z]|$)' /run/aleph/gpu-grs.log; then
+        /bin/busybox cat /run/aleph/gpu-grs.log /run/aleph/gpu-grs.err
+        gpu_fatal "ready state unreadable"
+    fi
     echo "init: GPU verified and ready"
 else
     echo "init: no NVIDIA GPU present; running without GPU attestation"
