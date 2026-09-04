@@ -585,6 +585,16 @@ async def create_vm_execution(
         try:
             _admit(capacity, content, vm_hash, is_instance=True)
             spec, attest_port = await build_vprogram_spec(vm_hash, content)
+            # content.gpus is Optional, and the attribute may not even exist on
+            # a schema that predates the field (absent and empty both mean no
+            # GPU): resolved against the host's CC-mode cards here, after
+            # staging, mirroring the instance path's resolve_gpus call.
+            requested_confidential_gpus = getattr(content, "gpus", None)
+            if requested_confidential_gpus:
+                resolved = await capacity.resolve_confidential_gpus(
+                    [gpu.device_id for gpu in requested_confidential_gpus], owner=content.address
+                )
+                spec = replace(spec, gpus=resolved)
             # Agent-side admission after the download, like the instance path:
             # a failed bundle fetch never consumes capacity.
             capacity.check_capacity(

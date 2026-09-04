@@ -20,7 +20,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aleph_message.models import VerifiableProgramMessage, parse_message
-from aleph_message.models.execution.vprogram import VerifiedVolume
+from aleph_message.models.execution.vprogram import (
+    VerifiableProgramContent,
+    VerifiedVolume,
+)
 
 from aleph.vm.agent.guest_ipv6 import compute_requested_ipv6
 from aleph.vm.agent.vprogram_launch import (
@@ -706,6 +709,89 @@ def test_remove_vprogram_staging_is_idempotent(tmp_path, monkeypatch):
     # Already gone (second teardown, or a non-V-PROGRAM VM with no staging dir).
     remove_vprogram_staging(vm_hash)
     assert not staging.exists()
+
+
+# A GPU-declaring message needs a VerifiableProgramContent.gpus field, which
+# only a post-1.4.0 aleph-message build carries; skip rather than fail on a
+# dev-deps run that predates it so CI on the released package stays green.
+requires_gpu_field = pytest.mark.skipif(
+    "gpus" not in getattr(VerifiableProgramContent, "model_fields", {}),
+    reason="aleph-message build has no VerifiableProgramContent.gpus field",
+)
+
+GPU_BLOCK = {
+    "vendor": "nvidia",
+    "arch": "blackwell",
+    "driver_version": "595.71.05",
+    "accepted_models": ["NVIDIA RTX PRO 6000 Blackwell Server Edition"],
+    "library_path": "/opt/nvidia/lib",
+}
+VOLUME_SLOT_TEMPLATE = (
+    MANIFEST_TEMPLATE["boot"]["cmdline_template"]
+    + " workload_roothash={workload_roothash} swiotlb=262144 verified_volumes={verified_volumes}"
+)
+
+
+def _with_gpu(message: VerifiableProgramMessage, *, memory: int = 4096) -> VerifiableProgramMessage:
+    # Deferred import: ConfidentialGpu does not exist on an aleph-message
+    # build that predates the gpus field, and this helper is only ever
+    # called from tests guarded by @requires_gpu_field.
+    from aleph_message.models.execution.vprogram import ConfidentialGpu
+
+    content = message.content.model_copy(
+        update={
+            # model_copy(update=...) does not coerce nested dicts (unlike
+            # parse_message/model_validate), so a real ConfidentialGpu is
+            # built here to match what a validated message actually carries.
+            "gpus": [ConfidentialGpu(vendor="nvidia", device_id="10de:2b85")],
+            "resources": message.content.resources.model_copy(update={"memory": memory}),
+        }
+    )
+    return message.model_copy(update={"content": content})
+
+
+@requires_gpu_field
+@pytest.mark.asyncio
+async def test_gpu_vprogram_needs_a_gpu_runtime(tmp_path, storage_files, snp_vcpu_types):
+    _stage_bundle(tmp_path, storage_files)  # MANIFEST_TEMPLATE has no gpu block
+    message = _with_gpu(load_vprogram_message())
+    with pytest.raises(VmSetupError, match="no gpu block"):
+        await build_vprogram_spec(message.item_hash, message.content)
+
+
+@requires_gpu_field
+@pytest.mark.asyncio
+async def test_gpu_vprogram_enforces_the_memory_floor(tmp_path, storage_files, snp_vcpu_types):
+    _stage_bundle(tmp_path, storage_files, gpu=GPU_BLOCK)
+    message = _with_gpu(load_vprogram_message(), memory=1024)
+    with pytest.raises(VmSetupError, match="2048"):
+        await build_vprogram_spec(message.item_hash, message.content)
+
+
+@requires_gpu_field
+@pytest.mark.asyncio
+async def test_gpu_vprogram_spec_leaves_gpus_for_run_to_resolve(tmp_path, storage_files, snp_vcpu_types):
+    # The fixture message carries a volume, so the manifest needs the slot
+    # for the build to run to completion.
+    _stage_bundle(tmp_path, storage_files, gpu=GPU_BLOCK, **{"boot.cmdline_template": VOLUME_SLOT_TEMPLATE})
+    message = _with_gpu(load_vprogram_message())
+    spec, _ = await build_vprogram_spec(message.item_hash, message.content)
+    assert spec.gpus == []  # resolved against the host in run.py, after staging
+    assert spec.memory_mib == 4096
+    # The fixed swiotlb token reaches the daemon through its own sidecar.
+    rootfs = next(disk.path for disk in spec.disks if disk.role is DiskRole.ROOTFS)
+    assert (rootfs.parent / f"{rootfs.name}.cmdline_extra").read_text() == "swiotlb=262144\n"
+
+
+@pytest.mark.asyncio
+async def test_non_gpu_vprogram_leaves_no_cmdline_extra_sidecar(tmp_path, storage_files, snp_vcpu_types):
+    _stage_bundle(
+        tmp_path, storage_files, **{"boot.cmdline_template": VOLUME_SLOT_TEMPLATE.replace(" swiotlb=262144", "")}
+    )
+    message = load_vprogram_message()
+    spec, _ = await build_vprogram_spec(message.item_hash, message.content)
+    rootfs = next(disk.path for disk in spec.disks if disk.role is DiskRole.ROOTFS)
+    assert not (rootfs.parent / f"{rootfs.name}.cmdline_extra").exists()
 
 
 @pytest.mark.asyncio

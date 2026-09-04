@@ -409,6 +409,27 @@ async def test_resolve_gpus_empty_request_makes_no_supervisor_call():
     supervisor.get_host_info.assert_not_awaited()
 
 
+def _cc_gpu(pci_host: str, cc_mode: str | None) -> GpuDevice:
+    gpu = GpuDevice(vendor="NVIDIA", device_name="GB202", device_class="0300", pci_host=pci_host, device_id=_DEVICE_ID)
+    return gpu.model_copy(update={"cc_mode": cc_mode})
+
+
+@pytest.mark.asyncio
+async def test_resolve_confidential_gpus_takes_only_on_mode_cards():
+    manager = _manager([_cc_gpu("06:00.0", "off"), _cc_gpu("07:00.0", None), _cc_gpu("08:00.0", "on")])
+    resolved = await manager.resolve_confidential_gpus([_DEVICE_ID], owner="0xUSER")
+    assert [str(g.pci_host) for g in resolved] == ["08:00.0"]
+    assert resolved[0].supports_x_vga is False
+
+
+@pytest.mark.asyncio
+async def test_resolve_confidential_gpus_names_the_confidential_requirement():
+    manager = _manager([_cc_gpu("06:00.0", "devtools")])
+    with pytest.raises(InsufficientResourcesError) as excinfo:
+        await manager.resolve_confidential_gpus([_DEVICE_ID], owner="0xUSER")
+    assert excinfo.value.required == {"confidential_gpu_device_id": _DEVICE_ID}
+
+
 def test_manager_never_calls_unrelated_supervisor_methods(mocker):
     # check_capacity is pure agent policy: registry sums plus host figures.
     _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)

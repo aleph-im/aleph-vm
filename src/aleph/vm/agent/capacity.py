@@ -309,6 +309,30 @@ class CapacityManager:
             for gpu in resolved
         ]
 
+    async def resolve_confidential_gpus(self, requested_device_ids: list[str], owner: str) -> list[GpuSpec]:
+        """Like resolve_gpus, restricted to cards probed in NVIDIA CC mode.
+
+        `supports_x_vga` is always False: the SNP launcher never emits x-vga
+        for a headless confidential guest. The error names the confidential
+        requirement so the scheduler and the log can tell it from a plain
+        GPU shortage.
+        """
+        if not requested_device_ids:
+            return []
+        async with self._lock:
+            confidential = [gpu for gpu in await self._available_gpus() if gpu.cc_mode == "on"]
+            try:
+                resolved = self._match_requests(confidential, requested_device_ids, owner, consume_own_hold=True)
+            except InsufficientResourcesError as error:
+                device_id = error.required.get("gpu_device_id", "")
+                detail = f"No available GPU in confidential-computing mode matching device_id {device_id!r}"
+                raise InsufficientResourcesError(
+                    detail,
+                    required={"confidential_gpu_device_id": device_id},
+                    available={"confidential_gpus": [gpu.device_id for gpu in confidential]},
+                ) from error
+        return [GpuSpec(pci_host=PciAddress(gpu.pci_host), supports_x_vga=False) for gpu in resolved]
+
     def _match_requests(
         self,
         available_gpus: list[GpuDevice],
