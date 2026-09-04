@@ -21,6 +21,7 @@ from aleph_message.models.execution.environment import (
 )
 from test_snp_instance_launch import VM_HASH, snp_instance_content
 from test_supervisor_translate import _make_qemu_instance_message
+from test_vprogram_launch import _with_gpu, load_vprogram_message
 
 from aleph.vm.agent import run as run_module
 from aleph.vm.agent.vm_registry import AgentVmRegistry
@@ -32,8 +33,10 @@ from aleph.vm.supervisor_interface.types import (
     DiskFormat,
     DiskRole,
     DiskSpec,
+    GpuSpec,
     IpAssignment,
     NetworkConfig,
+    PciAddress,
     TeeBackend,
     TeeConfig,
     VmId,
@@ -353,3 +356,37 @@ async def test_snp_instance_port_forward_failure_cleans_staging(monkeypatch):
 
     retire.assert_awaited_once_with(VM_HASH, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)
     supervisor.delete_vm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_vprogram_create_resolves_confidential_gpus(monkeypatch):
+    """A GPU-declaring V-PROGRAM resolves its family requirement against the
+    host's CC-mode cards through capacity.resolve_confidential_gpus, after
+    build_vprogram_spec and before create_vm: the resolved GpuSpec must reach
+    the spec supervisor.create_vm actually gets (mirrors the plain-instance
+    resolve_gpus wiring, but for the V-PROGRAM branch)."""
+    message = _with_gpu(load_vprogram_message())
+    content = message.content
+    monkeypatch.setattr(run_module, "load_updated_message", AsyncMock(return_value=(message, message)))
+    fake_spec = _snp_spec()
+    assert fake_spec.gpus == []
+    monkeypatch.setattr(run_module, "build_vprogram_spec", AsyncMock(return_value=(fake_spec, _ATTEST_PORT)))
+    monkeypatch.setattr(run_module, "reconcile_vprogram_port_forwards", AsyncMock())
+    monkeypatch.setattr(run_module, "_wait_until_attest_endpoint_listens", AsyncMock())
+    monkeypatch.setattr(run_module, "persist_record", AsyncMock())
+
+    resolved_gpu = GpuSpec(pci_host=PciAddress("08:00.0"), supports_x_vga=False)
+    capacity = _fake_capacity()
+    capacity.resolve_confidential_gpus = AsyncMock(return_value=[resolved_gpu])
+    supervisor = _fake_supervisor()
+    registry = AgentVmRegistry()
+
+    await run_module.create_vm_execution(
+        message.item_hash, supervisor=supervisor, registry=registry, capacity=capacity, persistent=True
+    )
+
+    capacity.resolve_confidential_gpus.assert_awaited_once_with(
+        arch=content.gpu.arch, count=content.gpu.count, models=content.gpu.models, owner=content.address
+    )
+    sent_spec = supervisor.create_vm.await_args.args[0]
+    assert sent_spec.gpus == [resolved_gpu]

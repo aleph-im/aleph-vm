@@ -63,6 +63,19 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# A GPU-declaring V-PROGRAM's runtime reserves a fixed IOMMU bounce buffer
+# (swiotlb=262144, pinned in the manifest's cmdline template): a VM below this
+# floor cannot afford it, so refuse the launch before any staging I/O runs.
+GPU_VPROGRAM_MIN_MEMORY_MIB = 2048
+
+# The one fixed (non-placeholder) cmdline token a format-version-1 template
+# may carry today: the GPU runtime's swiotlb size. manifest.py's validator
+# already restricts a template to this closed set on parse; this regex finds
+# the token so it can be handed to the daemon through its own sidecar (the
+# proto has no cmdline field for it, mirroring workload_roothash/
+# verified_volumes below).
+CMDLINE_EXTRA_TOKEN = re.compile(r"(?<!\S)swiotlb=\d{1,9}(?!\S)")
+
 
 def vprogram_staging_dir(vm_hash: ItemHash) -> Path:
     """The per-VM directory the runtime bundle is extracted into."""
@@ -177,6 +190,27 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
     """
     manifest = await fetch_runtime_manifest(str(content.runtime.ref))
 
+    # content.gpus is Optional on the schema (absent and empty both mean no
+    # GPU); read it defensively so this keeps working against an
+    # aleph-message release that predates the field.
+    gpus = list(getattr(content, "gpus", None) or [])
+    if gpus:
+        if len(gpus) > 1:
+            msg = f"V-PROGRAM {vm_hash} declares {len(gpus)} GPUs; one confidential GPU per VM is supported"
+            raise VmSetupError(msg)
+        if manifest.gpu is None:
+            msg = f"V-PROGRAM {vm_hash} declares a GPU but runtime {content.runtime.ref} has no gpu block"
+            raise VmSetupError(msg)
+        if gpus[0].vendor != manifest.gpu.vendor:
+            msg = f"V-PROGRAM {vm_hash} declares a {gpus[0].vendor} GPU but the runtime drives {manifest.gpu.vendor}"
+            raise VmSetupError(msg)
+        if content.resources.memory < GPU_VPROGRAM_MIN_MEMORY_MIB:
+            msg = (
+                f"V-PROGRAM {vm_hash} declares a GPU with {content.resources.memory} MiB; the runtime's "
+                f"swiotlb reservation needs at least {GPU_VPROGRAM_MIN_MEMORY_MIB} MiB"
+            )
+            raise VmSetupError(msg)
+
     # The tarball is fetched here (not via snp_staging.fetch_and_stage_bundle)
     # so it goes through this module's own get_existing_file: run.py and the
     # launch-path tests patch aleph.vm.agent.vprogram_launch.get_existing_file
@@ -275,6 +309,19 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
         # bundle (the workload sidecar above is overwritten for the same
         # reason).
         volumes_sidecar.unlink(missing_ok=True)
+
+    # Fixed tokens the template carries that the daemon cannot derive from a
+    # roothash: today only the SWIOTLB size of the GPU runtime. Written to a
+    # sidecar the daemon validates against the same closed allowlist and
+    # splices between workload_roothash and verified_volumes, the template's
+    # position. Absent token, absent sidecar: a stale file from a previous
+    # staging must not survive into a runtime that never measured it.
+    extra_sidecar = rootfs_path.parent / f"{rootfs_path.name}.cmdline_extra"
+    extra_tokens = CMDLINE_EXTRA_TOKEN.findall(manifest.boot.cmdline_template)
+    if extra_tokens:
+        extra_sidecar.write_text(" ".join(extra_tokens) + "\n")
+    else:
+        extra_sidecar.unlink(missing_ok=True)
 
     session_base = settings.CONFIDENTIAL_SESSION_DIRECTORY or (Path(settings.EXECUTION_ROOT) / "sessions")
 
