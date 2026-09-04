@@ -497,11 +497,10 @@ platform image without one is unaffected). Steps, each failing to
    RIM and VBIOS RIM fetch, signature and schema validation, measurement
    comparison, and produces the claims and detached EAT.
 3. Check `result_code == 0` and every per-GPU `measres == "Success"`.
-4. Set the GPU ready state explicitly with
-   `nvmlSystemSetConfComputeGpusReadyState(1)` through a small subcommand
-   of the attest-agent binary (`aleph-attest-agent gpu-ready`), so the gate
-   does not depend on `nvattest`'s own root-mode side effects, and read it
-   back before continuing.
+4. Set the GPU ready state explicitly with `nvidia-smi conf-compute -srs 1`
+   from the raw driver userland, so the gate does not depend on
+   `nvattest`'s own root-mode side effects, and read it back with
+   `conf-compute -grs` before continuing.
 5. Write the claims JSON to `/run/aleph/gpu-boot-claims.json` (tmpfs,
    mode 0600) for the attest-agent.
 6. Bind-mount `/opt/nvidia/lib` and the `/dev/nvidia*` nodes into the
@@ -519,14 +518,17 @@ launch. There is no offline RIM cache in v1; section 9 lists it.
 
 ### 6.5 Attest-agent
 
-`rust/crates/aleph-attest-agent` gains `gpu.rs`: NVML loaded with `dlopen`
-at startup only when `--gpu-claims` is given (the non-GPU image has no
-NVML, and the agent must keep building and running without it). The route
-handler derives the nonce (4.3), calls
-`nvmlDeviceGetConfComputeGpuCertificate` and
-`nvmlDeviceGetConfComputeGpuAttestationReport` for each device, base64
-encodes, and returns the 4.4 document. A mutex serializes GPU evidence
-requests; concurrent callers queue rather than overlap SPDM sessions.
+`rust/crates/aleph-attest-agent` gains `gpu.rs`. The agent is a static
+musl binary inside a content-only measured initrd, so it cannot load
+NVIDIA's glibc NVML library itself. Instead, when init passes
+`--gpu-claims` and `--gpu-collector`, the route handler derives the nonce
+(4.3) and runs NVIDIA's own `nvattest collect-evidence --device gpu
+--format json --nonce <hex>` as a child process chrooted into the rootfs,
+parses the `evidences` array it prints (the exact 4.4 per-GPU shape),
+refuses any entry whose nonce is not the one asked for, and returns the
+4.4 document. A mutex serializes GPU evidence requests; concurrent callers
+queue rather than overlap SPDM sessions. The non-GPU image starts the agent
+without those flags and the route answers 404.
 
 The agent does not verify anything itself. It is a relay for signed
 evidence; verification at request time is the client's (4.5), verification
