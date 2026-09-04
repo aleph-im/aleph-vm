@@ -212,6 +212,20 @@
         udhcpc6-script = ./udhcpc6.script;
       };
 
+      # Confidential-GPU initrd: the v-program contents (dm-verity + nft
+      # firewall) built against gpuKernel, plus NVIDIA's open kernel modules
+      # and init-gpu.sh as /init. The kernel MUST be gpuKernel: the dm-*/nft
+      # modules shipped alongside nvidia.ko have to come from the same build.
+      gpuInitrd = pkgs.callPackage ./initrd.nix {
+        inherit attest-agent;
+        kernel = gpuKernel;
+        init-script = ./init-gpu.sh;
+        init-common-script = ./init-common.sh;
+        udhcpc-script = ./udhcpc.script;
+        udhcpc6-script = ./udhcpc6.script;
+        withNvidia = nvidiaDriver.modules;
+      };
+
       rootfs = pkgs.callPackage ./rootfs.nix {};
 
       # Compose-runner platform rootfs (aleph.compose/1): podman + podman-compose
@@ -219,6 +233,11 @@
       # volume. See compose-rootfs.nix for the donor deltas (determinism,
       # ownership, fail-closed init).
       composeRootfs = pkgs.callPackage ./compose-rootfs.nix { inherit kernel; };
+
+      # Confidential-GPU platform rootfs: the base busybox content plus the
+      # raw driver userland, GSP firmware and NVIDIA's local verifier. See
+      # gpu-rootfs.nix.
+      gpuRootfs = import ./gpu-rootfs.nix { inherit pkgs nvidiaDriver nvat; };
 
       # fib-service V-PROGRAM workload volume: a content-only ext4 carrying the
       # fib-service binary as /sbin/init, delivered to the measured guest as an
@@ -272,6 +291,24 @@
           | tr -d '\n' > $out/roothash
       '';
 
+      # dm-verity hash tree + root hash for the confidential-GPU platform
+      # rootfs. Same mechanism as `verity` above (identical fixed salt/uuid),
+      # applied to gpuRootfs.
+      gpuVerity = pkgs.runCommand "gpu-rootfs-verity" {
+        nativeBuildInputs = [ pkgs.cryptsetup ];
+      } ''
+        mkdir -p $out
+        veritysetup format \
+          --salt=${veritySalt} \
+          --uuid=${verityUuid} \
+          ${gpuRootfs} \
+          $out/hashtree \
+          | tee /dev/stderr \
+          | grep "Root hash:" \
+          | awk '{print $NF}' \
+          | tr -d '\n' > $out/roothash
+      '';
+
       # dm-verity hash tree + root hash for the fib-service workload volume.
       # Same mechanism as `verity` above (identical fixed salt/uuid), applied to
       # workloadImage instead of rootfs, so the workload_roothash is reproducible
@@ -315,11 +352,17 @@
       #   manifest template (src/aleph/vm/vprogram/bundle.py). Per-workload
       #   measurements are computed by passing this argument; they are never
       #   baked into the platform bundle's own measurement.hex.
-      # initrdDrv/verityDrv: which initrd and platform-rootfs verity derivation
-      #   to measure. Default to `initrd`/`verity` (the base flavor), so
-      #   existing callers are unaffected; the compose flavor below passes
-      #   composeInitrd/composeVerity to reuse this same cmdline template
+      # initrdDrv/verityDrv/kernelDrv: which initrd, platform-rootfs verity and
+      #   kernel derivation to measure. Default to `initrd`/`verity`/`kernel`
+      #   (the base flavor), so existing callers are unaffected; the compose
+      #   flavor below passes composeInitrd/composeVerity and the GPU flavor
+      #   additionally passes gpuKernel, to reuse this same cmdline template
       #   instead of duplicating it.
+      # cmdlineExtra: appended verbatim to the cmdline built above (so it
+      #   carries its own leading space). Empty by default, which keeps every
+      #   existing caller's cmdline BYTE-identical; the GPU flavor passes
+      #   " swiotlb=262144", which the guest needs for the driver's bounce
+      #   buffers under SEV-SNP.
       # name: the derivation name. Defaults to the exact string this function
       #   has always used, so the base flavor's `#measurement` store path is
       #   unchanged; the compose flavor below passes a compose-tagged name so
@@ -329,12 +372,13 @@
       #   its inputs (initrd/verity vs composeInitrd/composeVerity) differ.
       # The measurement is a function of (OVMF + kernel + initrd + cmdline +
       # vCPU count + CPU type), so each configuration needs its own value.
-      measurementFor = { vcpus ? 2, vcpuType ? "EPYC-v4", workloadRoothash ? null, initrdDrv ? initrd, verityDrv ? verity, name ? "sev-snp-measurement-${toString vcpus}vcpus-${vcpuType}" }: let
+      measurementFor = { vcpus ? 2, vcpuType ? "EPYC-v4", workloadRoothash ? null, initrdDrv ? initrd, verityDrv ? verity, kernelDrv ? kernel, cmdlineExtra ? "", name ? "sev-snp-measurement-${toString vcpus}vcpus-${vcpuType}" }: let
         platformRoothash = builtins.readFile "${verityDrv}/roothash";
-        kernelCmdline =
+        baseCmdline =
           if workloadRoothash == null
           then "console=ttyS0 root=/dev/mapper/verity-root ro roothash=${platformRoothash}"
           else "console=ttyS0 root=/dev/mapper/verity-root ro roothash=${platformRoothash} workload_roothash=${workloadRoothash}";
+        kernelCmdline = baseCmdline + cmdlineExtra;
       in pkgs.runCommand name {
         nativeBuildInputs = [ sev-snp-measure ];
       } ''
@@ -343,7 +387,7 @@
           --vcpus ${toString vcpus} \
           --vcpu-type ${vcpuType} \
           --ovmf ${ovmfFd} \
-          --kernel ${kernel}/bzImage \
+          --kernel ${kernelDrv}/bzImage \
           --initrd ${initrdDrv}/initrd \
           --append "${kernelCmdline}" \
           | tr -d '\n' > $out
@@ -369,6 +413,24 @@
       # cmdline. Mirrors `measurement` above for the compose flavor; this is
       # the value baked into composeImage/measurement.hex below.
       composeMeasurement = composeMeasurementFor { vcpus = 2; vcpuType = "EPYC-v4"; };
+
+      # Confidential-GPU measurement builder: same measurementFor machinery,
+      # pinned to gpuInitrd, gpuVerity's root hash and gpuKernel, with the
+      # GPU flavor's extra cmdline token.
+      gpuMeasurementFor = { vcpus ? 2, vcpuType ? "EPYC-v4", workloadRoothash ? null }:
+        measurementFor {
+          inherit vcpus vcpuType workloadRoothash;
+          initrdDrv = gpuInitrd;
+          verityDrv = gpuVerity;
+          kernelDrv = gpuKernel;
+          cmdlineExtra = " swiotlb=262144";
+          name = "sev-snp-measurement-gpu-${toString vcpus}vcpus-${vcpuType}";
+        };
+
+      # Default GPU measurement: 2 vCPUs, EPYC-v4 (Genoa), platform-only
+      # cmdline. Mirrors `measurement` above for the GPU flavor; this is the
+      # value baked into gpuImage/measurement.hex below.
+      gpuMeasurement = gpuMeasurementFor { vcpus = 2; vcpuType = "EPYC-v4"; };
 
       # Convenience: the workload-form measurement for THIS repo's fib-service
       # demo workload (2 vCPUs, EPYC-v4), using workloadVerity's root hash.
@@ -409,6 +471,27 @@
         cp ${composeVerity}/hashtree $out/rootfs.ext4.verity
         cp ${composeVerity}/roothash $out/rootfs.ext4.roothash
         echo "${sourceRev}" > $out/source-rev
+      '';
+
+      # Convenience: all measured-image artifacts in one directory, for the
+      # confidential-GPU flavor. Mirrors `image` above, plus gpu.json: the
+      # runtime's GPU contract (vendor, architecture, driver version, the
+      # models the node will accept, and the in-guest library path the
+      # workload gets its driver userland at), which the bundle builder
+      # copies into the published manifest.
+      gpuImage = pkgs.runCommand "aleph-gpu-image" {} ''
+        mkdir -p $out
+        ln -s ${gpuKernel}/bzImage $out/bzImage
+        ln -s ${gpuInitrd}/initrd $out/initrd
+        ln -s ${gpuRootfs} $out/rootfs.ext4
+        cp ${ovmfFd} $out/OVMF.fd
+        cp ${gpuMeasurement} $out/measurement.hex
+        cp ${gpuVerity}/hashtree $out/rootfs.ext4.verity
+        cp ${gpuVerity}/roothash $out/rootfs.ext4.roothash
+        echo "${sourceRev}" > $out/source-rev
+        cat > $out/gpu.json <<EOF
+{"vendor":"nvidia","arch":"blackwell","driver_version":"${nvidiaDriver.version}","accepted_models":["NVIDIA RTX PRO 6000 Blackwell Server Edition"],"library_path":"/opt/nvidia/lib"}
+EOF
       '';
 
       # Per-deployment measurement helper for the instance image: the owner
@@ -484,18 +567,23 @@
           initrd
           instanceInitrd
           composeInitrd
+          gpuInitrd
           rootfs
           composeRootfs
+          gpuRootfs
           verity
           composeVerity
+          gpuVerity
           workloadImage
           workloadVerity
           workload
           measurement
           workloadMeasurement
           composeMeasurement
+          gpuMeasurement
           image
           composeImage
+          gpuImage
           instanceImage
           instanceMeasurementSmoke
           instanceTestRootfs;
@@ -507,8 +595,12 @@
       # Tasks 8/11/13 (and any other flake consumer, not just direct
       # importers of this file) can call
       # `(builtins.getFlake ...).lib.${system}.instanceMeasurementFor { ... }`.
+      # gpuMeasurementFor takes only optional arguments, so `gpuMeasurement`
+      # above already gives it build coverage; it is exposed here for the
+      # same reason as instanceMeasurementFor, so a flake consumer can
+      # compute a workload-form GPU measurement without importing this file.
       lib.${system} = {
-        inherit instanceMeasurementFor;
+        inherit instanceMeasurementFor gpuMeasurementFor;
       };
     };
 }
