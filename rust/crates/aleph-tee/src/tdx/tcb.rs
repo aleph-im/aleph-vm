@@ -10,7 +10,7 @@
 //! advisories.
 
 use std::collections::BTreeSet;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use openssl::hash::MessageDigest;
@@ -71,9 +71,10 @@ impl TcbStatus {
 /// The builtin baseline accepts `UpToDate` and `SWHardeningNeeded` (the
 /// latter is routine QE software mitigation) and rejects everything else.
 /// `ConfigurationNeeded` is rejected by default because it typically flags
-/// BIOS state such as SMT. `Revoked` is never acceptable and cannot be added
-/// to `accepted_statuses`; that asymmetry with the SNP override is
-/// deliberate.
+/// BIOS state such as SMT. `Revoked` is never acceptable: that rejection is
+/// enforced in `evaluate_tcb` regardless of `accepted_statuses`, so putting
+/// it in the set has no effect. That asymmetry with the SNP override, which
+/// admits any concrete named TCB, is deliberate.
 #[derive(Debug, Clone)]
 pub struct TdxTcbPolicy {
     pub accepted_statuses: BTreeSet<TcbStatus>,
@@ -92,11 +93,32 @@ impl Default for TdxTcbPolicy {
     }
 }
 
-/// The outcome of a full TDX quote verification.
+/// The outcome of a TDX TCB appraisal: the converged status and the union
+/// of advisory ids across the platform, module and QE levels.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TdxTcbOutcome {
     pub status: TcbStatus,
     pub advisory_ids: Vec<String>,
+}
+
+/// Apply a policy to an appraised status and its advisories.
+///
+/// `Revoked` is a security invariant, rejected before the policy is even
+/// consulted: it cannot be admitted by adding it to `accepted_statuses`.
+fn check_policy(status: TcbStatus, advisories: &[String], policy: &TdxTcbPolicy) -> Result<()> {
+    if status == TcbStatus::Revoked {
+        bail!("TCB status is Revoked: the platform keys are compromised");
+    }
+    if !policy.accepted_statuses.contains(&status) {
+        bail!("TCB status {status:?} is not accepted by policy");
+    }
+    if let Some(hit) = advisories
+        .iter()
+        .find(|a| policy.denied_advisories.contains(*a))
+    {
+        bail!("TCB carries a denied advisory: {hit}");
+    }
+    Ok(())
 }
 
 // --- Intel signed documents (only the fields consumed here) ---
@@ -144,6 +166,8 @@ struct TdxModuleTcb {
 struct TdxModuleIdentity {
     id: String,
     mrsigner: String,
+    attributes: String,
+    attributes_mask: String,
     tcb_levels: Vec<TdxModuleTcbLevel>,
 }
 
@@ -152,15 +176,29 @@ struct TdxModuleIdentity {
 struct TcbInfo {
     id: String,
     version: u32,
+    issue_date: String,
+    next_update: String,
     fmspc: String,
     tcb_levels: Vec<TcbLevel>,
+    tdx_module: Option<TdxModuleBase>,
     #[serde(default)]
     tdx_module_identities: Vec<TdxModuleIdentity>,
+}
+
+/// The base TDX module identity, used when no per-version identity applies.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TdxModuleBase {
+    mrsigner: String,
+    attributes: String,
+    attributes_mask: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct QeIdentity {
+    issue_date: String,
+    next_update: String,
     mrsigner: String,
     isvprodid: u16,
     attributes: String,
@@ -223,6 +261,63 @@ fn verify_signed_document(
     Ok(())
 }
 
+/// Parse the fixed `YYYY-MM-DDTHH:MM:SSZ` timestamp Intel uses in its signed
+/// documents into a `SystemTime`. Kept deliberately small: pulling in a date
+/// crate would widen the measured agent's dependency tree for one format.
+fn parse_rfc3339_z(s: &str) -> Result<SystemTime> {
+    let b = s.as_bytes();
+    if b.len() != 20
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || b[10] != b'T'
+        || b[13] != b':'
+        || b[16] != b':'
+        || b[19] != b'Z'
+    {
+        bail!("unexpected date format {s:?}");
+    }
+    let field = |r: std::ops::Range<usize>| -> Result<i64> {
+        s.get(r.clone())
+            .and_then(|f| f.parse::<i64>().ok())
+            .with_context(|| format!("bad date field in {s:?}"))
+    };
+    let (year, month, day) = (field(0..4)?, field(5..7)?, field(8..10)?);
+    let (hour, minute, second) = (field(11..13)?, field(14..16)?, field(17..19)?);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        bail!("date out of range in {s:?}");
+    }
+    // days_from_civil (Howard Hinnant): days since the unix epoch.
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    let secs = days * 86400 + hour * 3600 + minute * 60 + second;
+    let secs: u64 = secs
+        .try_into()
+        .with_context(|| format!("date predates the unix epoch: {s:?}"))?;
+    Ok(UNIX_EPOCH + Duration::from_secs(secs))
+}
+
+/// Reject a signed document whose validity window does not contain `now`.
+///
+/// The signer certificates outlive these documents by years, so without
+/// this an old but genuinely-signed document (with lower SVN thresholds)
+/// could be replayed to keep an unpatched platform appraising as current.
+fn check_document_window(what: &str, issue: &str, next: &str, now: SystemTime) -> Result<()> {
+    let issue = parse_rfc3339_z(issue).with_context(|| format!("{what} issueDate"))?;
+    let next = parse_rfc3339_z(next).with_context(|| format!("{what} nextUpdate"))?;
+    if now < issue {
+        bail!("{what} is not yet valid (issueDate {issue:?})");
+    }
+    if now > next {
+        bail!("{what} has expired (nextUpdate {next:?})");
+    }
+    Ok(())
+}
+
 fn verify_tcb_info(collateral: &TdxCollateral, now: SystemTime) -> Result<TcbInfo> {
     verify_signed_document(
         "TCB Info",
@@ -231,7 +326,10 @@ fn verify_tcb_info(collateral: &TdxCollateral, now: SystemTime) -> Result<TcbInf
         &collateral.tcb_info_issuer_chain,
         now,
     )?;
-    serde_json::from_str(&collateral.tcb_info).context("failed to parse TCB Info body")
+    let tcb_info: TcbInfo =
+        serde_json::from_str(&collateral.tcb_info).context("failed to parse TCB Info body")?;
+    check_document_window("TCB Info", &tcb_info.issue_date, &tcb_info.next_update, now)?;
+    Ok(tcb_info)
 }
 
 fn verify_qe_identity(collateral: &TdxCollateral, now: SystemTime) -> Result<QeIdentity> {
@@ -242,7 +340,15 @@ fn verify_qe_identity(collateral: &TdxCollateral, now: SystemTime) -> Result<QeI
         &collateral.qe_identity_issuer_chain,
         now,
     )?;
-    serde_json::from_str(&collateral.qe_identity).context("failed to parse QE Identity body")
+    let qe_identity: QeIdentity = serde_json::from_str(&collateral.qe_identity)
+        .context("failed to parse QE Identity body")?;
+    check_document_window(
+        "QE Identity",
+        &qe_identity.issue_date,
+        &qe_identity.next_update,
+        now,
+    )?;
+    Ok(qe_identity)
 }
 
 // --- The platform TCB walk ---
@@ -309,23 +415,56 @@ fn tdx_module_status(
     }
     let module_svn = quote.body.tee_tcb_svn[0];
     let module_version = quote.body.tee_tcb_svn[1];
-    if module_version == 0 || tcb_info.tdx_module_identities.is_empty() {
-        return Ok(None);
+
+    // Expected identity: the base tdxModule, overridden by a per-version
+    // entry when the report names one. Falling straight through without
+    // checking MRSIGNERSEAM would be fail-open, so the base is required for
+    // a v3 TDX document even when no per-version identity applies.
+    let base = tcb_info
+        .tdx_module
+        .as_ref()
+        .context("a v3 TDX TCB Info must carry a tdxModule identity")?;
+    let mut expected_mrsigner: [u8; 48] = hex_fixed("tdxModule.mrsigner", &base.mrsigner)?;
+    let mut expected_attributes: [u8; 8] = hex_fixed("tdxModule.attributes", &base.attributes)?;
+    let mut attributes_mask: [u8; 8] =
+        hex_fixed("tdxModule.attributesMask", &base.attributes_mask)?;
+    let mut identity_levels: Option<&[TdxModuleTcbLevel]> = None;
+
+    if module_version > 0 && !tcb_info.tdx_module_identities.is_empty() {
+        let wanted = format!("TDX_{module_version:02X}");
+        let identity = tcb_info
+            .tdx_module_identities
+            .iter()
+            .find(|id| id.id.eq_ignore_ascii_case(&wanted))
+            .with_context(|| format!("no TDX module identity {wanted} in the TCB Info"))?;
+        expected_mrsigner = hex_fixed("tdxModuleIdentity.mrsigner", &identity.mrsigner)?;
+        expected_attributes = hex_fixed("tdxModuleIdentity.attributes", &identity.attributes)?;
+        attributes_mask = hex_fixed(
+            "tdxModuleIdentity.attributesMask",
+            &identity.attributes_mask,
+        )?;
+        identity_levels = Some(&identity.tcb_levels);
     }
 
-    let wanted = format!("TDX_{module_version:02X}");
-    let identity = tcb_info
-        .tdx_module_identities
-        .iter()
-        .find(|id| id.id.eq_ignore_ascii_case(&wanted))
-        .with_context(|| format!("no TDX module identity {wanted} in the TCB Info"))?;
-
-    let expected_mrsigner: [u8; 48] = hex_fixed("tdxModuleIdentity.mrsigner", &identity.mrsigner)?;
     if quote.body.mrsignerseam != expected_mrsigner {
         bail!("MRSIGNERSEAM does not match the Intel-signed TDX module identity");
     }
+    // SEAMATTRIBUTES must match the identity under its mask: the masked bits
+    // pin the module's own attributes (notably its DEBUG bit).
+    for i in 0..8 {
+        if quote.body.seam_attributes[i] & attributes_mask[i]
+            != expected_attributes[i] & attributes_mask[i]
+        {
+            bail!("SEAMATTRIBUTES do not match the TDX module identity under its mask");
+        }
+    }
 
-    for level in &identity.tcb_levels {
+    // The SVN ladder only exists on a per-version identity; the base entry
+    // contributes the MRSIGNER/attributes gate but no status.
+    let Some(levels) = identity_levels else {
+        return Ok(None);
+    };
+    for level in levels {
         if module_svn >= level.tcb.isvsvn {
             return Ok(Some((
                 TcbStatus::parse(&level.tcb_status)?,
@@ -452,19 +591,7 @@ pub fn evaluate_tcb(
         }
     }
 
-    // Revoked is a security invariant, not a policy decision.
-    if status == TcbStatus::Revoked {
-        bail!("TCB status is Revoked: the platform keys are compromised");
-    }
-    if !policy.accepted_statuses.contains(&status) {
-        bail!("TCB status {status:?} is not accepted by policy");
-    }
-    if let Some(hit) = advisories
-        .iter()
-        .find(|a| policy.denied_advisories.contains(*a))
-    {
-        bail!("TCB carries a denied advisory: {hit}");
-    }
+    check_policy(status, &advisories, policy)?;
 
     Ok(TdxTcbOutcome {
         status,
@@ -524,16 +651,74 @@ mod tests {
         // must not be accepted by the default policy.
         let quote = parse_tdx_quote(QUOTE_OUTDATED).unwrap();
         let collateral = TdxCollateral::from_json(COLLATERAL_OUTDATED).unwrap();
-        assert!(
-            evaluate_tcb(
-                &quote,
-                &collateral,
-                &pck_leaf(QUOTE_OUTDATED),
-                now_outdated(),
-                &TdxTcbPolicy::default(),
-            )
-            .is_err()
+        let err = evaluate_tcb(
+            &quote,
+            &collateral,
+            &pck_leaf(QUOTE_OUTDATED),
+            now_outdated(),
+            &TdxTcbPolicy::default(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("below every level"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_expired_tcb_info() {
+        // 40 days past now_v4() is outside the TCB Info window (nextUpdate
+        // 2025-07-19) though still inside the signer certificate's. Without
+        // the document-window check this stale collateral would appraise.
+        let quote = parse_tdx_quote(QUOTE_V4).unwrap();
+        let collateral = TdxCollateral::from_json(COLLATERAL_V4).unwrap();
+        let stale = now_v4() + Duration::from_secs(40 * 24 * 3600);
+        let err = evaluate_tcb(
+            &quote,
+            &collateral,
+            &pck_leaf(QUOTE_V4),
+            stale,
+            &TdxTcbPolicy::default(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("has expired"), "got: {err}");
+    }
+
+    #[test]
+    fn parses_intel_document_dates() {
+        let t = parse_rfc3339_z("2025-06-19T10:16:03Z").unwrap();
+        assert_eq!(
+            t.duration_since(UNIX_EPOCH).unwrap(),
+            Duration::from_secs(1_750_328_163)
         );
+        assert!(parse_rfc3339_z("2025-06-19 10:16:03").is_err());
+        assert!(parse_rfc3339_z("2025-13-19T10:16:03Z").is_err());
+    }
+
+    #[test]
+    fn policy_rejects_revoked_even_when_accepted() {
+        // Revoked is never admissible, even inserted into the accept set.
+        let mut policy = TdxTcbPolicy::default();
+        policy.accepted_statuses.insert(TcbStatus::Revoked);
+        let err = check_policy(TcbStatus::Revoked, &[], &policy)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Revoked"), "got: {err}");
+    }
+
+    #[test]
+    fn policy_rejects_denied_advisory() {
+        let mut policy = TdxTcbPolicy::default();
+        policy
+            .denied_advisories
+            .insert("INTEL-SA-00999".to_string());
+        // An accepted status still fails when it carries a denied advisory.
+        let advisories = vec!["INTEL-SA-00999".to_string()];
+        let err = check_policy(TcbStatus::UpToDate, &advisories, &policy)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("denied advisory"), "got: {err}");
+        // The same advisory is fine when the policy does not deny it.
+        assert!(check_policy(TcbStatus::UpToDate, &advisories, &TdxTcbPolicy::default()).is_ok());
     }
 
     #[test]
@@ -602,6 +787,8 @@ mod tests {
         let tcb_info: TcbInfo = serde_json::from_value(serde_json::json!({
             "id": "TDX",
             "version": 3,
+            "issueDate": "2025-06-19T10:16:03Z",
+            "nextUpdate": "2025-07-19T10:16:03Z",
             "fmspc": "b0c06f000000",
             "tcbLevels": [
                 {
