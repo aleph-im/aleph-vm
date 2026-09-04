@@ -1,5 +1,8 @@
 """HostGPU retains device_id + model so the supervisor can report full GpuDevices."""
 
+import pytest
+from pydantic import ValidationError
+
 from aleph.vm.resources import HostGPU
 
 
@@ -17,3 +20,19 @@ def test_hostgpu_round_trips_detail():
     reloaded = HostGPU.model_validate(gpu.model_dump())
     assert reloaded.device_id == "10de:2504"
     assert reloaded.model == "RTX 3090"
+
+
+def test_inventory_gpu_accepts_and_defaults_cc_mode():
+    from aleph.vm.resources import GpuDevice
+
+    raw = {
+        "vendor": "NVIDIA",
+        "device_name": "GB202",
+        "device_class": "0300",
+        "pci_host": "06:00.0",
+        "device_id": "10de:2b85",
+    }
+    assert GpuDevice.model_validate(raw).cc_mode is None
+    assert GpuDevice.model_validate(raw | {"cc_mode": "on"}).cc_mode == "on"
+    with pytest.raises(ValidationError):
+        GpuDevice.model_validate(raw | {"cc_mode": "maybe"})

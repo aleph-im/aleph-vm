@@ -1,5 +1,6 @@
 import subprocess
 from enum import Enum
+from typing import Literal
 
 from aleph_message.models import HashableModel
 from pydantic import BaseModel, ConfigDict, Field
@@ -21,6 +22,9 @@ class HostGPU(BaseModel):
     supports_x_vga: bool = Field(description="Whether the GPU supports x-vga QEMU parameter", default=True)
     device_id: str = Field(description="GPU vendor:device id, e.g. '10de:2504'", default="")
     model: str | None = Field(description="GPU model name on the Aleph network", default=None)
+    cc_mode: Literal["on", "devtools", "off"] | None = Field(
+        default=None, description="NVIDIA confidential-computing mode when probed"
+    )
 
     model_config = ConfigDict(extra="forbid")
 
@@ -47,6 +51,9 @@ class GpuDevice(HashableModel):
     )
     pci_host: str = Field(description="Host PCI bus for this device")
     device_id: str = Field(description="GPU vendor & device ids")
+    cc_mode: Literal["on", "devtools", "off"] | None = Field(
+        default=None, description="NVIDIA confidential-computing mode when probed"
+    )
 
     @property
     def has_x_vga_support(self) -> bool:
