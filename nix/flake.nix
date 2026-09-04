@@ -34,7 +34,23 @@
       pkgs = import nixpkgs {
         inherit system;
         overlays = [ rust-overlay.overlays.default ];
+        # Only the NVIDIA driver (nvidia-x11's open kernel modules + raw
+        # userland) is unfree in this flake; everything else stays gated by
+        # nixpkgs' default (no blanket allowUnfree). nvidia.acceptLicense
+        # covers nvidia-x11's own license gate (nixpkgs generic.nix), which
+        # the open-modules build sidesteps but the userland .run extraction
+        # (openSha256 != null) still exercises.
+        config = {
+          allowUnfreePredicate = pkg: builtins.elem (nixpkgs.lib.getName pkg) [
+            "nvidia-x11"
+            "nvidia-open"
+            "nvidia-settings"
+            "nvidia-persistenced"
+          ];
+          nvidia.acceptLicense = true;
+        };
       };
+      lib = pkgs.lib;
       craneLib = crane.mkLib pkgs;
 
       # Rust toolchain with musl target for static linking.
@@ -145,6 +161,14 @@
       # base image/measurement derivations below, so it never moves the
       # base `kernel` or `measurement` outputs.
       gpuKernel = pkgs.callPackage ./kernel.nix { extraFragment = ./kernel-config-gpu.fragment; };
+
+      # NVIDIA open kernel modules (against gpuKernel), raw userland and GSP
+      # firmware for the confidential-GPU guest. See nvidia.nix for the
+      # extraction rationale (raw, unpatched ELF; open modules only).
+      nvidiaDriver = import ./nvidia.nix { inherit pkgs lib gpuKernel; };
+      nvidiaModules = nvidiaDriver.modules;
+      nvidiaUserland = nvidiaDriver.userland;
+      nvidiaFirmware = nvidiaDriver.firmware;
 
       initrd = pkgs.callPackage ./initrd.nix {
         inherit attest-agent kernel;
@@ -448,6 +472,9 @@
           ovmf
           kernel
           gpuKernel
+          nvidiaModules
+          nvidiaUserland
+          nvidiaFirmware
           initrd
           instanceInitrd
           composeInitrd
