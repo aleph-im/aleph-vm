@@ -328,9 +328,10 @@ byte-identical to the pre-NUMA baseline.
 - An SEV-SNP measured cmdline never carries `ip=`; the guest always DHCPs,
   which is why SNP VMs need the per-tap DHCP server described in
   [`networking.md`](networking.md).
-- GPU passthrough into an SEV-SNP guest fails closed at spec-build time
-  (`InvalidBackend`); the SNP argv builder emits no passthrough devices at
-  all, so nothing is silently dropped:
+- GPU passthrough into an SEV-SNP guest is admitted only for cards the
+  daemon probed in NVIDIA CC mode (`InvalidBackend` otherwise, including an
+  unprobed or off/devtools card); the SNP argv builder then emits a root
+  port, `vfio-pci` and a BAR-sized OVMF MMIO window:
   `rust/crates/supervisor-daemon/src/lifecycle.rs`,
   `rust/crates/supervisor-controller/src/qemu.rs`.
 - A hugepage size is never selected for a VM the allocator did not also
