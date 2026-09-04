@@ -11,6 +11,7 @@
 
 #![allow(dead_code)]
 
+use std::io::Read;
 use std::process::Command;
 use std::time::Duration;
 
@@ -106,6 +107,25 @@ impl GpuEvidenceSource for CollectorProcess {
             .stderr(std::process::Stdio::piped())
             .spawn()
             .with_context(|| format!("cannot start GPU collector {}", self.program))?;
+
+        // Take ownership of pipes and spawn reader threads to avoid deadlock:
+        // if collector writes >64 KiB, it blocks on the pipe write; without
+        // draining on separate threads, try_wait loops forever and times out.
+        let mut stdout = child.stdout.take().context("expected piped stdout")?;
+        let mut stderr = child.stderr.take().context("expected piped stderr")?;
+
+        let stdout_handle = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stdout.read_to_end(&mut buf);
+            buf
+        });
+
+        let stderr_handle = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stderr.read_to_end(&mut buf);
+            buf
+        });
+
         let started = std::time::Instant::now();
         loop {
             if child
@@ -122,15 +142,28 @@ impl GpuEvidenceSource for CollectorProcess {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        let output = child
-            .wait_with_output()
-            .context("reading the GPU collector output")?;
-        if !output.status.success() {
+
+        // Join reader threads
+        let stdout_buf = stdout_handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("stdout reader thread panicked"))?;
+        let stderr_buf = stderr_handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("stderr reader thread panicked"))?;
+
+        let status = child
+            .wait()
+            .context("waiting for collector after pipes drained")?;
+        if !status.success() {
             // stderr stays in the guest log; the caller only learns it failed.
-            tracing::error!(status = %output.status, stderr = %String::from_utf8_lossy(&output.stderr), "GPU collector failed");
-            bail!("GPU collector exit status {}", output.status);
+            tracing::error!(
+                status = %status,
+                stderr = %String::from_utf8_lossy(&stderr_buf),
+                "GPU collector failed"
+            );
+            bail!("GPU collector exit status {}", status);
         }
-        Self::parse_output(&output.stdout, &nonce_hex)
+        Self::parse_output(&stdout_buf, &nonce_hex)
     }
 }
 
@@ -228,5 +261,29 @@ mod tests {
         let collector = CollectorProcess::from_command_line("/bin/false").unwrap();
         let err = collector.collect(&[0u8; 32]).unwrap_err();
         assert!(err.to_string().contains("exit"), "{err}");
+    }
+
+    /// Large output that would overflow pipe buffers (>64 KiB) must not deadlock.
+    /// The fix drains stdout and stderr on separate threads while polling try_wait.
+    #[test]
+    fn collect_handles_large_output_without_deadlock() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("large-output.sh");
+        // Output ~200 KiB JSON: pipe buffer overflow without the drain fix.
+        let padding = "x".repeat(200000);
+        let script_content = format!(
+            "#!/bin/sh\nnonce=\"$1\"\nprintf '{{\"evidences\":[{{\"arch\":\"HOPPER\",\"nonce\":\"%s\",\"evidence\":\"ZQ==\",\"certificate\":\"Yw==\"}}],\"result_code\":0,\"result_message\":\"{}\"}}' \"$nonce\"\n",
+            padding
+        );
+        std::fs::write(&script, script_content).unwrap();
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let collector = CollectorProcess::from_command_line(script.to_str().unwrap()).unwrap();
+        let nonce = [0xabu8; 32];
+        // Must complete within COLLECT_TIMEOUT (60 s), not deadlock.
+        let out = collector.collect(&nonce).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].arch, "HOPPER");
+        assert_eq!(out[0].nonce, "ab".repeat(32));
     }
 }
