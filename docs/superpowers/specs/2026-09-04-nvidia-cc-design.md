@@ -441,7 +441,7 @@ golden values do not move.
 ### 6.2 Measured cmdline
 
 The GPU runtime's cmdline template is
-`console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash} workload_roothash={workload_roothash} swiotlb=262144 {verified_volumes}`.
+`console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash} workload_roothash={workload_roothash} swiotlb=262144 verified_volumes={verified_volumes}`.
 `swiotlb=262144` (512 MiB of bounce buffer) is NVIDIA's recommendation for
 CC guests; it is a fixed part of the runtime, not a placeholder, so the
 manifest's closed placeholder set is unchanged. The daemon derives the
