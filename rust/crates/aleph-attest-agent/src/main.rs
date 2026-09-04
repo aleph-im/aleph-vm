@@ -95,8 +95,9 @@ async fn main() -> Result<()> {
             tracing::warn!("INSECURE: plain HTTP, no TEE; local testing only");
             (Arc::new(NoTeeBackend::new()), None)
         } else {
-            // Explicit dyn type: unsized coercion does not happen inside a
-            // tuple, so the concrete Arc must be widened here.
+            // The outer tuple annotation is what lets each element coerce to
+            // Arc<dyn TeeBackend>; the local binding is widened explicitly so
+            // generate_attested_tls_identity sees the trait object too.
             let backend: Arc<dyn TeeBackend> = Arc::new(SevSnpBackend::new(&cli.amd_product));
             let identity = generate_attested_tls_identity(backend.as_ref())
                 .context("failed to generate attested TLS identity")?;

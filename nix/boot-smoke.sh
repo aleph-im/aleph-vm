@@ -146,7 +146,9 @@ echo "boot smoke phase 2 OK: workload and verified volume verity-mounted, worklo
 # agent port then reaches the fib workload's /health through the same
 # agent-to-loopback proxy path production uses. This is the contract
 # `aleph vprogram run` relies on.
-command -v curl >/dev/null || { echo "boot smoke: curl not found on PATH (needed for phase 3)" >&2; exit 1; }
+for tool in curl python3; do
+  command -v "$tool" >/dev/null || { echo "boot smoke: $tool not found on PATH (needed for phase 3)" >&2; exit 1; }
+done
 local_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
 
 # shellcheck disable=SC2329  # invoked indirectly via probe=probe_local_health

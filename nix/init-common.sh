@@ -276,7 +276,9 @@ local_mode=$(/bin/busybox sed -n 's/.*\baleph_local=1\b.*/1/p' /proc/cmdline)
 # plain HTTP on the same port with the same proxy path to the loopback
 # upstream, so a host-side port forward exercises exactly what the attested
 # endpoint would serve. The marker line is what `aleph vprogram run` waits
-# for; keep it byte-stable.
+# for; keep it byte-stable. It is printed before the agent is backgrounded,
+# so it means "agent starting", not "agent listening": consumers must keep
+# probing tcp/8443 until it answers (the CLI and boot-smoke.sh both do).
 start_attest_agent() {
     if [ -n "$local_mode" ]; then
         echo "init: LOCAL MODE: attest agent serving plain HTTP without a TEE; tcp/8443 is unattested"

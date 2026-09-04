@@ -10,6 +10,8 @@ name: "V-PROGRAM boot smoke (plain QEMU)"
 on:
   workflow_dispatch:
   push:
+    # 'dev*' rather than a single dev branch: release lines live on numbered
+    # dev branches (dev-2.1 and later) and must carry the smoke too.
     branches: [main, 'dev*']
     paths:
       - "nix/**"
