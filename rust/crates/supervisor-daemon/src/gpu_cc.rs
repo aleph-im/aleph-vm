@@ -97,6 +97,13 @@ pub fn sysfs_device_dir(pci_host: &str) -> PathBuf {
 /// holding the offset and do a volatile read.
 pub fn read_bar0_u32(resource0: &Path, offset: u64) -> Result<u32, DaemonError> {
     use std::os::fd::AsRawFd as _;
+
+    if !offset.is_multiple_of(4) {
+        return Err(DaemonError::GpuProbe(format!(
+            "register offset {offset:#x} is not 4-byte aligned"
+        )));
+    }
+
     let file = std::fs::File::open(resource0).map_err(|error| {
         DaemonError::GpuProbe(format!("cannot open {}: {error}", resource0.display()))
     })?;
@@ -106,7 +113,12 @@ pub fn read_bar0_u32(resource0: &Path, offset: u64) -> Result<u32, DaemonError> 
             DaemonError::GpuProbe(format!("cannot stat {}: {error}", resource0.display()))
         })?
         .len();
-    if offset + 4 > len {
+    let end = offset.checked_add(4).ok_or_else(|| {
+        DaemonError::GpuProbe(format!(
+            "register offset {offset:#x} + 4 would overflow u64"
+        ))
+    })?;
+    if end > len {
         return Err(DaemonError::GpuProbe(format!(
             "register offset {offset:#x} is past the end of {} ({len} bytes)",
             resource0.display()
@@ -116,8 +128,9 @@ pub fn read_bar0_u32(resource0: &Path, offset: u64) -> Result<u32, DaemonError> 
     let base = offset & !(page - 1);
     let within = (offset - base) as usize;
     // SAFETY: a read-only shared mapping of one page of an open file; the
-    // pointer is checked against MAP_FAILED, the read stays inside the page,
-    // and the mapping is released before returning.
+    // pointer is checked against MAP_FAILED; the offset is 4-byte aligned,
+    // so within is 4-aligned and within + 4 <= 4096, keeping the read inside
+    // the mapped page; and the mapping is released before returning.
     unsafe {
         let mapped = libc::mmap(
             std::ptr::null_mut(),
@@ -214,6 +227,20 @@ mod tests {
         );
         // Past the end of the mapping is a clean error, never a fault.
         assert!(read_bar0_u32(&path, 0x4000).is_err());
+    }
+
+    #[test]
+    fn bar0_read_rejects_misaligned_offsets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("resource0");
+        let mut bytes = vec![0u8; 0x2000];
+        bytes[0x590..0x594].copy_from_slice(&0x0000_0101u32.to_le_bytes());
+        std::fs::write(&path, &bytes).unwrap();
+        // Misaligned offset should error with "aligned" in the message.
+        let err = read_bar0_u32(&path, 0x591).unwrap_err();
+        assert!(err.to_string().contains("aligned"));
+        // Aligned offset still reads correctly.
+        assert_eq!(read_bar0_u32(&path, 0x590).unwrap(), 0x101);
     }
 
     #[test]
