@@ -11,6 +11,7 @@ from aleph.vm.vprogram.bundle import (
     BUNDLE_INFO_NAME,
     BUNDLE_NAME,
     CMDLINE_TEMPLATE_EXEC_V1,
+    CMDLINE_TEMPLATE_GPU_V1,
     CMDLINE_TEMPLATE_LUKS_V1,
     BundleInfo,
     InstanceBundleInfo,
@@ -48,6 +49,18 @@ def image_dir(tmp_path: Path) -> Path:
     (d / "rootfs.ext4.roothash").write_text(ROOTHASH + "\n")
     (d / "measurement.hex").write_text(MEASUREMENT + "\n")
     return d
+
+
+@pytest.fixture()
+def gpu_image_dir(image_dir: Path) -> Path:
+    """The nix gpuImage output: same layout as image_dir, plus the gpu.json
+    facts sidecar the gpu flavor reads."""
+    (image_dir / "gpu.json").write_text(
+        '{"vendor":"nvidia","arch":"blackwell","driver_version":"595.71.05",'
+        '"accepted_models":["NVIDIA RTX PRO 6000 Blackwell Server Edition"],'
+        '"library_path":"/opt/nvidia/lib"}'
+    )
+    return image_dir
 
 
 def _out(tmp_path: Path, name: str) -> Path:
@@ -302,3 +315,24 @@ def test_exec_and_compose_templates_carry_the_verified_volumes_slot():
         " verified_volumes={verified_volumes}"
     )
     assert "verified_volumes" not in CMDLINE_TEMPLATE_V1
+
+
+def test_gpu_flavor_records_the_gpu_block(gpu_image_dir: Path, tmp_path: Path) -> None:
+    info = build_bundle(gpu_image_dir, tmp_path, source_epoch=0, source=SOURCE, flavor="gpu")
+    assert info.gpu.vendor == "nvidia"
+    manifest = make_manifest(
+        info=info, bundle_ref=BUNDLE_REF, name="aleph-snp-gpu", runtime_version="1", gpu_runtime=True
+    )
+    assert manifest.gpu == info.gpu
+    assert manifest.boot.cmdline_template == CMDLINE_TEMPLATE_GPU_V1
+
+
+def test_gpu_flavor_requires_gpu_json(image_dir: Path, tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        build_bundle(image_dir, tmp_path, source_epoch=0, source=SOURCE, flavor="gpu")
+
+
+def test_make_manifest_refuses_gpu_runtime_without_gpu_facts(image_dir: Path, tmp_path: Path) -> None:
+    info = build_bundle(image_dir, tmp_path, source_epoch=0, source=SOURCE)
+    with pytest.raises(ValueError, match="gpu"):
+        make_manifest(info=info, bundle_ref=BUNDLE_REF, name="x", runtime_version="1", gpu_runtime=True)
