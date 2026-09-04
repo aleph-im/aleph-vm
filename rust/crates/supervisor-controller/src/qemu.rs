@@ -115,6 +115,36 @@ fn gpu_args(gpus: &[Gpu]) -> Vec<String> {
     args
 }
 
+/// Confidential GPU passthrough for the SNP path: one PCIe root port plus
+/// one `vfio-pci` per card, then the OVMF 64-bit MMIO window. Deliberately
+/// NOT `gpu_args`: that helper switches `-cpu` to `host`, and the SNP CPU
+/// model is a measurement input that must stay the declared one; it also
+/// adds `x-vga`, meaningless for a headless compute guest. The window is a
+/// fw_cfg value, not a measured input, so it can follow the card.
+pub fn snp_gpu_args(gpus: &[Gpu], pci_mmio64_mb: Option<u64>) -> Vec<String> {
+    if gpus.is_empty() {
+        return Vec::new();
+    }
+    let mut args = Vec::with_capacity(gpus.len() * 4 + 2);
+    for (index, gpu) in gpus.iter().enumerate() {
+        args.push("-device".into());
+        args.push(format!(
+            "pcie-root-port,id=rp{index},bus=pcie.0,chassis={}",
+            index + 1
+        ));
+        args.push("-device".into());
+        args.push(format!(
+            "vfio-pci,host={},bus=rp{index},rombar=0",
+            gpu.pci_host
+        ));
+    }
+    if let Some(mb) = pci_mmio64_mb {
+        args.push("-fw_cfg".into());
+        args.push(format!("name=opt/ovmf/X-PciMmio64Mb,string={mb}"));
+    }
+    args
+}
+
 /// The NUMA / hugetlb option suffix appended to a `memory-backend-memfd`
 /// object. The order is byte-identical to the aleph-tee generator
 /// (`sev_snp_qemu_args`): the hugetlb options FIRST
@@ -518,11 +548,10 @@ pub fn snp_tee_fragment(
 /// an SNP-marked config here, so their absence is an internal invariant
 /// violation.
 ///
-/// Unlike `build_argv` and `build_confidential_argv`, this path emits NO GPU
-/// passthrough devices: confidential GPU passthrough (NVIDIA CC) into an SNP
-/// guest is not supported yet. The daemon fails closed on an SNP spec that
-/// carries GPUs (`snp_config_slice`), so an SNP config reaching here always has
-/// an empty `gpus`; nothing is silently dropped.
+/// GPU passthrough on this path is confidential-GPU only: `snp_gpu_args`
+/// emits a root port and `vfio-pci` per card and the OVMF MMIO window; the
+/// daemon admits GPUs onto an SNP spec only when their cards are in NVIDIA CC
+/// mode (`snp_config_slice`).
 ///
 /// `sev` carries the host-CPUID-derived `cbitpos` / `reduced-phys-bits`,
 /// injected (not read here) so the builder is testable off-SEV and the argv is
@@ -633,6 +662,8 @@ pub fn build_snp_argv(config: &QemuConfig, sev: SevHostInfo) -> Vec<String> {
         "stdio".into(),
         "-nographic".into(),
     ]);
+
+    args.extend(snp_gpu_args(&config.gpus, config.pci_mmio64_mb));
 
     // NIC WITHOUT rombar=0 (like the SEV path). Python truthiness: an empty
     // interface name is skipped. The measured cmdline carries NO `ip=`, so the
@@ -1217,5 +1248,32 @@ mod tests {
             !argv.iter().any(|a| a.contains("readonly")),
             "the writable rootfs arm must carry no readonly attribute anywhere: {argv:?}"
         );
+    }
+
+    #[test]
+    fn snp_gpu_args_emit_root_port_vfio_and_the_mmio_window() {
+        let gpus = vec![Gpu {
+            pci_host: "06:00.0".into(),
+            supports_x_vga: true,
+        }];
+        assert_eq!(
+            snp_gpu_args(&gpus, Some(524288)),
+            vec![
+                "-device",
+                "pcie-root-port,id=rp0,bus=pcie.0,chassis=1",
+                "-device",
+                "vfio-pci,host=06:00.0,bus=rp0,rombar=0",
+                "-fw_cfg",
+                "name=opt/ovmf/X-PciMmio64Mb,string=524288",
+            ]
+        );
+        // x-vga is never emitted on the SNP path, whatever the card reports:
+        // a compute GPU in a headless confidential guest has no display.
+        assert!(
+            !snp_gpu_args(&gpus, Some(1024))
+                .iter()
+                .any(|a| a.contains("x-vga"))
+        );
+        assert!(snp_gpu_args(&[], Some(1024)).is_empty());
     }
 }
