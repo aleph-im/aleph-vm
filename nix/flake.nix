@@ -170,6 +170,11 @@
       nvidiaUserland = nvidiaDriver.userland;
       nvidiaFirmware = nvidiaDriver.firmware;
 
+      # NVIDIA's attestation SDK and its nvattest CLI, the in-guest GPU
+      # verifier. Like the driver pieces above it is only referenced by the
+      # confidential-GPU rootfs, so it never moves the base image outputs.
+      nvat = import ./nvat.nix { inherit pkgs lib; };
+
       initrd = pkgs.callPackage ./initrd.nix {
         inherit attest-agent kernel;
         init-script = ./init.sh;
@@ -475,6 +480,7 @@
           nvidiaModules
           nvidiaUserland
           nvidiaFirmware
+          nvat
           initrd
           instanceInitrd
           composeInitrd
