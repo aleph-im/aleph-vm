@@ -436,7 +436,14 @@ The GPU runtime's cmdline template is
 `console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash} workload_roothash={workload_roothash} swiotlb=262144 {verified_volumes}`.
 `swiotlb=262144` (512 MiB of bounce buffer) is NVIDIA's recommendation for
 CC guests; it is a fixed part of the runtime, not a placeholder, so the
-manifest's closed placeholder set is unchanged. The bounce buffer is guest
+manifest's closed placeholder set is unchanged. The daemon derives the
+measured cmdline from sidecars next to the rootfs rather than from the
+template, so the agent copies this token into a fourth sidecar,
+`{rootfs}.cmdline_extra`, which the daemon validates against a closed
+allowlist (`swiotlb=<digits>` only) and splices at the template's position,
+between `workload_roothash` and `verified_volumes`. The manifest validator
+rejects any other fixed token, so the template cannot become a kernel
+parameter smuggling channel. The bounce buffer is guest
 memory the workload cannot use, so the GPU runtime documents a 2 GiB
 minimum for `resources.memory` and the agent rejects a smaller V-PROGRAM at
 spec build (`VmSetupError`) rather than booting a guest that cannot
