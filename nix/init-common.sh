@@ -176,6 +176,21 @@ prepare_chroot() {
                 || echo "init: WARNING: ${target} has no /etc/resolv.conf placeholder; workload DNS unavailable"
         fi
     fi
+    # Confidential-GPU runtimes: hand the workload the raw driver userland.
+    # The source directory only exists on the GPU image, so this is a no-op
+    # on every other flavor; on the GPU image the platform rootfs IS the
+    # source, so a /mnt/root target already has the libraries at that path
+    # and needs no bind. The workload image must ship the /opt/nvidia/lib
+    # mount point (runtime contract, manifest gpu.library_path). The device
+    # nodes ride in on the /dev bind above.
+    if [ -d /mnt/root/opt/nvidia/lib ] && [ "$target" != /mnt/root ]; then
+        if [ -d "$target/opt/nvidia/lib" ]; then
+            /bin/busybox mount --bind -o ro /mnt/root/opt/nvidia/lib "$target/opt/nvidia/lib" \
+                || echo "init: WARNING: driver userland bind-mount failed"
+        else
+            echo "init: WARNING: ${target} has no /opt/nvidia/lib mount point; the workload cannot use the GPU"
+        fi
+    fi
     echo "init: chroot environment prepared at ${target} (proc, sys, dev, secrets, DNS)"
 }
 
