@@ -29,6 +29,7 @@ outputs=(
   composeMeasurement
   workloadMeasurement
   instanceMeasurementSmoke
+  gpuMeasurement
 )
 
 echo "Building ${#outputs[@]} measurement outputs (a cold build compiles the full measured boot chain and takes a while)..." >&2

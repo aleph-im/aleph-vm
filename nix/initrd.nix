@@ -1,5 +1,5 @@
 { pkgs, attest-agent, kernel, init-script, init-common-script, udhcpc-script, udhcpc6-script
-, withVerity ? true, withNft ? true, withLuks ? false, ... }:
+, withVerity ? true, withNft ? true, withLuks ? false, withNvidia ? null, ... }:
 
 let
   # veritysetup/cryptsetup need to be statically linked for the initrd
@@ -123,6 +123,14 @@ let
     ++ pkgs.lib.optionals withLuks [
       { source = "${staticCryptsetup}/bin/cryptsetup"; path = "bin/cryptsetup"; mode = "755"; }
       { source = "${dmCryptModules}/dm-crypt.ko"; path = "lib/modules/dm-crypt.ko"; mode = "644"; }
+    ]
+    # NVIDIA open modules for the confidential-GPU flavor. `withNvidia` is the
+    # nvidia.nix `modules` derivation; it must be built against the SAME
+    # kernel as the dm-*/nft modules above, i.e. the GPU flavor passes
+    # gpuKernel here.
+    ++ pkgs.lib.optionals (withNvidia != null) [
+      { source = "${withNvidia}/nvidia.ko"; path = "lib/modules/nvidia.ko"; mode = "644"; }
+      { source = "${withNvidia}/nvidia-uvm.ko"; path = "lib/modules/nvidia-uvm.ko"; mode = "644"; }
     ];
 
   installEntries = pkgs.lib.concatMapStringsSep "\n"
