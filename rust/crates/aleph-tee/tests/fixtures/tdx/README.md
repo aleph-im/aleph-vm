@@ -9,6 +9,9 @@ redistribution is clean.
 |---|---|---|---|
 | `tdx_quote_v4.bin` | [Phala-Network/dcap-qvl](https://github.com/Phala-Network/dcap-qvl) `sample/tdx_quote`, branch `master` @ `7cb5cace` | MIT (`LICENSE.dcap-qvl`) | Quote v4, TD report 1.0. 70 bytes of zero padding after the signature data. |
 | `tdx_quote_v5.bin` | [automata-network/automata-dcap-attestation](https://github.com/automata-network/automata-dcap-attestation) `rust-crates/samples/quotev5.dat`, branch `main` @ `41aedff9` | MIT (`LICENSE.automata-dcap-attestation`) | Quote v5, TD report 1.5 body (type 3, 648 bytes), non-zero `mrservicetd`. |
+| `tdx_quote_collateral.json` | Phala dcap-qvl `sample/tdx_quote_collateral.json`, same commit | MIT (`LICENSE.dcap-qvl`) | Complete DCAP collateral matching `tdx_quote_v4.bin`. All validity windows expired (PCK CRL and TCB Info to 2025-07-19); verifier tests inject a clock inside them. |
+| `tdx_quote_outdated.bin` | Phala dcap-qvl `sample/tdx_quote_outdated`, same commit | MIT (`LICENSE.dcap-qvl`) | Quote v5 from a platform at an OutOfDate TCB level; the chain and signatures are genuine. |
+| `tdx_quote_outdated_collateral.json` | Phala dcap-qvl `sample/tdx_quote_outdated_collateral.json`, same commit | MIT (`LICENSE.dcap-qvl`) | Collateral matching the outdated quote (windows to 2026-03-20). |
 
 The two remaining accepted-format cases have no public fixture and are
 synthesized in the tests instead: trailing non-zero bytes after the
