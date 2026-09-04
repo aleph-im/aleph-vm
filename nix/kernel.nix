@@ -1,4 +1,4 @@
-{ pkgs, lib, ... }:
+{ pkgs, lib, extraFragment ? null, ... }:
 
 # SEV-SNP guest kernel: a whitelist configuration (kernel-config.fragment)
 # on top of `make allnoconfig`, built with nixpkgs' manual-config kernel
@@ -24,7 +24,15 @@
 let
   base = pkgs.linuxPackages_6_18.kernel;
 
-  fragment = ./kernel-config.fragment;
+  baseFragment = ./kernel-config.fragment;
+  # The GPU flavor appends its options to the same whitelist; the concatenated
+  # file is what KCONFIG_ALLCONFIG seeds and what the line-by-line check
+  # verifies, so a GPU option Kconfig drops fails the build the same way.
+  fragment =
+    if extraFragment == null then baseFragment
+    else pkgs.runCommand "kernel-config-gpu.fragment" { } ''
+      cat ${baseFragment} ${extraFragment} > $out
+    '';
 
   # The complete .config: allnoconfig seeded with the fragment
   # (KCONFIG_ALLCONFIG), then olddefconfig to settle the dependencies the
@@ -34,7 +42,7 @@ let
   # result is checked line by line against the fragment and the build fails
   # on the first divergence.
   configfile = pkgs.stdenv.mkDerivation {
-    pname = "linux-config-snp-guest";
+    pname = "linux-config-snp-guest${lib.optionalString (extraFragment != null) "-gpu"}";
     inherit (base) version src;
     nativeBuildInputs = with pkgs; [ bison flex perl ];
     # The kernel's own Makefiles, nothing from the tree is patched.

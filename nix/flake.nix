@@ -138,6 +138,14 @@
       sourceRev = self.rev or self.dirtyRev or "unknown";
 
       kernel = pkgs.callPackage ./kernel.nix {};
+
+      # GPU flavor of the guest kernel: the same whitelist base fragment plus
+      # the options NVIDIA's open kernel modules (nvidia.ko, nvidia-uvm.ko)
+      # need (see kernel-config-gpu.fragment). Not referenced by any of the
+      # base image/measurement derivations below, so it never moves the
+      # base `kernel` or `measurement` outputs.
+      gpuKernel = pkgs.callPackage ./kernel.nix { extraFragment = ./kernel-config-gpu.fragment; };
+
       initrd = pkgs.callPackage ./initrd.nix {
         inherit attest-agent kernel;
         init-script = ./init.sh;
@@ -439,6 +447,7 @@
           fib-service
           ovmf
           kernel
+          gpuKernel
           initrd
           instanceInitrd
           composeInitrd

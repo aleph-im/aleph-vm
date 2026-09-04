@@ -1,0 +1,43 @@
+# Additions for the confidential-GPU guest. Every line is verified against
+# the generated .config at build time like the base fragment. Any edit moves
+# the gpuImage launch measurement: re-seed nix/golden-measurements.json.
+#
+# NVIDIA open kernel modules (nvidia.ko, nvidia-uvm.ko) need these.
+#
+# MMU_NOTIFIER and DMA_SHARED_BUFFER have no Kconfig prompt of their own:
+# Kconfig only turns them on when something that IS user-selectable selects
+# them, so KCONFIG_ALLCONFIG cannot set them directly (the build's fragment
+# check caught exactly this: "requested ..., got <absent>"). These lines
+# enable a selector for each one:
+#   - AMD_IOMMU selects MMU_NOTIFIER (also ATS/PRI/PASID, the PCIe features
+#     the NVIDIA CC-mode encrypted host<->GPU link relies on for this
+#     AMD SEV-SNP guest). AMD_IOMMU lives inside Kconfig's
+#     "if IOMMU_SUPPORT" block, an implicit depends the option's own text
+#     doesn't show, so IOMMU_SUPPORT has to be enabled too.
+#   - SYNC_FILE selects DMA_SHARED_BUFFER (dma-buf/dma-fence support, used
+#     for GPU compute synchronization).
+CONFIG_IOMMU_SUPPORT=y
+CONFIG_AMD_IOMMU=y
+CONFIG_SYNC_FILE=y
+CONFIG_MMU_NOTIFIER=y
+CONFIG_DMA_SHARED_BUFFER=y
+CONFIG_PCI_MMCONFIG=y
+CONFIG_PCI_MSI=y
+CONFIG_PCIEASPM=y
+CONFIG_HOTPLUG_PCI=y
+CONFIG_HOTPLUG_PCI_PCIE=y
+# PCI_REALLOC_ENABLE_AUTO depends on PCI_IOV (SR-IOV): needed for it to have
+# any effect, and for resizable BAR realloc detection on the 96 GiB-class
+# BAR1 behind the root port.
+CONFIG_PCI_IOV=y
+CONFIG_PCI_REALLOC_ENABLE_AUTO=y
+# The CC driver bounces every DMA through SWIOTLB (already selected by
+# AMD_MEM_ENCRYPT); the cmdline sizes it (swiotlb=262144).
+CONFIG_SWIOTLB=y
+# Firmware loading for the GSP blob from the rootfs.
+CONFIG_FW_LOADER=y
+CONFIG_FW_LOADER_COMPRESS=y
+CONFIG_FW_LOADER_COMPRESS_XZ=y
+# No display stack in a headless compute guest.
+# CONFIG_DRM is not set
+# CONFIG_VT is not set
