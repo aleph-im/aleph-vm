@@ -12,6 +12,8 @@ __pycache__
 # scripts/generate_rust_fixtures.py from the SQLAlchemy models).
 !rust/crates/supervisor-daemon/tests/fixtures/*.sqlite3
 *.bin
+# Vendored TDX quote fixtures (see the README next to them for provenance).
+!rust/crates/aleph-tee/tests/fixtures/tdx/*.bin
 *.ext4
 *.zip
 *.pyz
