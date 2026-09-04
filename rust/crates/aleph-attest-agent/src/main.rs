@@ -1,4 +1,5 @@
 mod attestation;
+mod gpu;
 mod proxy;
 mod secrets;
 mod tls;
