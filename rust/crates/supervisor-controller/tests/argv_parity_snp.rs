@@ -76,6 +76,7 @@ parity_case!(custom_policy, "custom_policy");
 // (non-verity) cmdline, no host volumes (the daemon inserts no hash-tree
 // volume for a writable rootfs, so no /dev/vdb drive appears).
 parity_case!(luks, "luks");
+parity_case!(gpu, "gpu");
 
 /// Every fixture in the directory is covered by a named case above.
 #[test]
@@ -86,6 +87,7 @@ fn every_snp_fixture_has_a_case() {
         "host_volume",
         "custom_policy",
         "luks",
+        "gpu",
     ];
     let mut on_disk: Vec<String> = std::fs::read_dir(fixture_dir())
         .unwrap()
