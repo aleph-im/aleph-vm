@@ -4,9 +4,9 @@
 
 **Goal:** Let a CRN pass one NVIDIA GPU in confidential-computing mode into a measured SEV-SNP V-PROGRAM guest, verify the GPU in the guest at boot, and serve nonce-bound GPU evidence to clients over the attested TLS channel.
 
-**Architecture:** Five stacked PRs off `origin/dev-2.1`, each independently testable without hardware: (A) the attest-agent grows a GPU evidence route fed by NVML through a trait with a fake for tests; (B) the daemon probes each NVIDIA card's CC mode from a BAR0 register and advertises it through proto and the agent's capability endpoint; (C) the controller emits the SNP passthrough argv and the daemon's fail-closed gate opens only for CC-mode cards; (D) the Nix flake gains a `gpuImage` flavor carrying the open kernel modules, the raw driver userland, GSP firmware, NVIDIA's libnvat verifier and a fail-closed `init-gpu.sh`; (E) the runtime manifest and bundle gain a `gpu` block and the agent resolves a V-PROGRAM's confidential GPU against CC-mode cards. The aleph-message, aleph-rs and scheduler halves are separate plans.
+**Architecture:** Five stacked PRs off `origin/dev-2.1`, each independently testable without hardware: (A) the attest-agent grows a GPU evidence route fed by NVIDIA's collector process through a trait with a fake for tests; (B) the daemon probes each NVIDIA card's CC mode from a BAR0 register and advertises it through proto and the agent's capability endpoint; (C) the controller emits the SNP passthrough argv and the daemon's fail-closed gate opens only for CC-mode cards; (D) the Nix flake gains a `gpuImage` flavor carrying the open kernel modules, the raw driver userland, GSP firmware, NVIDIA's libnvat verifier and a fail-closed `init-gpu.sh`; (E) the runtime manifest and bundle gain a `gpu` block and the agent resolves a V-PROGRAM's confidential GPU against CC-mode cards. The aleph-message, aleph-rs and scheduler halves are separate plans.
 
-**Tech Stack:** Rust 2024 (actix-web, serde, libloading, libc), Python 3.12+ (pydantic v2, aiohttp, pytest-asyncio), protobuf via `scripts/generate_proto.py`, Nix flakes on nixpkgs `nixos-26.05`, NVIDIA driver 595.71.05 open modules, NVIDIA attestation-sdk 1.2.2 (libnvat, nvattest), busybox init.
+**Tech Stack:** Rust 2024 (actix-web, serde, libc), Python 3.12+ (pydantic v2, aiohttp, pytest-asyncio), protobuf via `scripts/generate_proto.py`, Nix flakes on nixpkgs `nixos-26.05`, NVIDIA driver 595.71.05 open modules, NVIDIA attestation-sdk 1.2.2 (libnvat, nvattest), busybox init.
 
 **Spec:** `docs/superpowers/specs/2026-09-04-nvidia-cc-design.md`
 
@@ -32,10 +32,9 @@
 
 **PR A, attest-agent GPU route**
 - Modify: `rust/crates/aleph-tee/src/report_data.rs` (add `DOMAIN_GPU_NONCE`, `gpu_nonce`)
-- Create: `rust/crates/aleph-attest-agent/src/gpu.rs` (evidence types, `GpuEvidenceSource` trait, NVML source, ready state)
+- Create: `rust/crates/aleph-attest-agent/src/gpu.rs` (evidence types, `GpuEvidenceSource` trait, external collector process)
 - Modify: `rust/crates/aleph-attest-agent/src/proxy.rs` (`AppState.gpu`, `gpu_attestation_endpoint`)
-- Modify: `rust/crates/aleph-attest-agent/src/main.rs` (`--gpu-claims`, `gpu-ready` subcommand, route)
-- Modify: `rust/crates/aleph-attest-agent/Cargo.toml` (+`libloading`, `base64`)
+- Modify: `rust/crates/aleph-attest-agent/src/main.rs` (`--gpu-claims`, `--gpu-collector`, route)
 
 **PR B, CC-mode probe and advertisement**
 - Create: `rust/crates/supervisor-daemon/src/gpu_cc.rs`
@@ -165,33 +164,22 @@ git commit -m "feat(tee): gpu_nonce, the key-bound SPDM nonce scheme for GPU evi
 
 ---
 
-### Task 2: NVML evidence source in the attest-agent
+### Task 2: external GPU evidence collector in the attest-agent
 
 **Files:**
 - Create: `rust/crates/aleph-attest-agent/src/gpu.rs`
-- Modify: `rust/crates/aleph-attest-agent/Cargo.toml`, `rust/crates/aleph-attest-agent/src/main.rs` (add `mod gpu;` only)
+- Modify: `rust/crates/aleph-attest-agent/src/main.rs` (add `mod gpu;` only)
+
+**Why an external process:** the attest-agent is a static musl binary and the measured initrd refuses anything dynamically linked, so it cannot dlopen NVIDIA's glibc `libnvidia-ml.so`. NVIDIA's own `nvattest collect-evidence` (in the GPU rootfs, Task 12) already emits the exact per-GPU evidence JSON the route serves, so the agent runs it as a child process and parses its output. No new dependencies, so the agent's `Cargo.lock` and the base image measurement do not move in this PR.
 
 **Interfaces:**
 - Produces:
-  - `pub struct GpuEvidence { pub arch: String, pub nonce: String, pub evidence: String, pub certificate: String }` (serde; `nonce` hex, `evidence` and `certificate` base64, exactly the `nvattest collect-evidence` JSON shape)
+  - `pub struct GpuEvidence { pub arch: String, pub nonce: String, pub evidence: String, pub certificate: String }` (serde Serialize + Deserialize; `nonce` hex, `evidence` and `certificate` base64, exactly the `nvattest collect-evidence --format json` `evidences[]` entry shape)
   - `pub trait GpuEvidenceSource: Send + Sync { fn collect(&self, nonce: &[u8; 32]) -> anyhow::Result<Vec<GpuEvidence>>; }`
-  - `pub struct NvmlEvidenceSource` with `pub fn load() -> anyhow::Result<Self>`, `pub fn set_ready_state(&self, ready: bool) -> anyhow::Result<()>`, `pub fn get_ready_state(&self) -> anyhow::Result<bool>`; implements `GpuEvidenceSource`.
-  - `pub const NVML_LIBRARY: &str = "libnvidia-ml.so.1"`.
+  - `pub struct CollectorProcess { pub program: String, pub args: Vec<String> }` with `pub fn from_command_line(command: &str) -> anyhow::Result<Self>` (whitespace-split; the nonce hex is appended as the final argument at collect time) and `pub fn parse_output(stdout: &[u8], expected_nonce_hex: &str) -> anyhow::Result<Vec<GpuEvidence>>`; implements `GpuEvidenceSource`.
+  - `pub const COLLECT_TIMEOUT: Duration = Duration::from_secs(60)`.
 
-- [ ] **Step 1: Add dependencies**
-
-In `rust/crates/aleph-attest-agent/Cargo.toml` `[dependencies]` add:
-
-```toml
-# NVML is dlopen'ed at runtime, never linked: the non-GPU image has no
-# NVML and the agent must keep building and running without it.
-libloading = "0.8"
-base64 = "0.22"
-```
-
-Then `cd rust/crates/aleph-attest-agent && cargo update -p libloading -p base64 --offline 2>/dev/null || cargo generate-lockfile` so `Cargo.lock` (the measured lock) records them. The golden measurement for the base image moves with any agent dependency change; PR D re-seeds it (Task 13), and this PR's description must say so.
-
-- [ ] **Step 2: Write the failing tests**
+- [ ] **Step 1: Write the failing tests**
 
 Create `rust/crates/aleph-attest-agent/src/gpu.rs` with only the test module first:
 
@@ -199,6 +187,8 @@ Create `rust/crates/aleph-attest-agent/src/gpu.rs` with only the test module fir
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const ONE_GPU: &str = r#"{"evidences":[{"arch":"BLACKWELL","nonce":"NONCE","evidence":"EeAB","certificate":"LS0t"}],"result_code":0,"result_message":"Ok"}"#;
 
     #[test]
     fn evidence_serializes_in_the_nvattest_shape() {
@@ -211,72 +201,109 @@ mod tests {
         let json = serde_json::to_value(&evidence).unwrap();
         assert_eq!(
             json,
-            serde_json::json!({
-                "arch": "BLACKWELL",
-                "nonce": "00".repeat(32),
-                "evidence": "EeAB",
-                "certificate": "LS0t"
-            })
+            serde_json::json!({"arch": "BLACKWELL", "nonce": "00".repeat(32), "evidence": "EeAB", "certificate": "LS0t"})
         );
     }
 
     #[test]
-    fn architecture_names_follow_nvml_codes() {
-        assert_eq!(arch_name(9).unwrap(), "HOPPER");
-        assert_eq!(arch_name(10).unwrap(), "BLACKWELL");
-        assert!(arch_name(7).is_err(), "Ampere has no CC mode");
-        assert!(arch_name(0xffff_ffff).is_err());
+    fn parse_output_accepts_a_matching_nonce() {
+        let nonce = "ab".repeat(32);
+        let out = CollectorProcess::parse_output(ONE_GPU.replace("NONCE", &nonce).as_bytes(), &nonce).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].arch, "BLACKWELL");
+        assert_eq!(out[0].evidence, "EeAB");
     }
 
     #[test]
-    fn raw_report_is_trimmed_to_its_declared_size() {
-        let mut report = NvmlAttestationReport::zeroed();
-        report.attestation_report_size = 3;
-        report.attestation_report[..3].copy_from_slice(b"abc");
-        assert_eq!(report.report_bytes().unwrap(), b"abc");
-        report.attestation_report_size = NVML_ATTESTATION_REPORT_MAX + 1;
-        assert!(report.report_bytes().is_err(), "an oversized size field is rejected");
+    fn parse_output_rejects_a_foreign_nonce() {
+        let nonce = "ab".repeat(32);
+        let err = CollectorProcess::parse_output(ONE_GPU.replace("NONCE", &"cd".repeat(32)).as_bytes(), &nonce).unwrap_err();
+        assert!(err.to_string().contains("nonce"), "{err}");
     }
 
     #[test]
-    fn missing_nvml_is_a_clean_error_not_a_panic() {
-        let error = NvmlEvidenceSource::load_from("/nonexistent/libnvidia-ml.so.1").unwrap_err();
-        assert!(error.to_string().contains("libnvidia-ml"));
+    fn parse_output_rejects_a_failed_collection() {
+        let nonce = "ab".repeat(32);
+        let failed = ONE_GPU.replace("NONCE", &nonce).replace("\"result_code\":0", "\"result_code\":7");
+        assert!(CollectorProcess::parse_output(failed.as_bytes(), &nonce).is_err());
+        let empty = r#"{"evidences":[],"result_code":0,"result_message":"Ok"}"#;
+        assert!(CollectorProcess::parse_output(empty.as_bytes(), &nonce).is_err(), "no GPU is an error");
+        assert!(CollectorProcess::parse_output(b"not json", &nonce).is_err());
+    }
+
+    #[test]
+    fn command_line_splits_program_and_args() {
+        let collector = CollectorProcess::from_command_line(
+            "/bin/busybox chroot /mnt/root /usr/bin/env LD_LIBRARY_PATH=/opt/nvidia/lib nvattest collect-evidence --device gpu --format json --nonce",
+        )
+        .unwrap();
+        assert_eq!(collector.program, "/bin/busybox");
+        assert_eq!(collector.args.last().unwrap(), "--nonce");
+        assert!(CollectorProcess::from_command_line("   ").is_err());
+    }
+
+    /// End to end against a fake collector script: the nonce hex must arrive
+    /// as the last argument and the JSON on stdout must be parsed.
+    #[test]
+    fn collect_runs_the_program_with_the_nonce_appended() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fake-nvattest.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nnonce=\"$1\"\nprintf '{\"evidences\":[{\"arch\":\"HOPPER\",\"nonce\":\"%s\",\"evidence\":\"ZQ==\",\"certificate\":\"Yw==\"}],\"result_code\":0,\"result_message\":\"Ok\"}' \"$nonce\"\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let collector = CollectorProcess::from_command_line(script.to_str().unwrap()).unwrap();
+        let nonce = [0x5au8; 32];
+        let out = collector.collect(&nonce).unwrap();
+        assert_eq!(out[0].nonce, "5a".repeat(32));
+        assert_eq!(out[0].arch, "HOPPER");
+    }
+
+    #[test]
+    fn collect_reports_a_non_zero_exit() {
+        let collector = CollectorProcess::from_command_line("/bin/false").unwrap();
+        let err = collector.collect(&[0u8; 32]).unwrap_err();
+        assert!(err.to_string().contains("exit"), "{err}");
     }
 }
 ```
 
-- [ ] **Step 3: Run the tests to verify they fail**
+Add `tempfile = "3"` under `[dev-dependencies]` in the agent's `Cargo.toml` if it is not already there (dev-dependencies do not enter the measured binary, but they do enter `Cargo.lock`; check `git diff Cargo.lock` and mention it in the report if the lock changed).
+
+- [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `cd rust/crates/aleph-attest-agent && cargo test gpu::`
 Expected: compile errors for every missing item.
 
-- [ ] **Step 4: Implement the module**
+- [ ] **Step 3: Implement the module**
 
-Above the test module in `gpu.rs`:
+Above the test module:
 
 ```rust
 //! GPU evidence for NVIDIA confidential computing.
 //!
-//! The guest driver holds an SPDM session with the GPU; NVML exposes the
-//! signed GET_MEASUREMENTS response and the GPU's certificate chain. This
-//! module collects that evidence behind a trait so the route handler is
-//! testable with a fake, and loads NVML with dlopen so the non-GPU image,
-//! which ships no NVML, keeps running the same binary.
+//! The guest driver holds an SPDM session with the GPU; NVIDIA's
+//! `nvattest collect-evidence` reads the signed GET_MEASUREMENTS response
+//! and the GPU certificate chain through NVML and prints them as JSON. The
+//! agent is a static musl binary inside a content-only measured initrd, so
+//! it cannot load NVIDIA's glibc libraries itself; it runs the collector as
+//! a child process instead, with the derived SPDM nonce as the last argument,
+//! and parses what comes back. The trait keeps the route testable with a
+//! fake collector script.
 
-use std::ffi::c_uint;
-use std::ffi::c_void;
+use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use base64::Engine as _;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-pub const NVML_LIBRARY: &str = "libnvidia-ml.so.1";
-
-/// One GPU's evidence, in the exact JSON shape NVIDIA's `nvattest
-/// collect-evidence --format json` emits, so NVIDIA's verifier and the
-/// aleph-rs client read the same document.
-#[derive(Debug, Clone, Serialize)]
+/// One GPU's evidence, in the exact JSON shape `nvattest collect-evidence
+/// --format json` emits per device, so NVIDIA's verifier and the aleph-rs
+/// client read the same document.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GpuEvidence {
     pub arch: String,
     /// Hex, 32 bytes: the derived GPU nonce this report answers.
@@ -291,207 +318,113 @@ pub trait GpuEvidenceSource: Send + Sync {
     fn collect(&self, nonce: &[u8; 32]) -> Result<Vec<GpuEvidence>>;
 }
 
-// NVML ABI, from nvml.h (driver R580+). Sizes are fixed by the header.
-pub const NVML_CERT_CHAIN_MAX: usize = 0x1000;
-pub const NVML_ATTESTATION_CERT_CHAIN_MAX: usize = 0x1400;
-pub const NVML_ATTESTATION_REPORT_MAX: usize = 0x2000;
-pub const NVML_CEC_REPORT_MAX: usize = 0x1000;
-const NVML_SUCCESS: c_uint = 0;
-const NVML_DEVICE_ARCH_HOPPER: c_uint = 9;
-const NVML_DEVICE_ARCH_BLACKWELL: c_uint = 10;
+/// An upper bound on one collection: an SPDM exchange takes well under a
+/// second, RIM-free collection does no network I/O, so a minute means the
+/// driver is wedged and the request should fail rather than pile up.
+pub const COLLECT_TIMEOUT: Duration = Duration::from_secs(60);
 
-#[repr(C)]
-pub struct NvmlGpuCertificate {
-    cert_chain_size: c_uint,
-    attestation_cert_chain_size: c_uint,
-    cert_chain: [u8; NVML_CERT_CHAIN_MAX],
-    attestation_cert_chain: [u8; NVML_ATTESTATION_CERT_CHAIN_MAX],
+#[derive(Deserialize)]
+struct CollectorOutput {
+    evidences: Vec<GpuEvidence>,
+    result_code: i64,
+    #[serde(default)]
+    result_message: String,
 }
 
-#[repr(C)]
-pub struct NvmlAttestationReport {
-    is_cec_report_present: c_uint,
-    attestation_report_size: c_uint,
-    cec_report_size: c_uint,
-    nonce: [u8; 32],
-    attestation_report: [u8; NVML_ATTESTATION_REPORT_MAX],
-    cec_report: [u8; NVML_CEC_REPORT_MAX],
+/// The collector command, e.g. `/bin/busybox chroot /mnt/root /usr/bin/env
+/// LD_LIBRARY_PATH=/opt/nvidia/lib nvattest collect-evidence --device gpu
+/// --format json --nonce`; the nonce hex is appended at collect time.
+pub struct CollectorProcess {
+    pub program: String,
+    pub args: Vec<String>,
 }
 
-impl NvmlAttestationReport {
-    pub fn zeroed() -> Self {
-        // All-zero is a valid value for every field (plain integers and byte
-        // arrays), and NVML fills the struct in place.
-        unsafe { std::mem::zeroed() }
+impl CollectorProcess {
+    pub fn from_command_line(command: &str) -> Result<Self> {
+        let mut parts = command.split_whitespace().map(str::to_string);
+        let program = parts.next().context("--gpu-collector is empty")?;
+        Ok(Self { program, args: parts.collect() })
     }
 
-    /// The report bytes NVML declared, bounded by the buffer: a size field
-    /// past the end is a driver bug we refuse rather than read out of bounds.
-    pub fn report_bytes(&self) -> Result<&[u8]> {
-        let size = self.attestation_report_size as usize;
-        if size == 0 || size > NVML_ATTESTATION_REPORT_MAX {
-            bail!("NVML reported an attestation report of {size} bytes, outside 1..={NVML_ATTESTATION_REPORT_MAX}");
+    /// Parse the collector's stdout, requiring a zero result code, at least
+    /// one device, and every device answering exactly the nonce we asked
+    /// for: a collector that answered a different nonce (a stale or foreign
+    /// report) is a failure, never a substitution.
+    pub fn parse_output(stdout: &[u8], expected_nonce_hex: &str) -> Result<Vec<GpuEvidence>> {
+        let output: CollectorOutput = serde_json::from_slice(stdout).context("collector output is not the expected JSON")?;
+        if output.result_code != 0 {
+            bail!("collector failed: result_code {} ({})", output.result_code, output.result_message);
         }
-        Ok(&self.attestation_report[..size])
-    }
-}
-
-impl NvmlGpuCertificate {
-    fn zeroed() -> Self {
-        unsafe { std::mem::zeroed() }
-    }
-
-    fn attestation_chain_pem(&self) -> Result<&[u8]> {
-        let size = self.attestation_cert_chain_size as usize;
-        if size == 0 || size > NVML_ATTESTATION_CERT_CHAIN_MAX {
-            bail!("NVML reported a certificate chain of {size} bytes, outside 1..={NVML_ATTESTATION_CERT_CHAIN_MAX}");
+        if output.evidences.is_empty() {
+            bail!("collector reported no GPU");
         }
-        Ok(&self.attestation_cert_chain[..size])
-    }
-}
-
-pub fn arch_name(code: c_uint) -> Result<&'static str> {
-    match code {
-        NVML_DEVICE_ARCH_HOPPER => Ok("HOPPER"),
-        NVML_DEVICE_ARCH_BLACKWELL => Ok("BLACKWELL"),
-        other => bail!("GPU architecture code {other} has no confidential-computing mode"),
-    }
-}
-
-type NvmlDevice = *mut c_void;
-type FnInit = unsafe extern "C" fn() -> c_uint;
-type FnShutdown = unsafe extern "C" fn() -> c_uint;
-type FnDeviceCount = unsafe extern "C" fn(*mut c_uint) -> c_uint;
-type FnDeviceByIndex = unsafe extern "C" fn(c_uint, *mut NvmlDevice) -> c_uint;
-type FnDeviceArch = unsafe extern "C" fn(NvmlDevice, *mut c_uint) -> c_uint;
-type FnCertificate = unsafe extern "C" fn(NvmlDevice, *mut NvmlGpuCertificate) -> c_uint;
-type FnReport = unsafe extern "C" fn(NvmlDevice, *mut NvmlAttestationReport) -> c_uint;
-type FnSetReady = unsafe extern "C" fn(c_uint) -> c_uint;
-type FnGetReady = unsafe extern "C" fn(*mut c_uint) -> c_uint;
-
-/// NVML loaded with dlopen. `nvmlInit_v2` runs once at load and
-/// `nvmlShutdown` on drop; every call is serialized by the route's mutex
-/// (NVML itself is thread-safe, the SPDM session is not something we want
-/// two callers driving at once).
-pub struct NvmlEvidenceSource {
-    library: libloading::Library,
-}
-
-impl NvmlEvidenceSource {
-    pub fn load() -> Result<Self> {
-        Self::load_from(NVML_LIBRARY)
-    }
-
-    pub fn load_from(path: &str) -> Result<Self> {
-        // SAFETY: loading NVML runs its constructors; it is NVIDIA's supported
-        // entry point and the measured image pins the exact library.
-        let library = unsafe { libloading::Library::new(path) }
-            .with_context(|| format!("cannot load {path} (libnvidia-ml)"))?;
-        let source = Self { library };
-        let init: libloading::Symbol<FnInit> = source.symbol(b"nvmlInit_v2\0")?;
-        // SAFETY: nvmlInit_v2 takes no arguments and returns a status code.
-        check(unsafe { init() }, "nvmlInit_v2")?;
-        Ok(source)
-    }
-
-    fn symbol<T>(&self, name: &[u8]) -> Result<libloading::Symbol<'_, T>> {
-        // SAFETY: the caller supplies the matching function type for `name`.
-        unsafe { self.library.get(name) }
-            .with_context(|| format!("NVML lacks {}", String::from_utf8_lossy(name)))
-    }
-
-    pub fn set_ready_state(&self, ready: bool) -> Result<()> {
-        let set: libloading::Symbol<FnSetReady> = self.symbol(b"nvmlSystemSetConfComputeGpusReadyState\0")?;
-        check(unsafe { set(c_uint::from(ready)) }, "nvmlSystemSetConfComputeGpusReadyState")
-    }
-
-    pub fn get_ready_state(&self) -> Result<bool> {
-        let get: libloading::Symbol<FnGetReady> = self.symbol(b"nvmlSystemGetConfComputeGpusReadyState\0")?;
-        let mut state: c_uint = 0;
-        check(unsafe { get(&mut state) }, "nvmlSystemGetConfComputeGpusReadyState")?;
-        Ok(state == 1)
-    }
-}
-
-impl Drop for NvmlEvidenceSource {
-    fn drop(&mut self) {
-        if let Ok(shutdown) = self.symbol::<FnShutdown>(b"nvmlShutdown\0") {
-            // SAFETY: matching nvmlInit_v2 from load_from; the return is ignored
-            // because there is nothing to do about a failed shutdown.
-            let _ = unsafe { shutdown() };
+        for (index, evidence) in output.evidences.iter().enumerate() {
+            if !evidence.nonce.eq_ignore_ascii_case(expected_nonce_hex) {
+                bail!("GPU {index} evidence answers nonce {} instead of {expected_nonce_hex}", evidence.nonce);
+            }
         }
+        Ok(output.evidences)
     }
 }
 
-impl GpuEvidenceSource for NvmlEvidenceSource {
+impl GpuEvidenceSource for CollectorProcess {
     fn collect(&self, nonce: &[u8; 32]) -> Result<Vec<GpuEvidence>> {
-        let count_fn: libloading::Symbol<FnDeviceCount> = self.symbol(b"nvmlDeviceGetCount_v2\0")?;
-        let by_index: libloading::Symbol<FnDeviceByIndex> = self.symbol(b"nvmlDeviceGetHandleByIndex_v2\0")?;
-        let arch_fn: libloading::Symbol<FnDeviceArch> = self.symbol(b"nvmlDeviceGetArchitecture\0")?;
-        let cert_fn: libloading::Symbol<FnCertificate> = self.symbol(b"nvmlDeviceGetConfComputeGpuCertificate\0")?;
-        let report_fn: libloading::Symbol<FnReport> = self.symbol(b"nvmlDeviceGetConfComputeGpuAttestationReport\0")?;
-
-        let mut count: c_uint = 0;
-        check(unsafe { count_fn(&mut count) }, "nvmlDeviceGetCount_v2")?;
-        if count == 0 {
-            bail!("NVML reports no GPU");
+        let nonce_hex = hex::encode(nonce);
+        let mut child = Command::new(&self.program)
+            .args(&self.args)
+            .arg(&nonce_hex)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .with_context(|| format!("cannot start GPU collector {}", self.program))?;
+        let started = std::time::Instant::now();
+        loop {
+            if child.try_wait().context("waiting for the GPU collector")?.is_some() {
+                break;
+            }
+            if started.elapsed() > COLLECT_TIMEOUT {
+                let _ = child.kill();
+                let _ = child.wait();
+                bail!("GPU collector exceeded {COLLECT_TIMEOUT:?}");
+            }
+            std::thread::sleep(Duration::from_millis(50));
         }
-        let b64 = base64::engine::general_purpose::STANDARD;
-        let mut out = Vec::with_capacity(count as usize);
-        for index in 0..count {
-            let mut device: NvmlDevice = std::ptr::null_mut();
-            check(unsafe { by_index(index, &mut device) }, "nvmlDeviceGetHandleByIndex_v2")?;
-            let mut arch: c_uint = 0;
-            check(unsafe { arch_fn(device, &mut arch) }, "nvmlDeviceGetArchitecture")?;
-            let mut cert = Box::new(NvmlGpuCertificate::zeroed());
-            check(unsafe { cert_fn(device, &mut *cert) }, "nvmlDeviceGetConfComputeGpuCertificate")?;
-            let mut report = Box::new(NvmlAttestationReport::zeroed());
-            report.nonce.copy_from_slice(nonce);
-            check(unsafe { report_fn(device, &mut *report) }, "nvmlDeviceGetConfComputeGpuAttestationReport")?;
-            out.push(GpuEvidence {
-                arch: arch_name(arch)?.to_string(),
-                nonce: hex::encode(nonce),
-                evidence: b64.encode(report.report_bytes()?),
-                certificate: b64.encode(cert.attestation_chain_pem()?),
-            });
+        let output = child.wait_with_output().context("reading the GPU collector output")?;
+        if !output.status.success() {
+            // stderr stays in the guest log; the caller only learns it failed.
+            tracing::error!(status = %output.status, stderr = %String::from_utf8_lossy(&output.stderr), "GPU collector failed");
+            bail!("GPU collector exit status {}", output.status);
         }
-        Ok(out)
-    }
-}
-
-fn check(status: c_uint, call: &str) -> Result<()> {
-    if status == NVML_SUCCESS {
-        Ok(())
-    } else {
-        bail!("{call} failed with NVML status {status}")
+        Self::parse_output(&output.stdout, &nonce_hex)
     }
 }
 ```
 
-The structs are boxed because they are 13 KiB and 8 KiB; they must not live on an actix worker's stack. Add `mod gpu;` to `main.rs`. The `unsafe` calls are documented at the top of the impl; clippy's `undocumented_unsafe_blocks` is not enabled in this workspace, so the block-level notes above suffice.
+Add `mod gpu;` to `main.rs`. `hex`, `serde`, `serde_json`, `anyhow` and `tracing` are already dependencies.
 
-- [ ] **Step 5: Run the tests**
+- [ ] **Step 4: Run the tests**
 
 Run: `cd rust/crates/aleph-attest-agent && cargo test gpu::`
-Expected: 4 passed.
+Expected: 7 passed.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add rust/crates/aleph-attest-agent/Cargo.toml rust/crates/aleph-attest-agent/Cargo.lock rust/crates/aleph-attest-agent/src/gpu.rs rust/crates/aleph-attest-agent/src/main.rs
-git commit -m "feat(attest-agent): NVML GPU evidence source behind a trait, dlopen'ed at runtime"
+git commit -m "feat(attest-agent): GPU evidence source that runs NVIDIA's collector with the derived nonce"
 ```
 
 ---
 
-### Task 3: GPU attestation route, `--gpu-claims`, `gpu-ready`
+### Task 3: GPU attestation route and `--gpu-claims` / `--gpu-collector`
 
 **Files:**
 - Modify: `rust/crates/aleph-attest-agent/src/proxy.rs`, `rust/crates/aleph-attest-agent/src/main.rs`
 
 **Interfaces:**
-- Consumes: `aleph_tee::report_data::gpu_nonce` (Task 1), `gpu::{GpuEvidence, GpuEvidenceSource, NvmlEvidenceSource}` (Task 2).
-- Produces: `pub struct GpuState { pub source: Box<dyn GpuEvidenceSource>, pub boot_claims: serde_json::Value, pub lock: tokio::sync::Mutex<()> }`, `AppState.gpu: Option<Arc<GpuState>>`, `pub async fn gpu_attestation_endpoint(...)`, response `GpuAttestationResponse { tee_type, client_nonce, gpus, boot_claims }`. CLI: `--gpu-claims <PATH>`; subcommand `gpu-ready`.
+- Consumes: `aleph_tee::report_data::gpu_nonce` (Task 1), `gpu::{GpuEvidence, GpuEvidenceSource, CollectorProcess}` (Task 2).
+- Produces: `pub struct GpuState { pub source: Box<dyn GpuEvidenceSource>, pub boot_claims: serde_json::Value, pub lock: tokio::sync::Mutex<()> }`, `AppState.gpu: Option<Arc<GpuState>>`, `pub async fn gpu_attestation_endpoint(...)`, response `GpuAttestationResponse { tee_type, client_nonce, gpus, boot_claims }`. CLI: `--gpu-claims <PATH>` and `--gpu-collector <COMMAND LINE>`, both required together.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -588,7 +521,8 @@ use serde::Serialize;
 use crate::gpu::{GpuEvidence, GpuEvidenceSource};
 
 /// GPU attestation state, present only when init handed the agent the
-/// claims its boot-time verification produced (`--gpu-claims`).
+/// claims its boot-time verification produced (`--gpu-claims`) and the
+/// collector command (`--gpu-collector`).
 pub struct GpuState {
     pub source: Box<dyn GpuEvidenceSource>,
     /// The per-GPU claims NVIDIA's local verifier produced at boot. Served
@@ -644,7 +578,7 @@ pub async fn gpu_attestation_endpoint(
     };
     let nonce = gpu_nonce(&state.served_public_key_raw, &client_nonce);
     let _serialized = gpu.lock.lock().await;
-    // NVML calls block; keep them off the async workers.
+    // The collector is a blocking child process; keep it off the async workers.
     let gpu_for_task = Arc::clone(gpu);
     let collected = web::block(move || gpu_for_task.source.collect(&nonce)).await;
     match collected {
@@ -668,77 +602,58 @@ pub async fn gpu_attestation_endpoint(
 }
 ```
 
-Refactor `attestation_endpoint` to use `decode_nonce` so both routes share the bound (its existing tests keep passing). Note `web::block` needs the closure `'static`, hence the `Arc` clone; `Box<dyn GpuEvidenceSource>` is `Send + Sync` by the trait bound.
+Refactor `attestation_endpoint` to use `decode_nonce` so both routes share the bound (its existing tests keep passing). `web::block` needs a `'static` closure, hence the `Arc` clone; `Box<dyn GpuEvidenceSource>` is `Send + Sync` by the trait bound.
 
 - [ ] **Step 4: Wire the CLI**
 
 In `main.rs`:
 
 ```rust
-use clap::Subcommand;
-use crate::gpu::NvmlEvidenceSource;
+use crate::gpu::CollectorProcess;
 use crate::proxy::{GpuState, gpu_attestation_endpoint};
-
-#[derive(Subcommand, Debug)]
-enum Command {
-    /// Set the confidential-computing GPU ready state, then read it back.
-    /// Run by init after NVIDIA's local verifier accepted the GPU; a
-    /// non-zero exit tells init to power the VM off.
-    GpuReady,
-}
 
 // in Cli:
     /// Path to the per-GPU claims JSON NVIDIA's local verifier wrote at boot.
     /// Enables the GPU attestation route; absent on runtimes without a GPU.
-    #[arg(long)]
+    /// Requires --gpu-collector.
+    #[arg(long, requires = "gpu_collector")]
     gpu_claims: Option<std::path::PathBuf>,
 
-    #[command(subcommand)]
-    command: Option<Command>,
-```
-
-At the top of `main`, after parsing:
-
-```rust
-    if let Some(Command::GpuReady) = cli.command {
-        let nvml = NvmlEvidenceSource::load().context("NVML unavailable")?;
-        nvml.set_ready_state(true).context("cannot set the GPU ready state")?;
-        if !nvml.get_ready_state().context("cannot read the GPU ready state")? {
-            anyhow::bail!("GPU ready state did not stick");
-        }
-        info!("GPU ready state set");
-        return Ok(());
-    }
+    /// Command line that collects GPU evidence and prints nvattest's
+    /// collect-evidence JSON; the derived nonce (hex) is appended as the last
+    /// argument. Requires --gpu-claims.
+    #[arg(long, requires = "gpu_claims")]
+    gpu_collector: Option<String>,
 ```
 
 Before building `app_state`:
 
 ```rust
-    let gpu = match &cli.gpu_claims {
-        Some(path) => {
+    let gpu = match (&cli.gpu_claims, &cli.gpu_collector) {
+        (Some(path), Some(command)) => {
             let raw = std::fs::read(path)
                 .with_context(|| format!("cannot read --gpu-claims {}", path.display()))?;
             let boot_claims: serde_json::Value =
                 serde_json::from_slice(&raw).context("--gpu-claims is not JSON")?;
-            let source = NvmlEvidenceSource::load().context("NVML unavailable for the GPU route")?;
-            info!("GPU attestation route enabled");
+            let source = CollectorProcess::from_command_line(command).context("--gpu-collector")?;
+            info!(program = %source.program, "GPU attestation route enabled");
             Some(Arc::new(GpuState {
                 source: Box::new(source),
                 boot_claims,
                 lock: tokio::sync::Mutex::new(()),
             }))
         }
-        None => None,
+        _ => None,
     };
 ```
 
-Add `gpu` to the `AppState` literal, and the route before the SNP one (actix matches exact paths, order is cosmetic):
+Add `gpu` to the `AppState` literal, and the route:
 
 ```rust
             .route("/.well-known/attestation/gpu", web::get().to(gpu_attestation_endpoint))
 ```
 
-A missing or unparsable claims file, or an NVML load failure, exits non-zero on purpose: init only passes `--gpu-claims` after verification succeeded, so any of those is a broken image, and a broken image must not serve an attested endpoint.
+A missing or unparsable claims file, or an empty collector, exits non-zero on purpose: init only passes these flags after verification succeeded, so any of those is a broken image, and a broken image must not serve an attested endpoint.
 
 - [ ] **Step 5: Run all agent tests, fmt, clippy**
 
@@ -2093,6 +2008,13 @@ if gpu_present; then
     /bin/busybox mkdir -p /run/aleph
     gpu_claims=/run/aleph/gpu-boot-claims.json
     boot_nonce=$(/bin/busybox head -c 32 /dev/urandom | /bin/busybox hexdump -ve '1/1 "%02x"')
+    # nvattest and nvidia-smi run chrooted into the verity-mounted rootfs and
+    # need /proc, /sys and /dev there now, before the workload chroot is
+    # prepared. prepare_chroot is idempotent on the mount points but not on
+    # the bind mounts, so it runs once here and the later selection skips
+    # /mnt/root when it was already prepared (see the flag below).
+    prepare_chroot /mnt/root
+    gpu_chroot_prepared=1
     # nvattest lives in the rootfs' nix closure; NVML is the raw driver lib.
     if ! /bin/busybox chroot /mnt/root /usr/bin/env \
             LD_LIBRARY_PATH=/opt/nvidia/lib SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt \
@@ -2112,7 +2034,12 @@ if gpu_present; then
     /bin/busybox sed -n 's/^.*"claims" *: *\(\[.*\]\) *, *"detached_eat".*$/\1/p' /run/aleph/gpu-attest.json > "$gpu_claims"
     [ -s "$gpu_claims" ] || gpu_fatal "could not extract claims"
     /bin/busybox chmod 0600 "$gpu_claims"
-    LD_LIBRARY_PATH=/mnt/root/opt/nvidia/lib /bin/aleph-attest-agent gpu-ready || gpu_fatal "ready state"
+    # Ready state: the driver refuses CUDA work until it is set, and only a
+    # verified GPU may be marked ready. nvidia-smi is the raw driver userland
+    # in the rootfs; the agent is static and cannot drive NVML itself.
+    gpu_smi="/bin/busybox chroot /mnt/root /usr/bin/env LD_LIBRARY_PATH=/opt/nvidia/lib /opt/nvidia/lib/nvidia-smi"
+    $gpu_smi conf-compute -srs 1 > /dev/null 2>&1 || gpu_fatal "setting the ready state"
+    $gpu_smi conf-compute -grs 2>/dev/null | /bin/busybox grep -qi "ready" || gpu_fatal "ready state did not stick"
     echo "init: GPU verified and ready"
 else
     echo "init: no NVIDIA GPU present; running without GPU attestation"
@@ -2123,13 +2050,15 @@ The `nvattest` JSON layout (`claims`, `detached_eat`, `result_code`) is the docu
 
 ```sh
 if [ -n "$gpu_claims" ]; then
-    LD_LIBRARY_PATH=/mnt/root/opt/nvidia/lib /bin/aleph-attest-agent --port 8443 --upstream http://127.0.0.1:8080 --gpu-claims "$gpu_claims" &
+    /bin/aleph-attest-agent --port 8443 --upstream http://127.0.0.1:8080 \
+        --gpu-claims "$gpu_claims" \
+        --gpu-collector "/bin/busybox chroot /mnt/root /usr/bin/env LD_LIBRARY_PATH=/opt/nvidia/lib nvattest collect-evidence --device gpu --format json --nonce" &
 else
     /bin/aleph-attest-agent --port 8443 --upstream http://127.0.0.1:8080 &
 fi
 ```
 
-And export `LD_LIBRARY_PATH=/opt/nvidia/lib` before the `chroot "$guest_root" /sbin/init` line when `gpu_claims` is set, so the workload finds libcuda (the environment crosses `chroot`). `sed -n` with `\(\[.*\]\)` is greedy; the claims array precedes `detached_eat` in the CLI output, so the match is correct, and a wrong extraction fails at the agent's JSON parse anyway.
+The collector chroots into `/mnt/root`, which stays mounted and prepared for the VM's lifetime even when the workload runs from `/mnt/workload`. Guard the later `prepare_chroot` selection so `/mnt/root` is not prepared twice: `if [ -z "$workload_roothash" ] && [ -z "$gpu_chroot_prepared" ]; then prepare_chroot /mnt/root; fi` (the `/mnt/workload` branch is unchanged). Export `LD_LIBRARY_PATH=/opt/nvidia/lib` before the `chroot "$guest_root" /sbin/init` line when `gpu_claims` is set, so the workload finds libcuda (the environment crosses `chroot`). `sed -n` with `\(\[.*\]\)` is greedy; the claims array precedes `detached_eat` in the CLI output, so the match is correct, and a wrong extraction fails at the agent's JSON parse anyway.
 
 - [ ] **Step 3: `initrd.nix` gains `withNvidia`**
 
@@ -2614,7 +2543,7 @@ git commit -m "docs: NVIDIA CC operator runbook and architecture notes"
 
 - [ ] **Step 1: Branch layout**
 
-Five branches, each based on the previous, off `origin/dev-2.1`: `od/nvidia-cc-a-attest-agent` (Tasks 1 to 3), `od/nvidia-cc-b-cc-probe` (4 to 6), `od/nvidia-cc-c-snp-argv` (7 to 9), `od/nvidia-cc-d-nix-gpu-image` (10 to 13), `od/nvidia-cc-e-agent` (14 to 16). Open the PRs in order with `gh pr create --base <previous branch>`, each description naming the spec and the golden-measurement impact (A moves the base measurement through `Cargo.lock`; D re-seeds everything and adds `gpuMeasurement`).
+Five branches, each based on the previous, off `origin/dev-2.1`: `od/nvidia-cc-a-attest-agent` (Tasks 1 to 3), `od/nvidia-cc-b-cc-probe` (4 to 6), `od/nvidia-cc-c-snp-argv` (7 to 9), `od/nvidia-cc-d-nix-gpu-image` (10 to 13), `od/nvidia-cc-e-agent` (14 to 16). Open the PRs in order with `gh pr create --base <previous branch>`, each description naming the spec and the golden-measurement impact (D re-seeds everything and adds `gpuMeasurement`; A adds no runtime dependency, so it moves nothing).
 
 - [ ] **Step 2: Whole-stack checks**
 
