@@ -2455,12 +2455,12 @@ CMDLINE_EXTRA_TOKEN = re.compile(r"(?<!\S)swiotlb=\d{1,9}(?!\S)")
 
 - [ ] **Step 4: Implement the launch checks**
 
-In `vprogram_launch.py`, after `manifest = await fetch_runtime_manifest(...)`:
+In `vprogram_launch.py`, after `manifest = await fetch_runtime_manifest(...)` (`content.gpus` is `Optional`: absent and empty both mean no GPU):
 
 ```python
 GPU_VPROGRAM_MIN_MEMORY_MIB = 2048
 
-    gpus = list(content.gpus)
+    gpus = list(content.gpus or [])
     if gpus:
         if len(gpus) > 1:
             msg = f"V-PROGRAM {vm_hash} declares {len(gpus)} GPUs; one confidential GPU per VM is supported"
