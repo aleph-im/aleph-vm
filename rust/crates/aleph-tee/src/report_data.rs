@@ -9,9 +9,10 @@
 //!
 //! # Why domain separation and channel binding
 //!
-//! There are two distinct report shapes:
+//! There are three distinct report shapes:
 //!   * key binding: proves "the holder of this TLS key runs in this TEE".
 //!   * fresh/nonce binding: proves liveness against a caller-chosen nonce.
+//!   * gpu nonce: the SPDM nonce for GPU evidence, bound to the same key.
 //!
 //! The aleph-cvm donor placed the caller's raw nonce DIRECTLY into
 //! `report_data`, sharing the same 64-byte namespace as the key-binding report
@@ -33,7 +34,7 @@
 //! Both schemes write `SHA-384(...)` (48 bytes) into the first 48 bytes of the
 //! 64-byte field and leave the remaining 16 bytes zero.
 
-use sha2::{Digest, Sha384};
+use sha2::{Digest, Sha256, Sha384};
 
 /// Domain tag for the key-binding report (`SHA-384(DOMAIN_KEY || public_key)`).
 /// The trailing `0x00` is a separator byte, so the domain can never be a prefix
@@ -44,6 +45,11 @@ pub const DOMAIN_KEY: &[u8] = b"aleph-attest-tls-key-v1\x00";
 /// (`SHA-384(DOMAIN_FRESH || public_key || nonce)`). The trailing `0x00` is a
 /// separator byte.
 pub const DOMAIN_FRESH: &[u8] = b"aleph-attest-fresh-v1\x00";
+
+/// Domain tag for the GPU evidence nonce
+/// (`SHA-256(DOMAIN_GPU_NONCE || public_key || client_nonce)`). The trailing
+/// `0x00` is a separator byte.
+pub const DOMAIN_GPU_NONCE: &[u8] = b"aleph-gpu-nonce-v1\x00";
 
 /// Write a SHA-384 digest into a fresh 64-byte `report_data` buffer (first 48
 /// bytes = digest, remaining 16 bytes = zero).
@@ -80,6 +86,23 @@ pub fn fresh_report_data(public_key_raw: &[u8], nonce: &[u8]) -> [u8; 64] {
     hasher.update(public_key_raw);
     hasher.update(nonce);
     digest_into_report_data(hasher)
+}
+
+/// The 32-byte SPDM nonce the guest hands the GPU when a client asks for GPU
+/// evidence: bound to the served TLS key (so a relayed GPU report cannot be
+/// reused against another channel) and to the client's nonce (liveness).
+/// The raw client nonce never reaches the GPU verbatim.
+///
+/// SHA-256 rather than SHA-384: the SPDM nonce field is exactly 32 bytes, and
+/// truncating a 48-byte digest would invite a "which 32 bytes" mismatch
+/// between guest and client. The verifying side (aleph-rs) mirrors this
+/// function byte for byte.
+pub fn gpu_nonce(served_public_key_raw: &[u8], client_nonce: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(DOMAIN_GPU_NONCE);
+    hasher.update(served_public_key_raw);
+    hasher.update(client_nonce);
+    hasher.finalize().into()
 }
 
 #[cfg(test)]
@@ -154,5 +177,41 @@ mod tests {
         };
         assert_eq!(&out[..48], expected.as_slice());
         assert_eq!(&out[48..], &[0u8; 16]);
+    }
+
+    /// Pinned vector shared with the aleph-rs SDK mirror. Recompute with
+    /// python: sha256(b"aleph-gpu-nonce-v1\x00" + b"served-key" + b"client-nonce").
+    #[test]
+    fn gpu_nonce_matches_pinned_vector() {
+        let out = gpu_nonce(b"served-key", b"client-nonce");
+        assert_eq!(
+            hex::encode(out),
+            "20e597c53ba9506fc210a99757a7aef042b6d907c5492fa4b3ae91497d5dc71b"
+        );
+    }
+
+    #[test]
+    fn gpu_nonce_is_bound_to_key_and_nonce() {
+        let base = gpu_nonce(b"served-key", b"client-nonce");
+        assert_eq!(
+            hex::encode(gpu_nonce(b"served-key-B", b"client-nonce")),
+            "f32959269c10e809bc5c5a828c61c34b430e51862040c2bb5d7e3bfbba68064f"
+        );
+        assert_eq!(
+            hex::encode(gpu_nonce(b"served-key", b"client-nonce-2")),
+            "f99366e40cf9bbed2cdc36dd2e900899f1c62818bef6fdc40ac56a012cdd04e1"
+        );
+        assert_ne!(base, gpu_nonce(b"served-key-B", b"client-nonce"));
+    }
+
+    /// A GPU nonce can never equal the first 32 bytes of either SNP scheme:
+    /// different hash function (SHA-256 vs SHA-384) and different domain.
+    #[test]
+    fn gpu_nonce_never_collides_with_snp_report_data() {
+        let key = b"served-key";
+        let nonce = b"client-nonce";
+        let gpu = gpu_nonce(key, nonce);
+        assert_ne!(&gpu[..], &fresh_report_data(key, nonce)[..32]);
+        assert_ne!(&gpu[..], &key_bound_report_data(key)[..32]);
     }
 }
