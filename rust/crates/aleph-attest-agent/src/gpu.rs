@@ -268,12 +268,15 @@ mod tests {
         let script = dir.path().join("fake-nvattest.sh");
         std::fs::write(
             &script,
-            "#!/bin/sh\nnonce=\"$1\"\nprintf '{\"evidences\":[{\"arch\":\"HOPPER\",\"nonce\":\"%s\",\"evidence\":\"ZQ==\",\"certificate\":\"Yw==\"}],\"result_code\":0,\"result_message\":\"Ok\"}' \"$nonce\"\n",
+            "nonce=\"$1\"\nprintf '{\"evidences\":[{\"arch\":\"HOPPER\",\"nonce\":\"%s\",\"evidence\":\"ZQ==\",\"certificate\":\"Yw==\"}],\"result_code\":0,\"result_message\":\"Ok\"}' \"$nonce\"\n",
         )
         .unwrap();
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let collector = CollectorProcess::from_command_line(script.to_str().unwrap()).unwrap();
+        // Run it as an argument to /bin/sh rather than exec'ing the file: a
+        // fork from another test thread can still hold the just-written
+        // script open, and exec would then fail ETXTBSY. The nonce still
+        // lands last, so the script reads it as $1.
+        let collector =
+            CollectorProcess::from_command_line(&format!("/bin/sh {}", script.display())).unwrap();
         let nonce = [0x5au8; 32];
         let out = collector.collect(&nonce).unwrap();
         assert_eq!(out[0].nonce, "5a".repeat(32));
@@ -296,13 +299,13 @@ mod tests {
         // Output ~200 KiB JSON: pipe buffer overflow without the drain fix.
         let padding = "x".repeat(200000);
         let script_content = format!(
-            "#!/bin/sh\nnonce=\"$1\"\nprintf '{{\"evidences\":[{{\"arch\":\"HOPPER\",\"nonce\":\"%s\",\"evidence\":\"ZQ==\",\"certificate\":\"Yw==\"}}],\"result_code\":0,\"result_message\":\"{}\"}}' \"$nonce\"\n",
+            "nonce=\"$1\"\nprintf '{{\"evidences\":[{{\"arch\":\"HOPPER\",\"nonce\":\"%s\",\"evidence\":\"ZQ==\",\"certificate\":\"Yw==\"}}],\"result_code\":0,\"result_message\":\"{}\"}}' \"$nonce\"\n",
             padding
         );
         std::fs::write(&script, script_content).unwrap();
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let collector = CollectorProcess::from_command_line(script.to_str().unwrap()).unwrap();
+        // Through /bin/sh, for the ETXTBSY reason above.
+        let collector =
+            CollectorProcess::from_command_line(&format!("/bin/sh {}", script.display())).unwrap();
         let nonce = [0xabu8; 32];
         // Must complete within COLLECT_TIMEOUT (60 s), not deadlock.
         let out = collector.collect(&nonce).unwrap();
