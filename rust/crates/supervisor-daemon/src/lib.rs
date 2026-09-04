@@ -31,6 +31,7 @@ pub mod envfile;
 pub mod error;
 pub mod events;
 pub mod firecracker;
+pub mod gpu_cc;
 pub mod host;
 pub mod hugepages;
 pub mod lifecycle;

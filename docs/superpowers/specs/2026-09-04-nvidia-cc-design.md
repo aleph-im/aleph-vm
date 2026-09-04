@@ -319,8 +319,16 @@ class ConfidentialGpu(HashableModel):
 
 class VerifiableProgramContent(BaseExecutableContent):
     ...
-    gpus: List[ConfidentialGpu] = Field(default_factory=list, max_length=1)
+    gpus: Optional[List[ConfidentialGpu]] = Field(default=None, max_length=1)
 ```
+
+The field is optional rather than defaulting to an empty list: a
+V-PROGRAM message's `check_content` compares the model dump to the signed
+`item_content`, so a defaulted list would make every message signed before
+this field exists unparseable. Absent and empty both mean "no GPU";
+consumers read `content.gpus or []`. `requires_gpu` is overridden on the
+V-PROGRAM content to read this field, since the inherited
+`requirements.gpu` channel is refused there.
 
 `device_id` is the same `vendor:device` string the instance
 `GpuProperties.device_id` and the settings aggregate `compatible_gpus` use,

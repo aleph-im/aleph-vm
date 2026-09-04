@@ -153,6 +153,7 @@ message GpuDevice {
   string device_id = 2;    // vendor:device
   string model = 3;
   bool supports_x_vga = 4;
+  string cc_mode = 5;  // NVIDIA confidential-computing mode: "on", "devtools", "off"; empty when unknown
 }
 
 // ── Lifecycle ────────────────────────────────────────────────────────────

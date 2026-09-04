@@ -390,12 +390,15 @@ class GpuDevice(google.protobuf.message.Message):
     DEVICE_ID_FIELD_NUMBER: builtins.int
     MODEL_FIELD_NUMBER: builtins.int
     SUPPORTS_X_VGA_FIELD_NUMBER: builtins.int
+    CC_MODE_FIELD_NUMBER: builtins.int
     pci_host: builtins.str
     """e.g. "0000:01:00.0" """
     device_id: builtins.str
     """vendor:device"""
     model: builtins.str
     supports_x_vga: builtins.bool
+    cc_mode: builtins.str
+    """NVIDIA confidential-computing mode: "on", "devtools", "off"; empty when unknown"""
     def __init__(
         self,
         *,
@@ -403,8 +406,9 @@ class GpuDevice(google.protobuf.message.Message):
         device_id: builtins.str = ...,
         model: builtins.str = ...,
         supports_x_vga: builtins.bool = ...,
+        cc_mode: builtins.str = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["device_id", b"device_id", "model", b"model", "pci_host", b"pci_host", "supports_x_vga", b"supports_x_vga"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["cc_mode", b"cc_mode", "device_id", b"device_id", "model", b"model", "pci_host", b"pci_host", "supports_x_vga", b"supports_x_vga"]) -> None: ...
 
 global___GpuDevice = GpuDevice
 

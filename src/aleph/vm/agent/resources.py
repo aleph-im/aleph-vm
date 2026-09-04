@@ -84,10 +84,22 @@ class SevSnpProperties(BaseModel):
     )
 
 
+class NvidiaCcDevice(BaseModel):
+    device_id: str = Field(description="vendor:device id of a card in NVIDIA CC mode")
+    model: str | None = Field(default=None, description="GPU model name on Aleph Network")
+
+
+class NvidiaCcProperties(BaseModel):
+    """Cards probed in NVIDIA confidential-computing mode and free to attach."""
+
+    devices: list[NvidiaCcDevice]
+
+
 class TeeProperties(BaseModel):
     """TEE launch capability, keyed by platform so TDX and friends slot in later."""
 
     sev_snp: SevSnpProperties | None = None
+    nvidia_cc: NvidiaCcProperties | None = None
 
 
 class MachineProperties(BaseModel):
@@ -271,7 +283,19 @@ async def _get_static_machine_capability() -> MachineCapability:
     )
 
 
-async def get_machine_capability() -> MachineCapability:
+def nvidia_cc_properties(available_gpus: list[dict], network_models: dict[str, str]) -> NvidiaCcProperties | None:
+    """The confidential-GPU block: only cards whose probe said `on`.
+    `devtools` lifts the profiling blocks and is not confidential; an
+    unprobed card is unknown and advertises nothing."""
+    devices = [
+        NvidiaCcDevice(device_id=gpu["device_id"], model=network_models.get(gpu["device_id"]))
+        for gpu in available_gpus
+        if gpu.get("cc_mode") == "on"
+    ]
+    return NvidiaCcProperties(devices=devices) if devices else None
+
+
+async def get_machine_capability(supervisor) -> MachineCapability:
     """What ``/about/capability`` reports. Static part cached, TEE block
     re-evaluated per call so a recovered probe is advertised again.
 
@@ -280,14 +304,22 @@ async def get_machine_capability() -> MachineCapability:
     launch it (e.g. too old): human-facing only, so it is populated solely
     when ``check_amd_sev_snp_supported()`` is true, to keep the non-TEE
     fleet's response free of noise.
+
+    ``nvidia_cc`` is advertised only alongside ``sev_snp``: a confidential
+    GPU on a host that cannot launch a confidential guest is not a usable
+    capability.
     """
     static = await _get_static_machine_capability()
     capability = await get_snp_launch_capability()
-    tee = (
-        TeeProperties(sev_snp=SevSnpProperties(supported_vcpu_types=capability.supported_vcpu_types))
-        if capability.supported_vcpu_types
-        else None
-    )
+    tee = None
+    if capability.supported_vcpu_types:
+        host_info = await supervisor.get_host_info()
+        await update_aggregate_settings()
+        network_models = {gpu.device_id: gpu.model for gpu in get_compatible_gpus()}
+        tee = TeeProperties(
+            sev_snp=SevSnpProperties(supported_vcpu_types=capability.supported_vcpu_types),
+            nvidia_cc=nvidia_cc_properties(list(host_info.available_gpus), network_models),
+        )
     reason = capability.unavailable_reason if check_amd_sev_snp_supported() else None
     return static.model_copy(update={"tee": tee, "tee_unavailable_reason": reason})
 
@@ -370,10 +402,10 @@ async def about_certificates(request: web.Request):
     return web.FileResponse(await sev_client.get_certificates())
 
 
-async def about_capability(_: web.Request):
+async def about_capability(request: web.Request):
     """Public endpoint to expose information about the CRN capability."""
 
-    capability: MachineCapability = await get_machine_capability()
+    capability: MachineCapability = await get_machine_capability(request.app["supervisor"])
     return web.json_response(text=capability.json(exclude_none=False))
 
 
