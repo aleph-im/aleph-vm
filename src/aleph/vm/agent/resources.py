@@ -1,6 +1,7 @@
 import math
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import psutil
 from aiohttp import web
@@ -25,6 +26,10 @@ from aleph.vm.utils import (
     check_amd_sev_supported,
     cors_allow_all,
 )
+
+if TYPE_CHECKING:
+    from aleph.vm.supervisor_interface.abc import Supervisor
+    from aleph.vm.supervisor_interface.types import HostInfo
 
 
 class Period(BaseModel):
@@ -159,11 +164,21 @@ class MachineCapability(BaseModel):
         default=None,
         description="Why SEV-SNP is not advertised, for a node whose silicon supports it but "
         "cannot currently launch (e.g. QEMU too old). Human-facing only: the scheduler reads "
-        "/about/usage/system, which does not carry this field.",
+        "/about/usage/system, whose tee block is the same one but which carries no such "
+        "explanation field.",
     )
 
 
-async def _gpus_from_host_info(host_info) -> GpuProperties:
+async def _network_gpu_models() -> dict[str, str]:
+    """device_id -> model name on the Aleph Network, from the settings
+    aggregate's compatible_gpus whitelist (refreshed first). The supervisor
+    never talks to the network, so every network-derived GPU annotation is
+    built from this map."""
+    await update_aggregate_settings()
+    return {gpu.device_id: gpu.model for gpu in get_compatible_gpus()}
+
+
+async def _gpus_from_host_info(host_info: "HostInfo") -> GpuProperties:
     """Rebuild the rich GPU inventory from the supervisor's HostInfo.
 
     GetHostInfo carries raw GpuDevice fields as plain dicts (gpu_inventory /
@@ -171,8 +186,7 @@ async def _gpus_from_host_info(host_info) -> GpuProperties:
     network annotation (AnnotatedGpuDevice: `model`, `compatible`) is
     applied here from the settings aggregate.
     """
-    await update_aggregate_settings()
-    network_models = {gpu.device_id: gpu.model for gpu in get_compatible_gpus()}
+    network_models = await _network_gpu_models()
 
     def annotate(gpu: dict) -> AnnotatedGpuDevice:
         return AnnotatedGpuDevice.model_validate(
@@ -189,12 +203,23 @@ async def _gpus_from_host_info(host_info) -> GpuProperties:
     )
 
 
-async def _get_tee_properties() -> TeeProperties | None:
-    """TEE launch capability, absent when there is nothing provable to advertise."""
-    snp_vcpu_types = await get_supported_snp_vcpu_types()
-    if not snp_vcpu_types:
+async def _tee_properties(supported_vcpu_types: list[str], host_info: "HostInfo") -> TeeProperties | None:
+    """The tee block, absent when there is nothing provable to advertise.
+
+    The single builder behind both public advertisements, so
+    ``/about/usage/system`` (what the scheduler reads) and
+    ``/about/capability`` can never disagree about what this host offers.
+
+    ``nvidia_cc`` rides alongside ``sev_snp`` and only there: a confidential
+    GPU on a host that cannot launch a confidential guest is not a usable
+    capability.
+    """
+    if not supported_vcpu_types:
         return None
-    return TeeProperties(sev_snp=SevSnpProperties(supported_vcpu_types=snp_vcpu_types))
+    return TeeProperties(
+        sev_snp=SevSnpProperties(supported_vcpu_types=supported_vcpu_types),
+        nvidia_cc=nvidia_cc_properties(list(host_info.available_gpus), await _network_gpu_models()),
+    )
 
 
 @async_cache
@@ -230,7 +255,7 @@ async def _get_static_machine_properties() -> MachineProperties:
     )
 
 
-async def get_machine_properties() -> MachineProperties:
+async def get_machine_properties(host_info: "HostInfo") -> MachineProperties:
     """Fetch machine properties such as architecture, CPU vendor, ...
 
     The static part is cached; the TEE block is re-evaluated on every call so
@@ -238,10 +263,15 @@ async def get_machine_properties() -> MachineProperties:
     again. Cheap once the probe has succeeded, since the probe keeps its own
     result.
 
+    ``host_info`` is passed in rather than fetched: the caller already holds
+    one and a second GetHostInfo per usage poll would be a round trip for
+    nothing.
+
     In the future, some properties may have to be fetched from within a VM.
     """
     static = await _get_static_machine_properties()
-    return static.model_copy(update={"tee": await _get_tee_properties()})
+    tee = await _tee_properties(await get_supported_snp_vcpu_types(), host_info)
+    return static.model_copy(update={"tee": tee})
 
 
 @async_cache
@@ -295,31 +325,22 @@ def nvidia_cc_properties(available_gpus: list[dict], network_models: dict[str, s
     return NvidiaCcProperties(devices=devices) if devices else None
 
 
-async def get_machine_capability(supervisor) -> MachineCapability:
+async def get_machine_capability(supervisor: "Supervisor") -> MachineCapability:
     """What ``/about/capability`` reports. Static part cached, TEE block
     re-evaluated per call so a recovered probe is advertised again.
 
-    Unlike ``get_machine_properties``, this also names *why* SNP is not
-    advertised when the silicon supports it but the current QEMU cannot
-    launch it (e.g. too old): human-facing only, so it is populated solely
-    when ``check_amd_sev_snp_supported()`` is true, to keep the non-TEE
-    fleet's response free of noise.
-
-    ``nvidia_cc`` is advertised only alongside ``sev_snp``: a confidential
-    GPU on a host that cannot launch a confidential guest is not a usable
-    capability.
+    The tee block itself comes from the same builder ``/about/usage/system``
+    uses, so the two endpoints agree. Unlike ``get_machine_properties``, this
+    also names *why* SNP is not advertised when the silicon supports it but
+    the current QEMU cannot launch it (e.g. too old): human-facing only, so it
+    is populated solely when ``check_amd_sev_snp_supported()`` is true, to keep
+    the non-TEE fleet's response free of noise.
     """
     static = await _get_static_machine_capability()
     capability = await get_snp_launch_capability()
     tee = None
     if capability.supported_vcpu_types:
-        host_info = await supervisor.get_host_info()
-        await update_aggregate_settings()
-        network_models = {gpu.device_id: gpu.model for gpu in get_compatible_gpus()}
-        tee = TeeProperties(
-            sev_snp=SevSnpProperties(supported_vcpu_types=capability.supported_vcpu_types),
-            nvidia_cc=nvidia_cc_properties(list(host_info.available_gpus), network_models),
-        )
+        tee = await _tee_properties(capability.supported_vcpu_types, await supervisor.get_host_info())
     reason = capability.unavailable_reason if check_amd_sev_snp_supported() else None
     return static.model_copy(update={"tee": tee, "tee_unavailable_reason": reason})
 
@@ -365,7 +386,7 @@ async def about_system_usage(request: web.Request):
     period_start = datetime.now(timezone.utc).replace(second=0, microsecond=0)
     host_info = await request.app["supervisor"].get_host_info()
 
-    machine_properties = await get_machine_properties()
+    machine_properties = await get_machine_properties(host_info)
     usage: MachineUsage = MachineUsage(
         cpu=CpuUsage(
             count=psutil.cpu_count(),

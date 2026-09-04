@@ -74,3 +74,72 @@ async def test_capability_gates_nvidia_cc_on_snp(mocker):
     capability = await resources.get_machine_capability(supervisor)
     assert capability.tee.sev_snp.supported_vcpu_types == ["EPYC-v4"]
     assert capability.tee.nvidia_cc.devices[0].device_id == "10de:2b85"
+
+
+@pytest.mark.asyncio
+async def test_usage_endpoint_advertises_nvidia_cc(mocker):
+    """The scheduler reads /about/usage/system, not /about/capability: the
+    confidential-GPU block has to reach the properties both endpoints build."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from aleph.vm.agent import resources
+
+    mocker.patch.object(
+        resources,
+        "_get_static_machine_properties",
+        AsyncMock(return_value=SimpleNamespace(model_copy=lambda update: SimpleNamespace(**update))),
+    )
+    mocker.patch.object(resources, "update_aggregate_settings", AsyncMock())
+    mocker.patch.object(
+        resources,
+        "get_compatible_gpus",
+        return_value=[SimpleNamespace(device_id="10de:2b85", model="RTX PRO 6000")],
+    )
+    mocker.patch.object(resources, "get_supported_snp_vcpu_types", AsyncMock(return_value=["EPYC-v4"]))
+    host_info = SimpleNamespace(available_gpus=[_gpu("10de:2b85", "06:00.0", "on")])
+
+    properties = await resources.get_machine_properties(host_info)
+    assert properties.tee.sev_snp.supported_vcpu_types == ["EPYC-v4"]
+    assert properties.tee.nvidia_cc.devices[0].device_id == "10de:2b85"
+    assert properties.tee.nvidia_cc.devices[0].model == "RTX PRO 6000"
+
+
+@pytest.mark.asyncio
+async def test_both_endpoints_advertise_the_same_tee_block(mocker):
+    """One builder feeds both, so /about/usage/system and /about/capability
+    can never disagree about what this host offers."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from aleph.vm.agent import resources
+
+    mocker.patch.object(
+        resources,
+        "_get_static_machine_properties",
+        AsyncMock(return_value=SimpleNamespace(model_copy=lambda update: SimpleNamespace(**update))),
+    )
+    mocker.patch.object(
+        resources,
+        "_get_static_machine_capability",
+        AsyncMock(return_value=SimpleNamespace(model_copy=lambda update: SimpleNamespace(**update))),
+    )
+    mocker.patch.object(resources, "check_amd_sev_snp_supported", return_value=True)
+    mocker.patch.object(resources, "update_aggregate_settings", AsyncMock())
+    mocker.patch.object(
+        resources,
+        "get_compatible_gpus",
+        return_value=[SimpleNamespace(device_id="10de:2b85", model="RTX PRO 6000")],
+    )
+    mocker.patch.object(resources, "get_supported_snp_vcpu_types", AsyncMock(return_value=["EPYC-v4"]))
+    mocker.patch.object(
+        resources,
+        "get_snp_launch_capability",
+        AsyncMock(return_value=SimpleNamespace(supported_vcpu_types=["EPYC-v4"], unavailable_reason=None)),
+    )
+    host_info = SimpleNamespace(available_gpus=[_gpu("10de:2b85", "06:00.0", "on")])
+    supervisor = SimpleNamespace(get_host_info=AsyncMock(return_value=host_info))
+
+    usage = await resources.get_machine_properties(host_info)
+    capability = await resources.get_machine_capability(supervisor)
+    assert usage.tee == capability.tee
