@@ -38,6 +38,9 @@ pub enum DaemonError {
     #[error("{0}")]
     Lspci(String),
 
+    #[error("GPU probe failed: {0}")]
+    GpuProbe(String),
+
     #[error("Device vendor not compatible")]
     IncompatibleGpuVendor,
 
