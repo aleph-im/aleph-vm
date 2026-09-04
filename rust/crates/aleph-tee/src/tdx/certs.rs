@@ -226,6 +226,12 @@ pub fn verify_signer_chain(chain_pem: &[u8], now: SystemTime) -> Result<X509> {
         bail!("the collateral signer certificate is not signed by the intermediate CA");
     }
     check_window(
+        "the pinned root certificate",
+        pinned.not_before(),
+        pinned.not_after(),
+        &now,
+    )?;
+    check_window(
         "the intermediate certificate",
         intermediate.not_before(),
         intermediate.not_after(),
