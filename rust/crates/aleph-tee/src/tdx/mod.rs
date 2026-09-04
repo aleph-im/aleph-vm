@@ -1,7 +1,11 @@
 //! Intel TDX attestation stack.
 //!
-//! Sibling of `sev_snp`: same crate-level conventions, different TEE. Only
-//! quote parsing is implemented so far; chain verification, collateral
-//! handling and the hardware-backed backend arrive in later increments.
+//! Sibling of `sev_snp`: same crate-level conventions, different TEE.
+//! Quote parsing and the certificate-chain half of verification are
+//! implemented; the TCB walk, platform gates and the hardware-backed
+//! backend arrive in later increments.
 
+pub mod certs;
+pub mod collateral;
 pub mod quote;
+pub mod verify;
