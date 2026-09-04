@@ -54,7 +54,9 @@ jobs:
   golden-measurements:
     name: "build measured boot chain, compare launch measurements"
     runs-on: ubuntu-24.04
-    # ~20 min cold (run 33110775509: 19m25s); 3x headroom for a slow runner.
+    # ~20 min cold for the BASE set (run 33110775509: 19m25s, measured before
+    # the flavor split); 3x headroom for a slow runner. The confidential-GPU
+    # flavor is a separate job below, so it does not eat this budget.
     timeout-minutes: 60
 
     steps:
@@ -84,4 +86,94 @@ jobs:
       # a bad trade. Revisit with a real binary cache if this job's runtime
       # becomes a problem.
       - name: Check launch measurements against the golden file
-        run: ./nix/check-golden-measurements.sh
+        run: ./nix/check-golden-measurements.sh --base-only
+
+  # Confidential-GPU flavor. Its chain shares almost nothing with the base
+  # set: a second guest kernel (gpuKernel), the NVIDIA open kernel modules,
+  # the raw driver userland extracted from the .run archive, and nvat (a CMake
+  # build with a vendored Rust sub-build). Runtime is UNMEASURED until this
+  # job's first run; the timeout below is a guess with room to spare and
+  # should be tightened once there is a real number.
+  #
+  # Gated so it only runs when it can actually move: always on schedule and
+  # manual dispatch, and on push/pull_request only when a GPU input changed.
+  golden-measurements-gpu:
+    name: "build the confidential-GPU chain, compare its launch measurement"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the gate below diffs against the PR base or the
+          # push's previous revision, and the divergence message names the
+          # commit that last touched the golden file.
+          fetch-depth: 0
+
+      - name: Decide whether the GPU chain needs rebuilding
+        id: gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "schedule" ] || [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "GPU chain: always built on $EVENT_NAME."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A branch's first push has an all-zero "before" and a force-push can
+          # leave an unreachable one. Build rather than guess.
+          if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            echo "GPU chain: no usable base revision; building to be safe."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Inputs that can move gpuMeasurement: the GPU-only files, plus the
+          # shared ones the GPU chain also builds from (flake, lock, kernel
+          # recipe, initrd recipe, init-common.sh) and the golden file itself.
+          gpu_inputs="
+          nix/nvidia.nix
+          nix/nvat.nix
+          nix/gpu-rootfs.nix
+          nix/init-gpu.sh
+          nix/kernel-config-gpu.fragment
+          nix/regorus-ffi-Cargo.lock
+          nix/golden-measurements.json
+          nix/flake.nix
+          nix/flake.lock
+          nix/kernel.nix
+          nix/initrd.nix
+          nix/init-common.sh
+          "
+          changed="$(git diff --name-only "$BASE_SHA"...HEAD)"
+          echo "Changed files:"
+          echo "$changed"
+          for f in $gpu_inputs; do
+            if echo "$changed" | grep -qxF "$f"; then
+              echo "GPU chain: $f changed."
+              echo "run=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "GPU chain: no GPU input changed; skipping."
+          echo "run=false" >> "$GITHUB_OUTPUT"
+
+      - name: Free runner disk space
+        if: steps.gate.outputs.run == 'true'
+        # Same reasoning as the base job, and the GPU chain needs more: the
+        # driver userland alone is several hundred MB.
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          df -h /
+
+      - uses: cachix/install-nix-action@v31
+        if: steps.gate.outputs.run == 'true'
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Check the GPU launch measurement against the golden file
+        if: steps.gate.outputs.run == 'true'
+        run: ./nix/check-golden-measurements.sh --gpu-only
