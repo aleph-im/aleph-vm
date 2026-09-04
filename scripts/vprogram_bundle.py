@@ -196,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="build the aleph.exec/1 workload-runtime manifest (workload_roothash in the "
         "cmdline template) instead of the builtin no-workload form; "
-        "incompatible with --flavor instance/compose",
+        "incompatible with --flavor instance/compose/gpu",
     )
     p_manifest.set_defaults(func=cmd_manifest)
 

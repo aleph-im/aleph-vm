@@ -120,6 +120,24 @@ REJECTION_CASES: list[tuple[str, Callable[[dict[str, Any]], None]]] = [
             cmdline_template="console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash} init=/bin/sh"
         ),
     ),
+    (
+        "placeholder with text glued before it",
+        lambda d: d["boot"].update(
+            cmdline_template="console=ttyS0 root=/dev/mapper/verity-root ro evil{platform_roothash}"
+        ),
+    ),
+    (
+        "placeholder with text glued after it",
+        lambda d: d["boot"].update(
+            cmdline_template="console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash}evil"
+        ),
+    ),
+    (
+        "placeholder paired with the wrong key",
+        lambda d: d["boot"].update(
+            cmdline_template="console=ttyS0 root=/dev/mapper/verity-root ro rdinit={platform_roothash}"
+        ),
+    ),
 ]
 
 
@@ -256,5 +274,20 @@ def test_instance_manifest_rejects_platform_roothash_field(minimal_instance_mani
 def test_instance_manifest_rejects_extra_bundle_member(minimal_instance_manifest_dict: dict[str, Any]) -> None:
     bad = deepcopy(minimal_instance_manifest_dict)
     bad["bundle"]["members"]["platform_rootfs"] = "image/rootfs.ext4"
+    with pytest.raises(ValidationError):
+        InstanceRuntimeManifest.model_validate(bad)
+
+
+def test_luks_template_still_validates_with_pinned_keys(minimal_instance_manifest_dict: dict[str, Any]) -> None:
+    """console=ttyS0 and luks=1 stay legal as base/fixed literal tokens, and
+    owner={owner} is the one legal spelling of the owner placeholder, even
+    after pinning every placeholder token to its required key."""
+    manifest = InstanceRuntimeManifest.model_validate(minimal_instance_manifest_dict)
+    assert manifest.boot.cmdline_template == "console=ttyS0 luks=1 owner={owner}"
+
+
+def test_instance_template_rejects_owner_with_wrong_key(minimal_instance_manifest_dict: dict[str, Any]) -> None:
+    bad = deepcopy(minimal_instance_manifest_dict)
+    bad["boot"]["cmdline_template"] = "console=ttyS0 luks=1 user={owner}"
     with pytest.raises(ValidationError):
         InstanceRuntimeManifest.model_validate(bad)
