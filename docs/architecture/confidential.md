@@ -101,7 +101,7 @@ A failed or empty probe advertises nothing (`get_supported_snp_vcpu_types`
 returns `[]`) rather than guessing. The result lands in
 `TeeProperties.sev_snp.supported_vcpu_types`, a sibling of `properties.cpu`
 in `MachineProperties` (`src/aleph/vm/agent/resources.py`,
-`_get_tee_properties`), not nested under it: host-CPU facts and TEE-launch
+`_tee_properties`), not nested under it: host-CPU facts and TEE-launch
 facts are different axes, and keeping them siblings leaves room for a future
 `tdx` or GPU-CC platform key without a schema break.
 
