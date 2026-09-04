@@ -229,16 +229,19 @@ CMDLINE_TEMPLATE_EXEC_V1 = (
     " workload_roothash={workload_roothash}"
     " verified_volumes={verified_volumes}"
 )
-# Gpu-runtime flavor: same placeholder order as CMDLINE_TEMPLATE_EXEC_V1
-# (workload_roothash before verified_volumes), with a fixed swiotlb=262144
-# token inserted before the verified_volumes slot to size the IOMMU bounce
+# Gpu-runtime flavor: same placeholder order and the same
+# verified_volumes={verified_volumes} spelling as CMDLINE_TEMPLATE_EXEC_V1
+# (the aleph-rs CLI renders {verified_volumes} as the joined roothashes and
+# drops the whole verified_volumes= token when there are none; a bare
+# {verified_volumes} slot would render an unmeasurable cmdline), with a
+# fixed swiotlb=262144 token inserted before it to size the IOMMU bounce
 # buffer for the passed-through confidential GPU. Byte-identity with what
 # the daemon emits matters the same way CMDLINE_TEMPLATE_EXEC_V1's does.
 CMDLINE_TEMPLATE_GPU_V1 = (
     "console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash}"
     " workload_roothash={workload_roothash}"
     " swiotlb=262144"
-    " {verified_volumes}"
+    " verified_volumes={verified_volumes}"
 )
 DEFAULT_CPU_MODELS = ["EPYC-v4"]
 DEFAULT_ATTESTATION = [

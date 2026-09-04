@@ -13,6 +13,7 @@ Design: docs/plans/2026-07-09-vprogram-runtime-bundle-design.md
 from __future__ import annotations
 
 import json
+import re
 import string
 from typing import Literal
 
@@ -44,6 +45,21 @@ CMDLINE_FIXED_TOKENS_V1 = frozenset({"console=ttyS0", "root=/dev/mapper/verity-r
 # The closed set of purely-literal tokens for the aleph-instance-runtime luks
 # cmdline template.
 CMDLINE_FIXED_TOKENS_LUKS_V1 = frozenset({"console=ttyS0", "luks=1"})
+
+# The one legal spelling of each closed-set placeholder inside a cmdline
+# token: `<key>={<placeholder>}`, nothing glued before or after it, and no
+# other key. Without this, a placeholder-bearing token was only checked for
+# its placeholder *name* being allowed, so `evil{platform_roothash}`,
+# `roothash={platform_roothash}evil`, or `rdinit={platform_roothash}` all
+# validated: the placeholder name alone said nothing about what surrounds
+# it in the actual booted cmdline.
+CMDLINE_PLACEHOLDER_KEYS = {
+    "platform_roothash": "roothash",
+    "workload_roothash": "workload_roothash",
+    "verified_volumes": "verified_volumes",
+    "owner": "owner",
+}
+_CMDLINE_KV_TOKEN = re.compile(r"^([a-z_]+)=\{([a-z_]+)\}$")
 
 DRIVER_VERSION_PATTERN = r"^\d+\.\d+(\.\d+)?$"
 
@@ -87,12 +103,34 @@ def _parse_cmdline_placeholders(value: str) -> set[str]:
     return placeholders
 
 
+def _check_cmdline_tokens(value: str, fixed_tokens: frozenset[str]) -> None:
+    """Check every whitespace-separated token in `value`: a token with no
+    placeholder must be one of `fixed_tokens` (closed set); a token that
+    carries a placeholder must be exactly `key={placeholder}`, with the key
+    pinned per placeholder by CMDLINE_PLACEHOLDER_KEYS, and nothing glued
+    onto either side."""
+    for token in value.split():
+        if "{" not in token and "}" not in token:
+            if token not in fixed_tokens:
+                msg = f"unknown fixed cmdline token {token!r}; allowed: {sorted(fixed_tokens)}"
+                raise ValueError(msg)
+            continue
+        match = _CMDLINE_KV_TOKEN.fullmatch(token)
+        if match is None:
+            msg = f"cmdline token must be exactly key={{placeholder}}, with nothing else glued onto it: {token!r}"
+            raise ValueError(msg)
+        key, placeholder = match.groups()
+        if CMDLINE_PLACEHOLDER_KEYS.get(placeholder) != key:
+            msg = f"cmdline token {token!r} must pair {{{placeholder}}} with its pinned key, not {key!r}"
+            raise ValueError(msg)
+
+
 def _validate_cmdline_template(value: str, allowed: frozenset[str], required: str, fixed_tokens: frozenset[str]) -> str:
     """Shared cmdline-template validator: checks the template's placeholder
-    set against `allowed` (closed set) with `required` mandatory, and rejects
-    any whitespace-separated token that carries no placeholder and is not in
-    `fixed_tokens` (closed set), so a manifest cannot smuggle an arbitrary
-    kernel parameter such as `init=/bin/sh` alongside the legitimate ones.
+    set against `allowed` (closed set) with `required` mandatory, and checks
+    every token (see `_check_cmdline_tokens`) so a manifest cannot smuggle an
+    arbitrary kernel parameter such as `init=/bin/sh`, or arbitrary text
+    glued onto a legitimate placeholder such as `rdinit={platform_roothash}`.
     Used by both BootSpec (v-program) and InstanceBootSpec so the two
     formats cannot drift apart."""
     placeholders = _parse_cmdline_placeholders(value)
@@ -103,12 +141,7 @@ def _validate_cmdline_template(value: str, allowed: frozenset[str], required: st
     if required not in placeholders:
         msg = f"cmdline template must contain {{{required}}}"
         raise ValueError(msg)
-    for token in value.split():
-        if "{" in token or "}" in token:
-            continue
-        if token not in fixed_tokens:
-            msg = f"unknown fixed cmdline token {token!r}; allowed: {sorted(fixed_tokens)}"
-            raise ValueError(msg)
+    _check_cmdline_tokens(value, fixed_tokens)
     return value
 
 
