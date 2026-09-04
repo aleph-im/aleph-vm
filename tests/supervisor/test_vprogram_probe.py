@@ -153,7 +153,7 @@ async def test_machine_properties_tee_block(mocker):
         return_value=["EPYC", "EPYC-v4"],
     )
 
-    properties = await get_machine_properties()
+    properties = await get_machine_properties(_host_info())
     assert properties.tee is not None
     assert properties.tee.sev_snp is not None
     assert properties.tee.sev_snp.supported_vcpu_types == ["EPYC", "EPYC-v4"]
@@ -174,7 +174,7 @@ async def test_machine_properties_no_tee_block_without_models(mocker):
         return_value=[],
     )
 
-    properties = await get_machine_properties()
+    properties = await get_machine_properties(_host_info())
     assert properties.tee is None
     # exclude_none keeps the usage-endpoint JSON free of a null tee key
     assert "tee" not in properties.model_dump(exclude_none=True)
@@ -286,8 +286,20 @@ def _static_host(mocker):
     return hardware
 
 
+def _host_info(available_gpus=()):
+    return SimpleNamespace(available_gpus=list(available_gpus))
+
+
 def _supervisor(available_gpus=()):
-    return SimpleNamespace(get_host_info=AsyncMock(return_value=SimpleNamespace(available_gpus=list(available_gpus))))
+    return SimpleNamespace(get_host_info=AsyncMock(return_value=_host_info(available_gpus)))
+
+
+@pytest.fixture(autouse=True)
+def _no_aggregate_fetch(mocker):
+    """The tee block annotates confidential GPUs from the settings aggregate.
+    No test here is about the network, so keep the fetch out of every call."""
+    mocker.patch("aleph.vm.agent.resources.update_aggregate_settings", new_callable=AsyncMock)
+    mocker.patch("aleph.vm.agent.resources.get_compatible_gpus", return_value=[])
 
 
 @pytest.mark.asyncio
@@ -299,12 +311,12 @@ async def test_advertisement_recovers_after_a_failed_first_probe(mocker):
     clock = _clock(mocker)
     probe = _snp_host(mocker, {"side_effect": OSError("qemu-system-x86_64 not found")})
 
-    assert (await get_machine_properties()).tee is None
+    assert (await get_machine_properties(_host_info())).tee is None
 
     probe.side_effect = None
     probe.return_value = _facts([{"name": "EPYC-v4", "unavailable-features": []}])
     clock["t"] += PROBE_RETRY_SECONDS
-    properties = await get_machine_properties()
+    properties = await get_machine_properties(_host_info())
     assert properties.tee is not None
     assert properties.tee.sev_snp is not None
     assert properties.tee.sev_snp.supported_vcpu_types == ["EPYC-v4"]
@@ -362,8 +374,8 @@ async def test_static_properties_stay_cached_across_calls(mocker):
     # Splitting the tee block out must not cost a hardware scan per poll.
     hardware = _static_host(mocker)
     _snp_host(mocker, {"return_value": [{"name": "EPYC-v4", "unavailable-features": []}]})
-    await get_machine_properties()
-    await get_machine_properties()
+    await get_machine_properties(_host_info())
+    await get_machine_properties(_host_info())
     assert hardware.await_count == 1
 
 
