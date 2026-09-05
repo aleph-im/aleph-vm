@@ -532,7 +532,7 @@ async def create_vm_execution(
                 if requested_gpu_ids(content):
                     msg = "GPU passthrough is not supported on SEV-SNP instances yet"
                     raise VmSetupError(msg)
-                spec, attest_port = await build_snp_instance_spec(vm_hash, content)
+                spec, attest_port = await build_snp_instance_spec(vm_hash, content, str(message.sender))
             else:
                 spec = await build_create_vm_spec(vm_hash, content)
             # Agent-side admission, after the download so a failed download

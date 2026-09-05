@@ -55,6 +55,7 @@ BUNDLE_REF = "b1eeb1eeb1eeb1eeb1eeb1eeb1eeb1eeb1eeb1eeb1eeb1eeb1eeb1eeb1eeb1ee"
 
 OWNER_LOWER = "0x1234567890abcdef1234567890abcdef12345678"
 NON_EVM_ADDRESS = "5FHwkrdxDCvSXWvBaHf3Aq6X8AfUY5vLwLLpAt7dQxCg"
+DELEGATE_LOWER = "0xfeedfacefeedfacefeedfacefeedfacefeedface"
 
 # The reference instance manifest shape (tests/vprogram/test_manifest.py), with
 # the bundle digest/size patched per-test to match the locally built tarball.
@@ -264,7 +265,7 @@ def staged_instance_bundle(tmp_path, storage_files, snp_supported, snp_vcpu_type
 
 @pytest.mark.asyncio
 async def test_build_snp_instance_spec_happy_path(staged_instance_bundle):
-    spec, attest_port = await build_snp_instance_spec(VM_HASH, snp_instance_content())
+    spec, attest_port = await build_snp_instance_spec(VM_HASH, snp_instance_content(), OWNER_LOWER)
 
     assert spec.tee is not None
     assert spec.tee.backend is TeeBackend.SEV_SNP
@@ -301,7 +302,7 @@ async def test_prefers_the_ra_tls_attestation_port(tmp_path, staged_instance_bun
         ],
     )
 
-    _, attest_port = await build_snp_instance_spec(VM_HASH, snp_instance_content())
+    _, attest_port = await build_snp_instance_spec(VM_HASH, snp_instance_content(), OWNER_LOWER)
 
     assert attest_port == 8443
 
@@ -318,7 +319,7 @@ async def test_falls_back_to_the_first_attestation_port_without_ra_tls(tmp_path,
         ],
     )
 
-    _, attest_port = await build_snp_instance_spec(VM_HASH, snp_instance_content())
+    _, attest_port = await build_snp_instance_spec(VM_HASH, snp_instance_content(), OWNER_LOWER)
 
     assert attest_port == 7000
 
@@ -335,7 +336,7 @@ async def test_snp_instance_spec_selects_the_measured_cpu_model(staged_instance_
         )
     ]
     content = snp_instance_content(trusted_execution_overrides={"measurements": measurements})
-    spec, _attest_port = await build_snp_instance_spec(VM_HASH, content)
+    spec, _attest_port = await build_snp_instance_spec(VM_HASH, content, OWNER_LOWER)
     assert spec.tee is not None
     assert spec.tee.cpu_model == "EPYC-Genoa-v2"
 
@@ -344,21 +345,54 @@ async def test_snp_instance_spec_selects_the_measured_cpu_model(staged_instance_
 async def test_snp_instance_spec_refuses_a_model_the_host_cannot_launch(staged_instance_bundle, snp_vcpu_types):
     snp_vcpu_types(["EPYC"])
     with pytest.raises(VmSetupError, match="launch measurements"):
-        await build_snp_instance_spec(VM_HASH, snp_instance_content())
+        await build_snp_instance_spec(VM_HASH, snp_instance_content(), OWNER_LOWER)
 
 
 @pytest.mark.asyncio
 async def test_rejects_attestation_port_set(staged_instance_bundle):
     content = snp_instance_content(trusted_execution_overrides={"attestation_port": 9000})
     with pytest.raises(VmSetupError, match="attestation_port"):
-        await build_snp_instance_spec(VM_HASH, content)
+        await build_snp_instance_spec(VM_HASH, content, OWNER_LOWER)
 
 
 @pytest.mark.asyncio
-async def test_rejects_non_evm_sender(snp_supported):
-    content = snp_instance_content(address=NON_EVM_ADDRESS)
+@pytest.mark.parametrize("address", [OWNER_LOWER, NON_EVM_ADDRESS])
+async def test_rejects_non_evm_sender(snp_supported, address):
+    """The unlock authority is the message sender; a non-EVM sender cannot
+    sign EIP-191 injections and is rejected regardless of content.address
+    (exercised with both an EVM and a non-EVM owner)."""
     with pytest.raises(VmSetupError, match="EVM"):
-        await build_snp_instance_spec(VM_HASH, content)
+        await build_snp_instance_spec(VM_HASH, snp_instance_content(address=address), NON_EVM_ADDRESS)
+
+
+@pytest.mark.asyncio
+async def test_non_evm_owner_with_evm_sender_is_accepted(staged_instance_bundle):
+    """content.address is billing/ownership only: a non-EVM owner deploys
+    fine as long as the signing sender is EVM-keyed."""
+    content = snp_instance_content(address=NON_EVM_ADDRESS)
+    spec, _ = await build_snp_instance_spec(VM_HASH, content, OWNER_LOWER)
+    assert spec.tee is not None
+    assert spec.tee.kernel_cmdline == f"console=ttyS0 luks=1 owner={OWNER_LOWER}"
+
+
+@pytest.mark.asyncio
+async def test_delegated_create_binds_the_sender_not_the_owner(staged_instance_bundle):
+    """An on-behalf-of deployment: the measured cmdline binds the delegate
+    that signed the message (and holds the passphrase), not content.address."""
+    spec, _ = await build_snp_instance_spec(VM_HASH, snp_instance_content(), DELEGATE_LOWER)
+    assert spec.tee is not None
+    assert spec.tee.kernel_cmdline == f"console=ttyS0 luks=1 owner={DELEGATE_LOWER}"
+
+
+@pytest.mark.asyncio
+async def test_sender_is_lowercased_into_the_cmdline(staged_instance_bundle):
+    """EIP-55 checksum case must not leak into the measured slot: the guest
+    compares lowercase-to-lowercase."""
+    # Lowercases exactly to DELEGATE_LOWER, hence the assertion below.
+    checksummed = "0xFeedFaceFeedFaceFeedFaceFeedFaceFeedFace"
+    spec, _ = await build_snp_instance_spec(VM_HASH, snp_instance_content(), checksummed)
+    assert spec.tee is not None
+    assert spec.tee.kernel_cmdline == f"console=ttyS0 luks=1 owner={DELEGATE_LOWER}"
 
 
 @pytest.mark.asyncio
@@ -373,7 +407,7 @@ async def test_rejects_vprogram_manifest(tmp_path, storage_files, snp_supported)
 
     content = snp_instance_content()
     with pytest.raises(VmSetupError, match="aleph-instance-runtime"):
-        await build_snp_instance_spec(VM_HASH, content)
+        await build_snp_instance_spec(VM_HASH, content, OWNER_LOWER)
 
 
 @pytest.mark.asyncio
@@ -383,7 +417,7 @@ async def test_rejects_policy_above_u32(snp_supported):
     over_u32_policy = (1 << 32) | (1 << 17)
     content = snp_instance_content(trusted_execution_overrides={"policy": over_u32_policy})
     with pytest.raises(VmSetupError, match="policy"):
-        await build_snp_instance_spec(VM_HASH, content)
+        await build_snp_instance_spec(VM_HASH, content, OWNER_LOWER)
 
 
 @pytest.mark.asyncio
@@ -391,14 +425,14 @@ async def test_rejects_host_without_snp(monkeypatch):
     monkeypatch.setattr("aleph.vm.agent.snp_instance_launch.check_amd_sev_snp_supported", lambda: False)
     content = snp_instance_content()
     with pytest.raises(VmSetupError, match="SEV-SNP"):
-        await build_snp_instance_spec(VM_HASH, content)
+        await build_snp_instance_spec(VM_HASH, content, OWNER_LOWER)
 
 
 @pytest.mark.asyncio
 async def test_warns_and_ignores_authorized_keys(caplog, staged_instance_bundle):
     content = snp_instance_content(authorized_keys=["ssh-ed25519 AAAAB3NzaC1lZDI1NTE5AAAAIAbc owner@example.com"])
     with caplog.at_level("WARNING"):
-        spec, _ = await build_snp_instance_spec(VM_HASH, content)
+        spec, _ = await build_snp_instance_spec(VM_HASH, content, OWNER_LOWER)
 
     assert spec.ssh_authorized_keys == []
     assert any("authorized_keys" in record.message for record in caplog.records)
@@ -410,7 +444,7 @@ async def test_warns_and_ignores_variables(caplog, staged_instance_bundle):
     are unmeasured host inputs too, so they are ignored with a warning."""
     content = snp_instance_content(variables={"SECRET": "value"})
     with caplog.at_level("WARNING"):
-        await build_snp_instance_spec(VM_HASH, content)
+        await build_snp_instance_spec(VM_HASH, content, OWNER_LOWER)
 
     assert any("variables" in record.message for record in caplog.records)
 
