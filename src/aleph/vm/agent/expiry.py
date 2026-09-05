@@ -2,8 +2,8 @@ import asyncio
 import logging
 from collections.abc import Callable
 
+from aleph.vm.agent.vm.retire import RetireReason, retire_vm
 from aleph.vm.supervisor_interface.abc import Supervisor
-from aleph.vm.supervisor_interface.errors import VmNotFoundError
 from aleph.vm.supervisor_interface.types import VmId
 
 logger = logging.getLogger(__name__)
@@ -49,10 +49,9 @@ class ExpiryManager:
         try:
             await asyncio.sleep(timeout)
             logger.info("Idle timeout reached for %s, reaping", vm_id)
-            await self.supervisor.delete_vm(vm_id)
-            reaped = True
-        except VmNotFoundError:
-            logger.debug("Expiry: VM %s already gone", vm_id)
+            # An idle on-demand program is recreated on the next request:
+            # RECREATE keeps its host-port forwards and disks.
+            await retire_vm(str(vm_id), RetireReason.RECREATE, supervisor=self.supervisor)
             reaped = True
         except asyncio.CancelledError:
             raise

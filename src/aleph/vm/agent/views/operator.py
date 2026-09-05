@@ -28,7 +28,9 @@ from aleph.vm.agent.views.authentication import (
 )
 from aleph.vm.agent.vm.backup import BackupManager
 from aleph.vm.agent.vm.downloader import recreate_vm_volumes
-from aleph.vm.agent.vm.purge import purge_vm_staging, purge_vm_storage, purge_vm_volumes
+from aleph.vm.agent.vm.purge import purge_vm_staging, purge_vm_volumes
+from aleph.vm.agent.vm.reclaimable import retained_marker
+from aleph.vm.agent.vm.retire import RetireReason, retire_vm
 from aleph.vm.agent.vm_registry import AgentVmRecord
 from aleph.vm.backup.archive import InsufficientDiskSpaceError
 from aleph.vm.backup.staging import download_volume_by_ref, get_backup_directory
@@ -223,6 +225,18 @@ async def check_owner_permissions(authenticated_sender: str, message: BaseExecut
     return False
 
 
+def is_owner_address(authenticated_sender: str, address: str) -> bool:
+    """The owner half of ``is_sender_authorized``: does the address the
+    signature resolved to (``require_jwk_authentication`` did the
+    cryptography) match the VM's owner address?
+
+    Split out so the erase endpoint can apply the same rule to the owner
+    address carried by a ``.reclaimable`` marker, where there is no message
+    left to check (and therefore no delegation aggregate to consult either).
+    """
+    return bool(address) and authenticated_sender.lower() == address.lower()
+
+
 async def is_sender_authorized(authenticated_sender: str, message: BaseExecutableContent) -> bool:
     """
     Check if the authenticated sender is authorized to access the message resources.
@@ -239,7 +253,7 @@ async def is_sender_authorized(authenticated_sender: str, message: BaseExecutabl
         True if authorized, False otherwise
     """
     # Check if sender is the owner
-    if authenticated_sender.lower() == message.address.lower():
+    if is_owner_address(authenticated_sender, message.address):
         return True
 
     # Check if sender has delegation permissions
@@ -250,10 +264,14 @@ async def is_sender_authorized(authenticated_sender: str, message: BaseExecutabl
     return False
 
 
-async def _logs_auth_message(request: web.Request, vm_hash: ItemHash):
-    """Message for owner-auth on the logs endpoints: registry first, then the
-    agent DB. Past executions keep their DB record: nothing deletes it today
-    (a follow-up adds explicit deletion on permanent dealloc)."""
+async def _owner_auth_message(request: web.Request, vm_hash: ItemHash):
+    """The message owner-auth is checked against: the agent registry first,
+    then the agent DB.
+
+    Used by the logs endpoints, whose past executions keep their DB record,
+    and by the erase endpoint, which must still answer for a VM the registry
+    has already dropped. Returns None when the node holds no message for the
+    hash, which is not the same as "no data on disk" (see operate_erase)."""
     record = request.app["vm_registry"].get(vm_hash)
     if record is not None:
         return record.message
@@ -275,7 +293,7 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
     """
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        message = await _logs_auth_message(request, vm_hash)
+        message = await _owner_auth_message(request, vm_hash)
         if message is None:
             raise web.HTTPNotFound(body=f"No execution found for VM {vm_hash}")
 
@@ -343,7 +361,7 @@ async def operate_logs_json(request: web.Request, authenticated_sender: str) -> 
     """Logs of a VM (not streaming) as json"""
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        message = await _logs_auth_message(request, vm_hash)
+        message = await _owner_auth_message(request, vm_hash)
         if message is None:
             raise aiohttp.web_exceptions.HTTPNotFound(body="No execution found for this VM")
         if not await is_sender_authorized(authenticated_sender, message):
@@ -504,7 +522,10 @@ async def operate_stop(request: web.Request, authenticated_sender: str) -> web.R
                 if record.persistent:
                     await supervisor.stop_vm(vm_id)
                 else:
-                    await supervisor.delete_vm(vm_id)
+                    # Ephemeral VMs have no stop state: the stop cycle is a
+                    # delete + recreate, so RECREATE keeps its port forwards
+                    # and disks for the VM that comes back.
+                    await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
                 request.app["expiry"].cancel(vm_id)
                 request.app["update_watcher"].cancel(vm_id)
                 return web.Response(status=200, body=f"Stopped VM with ref {vm_hash}")
@@ -534,7 +555,9 @@ async def operate_reboot(request: web.Request, authenticated_sender: str) -> web
                 if record.persistent:
                     await supervisor.reboot_vm(vm_id)
                 else:
-                    await supervisor.delete_vm(vm_id)
+                    # Ephemeral reboot is also a delete + recreate cycle:
+                    # RECREATE keeps its port forwards and disks.
+                    await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
                     request.app["expiry"].cancel(vm_id)
                     request.app["update_watcher"].cancel(vm_id)
                     await create_vm_execution_or_raise_http_error(
@@ -648,28 +671,46 @@ async def operate_confidential_inject_secret(request: web.Request, authenticated
 async def operate_erase(request: web.Request, authenticated_sender: str) -> web.Response:
     """Delete all data stored by a virtual machine.
     Stop the virtual machine first if needed.
+
+    An erase is answered as long as the node still holds something for the
+    hash: a registry record, or a retained (``.reclaimable``) directory the
+    owner is entitled to wipe. The supervisor is not asked whether it knows
+    the VM: it forgets a VM on restart or after a delete, while the disks
+    stay, and a 404 there would leave the owner's data on the node with no
+    way to remove it (retire_vm swallows the supervisor's VmNotFoundError).
     """
     vm_hash = get_itemhash_or_400(request.match_info)
     with set_vm_for_logging(vm_hash=vm_hash):
-        record = get_agent_record_or_404(request, vm_hash)
-        if not await is_sender_authorized(authenticated_sender, record.message):
-            return web.Response(status=403, body="Unauthorized sender")
+        record = request.app["vm_registry"].get(vm_hash)
+        marker = None if record is not None else await asyncio.to_thread(retained_marker, str(vm_hash))
+        if record is None and marker is None:
+            raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}")
+        message = record.message if record is not None else await _owner_auth_message(request, vm_hash)
+        if message is not None:
+            if not await is_sender_authorized(authenticated_sender, message):
+                return web.Response(status=403, body="Unauthorized sender")
+        elif marker is not None and marker.owner:
+            # Retained disks and no message anywhere: GONE forgot the registry
+            # record and deleted the DB rows, which is the normal state of a
+            # retained VM. The marker's owner address is what is left, and the
+            # signature has already been resolved to an address by
+            # require_jwk_authentication, so the same owner rule applies.
+            if not is_owner_address(authenticated_sender, marker.owner):
+                return web.Response(status=403, body="Unauthorized sender")
+        else:
+            # A marker with no owner (written before the field existed, or an
+            # orphan directory for a VM whose message this node never held):
+            # nothing can prove ownership, so nothing is wiped on request. The
+            # operator reclaims those through the agent's own storage CLI.
+            raise web.HTTPForbidden(body=f"No owner recorded for {vm_hash}: its retained data cannot be erased here")
 
         logger.info(f"Erasing {vm_hash}")
         supervisor: Supervisor = request.app["supervisor"]
-        try:
-            await supervisor.delete_vm(VmId(str(vm_hash)))
-            request.app["expiry"].cancel(VmId(str(vm_hash)))
-            request.app["update_watcher"].cancel(VmId(str(vm_hash)))
-        except VmNotFoundError:
-            raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
-        request.app["vm_registry"].forget(vm_hash)
-        await metrics.delete_records_for_vm(str(vm_hash))
-        # DeleteVm has released the supervisor's handles on the disks; the
-        # bytes are the agent's to delete, since the agent allocated them.
-        # This erases the rootfs too: an owner asking to erase their VM's data
-        # means all of it, and the rootfs is where most of it lives.
-        await asyncio.to_thread(purge_vm_storage, vm_hash)
+        vm_id = VmId(str(vm_hash))
+        request.app["expiry"].cancel(vm_id)
+        request.app["update_watcher"].cancel(vm_id)
+        # The owner asked for a wipe: ERASE purges regardless of VOLUME_RETENTION.
+        await retire_vm(vm_hash, RetireReason.ERASE, supervisor=supervisor, registry=request.app["vm_registry"])
         request.app["backups"].forget(str(vm_hash))
         return web.Response(status=200, body=f"Erased VM with ref {vm_hash}")
 
@@ -749,9 +790,11 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
                 # Ephemeral and confidential VMs are rebuilt from scratch: a
                 # confidential rootfs is measured and staged, so its bundle
                 # must be re-staged and its owner must re-attest anyway. This
-                # is a delete+recreate cycle, so the persisted host ports are
-                # kept for the recreated VM to reload.
-                await supervisor.delete_vm(vm_id, keep_port_mappings=True)
+                # is a delete+recreate cycle: RECREATE keeps the persisted
+                # host ports for the recreated VM to reload. The volume and
+                # staging purge below is a deliberate partial purge on top,
+                # with the registry record kept for the rebuild.
+                await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
                 await asyncio.to_thread(purge_vm_volumes, vm_hash, include_data_volumes=include_data_volumes)
                 purge_vm_staging(vm_hash)
                 # The registry record is deliberately left in place: the create

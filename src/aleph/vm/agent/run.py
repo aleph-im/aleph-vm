@@ -30,18 +30,16 @@ from aleph.vm.agent.capacity import (
     requirements_from_message,
 )
 from aleph.vm.agent.expiry import ExpiryManager
-from aleph.vm.agent.snp_instance_launch import (
-    build_snp_instance_spec,
-    is_snp_instance,
-    remove_snp_instance_staging,
-)
+from aleph.vm.agent.snp_instance_launch import build_snp_instance_spec, is_snp_instance
 from aleph.vm.agent.translate import build_create_vm_spec, build_program_create_vm_spec
 from aleph.vm.agent.update_watcher import UpdateWatcher
 from aleph.vm.agent.vm.program_client import ProgramGuestClient
+from aleph.vm.agent.vm.purge import vm_has_volumes
+from aleph.vm.agent.vm.reconciler import creating
+from aleph.vm.agent.vm.retire import RetireReason, retire_vm
 from aleph.vm.agent.vm_registry import AgentVmRegistry, persist_record
 from aleph.vm.agent.vprogram_launch import (
     build_vprogram_spec,
-    remove_vprogram_staging,
     resolve_vprogram_attestation_port,
 )
 from aleph.vm.conf import settings
@@ -411,6 +409,47 @@ def _admit(capacity: CapacityManager, content: ExecutableContent, vm_hash: ItemH
     )
 
 
+async def _retire_after_create_failure(
+    vm_hash: ItemHash,
+    *,
+    supervisor: Supervisor,
+    registry: AgentVmRegistry,
+    had_volumes: bool,
+    what: str,
+) -> None:
+    """Retire a VM whose create attempt failed.
+
+    The reason depends on whether its volumes already existed before this
+    attempt started (``had_volumes``, snapshotted before any allocation, e.g.
+    before build_*_spec runs). A create that allocated fresh disks retires
+    FAILED_CREATE: nothing worth keeping, purge everything. A create that
+    failed against volumes that already existed is the re-create path for a
+    host-persistent VM (downloader._make_writable_volume returns early when
+    the destination already exists), and must not wipe them: it retires
+    RECREATE instead, which keeps the record and the disks. Dropping the
+    record while keeping the disks would make the reconciler treat the
+    directory as an orphan and purge it after VOLUME_CREATE_GUARD, which is
+    why this is RECREATE and not a records-only teardown.
+
+    The kept record is a known phantom: it describes a VM that is not
+    running, and it counts in CapacityManager's committed memory and vCPU
+    sums (see ``_committed_resources``) until the next allocation cycle
+    replaces or retires it. It never blocks the retry of its own create,
+    which admits through ``_admit`` with ``exclude_vm_hash`` set, but it does
+    hold capacity against other VMs in the meantime. Straightening that out
+    means a record lifecycle that separates "allocated" from "running",
+    which is not this work.
+
+    Never lets a teardown error mask the original failure: logs and
+    swallows.
+    """
+    reason = RetireReason.RECREATE if had_volumes else RetireReason.FAILED_CREATE
+    try:
+        await retire_vm(vm_hash, reason, supervisor=supervisor, registry=registry)
+    except Exception:
+        logger.exception("Teardown of half-started %s %s failed", what, vm_hash)
+
+
 async def create_vm_execution(
     vm_hash: ItemHash,
     *,
@@ -442,29 +481,37 @@ async def create_vm_execution(
         # on the first request through _ensure_program_vm. On-demand programs
         # are created and configured per request there too, so this branch only
         # does eager work for the persistent (scheduled) case.
-        _admit(capacity, content, vm_hash, is_instance=False)
-        spec, _resources = await build_program_create_vm_spec(vm_hash, content)
-        capacity.check_capacity(
-            memory_mib=content.resources.memory,
-            vcpus=content.resources.vcpus,
-            disk_mib=0,
-            is_instance=False,
-            exclude_vm_hash=vm_hash,
-        )
-        info = await supervisor.create_vm(spec)
-        record = registry.record(
-            vm_hash, message=content, original=original_message.content, persistent=bool(content.on.persistent)
-        )
-        try:
-            await _wait_until_running(supervisor, info.vm_id)
-        except Exception:
-            registry.forget(vm_hash)
+        # Everything from admission to the registry commit runs under the
+        # create guard: it adopts any retained volumes for this hash and keeps
+        # the storage reconciler off a VM that is still being built.
+        with creating(str(vm_hash)):
+            _admit(capacity, content, vm_hash, is_instance=False)
+            # Snapshot before any allocation: a persistent program's volumes may
+            # already exist (host persistence), and a failed create must not
+            # wipe them (see _retire_after_create_failure).
+            had_volumes = await asyncio.to_thread(vm_has_volumes, vm_hash)
+            spec, _resources = await build_program_create_vm_spec(vm_hash, content)
+            capacity.check_capacity(
+                memory_mib=content.resources.memory,
+                vcpus=content.resources.vcpus,
+                disk_mib=0,
+                is_instance=False,
+                exclude_vm_hash=vm_hash,
+            )
+            info = await supervisor.create_vm(spec)
+            record = registry.record(
+                vm_hash, message=content, original=original_message.content, persistent=bool(content.on.persistent)
+            )
             try:
-                await supervisor.delete_vm(info.vm_id)
+                await _wait_until_running(supervisor, info.vm_id)
             except Exception:
-                logger.exception("Teardown of half-started program VM %s failed", vm_hash)
-            raise
-        await persist_record(vm_hash, record)
+                # Readiness failed: retire the half-started VM, but never let a
+                # teardown error mask the original failure.
+                await _retire_after_create_failure(
+                    vm_hash, supervisor=supervisor, registry=registry, had_volumes=had_volumes, what="program VM"
+                )
+                raise
+            await persist_record(vm_hash, record)
         return None
 
     if _is_spec_eligible(content):
@@ -480,96 +527,100 @@ async def create_vm_execution(
         # state before initializing it; the supervisor machinery never reads this
         # record. Spec-eligible VMs are QEMU instances, always persistent.
         record = registry.record(vm_hash, message=content, original=original_message.content, persistent=True)
-        snp_instance = is_snp_instance(content)
-        attest_port: int | None = None
-        try:
-            _admit(capacity, content, vm_hash, is_instance=True)
-            if snp_instance:
-                # SEV-SNP confidential instances build through the dedicated
-                # LUKS-rootfs SNP launch path, not build_create_vm_spec (which
-                # would build a SEV spec with no firmware, since these
-                # messages carry no trusted_execution.firmware). GPU
-                # passthrough is not supported yet on this path: reject
-                # before any staging I/O runs.
-                if requested_gpu_ids(content):
-                    msg = "GPU passthrough is not supported on SEV-SNP instances yet"
-                    raise VmSetupError(msg)
-                spec, attest_port = await build_snp_instance_spec(vm_hash, content)
-            else:
-                spec = await build_create_vm_spec(vm_hash, content)
-            # Agent-side admission, after the download so a failed download
-            # never consumes a GPU hold: bucket from the message type, then
-            # resolve the requested device_ids to concrete host cards (owner =
-            # message.address, consuming this owner's own holds). This VM's
-            # own registry record (the early owner record above) is excluded
-            # from the committed sums.
-            capacity.check_capacity(
-                memory_mib=content.resources.memory,
-                vcpus=content.resources.vcpus,
-                disk_mib=0,
-                is_instance=True,
-                exclude_vm_hash=vm_hash,
-            )
-            if not snp_instance:
-                # GPU resolution only applies to the legacy spec path: SNP
-                # instances are rejected above before reaching here.
-                requested_gpus = requested_gpu_ids(content)
-                if requested_gpus:
-                    resolved_gpus = await capacity.resolve_gpus(requested_gpus, owner=content.address)
-                    spec = replace(spec, gpus=resolved_gpus)
-            info = await supervisor.create_vm(spec)
-        except Exception:
-            # build or create failed: drop the early record so a failed create
-            # never leaves a dangling owner-identity entry behind (a record with no
-            # VM the supervisor knows about). Nothing is persisted yet, so
-            # forgetting the in-memory entry is sufficient.
-            registry.forget(vm_hash)
-            if snp_instance:
-                # build_snp_instance_spec may have already extracted the
-                # runtime bundle (e.g. capacity admission fails after
-                # staging): do not leak it.
-                remove_snp_instance_staging(vm_hash)
-            raise
-        if info.awaiting_confidential_init:
-            # A confidential VM is created but not started: only the owner can
-            # start it, by uploading the session certificates via
-            # /confidential/initialize. Waiting for RUNNING would block forever,
-            # and there are no port forwards to apply on a VM that is not up.
-            # This mirrors the message path, which never waits on a confidential
-            # VM either. SNP instances never set this: the daemon boots them
-            # immediately, so this branch is SEV-only.
-            await persist_record(vm_hash, record)
-            return None
-        try:
-            await finish_instance_create(supervisor, info.vm_id, content)
-            if attest_port is not None:
-                # The guest attestation service (aleph.ra-tls) the runtime
-                # manifest pinned: forward it alongside SSH and the user's
-                # own aggregate so the owner can attest post-boot.
-                await supervisor.add_port_forward(
-                    PortForwardSpec(
-                        vm_id=info.vm_id,
-                        host_port=HostPort(0),
-                        vm_port=GuestPort(attest_port),
-                        protocol=Protocol.TCP,
-                    )
-                )
-                await _wait_until_attest_endpoint_listens(supervisor, info.vm_id, attest_port)
-        except Exception:
-            # Readiness or port-forward setup failed: tear the half-started VM
-            # down, but never let a teardown error mask the original failure.
-            registry.forget(vm_hash)
+        # Everything from admission to the registry commit runs under the
+        # create guard: it adopts any retained volumes for this hash and keeps
+        # the storage reconciler off a VM that is still being built.
+        with creating(str(vm_hash)):
+            snp_instance = is_snp_instance(content)
+            attest_port: int | None = None
+            # Snapshot before any allocation: a persistent instance's volumes may
+            # already exist (host persistence, e.g. a crash-recovery re-create),
+            # and a failed create must not wipe them (see
+            # _retire_after_create_failure). Reused by both except blocks below:
+            # they cover the same create attempt.
+            had_volumes = await asyncio.to_thread(vm_has_volumes, vm_hash)
             try:
-                await supervisor.delete_vm(info.vm_id)
+                _admit(capacity, content, vm_hash, is_instance=True)
+                if snp_instance:
+                    # SEV-SNP confidential instances build through the dedicated
+                    # LUKS-rootfs SNP launch path, not build_create_vm_spec (which
+                    # would build a SEV spec with no firmware, since these
+                    # messages carry no trusted_execution.firmware). GPU
+                    # passthrough is not supported yet on this path: reject
+                    # before any staging I/O runs.
+                    if requested_gpu_ids(content):
+                        msg = "GPU passthrough is not supported on SEV-SNP instances yet"
+                        raise VmSetupError(msg)
+                    spec, attest_port = await build_snp_instance_spec(vm_hash, content)
+                else:
+                    spec = await build_create_vm_spec(vm_hash, content)
+                # Agent-side admission, after the download so a failed download
+                # never consumes a GPU hold: bucket from the message type, then
+                # resolve the requested device_ids to concrete host cards (owner =
+                # message.address, consuming this owner's own holds). This VM's
+                # own registry record (the early owner record above) is excluded
+                # from the committed sums.
+                capacity.check_capacity(
+                    memory_mib=content.resources.memory,
+                    vcpus=content.resources.vcpus,
+                    disk_mib=0,
+                    is_instance=True,
+                    exclude_vm_hash=vm_hash,
+                )
+                if not snp_instance:
+                    # GPU resolution only applies to the legacy spec path: SNP
+                    # instances are rejected above before reaching here.
+                    requested_gpus = requested_gpu_ids(content)
+                    if requested_gpus:
+                        resolved_gpus = await capacity.resolve_gpus(requested_gpus, owner=content.address)
+                        spec = replace(spec, gpus=resolved_gpus)
+                info = await supervisor.create_vm(spec)
             except Exception:
-                logger.exception("Teardown of half-started VM %s failed", vm_hash)
-            if snp_instance:
-                remove_snp_instance_staging(vm_hash)
-            raise
-        # Agent persists its own knowledge; the hypervisor object is not
-        # touched. Registry rehydration and past-logs owner-auth read the
-        # message back from the agent DB.
-        await persist_record(vm_hash, record)
+                # build or create failed: retire the early record so a failed
+                # create never leaves a dangling owner-identity entry behind (a
+                # record with no VM the supervisor knows about), and drop any
+                # runtime bundle build_snp_instance_spec may have already
+                # extracted before the failure.
+                await _retire_after_create_failure(
+                    vm_hash, supervisor=supervisor, registry=registry, had_volumes=had_volumes, what="instance"
+                )
+                raise
+            if info.awaiting_confidential_init:
+                # A confidential VM is created but not started: only the owner can
+                # start it, by uploading the session certificates via
+                # /confidential/initialize. Waiting for RUNNING would block forever,
+                # and there are no port forwards to apply on a VM that is not up.
+                # This mirrors the message path, which never waits on a confidential
+                # VM either. SNP instances never set this: the daemon boots them
+                # immediately, so this branch is SEV-only.
+                await persist_record(vm_hash, record)
+                return None
+            try:
+                await finish_instance_create(supervisor, info.vm_id, content)
+                if attest_port is not None:
+                    # The guest attestation service (aleph.ra-tls) the runtime
+                    # manifest pinned: forward it alongside SSH and the user's
+                    # own aggregate so the owner can attest post-boot.
+                    await supervisor.add_port_forward(
+                        PortForwardSpec(
+                            vm_id=info.vm_id,
+                            host_port=HostPort(0),
+                            vm_port=GuestPort(attest_port),
+                            protocol=Protocol.TCP,
+                        )
+                    )
+                    await _wait_until_attest_endpoint_listens(supervisor, info.vm_id, attest_port)
+            except Exception:
+                # Readiness or port-forward setup failed: retire the half-started
+                # VM, but never let a teardown error mask the original failure.
+                await _retire_after_create_failure(
+                    vm_hash, supervisor=supervisor, registry=registry, had_volumes=had_volumes, what="VM"
+                )
+                raise
+            # Agent persists its own knowledge; the hypervisor object is not
+            # touched. Registry rehydration and past-logs owner-auth read the
+            # message back from the agent DB.
+            await persist_record(vm_hash, record)
         return None
 
     if isinstance(content, VerifiableProgramContent):
@@ -582,49 +633,59 @@ async def create_vm_execution(
         # boots an SNP VM immediately (awaiting_confidential_init is never
         # set), so the plain readiness wait applies.
         record = registry.record(vm_hash, message=content, original=original_message.content, persistent=True)
-        try:
-            _admit(capacity, content, vm_hash, is_instance=True)
-            spec, attest_port = await build_vprogram_spec(vm_hash, content)
-            # Agent-side admission after the download, like the instance path:
-            # a failed bundle fetch never consumes capacity.
-            capacity.check_capacity(
-                memory_mib=content.resources.memory,
-                vcpus=content.resources.vcpus,
-                disk_mib=0,
-                is_instance=True,
-                exclude_vm_hash=vm_hash,
-            )
-            info = await supervisor.create_vm(spec)
-        except Exception:
-            registry.forget(vm_hash)
-            # build_vprogram_spec may have already extracted the bundle (e.g.
-            # capacity admission fails after staging): do not leak it.
-            remove_vprogram_staging(vm_hash)
-            raise
-        try:
-            await _wait_until_running(supervisor, info.vm_id)
-            # Host-only DNAT so an external client (the aleph CLI) can reach
-            # the guest's RA-TLS attestation endpoint; measurement-neutral
-            # (no guest image/cmdline change) and idempotent via the same
-            # reconcile machinery the instance path uses.
-            #
-            # A reconcile failure lands in the teardown branch below on
-            # purpose, mirroring the instance path: a V-PROGRAM whose
-            # attestation endpoint cannot be mapped is unreachable for its
-            # sole consumer, so failing the create loudly (and letting the
-            # scheduler retry) beats keeping an unusable VM alive.
-            await reconcile_vprogram_port_forwards(supervisor, info.vm_id, attest_port)
-            if attest_port is not None:
-                await _wait_until_attest_endpoint_listens(supervisor, info.vm_id, attest_port)
-        except Exception:
-            registry.forget(vm_hash)
+        # Everything from admission to the registry commit runs under the
+        # create guard: it adopts any retained volumes for this hash and keeps
+        # the storage reconciler off a VM that is still being built.
+        with creating(str(vm_hash)):
+            # Snapshot before any allocation, same reasoning as the instance path
+            # above; reused by both except blocks below, which cover the same
+            # create attempt.
+            had_volumes = await asyncio.to_thread(vm_has_volumes, vm_hash)
             try:
-                await supervisor.delete_vm(info.vm_id)
+                _admit(capacity, content, vm_hash, is_instance=True)
+                spec, attest_port = await build_vprogram_spec(vm_hash, content)
+                # Agent-side admission after the download, like the instance path:
+                # a failed bundle fetch never consumes capacity.
+                capacity.check_capacity(
+                    memory_mib=content.resources.memory,
+                    vcpus=content.resources.vcpus,
+                    disk_mib=0,
+                    is_instance=True,
+                    exclude_vm_hash=vm_hash,
+                )
+                info = await supervisor.create_vm(spec)
             except Exception:
-                logger.exception("Teardown of half-started V-PROGRAM %s failed", vm_hash)
-            remove_vprogram_staging(vm_hash)
-            raise
-        await persist_record(vm_hash, record)
+                # build or create failed: retire the early record, and drop any
+                # bundle build_vprogram_spec may have already extracted before
+                # the failure (e.g. capacity admission fails after staging).
+                await _retire_after_create_failure(
+                    vm_hash, supervisor=supervisor, registry=registry, had_volumes=had_volumes, what="V-PROGRAM"
+                )
+                raise
+            try:
+                await _wait_until_running(supervisor, info.vm_id)
+                # Host-only DNAT so an external client (the aleph CLI) can reach
+                # the guest's RA-TLS attestation endpoint; measurement-neutral
+                # (no guest image/cmdline change) and idempotent via the same
+                # reconcile machinery the instance path uses.
+                #
+                # A reconcile failure lands in the teardown branch below on
+                # purpose, mirroring the instance path: a V-PROGRAM whose
+                # attestation endpoint cannot be mapped is unreachable for its
+                # sole consumer, so failing the create loudly (and letting the
+                # scheduler retry) beats keeping an unusable VM alive.
+                await reconcile_vprogram_port_forwards(supervisor, info.vm_id, attest_port)
+                if attest_port is not None:
+                    await _wait_until_attest_endpoint_listens(supervisor, info.vm_id, attest_port)
+            except Exception:
+                # Readiness or port-forward setup failed: retire the half-started
+                # V-PROGRAM, but never let a teardown error mask the original
+                # failure.
+                await _retire_after_create_failure(
+                    vm_hash, supervisor=supervisor, registry=registry, had_volumes=had_volumes, what="V-PROGRAM"
+                )
+                raise
+            await persist_record(vm_hash, record)
         return None
 
     # Every supported content type is handled above: programs through the spec
@@ -644,10 +705,9 @@ async def create_vm_execution_or_raise_http_error(
     capacity: CapacityManager,
     persistent: bool = False,
 ) -> None:
-    # The spec path tears down and forgets a half-started VM inside
-    # create_vm_execution (registry.forget + supervisor.delete_vm), so this
-    # wrapper only translates failures to HTTP responses. The agent holds no
-    # pool to clean up.
+    # The spec path retires a half-started VM as FAILED_CREATE inside
+    # create_vm_execution, so this wrapper only translates failures to HTTP
+    # responses. The agent holds no pool to clean up.
     try:
         return await create_vm_execution(
             vm_hash=vm_hash, supervisor=supervisor, registry=registry, capacity=capacity, persistent=persistent
@@ -771,37 +831,40 @@ async def _ensure_program_vm(
                 return info
             logger.info("Program VM %s is %s/unconfigured; recreating", vm_hash, info.status.value)
             await program_client.forget(vm_id)
-            try:
-                await supervisor.delete_vm(vm_id)
-            except VmNotFoundError:
-                pass
+            await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
             await _wait_until_gone(supervisor, vm_id)
 
         try:
-            spec, resources = await build_program_create_vm_spec(vm_hash, content)
-            capacity.check_capacity(
-                memory_mib=content.resources.memory,
-                vcpus=content.resources.vcpus,
-                disk_mib=0,
-                is_instance=False,
-                exclude_vm_hash=vm_hash,
-            )
-            await supervisor.create_vm(spec)
-            record = registry.record(
-                vm_hash, message=content, original=original, persistent=bool(content.on.persistent)
-            )
-            try:
-                info = await _wait_until_running(supervisor, vm_id)
-                await program_client.setup_program(info, content, resources)
-            except Exception:
-                registry.forget(vm_hash)
-                await program_client.forget(vm_id)
+            # Everything from the snapshot to the registry commit runs under
+            # the create guard: it adopts any retained volumes for this hash
+            # and keeps the storage reconciler off a VM still being built.
+            with creating(str(vm_hash)):
+                # Snapshot before any allocation: a persistent program's volumes
+                # may already exist (host persistence, or the recreate just
+                # above), and a failed create must not wipe them.
+                had_volumes = await asyncio.to_thread(vm_has_volumes, vm_hash)
+                spec, resources = await build_program_create_vm_spec(vm_hash, content)
+                capacity.check_capacity(
+                    memory_mib=content.resources.memory,
+                    vcpus=content.resources.vcpus,
+                    disk_mib=0,
+                    is_instance=False,
+                    exclude_vm_hash=vm_hash,
+                )
+                await supervisor.create_vm(spec)
+                record = registry.record(
+                    vm_hash, message=content, original=original, persistent=bool(content.on.persistent)
+                )
                 try:
-                    await supervisor.delete_vm(vm_id)
+                    info = await _wait_until_running(supervisor, vm_id)
+                    await program_client.setup_program(info, content, resources)
                 except Exception:
-                    logger.exception("Teardown of half-started program VM %s failed", vm_hash)
-                raise
-            await persist_record(vm_hash, record)
+                    await program_client.forget(vm_id)
+                    await _retire_after_create_failure(
+                        vm_hash, supervisor=supervisor, registry=registry, had_volumes=had_volumes, what="program VM"
+                    )
+                    raise
+                await persist_record(vm_hash, record)
             return info
         except web.HTTPException:
             raise
@@ -908,7 +971,9 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, request: web.Request
             # on-demand VM down (it is recreated on a future request); a
             # persistent VM is left for the scheduler to restart.
             if not persistent:
-                await supervisor.delete_vm(vm_id)
+                # An on-demand VM comes back on the next request: RECREATE
+                # keeps its host-port forwards and disks.
+                await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
                 await program_client.forget(vm_id)
 
             return web.Response(
@@ -933,7 +998,10 @@ async def run_code_on_request(vm_hash: ItemHash, path: str, request: web.Request
                 expiry.schedule(vm_id, settings.REUSE_TIMEOUT)
         elif not persistent:
             update_watcher.cancel(vm_id)
-            await supervisor.delete_vm(vm_id)
+            # REUSE_TIMEOUT == 0: tear down after every request, but the same
+            # VM comes back on the next one, so RECREATE keeps its forwards
+            # and disks.
+            await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
             await program_client.forget(vm_id)
 
 
@@ -1012,7 +1080,10 @@ async def run_code_on_event(
                 expiry.schedule(vm_id, settings.REUSE_TIMEOUT)
         elif not persistent:
             update_watcher.cancel(vm_id)
-            await supervisor.delete_vm(vm_id)
+            # REUSE_TIMEOUT == 0: tear down after every event, but the same
+            # VM comes back on the next one, so RECREATE keeps its forwards
+            # and disks.
+            await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
             await program_client.forget(vm_id)
 
 
@@ -1056,10 +1127,10 @@ async def start_persistent_vm(
             await _wait_until_running(supervisor, vm_id)
         else:  # FAILED
             logger.info(f"{vm_hash} in terminal state {info.status}, recreating")
-            # Crash recovery is a delete+recreate cycle, not a dealloc: keep
-            # the persisted host-port forwards (the owner's SSH forward among
-            # them) so the recreated VM reloads the same host ports.
-            await supervisor.delete_vm(vm_id, keep_port_mappings=True)
+            # Crash recovery is a delete+recreate cycle, not a dealloc:
+            # RECREATE keeps the persisted host-port forwards (the owner's
+            # SSH forward among them) and the disks.
+            await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
             info = None
         if info is not None and not info.awaiting_confidential_init:
             # Every branch that kept `info` ends with a RUNNING VM this agent

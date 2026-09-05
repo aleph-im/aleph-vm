@@ -355,13 +355,54 @@ shared by every program on that runtime), and a spec-only view misses the
 namespace directory itself, volumes on other pools and the staging
 directories. `DeleteVm` therefore takes no erase flag at all.
 
-Deletion lives in `src/aleph/vm/agent/vm/purge.py`, keyed by `vm_hash` and
-scoped to directories the agent created, so a shared cache entry is not
-merely spared by a check but unreachable: `purge_vm_volumes` deletes the
-files under `{pool}/{vm_hash}/` on every pool (the reinstall path);
-`purge_vm_storage` removes those directories, the confidential session
-directory and the SNP/V-PROGRAM staging directory (`operate_erase`, the
-owner's "delete all my data", which erases the rootfs too). A `.btrfs`
+Every agent path that ends a VM goes through one function,
+`retire_vm(vm_hash, reason, ...)` (`src/aleph/vm/agent/vm/retire.py`): it
+quiesces the VM through `DeleteVm`, then applies the reason to everything
+the agent holds for it (registry record, DB records, volumes, session and
+staging directories, backups). Nothing else under `src/aleph/vm/agent/`
+calls `supervisor.delete_vm`, and the reason has no default, since a call
+site that does not say what it means is how disks leaked in the first place.
+
+| Reason | Volumes | Registry, ports | Session, staging, backups |
+|--------|---------|-----------------|---------------------------|
+| `RECREATE` | untouched | kept | untouched |
+| `GONE` | `reap`: purged; `keep`: marked reclaimable | dropped | removed |
+| `ERASE` | purged, whatever the policy | dropped | removed |
+| `FAILED_CREATE` | purged, whatever the policy | dropped | removed |
+
+`RECREATE` is the same VM coming straight back (message amend, crash
+recovery, idle program reap, reboot) and stops after the quiesce. `GONE`
+requires positive knowledge that it will not come back: a forgotten or
+removed message, a stopped payment, a scheduler deallocation, a completed
+migration hand-off; an API error or timeout is not an answer and retires
+nothing. `ERASE` is the owner's own "delete all my data" and ignores the
+retention policy, as does `FAILED_CREATE`, a create that never committed. A
+create that fails on a VM whose volumes already existed retires `RECREATE`
+instead, so a transient failure never wipes a host-persistent owner's disks.
+See "Reclamation" in `docs/architecture/storage.md` for the retention
+policy, the `.reclaimable` marker and the reconciler that enforces the
+budget. The reconciler never removes a directory whose hash is live in the
+agent registry or listed by the supervisor; under `/mnt` it removes empty
+mount-point directories only; and its startup pass refuses to purge
+anything at all when the supervisor cannot be listed, or when the registry
+rehydrated empty while the supervisor still runs VMs.
+
+`ERASE` is answered whenever the node still holds something for the hash:
+a registry record, or a retained directory left by a `GONE` under `keep`.
+The supervisor's own knowledge of the VM is not a precondition (it forgets
+a VM on restart, while the disks stay), so `operate_erase` 404s only when
+neither the registry nor a marker knows the hash. Ownership is always
+proven: against the message when the registry or the agent DB still holds
+one, and otherwise against the `owner` address in the marker, which is why
+`GONE` writes it there. A marker with no owner is refused (403), never
+wiped on request.
+
+The deletion primitives live in `src/aleph/vm/agent/vm/purge.py`, keyed by
+`vm_hash` and scoped to directories the agent created, so a shared cache
+entry is not merely spared by a check but unreachable: `purge_vm_volumes`
+deletes the files under `{pool}/{vm_hash}/` on every pool (the reinstall
+path); `purge_vm_storage` removes those directories, the confidential
+session directory and the SNP/V-PROGRAM staging directory. A `.btrfs`
 volume whose device-mapper target is still present is refused with an
 error rather than unlinked (the loop device would pin the inode and
 `create_devmapper` would skip the rebuild), until dm teardown on stop

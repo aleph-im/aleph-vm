@@ -24,11 +24,25 @@ from aleph_message.models.execution.environment import HypervisorType
 from test_supervisor_translate import _make_qemu_instance_message
 
 from aleph.vm.agent import run as run_module
+from aleph.vm.agent.vm.reconciler import is_creating
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.utils import get_message_executable_content
 
 _HASH = ItemHash("deadbeef" * 8)
+
+
+@pytest.fixture(autouse=True)
+def _stub_retire_db_write(monkeypatch):
+    """A refused admission now retires the never-created VM as
+    FAILED_CREATE, which writes a DB record deletion; stub it out, since
+    these tests only care about admission ordering, not retire_vm's DB
+    write, which needs an app-level session this unit test does not set up.
+    """
+    from aleph.vm.agent.vm import retire as retire_module
+
+    monkeypatch.setattr(retire_module, "delete_records_for_vm", AsyncMock())
+
 
 # _make_qemu_instance_message declares a single 10000 MiB rootfs and no extra
 # volumes, so both the total and the largest single volume are 10000.
@@ -178,3 +192,73 @@ class TestBothChecksOnTheHappyPath:
         await _create(capacity, supervisor)
 
         assert _disk_args(capacity) == [(INSTANCE_ROOTFS_MIB, INSTANCE_ROOTFS_MIB), (0, 0)]
+
+
+class TestCreateGuard:
+    """Every create path runs inside ``creating()``.
+
+    The reconciler decides what is an orphan from the filesystem, so a create
+    that stages files outside the guard can have them removed from under it
+    once it outlives VOLUME_CREATE_GUARD. Admission is the first thing that
+    can block for long, so the guard is taken before it: a concurrent create
+    under pressure must not evict the retained directory this one is about to
+    adopt.
+    """
+
+    @staticmethod
+    def _capacity_watching_the_guard(seen: list[bool]):
+        """An admission stub that records whether the guard is held when it
+        runs, then refuses (which ends the create right there)."""
+        error = InsufficientResourcesError("no room", required={}, available={})
+
+        def check(**kwargs):
+            seen.append(is_creating(str(_HASH)))
+            raise error
+
+        return SimpleNamespace(check_capacity=MagicMock(side_effect=check), resolve_gpus=AsyncMock(return_value=[]))
+
+    @pytest.mark.asyncio
+    async def test_the_instance_path_holds_the_guard(self, monkeypatch):
+        _patch_message(monkeypatch, _make_qemu_instance_message(hypervisor=HypervisorType.qemu))
+        monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock())
+        seen: list[bool] = []
+
+        with pytest.raises(InsufficientResourcesError):
+            await _create(self._capacity_watching_the_guard(seen))
+
+        assert seen == [True]
+        assert not is_creating(str(_HASH))
+
+    @pytest.mark.asyncio
+    async def test_the_program_path_holds_the_guard(self, monkeypatch):
+        _patch_message(monkeypatch, _program_content())
+        monkeypatch.setattr(run_module, "build_program_create_vm_spec", AsyncMock())
+        seen: list[bool] = []
+
+        with pytest.raises(InsufficientResourcesError):
+            await _create(self._capacity_watching_the_guard(seen))
+
+        assert seen == [True]
+        assert not is_creating(str(_HASH))
+
+    @pytest.mark.asyncio
+    async def test_the_guard_is_released_on_the_happy_path(self, monkeypatch):
+        from test_supervisor_run_routing import _info, _spec
+
+        _patch_message(monkeypatch, _make_qemu_instance_message(hypervisor=HypervisorType.qemu))
+        monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock(return_value=_spec()))
+        monkeypatch.setattr(run_module, "get_user_settings", AsyncMock(return_value={}))
+        monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
+        monkeypatch.setattr(run_module, "persist_record", AsyncMock())
+        held: list[bool] = []
+        supervisor = SimpleNamespace(
+            create_vm=AsyncMock(side_effect=lambda spec: held.append(is_creating(str(_HASH))) or _info()),
+            get_vm=AsyncMock(return_value=_info()),
+            add_port_forward=AsyncMock(),
+            delete_vm=AsyncMock(),
+        )
+
+        await _create(_capacity(), supervisor)
+
+        assert held == [True]
+        assert not is_creating(str(_HASH))

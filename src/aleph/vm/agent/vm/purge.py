@@ -86,6 +86,17 @@ def iter_volume_files(
             yield entry
 
 
+def vm_has_volumes(vm_hash: ItemHash | str) -> bool:
+    """True when the VM already owns at least one volume file on disk.
+
+    Used by the create paths to tell a re-create (the VM's volumes already
+    exist, e.g. host-persistent storage that a failed create must not wipe)
+    apart from a fresh create (nothing allocated yet, safe to purge on
+    failure).
+    """
+    return any(iter_volume_files(vm_hash))
+
+
 def _held_by_device_mapper(namespace: str, volume: Path) -> bool:
     """True when ``volume`` is the backing file of a live dm target."""
     if volume.suffix != ".btrfs":
@@ -184,6 +195,16 @@ def purge_vm_storage(vm_hash: ItemHash | str) -> int:
         except OSError:
             logger.warning("Failed to remove volume directory %s", volumes_dir, exc_info=True)
 
+    purge_vm_side_dirs(namespace)
+
+    return deleted
+
+
+def purge_vm_side_dirs(vm_hash: ItemHash | str) -> None:
+    """Delete the per-VM directories that are not volumes: the confidential
+    session directory and the staging directories. Rebuilt by the next
+    create, so a retained (reclaimable) VM keeps only its volumes."""
+    namespace = _checked_namespace(vm_hash)
     if settings.CONFIDENTIAL_SESSION_DIRECTORY:
         session_dir = Path(settings.CONFIDENTIAL_SESSION_DIRECTORY) / namespace
         if session_dir.exists():
@@ -192,7 +213,4 @@ def purge_vm_storage(vm_hash: ItemHash | str) -> int:
                 logger.info("Removed the confidential session directory of %s", namespace)
             except OSError:
                 logger.warning("Failed to remove the session directory of %s", namespace, exc_info=True)
-
     purge_vm_staging(namespace)
-
-    return deleted

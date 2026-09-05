@@ -115,6 +115,21 @@ happily admit, say, a 900 GiB volume onto two half-full 500 GiB disks and
 then fail at creation time. Either check failing raises
 `InsufficientResourcesError`.
 
+Admission counts retained (reclaimable) bytes as free:
+`_available_disk_bytes` adds `reclaimable_bytes()` to the pooled free sum,
+and `select_pool`, before refusing a placement, calls the room maker the
+agent registered at startup (`storage_pools.set_room_maker`, wired to
+`reconciler.make_room`) so the retained directories on the target pool are
+evicted oldest-first until the create fits. See "Reclamation" below: a
+retained disk is a cache entry, not usage, so counting it as used would sell
+less capacity than the node actually has. The rule holds for all three disk
+figures the agent produces, and they have to agree: the aggregate
+(`_available_disk_bytes`), the largest-single-volume check (`_check_max_volume`,
+which adds each pool's own `reclaimable_bytes(pool.path)` to that pool's free
+space) and the advertised capacity (`about_system_usage` /
+`_disk_usage_from_pools`). A node that advertises less than admission accepts
+is a node the scheduler stops sending work to.
+
 The Rust supervisor daemon does none of this pool selection or admission
 work. It parses `VOLUME_POOLS` (`config.rs`) with the same validation rules
 purely so a configuration the agent would refuse to boot on also fails
@@ -251,6 +266,158 @@ download) files, since that combination is unambiguous evidence of an
 aborted import; a namespace with only complete `.qcow2` files but no known
 VM is left alone and only logged, since a retried import can still adopt it.
 
+## Reclamation
+
+Every agent path that ends a VM goes through one function,
+`retire_vm(vm_hash, reason, ...)` (`src/aleph/vm/agent/vm/retire.py`), and
+the reason decides what happens to the disks. There is no default: a call
+site has to say what it means, which is exactly what was missing when disks
+leaked.
+
+| Reason | Volumes | Registry, ports | Session, staging, backups |
+|--------|---------|-----------------|---------------------------|
+| `RECREATE` | untouched | kept | untouched |
+| `GONE` | `reap`: purged; `keep`: marked reclaimable | dropped | removed |
+| `ERASE` | purged, whatever the policy | dropped | removed |
+| `FAILED_CREATE` | purged, whatever the policy | dropped | removed |
+
+`RECREATE` is the same VM coming straight back (message amend, crash
+recovery, idle program reap, reboot). `GONE` needs positive knowledge that
+it will not: a forgotten or removed message, a stopped payment, a scheduler
+deallocation, a completed migration hand-off. An API error or a timeout is
+not an answer and retires nothing. `ERASE` ignores `keep` on purpose:
+retention protects against administrative deletion, not against the owner's
+own request, and a `FAILED_CREATE` never ran, so it has nothing worth
+keeping. A create that fails on a VM whose volumes already existed retires
+`RECREATE` instead, since the create paths are also the re-create paths for
+a host-persistent VM.
+
+### The `.reclaimable` marker
+
+A namespace directory with no marker belongs to a live VM. Under
+`VOLUME_RETENTION=keep`, `GONE` drops the registry record and writes
+`{pool}/{vm_hash}/.reclaimable` in its place
+(`src/aleph/vm/agent/vm/reclaimable.py`):
+
+```json
+{
+  "version": 1,
+  "reclaimable_since": "<iso timestamp>",
+  "reason": "gone | orphan",
+  "size_bytes": 12345,
+  "depends_on": ["<parent image ref>", "..."],
+  "owner": "<owner address>"
+}
+```
+
+One marker per pool the VM spans, so each pool's budget is computed from its
+own tree. `depends_on` names the cache entries (parent images) the volumes
+still need, so the cache pass cannot evict a parent from under a retained
+overlay. `owner` is the address from the VM's message, copied in at `GONE`
+because the marker outlives every other record of it (the registry record is
+forgotten and the DB rows are deleted), and it is what lets the node
+authorize the owner's own erase of retained data; it is optional, so markers
+written before the field and orphan markers for a VM whose message the node
+never held simply have none. Under `reap` no marker is ever written: the
+purge is immediate.
+A create for the same hash adopts the directory (the marker is unlinked and
+the volumes are reused through the existing sticky placement in
+`volume_path_for`), which is what `reconciler.creating()` does on entry.
+
+### The reconciler
+
+`reconcile_storage()` (`src/aleph/vm/agent/vm/reconciler.py`) treats the
+filesystem as the truth and asks two sources who the owners are: the agent
+registry, and the VMs the supervisor lists. The union is the live set. The
+registry alone is not enough, because it is refilled at boot from the agent
+DB and that rehydration skips any record with an empty or unparseable
+message. One pass does, in order:
+
+1. Walk `{pool}/*/`. Each directory is live (the registry or the supervisor
+   knows its hash), reclaimable (a marker is present) or an orphan
+   (neither). Orphans are purged under `reap` and marked `reason: orphan`
+   under `keep`. Liveness is asked again immediately before anything is
+   marked, purged or evicted, so a create that commits while the pass walks
+   is not mistaken for an orphan.
+2. Delete `*.part` files older than the guard, in the four download caches
+   and in the pools (the downloader streams volumes in place).
+3. Sweep the side directories keyed by VM hash: the confidential session
+   directory, the SNP and V-PROGRAM staging directories, and
+   `/mnt/{namespace}_{volume}` mount points. A directory that is still a
+   mount point is logged and left alone, and under `/mnt` only empty
+   mount-point directories are removed (with `rmdir`, never `rmtree`): `/mnt`
+   is the operator's directory, and an unmounted agent mount point is empty
+   by construction.
+4. Enforce the retention budget per pool: sum the markers' `size_bytes` and
+   evict oldest-first (by `reclaimable_since`) until under
+   `VOLUME_RETENTION_BUDGET`. Under `reap` everything marked is given back,
+   which is how a node switched from `keep` to `reap` drains.
+5. Sweep expired backups.
+
+Nothing a create is still building is touched. Two independent guards say
+so: a hash registered in the in-process "creating" set (every create path in
+`run.py` and `_ensure_program_vm` runs inside `reconciler.creating()`), and
+an mtime younger than `VOLUME_CREATE_GUARD`. Both matter, since a create
+that outlives the guard is only protected by the first, and a create that
+somehow escaped the context manager is still protected by the second.
+Everything a pass touches is under a directory the agent created and is
+keyed by a hash validated by `purge._checked_namespace`.
+
+The startup pass is stricter than the rest: it refuses to purge anything
+(it runs dry and logs why) when the supervisor did not answer `list_vms`,
+or when rehydration left the registry empty while the supervisor still runs
+at least one VM. Both states mean the live set cannot be trusted, and the
+first pass on a node is the one acting on the biggest backlog.
+
+Passes run at startup, every `VOLUME_RECONCILE_INTERVAL` (jittered, so a
+fleet of nodes does not sweep in lockstep), after every `GONE` under `keep`
+(`retire.set_after_gone_hook`, best effort: a failing pass never breaks the
+sweep that retired the VM), and on admission pressure (`make_room`, through
+`storage_pools.set_room_maker`). A pass runs in a worker thread, so the
+live-VM set is snapshotted on the event loop first (`live_hashes`) and handed
+over; `make_room` never evicts a hash in it, even if a stale marker says it
+could. Loop-triggered passes serialize on a lock (`reconcile_now`); they are
+serialized, not coalesced, so a sweep that retires N VMs `GONE` queues N
+passes. And
+placement runs `make_room` through `asyncio.to_thread`, so it can still
+overlap a pass: every removal therefore tolerates a directory that another
+pass took first, and counts only what it actually removed.
+
+The create guard covers more than the create paths in `run.py`: a migration
+import stages multi-GB disks into `{pool}/{vm_hash}/` for a namespace the
+registry knows nothing about yet, so `run_import` holds `creating()` across
+the whole transfer and records the imported VM in the registry (and the agent
+DB) once `CreateVm` returns. A namespace under the guard is skipped whole,
+`.part` files included: the directory mtime does not advance while a file
+inside it grows, so age is no evidence that a transfer has stopped.
+
+### Settings
+
+| Setting | Default | What it does |
+|---------|---------|--------------|
+| `VOLUME_RETENTION` | `reap` | `reap` purges a `GONE` VM's volumes at once; `keep` retains them |
+| `VOLUME_RETENTION_BUDGET` | `10%` | Cap on reclaimable bytes per pool (percentage or absolute, e.g. `50G`) |
+| `VOLUME_RECONCILE_INTERVAL` | `3600` | Seconds between periodic passes |
+| `VOLUME_CREATE_GUARD` | `600` | Seconds a young directory or `.part` file is assumed to be an in-flight create |
+| `CACHE_BUDGET` | `20%` | Cap on each download cache (runtime, code, data, message) |
+
+`keep` is not a promise of "forever": reclaimable disks are unpaid storage,
+and an attacker does not need to stop paying to create them (create, forget,
+repeat). It means "kept as long as the budget and live demand allow, oldest
+goes first", which is the only promise a node can honestly sell.
+
+### First start on an existing node
+
+The first pass on an upgraded node finds every directory leaked by the bugs
+this machinery fixes, as an orphan. Under `reap` that is a one-shot cleanup
+of potentially a lot of data, so the startup hook runs a dry pass first and
+logs what it is about to remove, once as a total and once per pool
+(count and bytes), before the real pass runs. An operator reading the log
+can then explain why free space jumped. Under `keep` those directories
+become reclaimable with `reason: orphan` and fall under the budget instead.
+The startup hook is registered after registry rehydration on purpose: a
+pass against an empty registry would call every running VM an orphan.
+
 ## Key invariants
 
 - `PERSISTENT_VOLUMES_DIR` is always pool index 0 and is always VM-eligible
@@ -271,6 +438,18 @@ VM is left alone and only logged, since a retried import can still adopt it.
 - Disk admission checks aggregate free space and, separately, that the
   single largest requested volume fits the roomiest eligible pool, since no
   pool splits a volume across disks (`src/aleph/vm/agent/capacity.py`).
+- Reclaimable bytes are advertised as free, not as used, in every disk figure
+  the agent reports (aggregate, largest single volume, advertised capacity),
+  and a placement that does not fit evicts them (oldest first) before it is
+  refused (`src/aleph/vm/agent/capacity.py`,
+  `src/aleph/vm/agent/resources.py`, `src/aleph/vm/storage_pools.py`).
+- Every agent-side deletion goes through `retire_vm` with an explicit
+  reason; nothing else under `src/aleph/vm/agent/` calls
+  `supervisor.delete_vm` (`src/aleph/vm/agent/vm/retire.py`).
+- The reconciler never removes a directory whose hash is live in the agent
+  registry or listed by the supervisor, is in the in-process creating set,
+  or whose mtime is inside `VOLUME_CREATE_GUARD`
+  (`src/aleph/vm/agent/vm/reconciler.py`).
 - The Rust supervisor daemon never selects, adopts, or writes to a pool; it
   only re-validates `VOLUME_POOLS` and sums free bytes for host-info
   reporting. All placement is agent-side
@@ -303,6 +482,13 @@ VM is left alone and only logged, since a retried import can still adopt it.
   (`_make_writable_volume`) and the `pool0_only` wiring for Firecracker.
 - `src/aleph/vm/agent/capacity.py`: `CapacityManager.check_capacity` and the
   disk-admission checks.
+- `src/aleph/vm/agent/vm/retire.py`: `retire_vm` and `RetireReason`, the one
+  way a VM's storage is released.
+- `src/aleph/vm/agent/vm/reclaimable.py`: the `.reclaimable` marker
+  (`mark_reclaimable`, `adopt`, `iter_reclaimable`, `reclaimable_bytes`).
+- `src/aleph/vm/agent/vm/reconciler.py`: `reconcile_storage`, the create
+  guard (`creating`), the evictor (`make_room`) and the startup/periodic
+  hooks the agent registers in `src/aleph/vm/agent/supervisor.py`.
 - `src/aleph/vm/agent/resources.py`: `about_system_usage`'s pooled disk
   figures.
 - `rust/crates/supervisor-daemon/src/config.rs`: `VOLUME_POOLS`/`MediaClass`

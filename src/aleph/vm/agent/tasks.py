@@ -27,16 +27,14 @@ from aleph_message.status import MessageStatus
 from yarl import URL
 
 from aleph.vm.agent.haproxy_sync import sync_domain_mappings
-from aleph.vm.agent.metrics import delete_records_for_vm
 from aleph.vm.agent.run import reconcile_port_forwards
-from aleph.vm.agent.snp_instance_launch import remove_snp_instance_staging
 from aleph.vm.agent.utils import (
     format_cost,
     get_community_wallet_address,
     is_after_community_wallet_start,
 )
+from aleph.vm.agent.vm.retire import RetireReason, retire_vm
 from aleph.vm.agent.vm_registry import AgentVmRegistry
-from aleph.vm.agent.vprogram_launch import remove_vprogram_staging
 from aleph.vm.conf import settings
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
@@ -363,6 +361,9 @@ async def check_payment(supervisor: Supervisor, registry: AgentVmRegistry):
     funds in the wallet or inadequate payment stream coverage. Handles forgotten VMs
     balance checks for the "hold" tier, and stream flow validation for the "superfluid" tier
     stopping executions as needed to maintain compliance.
+
+    Stopping a VM here means retiring it as GONE: the record is dropped and the
+    disks follow VOLUME_RETENTION.
     """
     # Take a single snapshot of all running VMs from the supervisor.
     infos = await supervisor.list_vms()
@@ -401,11 +402,7 @@ async def check_payment(supervisor: Supervisor, registry: AgentVmRegistry):
                 message_status,
             )
             del _terminal_strike_count[key]
-            await supervisor.delete_vm(VmId(str(vm_hash)))
-            registry.forget(vm_hash)
-            await delete_records_for_vm(str(vm_hash))
-            remove_vprogram_staging(vm_hash)
-            remove_snp_instance_staging(vm_hash)
+            await retire_vm(vm_hash, RetireReason.GONE, supervisor=supervisor, registry=registry)
         else:
             # Status is healthy — reset any previous strikes
             _terminal_strike_count.pop(str(vm_hash), None)
@@ -425,10 +422,7 @@ async def check_payment(supervisor: Supervisor, registry: AgentVmRegistry):
             while vm_infos and balance < (required_balance + settings.PAYMENT_BUFFER):
                 last_info = vm_infos.pop(-1)
                 logger.debug(f"Stopping {last_info.vm_id} due to insufficient balance")
-                try:
-                    await supervisor.delete_vm(last_info.vm_id)
-                except VmNotFoundError:
-                    pass
+                await retire_vm(ItemHash(last_info.vm_id), RetireReason.GONE, supervisor=supervisor, registry=registry)
                 required_balance = await compute_required_balance([ItemHash(i.vm_id) for i in vm_infos])
 
     community_wallet = await get_community_wallet_address()
@@ -452,10 +446,7 @@ async def check_payment(supervisor: Supervisor, registry: AgentVmRegistry):
             while vm_infos and balance < (required_credits + settings.PAYMENT_BUFFER):
                 last_info = vm_infos.pop(-1)
                 logger.debug(f"Stopping {last_info.vm_id} due to insufficient credit balance")
-                try:
-                    await supervisor.delete_vm(last_info.vm_id)
-                except VmNotFoundError:
-                    pass
+                await retire_vm(ItemHash(last_info.vm_id), RetireReason.GONE, supervisor=supervisor, registry=registry)
                 required_credits = await compute_required_credit_balance([ItemHash(i.vm_id) for i in vm_infos])
 
     # Check if the balance held in the wallet is sufficient stream tier resources
@@ -513,10 +504,7 @@ async def check_payment(supervisor: Supervisor, registry: AgentVmRegistry):
                 # Stop executions until the required stream is reached
                 last_info = vm_infos.pop(-1)
                 logger.info(f"Stopping {last_info.vm_id} of {execution_address} due to insufficient stream")
-                try:
-                    await supervisor.delete_vm(last_info.vm_id)
-                except VmNotFoundError:
-                    pass
+                await retire_vm(ItemHash(last_info.vm_id), RetireReason.GONE, supervisor=supervisor, registry=registry)
 
 
 async def start_payment_monitoring_task(app: web.Application):

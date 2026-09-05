@@ -19,7 +19,9 @@ import msgpack
 import pytest
 from aleph_message.models import ItemHash, ProgramContent
 
+from aleph.vm.agent import run as run_module
 from aleph.vm.agent.run import run_code_on_event, run_code_on_request
+from aleph.vm.agent.vm.retire import RetireReason
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
 from aleph.vm.supervisor_interface.types import (
@@ -230,3 +232,55 @@ async def test_event_never_schedules_expiry_for_persistent_vm(reuse_settings):
     assert result == "ok"
     supervisor.run_program_code.assert_awaited_once()
     assert expiry.scheduled == []
+
+
+@pytest.mark.asyncio
+async def test_request_teardown_retires_as_recreate_when_reuse_timeout_zero(monkeypatch):
+    """REUSE_TIMEOUT == 0 tears an on-demand VM down after every request, but
+    the same VM comes back on the next one: retire_vm(RECREATE) keeps its
+    host-port forwards and disks, not a plain supervisor.delete_vm."""
+    monkeypatch.setattr(settings, "REUSE_TIMEOUT", 0)
+    monkeypatch.setattr(settings, "WATCH_FOR_UPDATES", False)
+
+    content, expiry, supervisor, program_client, app = _on_demand_fakes()
+    app["update_watcher"] = MagicMock()
+    retire = AsyncMock()
+    monkeypatch.setattr(run_module, "retire_vm", retire)
+
+    response = await run_code_on_request(VM_HASH, "/", FakeRequest(app=app))
+
+    assert response.status == 200
+    retire.assert_awaited_once_with(VM_HASH, RetireReason.RECREATE, supervisor=supervisor)
+    supervisor.delete_vm.assert_not_awaited()
+    assert program_client.forgotten == [str(VM_HASH)]
+
+
+@pytest.mark.asyncio
+async def test_event_teardown_retires_as_recreate_when_reuse_timeout_zero(monkeypatch):
+    """Same as the request path, for the event path."""
+    monkeypatch.setattr(settings, "REUSE_TIMEOUT", 0)
+    monkeypatch.setattr(settings, "WATCH_FOR_UPDATES", False)
+
+    content = _program_content(persistent=False)
+    program_client = FakeProgramClient({"body": "ok"})
+    supervisor = SimpleNamespace(get_vm=AsyncMock(return_value=_running_info()), delete_vm=AsyncMock())
+    update_watcher = MagicMock()
+    retire = AsyncMock()
+    monkeypatch.setattr(run_module, "retire_vm", retire)
+
+    result = await run_code_on_event(
+        VM_HASH,
+        None,
+        None,
+        supervisor=supervisor,
+        expiry=SpyExpiry(),
+        update_watcher=update_watcher,
+        registry=_registry_with(content),
+        capacity=_fake_capacity(),
+        program_client=program_client,
+    )
+
+    assert result == "ok"
+    retire.assert_awaited_once_with(VM_HASH, RetireReason.RECREATE, supervisor=supervisor)
+    supervisor.delete_vm.assert_not_awaited()
+    assert program_client.forgotten == [str(VM_HASH)]
