@@ -310,8 +310,11 @@ def _select_from(candidates: list[StoragePool], size_mib: int) -> StoragePool:
     Ties break on the lowest pool index (candidates are scanned in index
     order, so the first max wins). Unreachable pools are skipped: a dead disk
     stops receiving placements without failing the agent. When nothing fits,
-    the registered room maker (if any) gets one chance to evict reclaimable
-    volumes off the best target before the placement is refused.
+    the registered room maker (if any) is offered every eligible candidate,
+    most free bytes first, before the placement is refused: admission counts
+    every pool's reclaimable bytes as free, so the volume may only fit on a
+    pool that is not the free-max one once its retained directories are
+    evicted.
     """
     required_bytes = size_mib * 1024 * 1024
     best: StoragePool | None = None
@@ -325,10 +328,17 @@ def _select_from(candidates: list[StoragePool], size_mib: int) -> StoragePool:
         if free > best_free:
             best, best_free = pool, free
     if (best is None or best_free < required_bytes) and _room_maker is not None:
-        # No pool reported free space at all: fall back to the first eligible
-        # candidate, which is still where this placement would land.
-        target = best or next((pool for pool in candidates if pool.vm_eligible), None)
-        if target is not None and _room_maker(target, required_bytes) > 0:
+        # Free-descending order asks the pool that needs the least eviction
+        # first; a pool that reports no free space at all (dead disk,
+        # unmounted) still gets a turn last, since it is where this placement
+        # would land if the evictor brings it back.
+        def known_free(pool: StoragePool) -> int:
+            free = _pool_free_bytes(pool)
+            return -1 if free is None else free
+
+        for target in sorted((pool for pool in candidates if pool.vm_eligible), key=known_free, reverse=True):
+            if _room_maker(target, required_bytes) <= 0:
+                continue
             free = _pool_free_bytes(target)
             if free is not None and free >= required_bytes:
                 return target

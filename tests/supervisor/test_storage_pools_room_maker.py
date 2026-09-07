@@ -88,8 +88,8 @@ class TestRoomMaker:
         with pytest.raises(InsufficientResourcesError):
             select_pool(size_mib=1)
 
-        # The roomiest eligible pool, asked for the placement's own size.
-        assert calls == [(0, 1024 * 1024)]
+        # Every eligible pool in free order, asked for the placement's own size.
+        assert calls == [(0, 1024 * 1024), (1, 1024 * 1024), (2, 1024 * 1024)]
 
     def test_placement_succeeds_when_the_room_maker_frees_enough(self, three_pools, monkeypatch, room_maker):
         # One reading per pool (nothing fits), then the post-eviction reading.
@@ -98,6 +98,27 @@ class TestRoomMaker:
         room_maker(lambda pool, needed: 4 * 1024 * 1024)
 
         assert select_pool(size_mib=1) == three_pools[0]
+
+    def test_placement_reaches_a_pool_that_only_fits_after_eviction(self, three_pools, monkeypatch, room_maker):
+        """Admission counts every pool's reclaimable bytes as free, so the
+        eviction fallback must reach every pool too: the volume here only
+        fits on pool 1 once its retained directories are evicted, and pool 0
+        (the free-max pool) has nothing to give back."""
+        evicted = []
+        frees = {0: 2 * 1024 * 1024, 1: 1024, 2: 512}
+        monkeypatch.setattr(storage_pools_module, "_pool_free_bytes", lambda pool: frees[pool.index])
+
+        def evictor(pool, needed):
+            evicted.append(pool.index)
+            if pool.index == 1:
+                frees[1] = 8 * 1024 * 1024
+                return 8 * 1024 * 1024
+            return 0
+
+        room_maker(evictor)
+
+        assert select_pool(size_mib=4) == three_pools[1]
+        assert evicted == [0, 1]
 
     def test_placement_still_fails_when_eviction_frees_too_little(self, three_pools, monkeypatch, room_maker):
         monkeypatch.setattr(storage_pools_module, "_pool_free_bytes", lambda pool: 1024)
@@ -121,7 +142,7 @@ class TestRoomMaker:
 
     def test_every_pool_unreachable_still_offers_the_room_maker_a_target(self, three_pools, monkeypatch, room_maker):
         """No pool reports free space (dead disks, unmounted): there is no
-        roomiest pool, so the evictor gets the first eligible one rather than
+        roomiest pool, so every eligible pool still gets a turn rather than
         nothing at all."""
         monkeypatch.setattr(storage_pools_module, "_pool_free_bytes", lambda pool: None)
         calls = []
@@ -135,4 +156,4 @@ class TestRoomMaker:
         with pytest.raises(InsufficientResourcesError):
             select_pool(size_mib=1)
 
-        assert calls == [0]
+        assert calls == [0, 1, 2]
