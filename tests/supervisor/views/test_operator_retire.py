@@ -350,6 +350,49 @@ async def test_operator_reboot_non_persistent(aiohttp_client, mocker):
 
 
 @pytest.mark.asyncio
+async def test_operator_reinstall_in_place_runs_under_the_create_guard(aiohttp_client, mocker):
+    """The in-place rebuild is a create path: the reconciler's part sweep
+    spares only namespaces inside creating(), so the rebuild's downloads must
+    run under the guard (the registry record the reinstall keeps does not
+    protect them)."""
+    from aleph.vm.agent.vm.reconciler import is_creating
+
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+
+    mocker.patch(
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
+        return_value=instance_message.sender,
+    )
+
+    app = setup_webapp(supervisor=_fake_supervisor())
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    fake_sup = _fake_supervisor(VmStatus.RUNNING)
+    app["supervisor"] = fake_sup
+    mocker.patch("aleph.vm.agent.views.operator.purge_vm_volumes", return_value=[])
+    guarded: list[bool] = []
+
+    async def observe(_content, namespace):
+        guarded.append(is_creating(namespace))
+
+    mocker.patch("aleph.vm.agent.views.operator.recreate_vm_volumes", new=AsyncMock(side_effect=observe))
+
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(f"/control/machine/{vm_hash}/reinstall")
+
+    assert response.status == 200
+    assert guarded == [True]
+    assert not is_creating(str(vm_hash))
+    fake_sup.stop_vm.assert_awaited_once()
+    fake_sup.start_vm.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_operator_reinstall_persistent_confidential_rebuilds_from_scratch(aiohttp_client, mocker):
     """A persistent confidential instance is not reinstalled in place: its
     rootfs is measured and staged, so it goes delete -> purge -> create,

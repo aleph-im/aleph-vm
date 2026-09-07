@@ -30,6 +30,7 @@ from aleph.vm.agent.vm.backup import BackupManager
 from aleph.vm.agent.vm.downloader import recreate_vm_volumes
 from aleph.vm.agent.vm.purge import purge_vm_staging, purge_vm_volumes
 from aleph.vm.agent.vm.reclaimable import retained_marker
+from aleph.vm.agent.vm.reconciler import creating
 from aleph.vm.agent.vm.retire import RetireReason, retire_vm
 from aleph.vm.agent.vm_registry import AgentVmRecord
 from aleph.vm.backup.archive import InsufficientDiskSpaceError
@@ -769,8 +770,12 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
                 deleted = await asyncio.to_thread(purge_vm_volumes, vm_hash, include_data_volumes=include_data_volumes)
                 try:
                     # Rebuild each volume on the pool it was deleted from: the
-                    # running VM's spec still names those paths.
-                    with pin_layout(str(vm_hash), deleted):
+                    # running VM's spec still names those paths. This rebuild
+                    # is a create path, so it runs under creating(): the part
+                    # sweep spares only namespaces inside the guard (the
+                    # registry record this reinstall keeps does not shield its
+                    # downloads), and the adopt() on entry is a no-op here.
+                    with creating(str(vm_hash)), pin_layout(str(vm_hash), deleted):
                         await recreate_vm_volumes(record.message, str(vm_hash))
                     await supervisor.start_vm(vm_id)
                 except VmNotFoundError:
