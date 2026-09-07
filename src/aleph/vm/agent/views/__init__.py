@@ -22,11 +22,12 @@ from pydantic import ValidationError
 from aleph.vm import haproxy
 from aleph.vm.agent import payment, status
 from aleph.vm.agent.aggregate import update_aggregate_settings
+from aleph.vm.agent.allocation.teardown import is_removable_by_allocation, teardown_vm
 from aleph.vm.agent.capacity import CapacityManager, requirements_from_message
 from aleph.vm.agent.custom_logs import set_vm_for_logging
 from aleph.vm.agent.haproxy_sync import sync_domain_mappings
 from aleph.vm.agent.messages import try_get_message
-from aleph.vm.agent.metrics import delete_records_for_vm, get_execution_records
+from aleph.vm.agent.metrics import get_execution_records
 from aleph.vm.agent.node_identity import NodeIdentity
 from aleph.vm.agent.payment import (
     InvalidAddressError,
@@ -42,7 +43,6 @@ from aleph.vm.agent.run import (
     run_code_on_request,
     start_persistent_vm,
 )
-from aleph.vm.agent.snp_instance_launch import remove_snp_instance_staging
 from aleph.vm.agent.tasks import COMMUNITY_STREAM_RATIO
 from aleph.vm.agent.utils import (
     format_cost,
@@ -63,7 +63,6 @@ from aleph.vm.agent.views.host_status import (
 )
 from aleph.vm.agent.views.operator import get_itemhash_or_400
 from aleph.vm.agent.vm_registry import AgentVmRecord, AgentVmRegistry
-from aleph.vm.agent.vprogram_launch import remove_vprogram_staging
 from aleph.vm.chains import STREAM_CHAINS
 from aleph.vm.conf import settings
 from aleph.vm.resources import InsufficientResourcesError
@@ -73,13 +72,7 @@ from aleph.vm.supervisor_interface.errors import (
     SupervisorError,
     VmNotFoundError,
 )
-from aleph.vm.supervisor_interface.types import (
-    ConfidentialMode,
-    PortForwardInfo,
-    VmId,
-    VmInfo,
-    VmStatus,
-)
+from aleph.vm.supervisor_interface.types import PortForwardInfo, VmId, VmInfo, VmStatus
 from aleph.vm.utils import (
     HostNotFoundError,
     b32_to_b16,
@@ -584,32 +577,13 @@ async def update_allocations(request: web.Request):
             record = registry.get(vm_hash)
             if (
                 record is not None
-                and record.persistent
                 and vm_hash not in allocations
                 and info.status is VmStatus.RUNNING
-                and (
-                    # The scheduler is the single source of truth for
-                    # v-programs: absence from the allocation stops them,
-                    # even though they are credit-paid and confidential.
-                    record.is_vprogram
-                    or (
-                        not record.uses_payment_stream
-                        and not record.uses_payment_credit
-                        and not info.gpus
-                        and info.confidential_mode is ConfidentialMode.NONE
-                    )
-                )
+                and is_removable_by_allocation(record, info)
             ):
                 vm_type = VmType.from_message_content(record.message).name
                 logger.info("Stopping %s %s", vm_type, vm_hash)
-                try:
-                    await supervisor.delete_vm(VmId(str(vm_hash)))
-                except VmNotFoundError:
-                    pass
-                registry.forget(vm_hash)
-                await delete_records_for_vm(str(vm_hash))
-                remove_vprogram_staging(vm_hash)
-                remove_snp_instance_staging(vm_hash)
+                await teardown_vm(vm_hash, supervisor=supervisor, registry=registry)
                 stopped_vms.append(vm_hash)
 
         # Second start persistent VMs and instances sequentially to limit resource usage.
