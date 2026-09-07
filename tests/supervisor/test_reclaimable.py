@@ -129,6 +129,22 @@ def test_adopt_clears_every_marker_of_the_namespace(pools):  # noqa: F811
     assert adopt(VM_HASH) == 0
 
 
+def test_an_orphan_marker_never_overwrites_an_existing_marker(pools):  # noqa: F811
+    """The periodic pass can decide "orphan" in the window where a GONE
+    retire is writing the real marker; the gone marker carries the owner and
+    the parent-image pins, so the orphan write must lose that race, not win
+    it."""
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    mark_reclaimable(VM_HASH, "gone", ("parent",), owner="0xOWNER")
+
+    written = mark_reclaimable(VM_HASH, "orphan")
+
+    marker = read_marker(pools["pool0"] / VM_HASH)
+    assert written == []
+    assert marker is not None
+    assert marker.reason == "gone" and marker.owner == "0xOWNER" and marker.depends_on == ("parent",)
+
+
 def test_iter_reclaimable_and_reclaimable_bytes(pools):  # noqa: F811
     volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=4096)
     volume(pools["pool1"], OTHER_HASH, "rootfs.qcow2", size=4096)

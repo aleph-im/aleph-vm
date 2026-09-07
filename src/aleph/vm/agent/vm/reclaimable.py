@@ -104,11 +104,28 @@ def read_marker(namespace_dir: Path) -> ReclaimableMarker | None:
         return None
 
 
-def write_marker(namespace_dir: Path, marker: ReclaimableMarker) -> None:
+def write_marker(namespace_dir: Path, marker: ReclaimableMarker, *, exclusive: bool = False) -> bool:
+    """Publish the marker atomically (a reader sees the whole file or none).
+
+    With ``exclusive`` the write claims the directory only if no marker
+    exists yet, and reports whether it did: os.link publishes the finished
+    temp file if and only if nothing sits at the path. The two modes use
+    distinct temp names so an exclusive writer can never hand its content to
+    a concurrent replacing writer.
+    """
     path = namespace_dir / MARKER_NAME
-    tmp = path.with_name(MARKER_NAME + ".tmp")
+    tmp = path.with_name(MARKER_NAME + (".x.tmp" if exclusive else ".tmp"))
     tmp.write_text(marker.to_json())
-    os.replace(tmp, path)
+    if not exclusive:
+        os.replace(tmp, path)
+        return True
+    try:
+        os.link(tmp, path)
+    except FileExistsError:
+        return False
+    finally:
+        tmp.unlink(missing_ok=True)
+    return True
 
 
 def clear_marker(namespace_dir: Path) -> bool:
@@ -151,7 +168,14 @@ def mark_reclaimable(
             depends_on=depends_on,
             owner=owner,
         )
-        write_marker(directory, marker)
+        # An orphan marker only ever claims an unmarked directory: the
+        # periodic pass can decide "orphan" in the window where a GONE
+        # retire is writing the real marker, and replacing that marker
+        # would drop the owner (erase authorization) and the parent-image
+        # pins it carries.
+        if not write_marker(directory, marker, exclusive=reason == "orphan"):
+            logger.info("Not marking %s: another marker landed first", directory)
+            continue
         written.append(directory / MARKER_NAME)
         logger.info("Marked %s reclaimable (%s, %d bytes)", directory, reason, marker.size_bytes)
     return written
