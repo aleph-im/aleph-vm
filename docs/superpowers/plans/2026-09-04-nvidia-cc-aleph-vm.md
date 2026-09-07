@@ -10,6 +10,15 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-04-nvidia-cc-design.md`
 
+> **Amendment (2026-09-07):** the message field became
+> `content.gpu: Optional[ConfidentialGpuRequirement]` (architecture family,
+> count up to 8, optional `models` narrowing, required `mode`) instead of
+> `content.gpus: Optional[List[ConfidentialGpu]]` capped at one. Tasks below
+> that read `content.gpus` or resolve by `device_id` were reworked after the
+> fact: the daemon exports each card's `arch`, the agent resolves by family
+> and count, and the launch path refuses a count above the CRN's cap. The
+> task text is kept as executed.
+
 ## Global Constraints
 
 - Every fail-closed gate stays fail-closed: a GPU on an SNP spec is accepted only when its card reports `cc_mode == on` (spec 7.2); a V-PROGRAM with `gpus` whose manifest has no `gpu` block is `VmSetupError` (spec 5.2); init powers off on any GPU verification failure (spec 6.4).
