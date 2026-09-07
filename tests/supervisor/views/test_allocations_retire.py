@@ -128,7 +128,7 @@ async def test_update_allocations_stop_loop_uses_supervisor(aiohttp_client, mock
     # Seed registry so the app knows the VM.
     app["vm_registry"].record(vm_hash, message=message, original=message, persistent=True)
 
-    retire = mocker.patch("aleph.vm.agent.views.retire_vm", new_callable=AsyncMock)
+    retire = mocker.patch("aleph.vm.agent.allocation.teardown.retire_vm", new_callable=AsyncMock)
     client = await aiohttp_client(app)
 
     # Empty allocation: vm_hash is not in persistent_vms or instances, so it must be stopped.
@@ -158,7 +158,7 @@ async def test_stop_loop_stops_eligible_vm(aiohttp_client, mocker, scheduler_aut
     )
     app = _make_app_with_supervisor(fake_supervisor)
     app["vm_registry"].record(VM_HASH, message=message, original=message, persistent=True)
-    retire = mocker.patch("aleph.vm.agent.views.retire_vm", new_callable=AsyncMock)
+    retire = mocker.patch("aleph.vm.agent.allocation.teardown.retire_vm", new_callable=AsyncMock)
 
     client = await aiohttp_client(app)
     body, headers = scheduler_auth({"persistent_vms": []})
