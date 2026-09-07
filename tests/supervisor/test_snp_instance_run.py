@@ -339,8 +339,8 @@ async def test_snp_instance_port_forward_failure_cleans_staging(monkeypatch):
 @requires_gpu_field
 @pytest.mark.asyncio
 async def test_vprogram_create_resolves_confidential_gpus(monkeypatch):
-    """A GPU-declaring V-PROGRAM resolves its device_id against the host's
-    CC-mode cards through capacity.resolve_confidential_gpus, after
+    """A GPU-declaring V-PROGRAM resolves its family requirement against the
+    host's CC-mode cards through capacity.resolve_confidential_gpus, after
     build_vprogram_spec and before create_vm: the resolved GpuSpec must reach
     the spec supervisor.create_vm actually gets (mirrors the plain-instance
     resolve_gpus wiring, but for the V-PROGRAM branch)."""
@@ -366,6 +366,8 @@ async def test_vprogram_create_resolves_confidential_gpus(monkeypatch):
         message.item_hash, supervisor=supervisor, registry=registry, capacity=capacity, persistent=True
     )
 
-    capacity.resolve_confidential_gpus.assert_awaited_once_with([content.gpus[0].device_id], owner=content.address)
+    capacity.resolve_confidential_gpus.assert_awaited_once_with(
+        arch=content.gpu.arch, count=content.gpu.count, models=content.gpu.models, owner=content.address
+    )
     sent_spec = supervisor.create_vm.await_args.args[0]
     assert sent_spec.gpus == [resolved_gpu]
