@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -24,7 +25,7 @@ from typing import Literal
 from aleph_message.models import ExecutableContent, InstanceContent
 
 from aleph.vm.agent.vm.purge import _checked_namespace
-from aleph.vm.storage_pools import iter_namespace_dirs
+from aleph.vm.storage_pools import get_pools, iter_namespace_dirs
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,7 @@ def read_marker(namespace_dir: Path) -> ReclaimableMarker | None:
         return None
     except (ValueError, KeyError, TypeError, AttributeError):
         logger.warning("Corrupt reclaimable marker at %s, removing it", path)
+        invalidate_reclaimable_cache()
         path.unlink(missing_ok=True)
         return None
 
@@ -130,6 +132,7 @@ def write_marker(namespace_dir: Path, marker: ReclaimableMarker, *, exclusive: b
     """
     path = namespace_dir / MARKER_NAME
     tmp = path.with_name(MARKER_NAME + (".x.tmp" if exclusive else ".tmp"))
+    invalidate_reclaimable_cache()
     try:
         tmp.write_text(marker.to_json())
         if not exclusive:
@@ -156,6 +159,7 @@ def clear_marker(namespace_dir: Path) -> bool:
     """Remove the marker; whether there was one. A marker another adopter or
     pass removed first is not an error, like every removal in the reclaimer."""
     path = namespace_dir / MARKER_NAME
+    invalidate_reclaimable_cache()
     try:
         path.unlink()
     except FileNotFoundError:
@@ -243,10 +247,44 @@ def iter_reclaimable() -> Iterator[tuple[Path, ReclaimableMarker]]:
             yield directory, marker
 
 
+# reclaimable_bytes runs on every admission check and every capacity report,
+# and adds the markers up by walking every namespace directory. The sum is
+# cached, keyed on the pools' own directory mtimes (a namespace directory
+# appearing or going changes them) and dropped whenever this process writes
+# or removes a marker, so the common case costs one stat per pool and an
+# in-process change is never stale. A marker written by another process (the
+# storage CLI) shows up within the TTL; until then the figure errs towards
+# counting space as reclaimable, which placement's own free-space check then
+# corrects.
+_RECLAIMABLE_CACHE_TTL = 5.0
+_reclaimable_cache: dict[Path | None, tuple[float, tuple, int]] = {}
+
+
+def invalidate_reclaimable_cache() -> None:
+    _reclaimable_cache.clear()
+
+
+def _pools_fingerprint() -> tuple:
+    stamps = []
+    for pool in get_pools():
+        try:
+            stamps.append((str(pool.path), pool.path.stat().st_mtime_ns))
+        except OSError:
+            stamps.append((str(pool.path), None))
+    return tuple(stamps)
+
+
 def reclaimable_bytes(pool_path: Path | None = None) -> int:
     """Sum of marker size_bytes, across every pool or for one pool."""
-    return sum(
+    now = time.monotonic()
+    fingerprint = _pools_fingerprint()
+    cached = _reclaimable_cache.get(pool_path)
+    if cached is not None and cached[1] == fingerprint and now - cached[0] < _RECLAIMABLE_CACHE_TTL:
+        return cached[2]
+    total = sum(
         marker.size_bytes
         for directory, marker in iter_reclaimable()
         if pool_path is None or directory.parent == pool_path
     )
+    _reclaimable_cache[pool_path] = (now, fingerprint, total)
+    return total

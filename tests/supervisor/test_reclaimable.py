@@ -220,6 +220,38 @@ def test_an_exclusive_write_that_the_filesystem_refuses_is_not_a_marker(pools, m
     assert "Could not write the reclaimable marker" in caplog.text
 
 
+def test_reclaimable_bytes_is_cached_between_marker_changes(pools, monkeypatch):  # noqa: F811
+    """Admission asks on every request; the walk must not happen every time,
+    and must not be stale after a marker is written, cleared, or its whole
+    directory removed."""
+    import shutil
+
+    import aleph.vm.agent.vm.reclaimable as reclaimable_module
+
+    walks = []
+    real_iter = reclaimable_module.iter_reclaimable
+
+    def counting_iter():
+        walks.append(1)
+        return real_iter()
+
+    monkeypatch.setattr(reclaimable_module, "iter_reclaimable", counting_iter)
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=8192)
+    volume(pools["pool0"], OTHER_HASH, "rootfs.qcow2", size=8192)
+    mark_reclaimable(VM_HASH, "gone")
+    mark_reclaimable(OTHER_HASH, "gone")
+
+    assert reclaimable_bytes() == 16384
+    assert reclaimable_bytes() == 16384
+    assert len(walks) == 1, "the second call must be served from the cache"
+
+    clear_marker(pools["pool0"] / VM_HASH)
+    assert reclaimable_bytes() == 8192, "an in-process marker change invalidates at once"
+
+    shutil.rmtree(pools["pool0"] / OTHER_HASH)
+    assert reclaimable_bytes() == 0, "a directory that went away changes the pool's mtime"
+
+
 def test_an_orphan_marker_never_overwrites_an_existing_marker(pools):  # noqa: F811
     """The periodic pass can decide "orphan" in the window where a GONE
     retire is writing the real marker; the gone marker carries the owner and
