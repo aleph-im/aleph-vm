@@ -73,6 +73,24 @@ def _make_info(vm_hash: str, *, started_at_ns: int = 0, confidential: bool = Fal
 
 
 @pytest.mark.asyncio
+async def test_check_payment_tolerates_a_non_hash_vm_id(mocker):
+    """One supervisor id that is not an item hash must not take the whole
+    payment sweep down: it is dropped at the snapshot (the reconciler's
+    supervisor_hashes rule) and the other VMs are still checked."""
+    mocker.patch("aleph.vm.agent.tasks.get_community_wallet_address", return_value="0x23C7")
+    status = mocker.patch("aleph.vm.agent.tasks.get_message_status", return_value=MessageStatus.PROCESSED)
+    retire = mocker.patch("aleph.vm.agent.tasks.retire_vm", new_callable=AsyncMock)
+
+    checked = "cafe" * 16  # not FAKE_INSTANCE_ID, which the sweep skips
+    supervisor = _make_supervisor([_make_info("not-an-item-hash"), _make_info(checked)])
+
+    await check_payment(supervisor=supervisor, registry=_make_registry())
+
+    status.assert_awaited_once_with(ItemHash(checked))
+    retire.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_enough_flow(mocker, fake_instance_content):
     """Execution with community flow
 

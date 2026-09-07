@@ -12,6 +12,7 @@ from typing import TypeVar
 import aiohttp
 import pydantic
 from aiohttp import web
+from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import (
     AggregateMessage,
     AlephMessage,
@@ -365,8 +366,18 @@ async def check_payment(supervisor: Supervisor, registry: AgentVmRegistry):
     Stopping a VM here means retiring it as GONE: the record is dropped and the
     disks follow VOLUME_RETENTION.
     """
-    # Take a single snapshot of all running VMs from the supervisor.
-    infos = await supervisor.list_vms()
+    # Take a single snapshot of all running VMs from the supervisor, dropping
+    # ids that are not item hashes the way the reconciler's supervisor_hashes
+    # does: one unparseable id must not take the whole payment sweep down,
+    # and it cannot name a payment-checked VM anyway.
+    infos = []
+    for info in await supervisor.list_vms():
+        try:
+            ItemHash(str(info.vm_id))
+        except (UnknownHashError, ValueError):
+            logger.warning("Skipping payment checks for %r: its id is not an item hash", info.vm_id)
+            continue
+        infos.append(info)
 
     # Check if the executions continues existing or are forgotten before checking the payment
     # this is actually the main workflow for properly stopping PAYG instances, a user agent would stop the payment stream
