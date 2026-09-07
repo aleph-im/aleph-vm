@@ -130,29 +130,36 @@ def write_marker(namespace_dir: Path, marker: ReclaimableMarker, *, exclusive: b
     """
     path = namespace_dir / MARKER_NAME
     tmp = path.with_name(MARKER_NAME + (".x.tmp" if exclusive else ".tmp"))
-    tmp.write_text(marker.to_json())
-    if not exclusive:
-        try:
-            os.replace(tmp, path)
-        finally:
-            # On success the replace consumed the temp file; on failure
-            # (ENOSPC, EACCES) nothing else would ever collect it.
-            tmp.unlink(missing_ok=True)
-        return True
     try:
-        os.link(tmp, path)
-    except FileExistsError:
-        return False
+        tmp.write_text(marker.to_json())
+        if not exclusive:
+            os.replace(tmp, path)
+            return True
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            return False
+        except OSError:
+            # No hardlinks on this filesystem, or no space: the directory
+            # simply stays unmarked and the next pass tries again. Raising
+            # here would abort the whole reconcile pass for one directory.
+            logger.warning("Could not write the reclaimable marker at %s", path, exc_info=True)
+            return False
+        return True
     finally:
+        # On success the replace consumed the temp file; on any failure
+        # (ENOSPC, EACCES, a failed write) nothing else would ever collect it.
         tmp.unlink(missing_ok=True)
-    return True
 
 
 def clear_marker(namespace_dir: Path) -> bool:
+    """Remove the marker; whether there was one. A marker another adopter or
+    pass removed first is not an error, like every removal in the reclaimer."""
     path = namespace_dir / MARKER_NAME
-    if not path.exists():
+    try:
+        path.unlink()
+    except FileNotFoundError:
         return False
-    path.unlink()
     return True
 
 

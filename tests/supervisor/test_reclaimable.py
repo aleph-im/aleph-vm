@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 from aleph_message.models import InstanceContent, ProgramContent
@@ -161,6 +162,62 @@ def test_a_corrupt_marker_is_removed_and_reads_as_none(pools, content):  # noqa:
     assert read_marker(pools["pool0"] / VM_HASH) is None
     assert not marker_path.exists()
     assert reclaimable_bytes() == 0
+
+
+def test_clearing_a_marker_that_vanished_first_is_quiet(pools, monkeypatch):  # noqa: F811
+    """Two adopters, or a pass clearing a stale marker while a create adopts:
+    the loser must not raise out of adopt() and fail the create."""
+    directory = pools["pool0"] / VM_HASH
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    mark_reclaimable(VM_HASH, "gone")
+    real_unlink = Path.unlink
+
+    def vanish_then_unlink(self, *args, **kwargs):
+        if self.name == MARKER_NAME:
+            real_unlink(self)
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", vanish_then_unlink)
+
+    assert clear_marker(directory) is False
+    assert read_marker(directory) is None
+
+
+def test_a_failed_marker_write_of_the_temp_file_leaves_nothing_behind(pools, monkeypatch):  # noqa: F811
+    """ENOSPC can hit the temp file write itself, not only the publish."""
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    real_write_text = Path.write_text
+
+    def refuse(self, *args, **kwargs):
+        if self.name.endswith(".tmp"):
+            (self.parent / self.name).touch()
+            raise OSError("no space left on device")
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", refuse)
+
+    with pytest.raises(OSError):
+        mark_reclaimable(VM_HASH, "gone")
+
+    assert list((pools["pool0"] / VM_HASH).glob("*.tmp")) == []
+
+
+def test_an_exclusive_write_that_the_filesystem_refuses_is_not_a_marker(pools, monkeypatch, caplog):  # noqa: F811
+    """No hardlinks (or no space): the directory stays unmarked and the pass
+    goes on, rather than aborting on this one directory."""
+    import aleph.vm.agent.vm.reclaimable as reclaimable_module
+
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+
+    def refuse(src, dst):
+        raise PermissionError("hard links not supported")
+
+    monkeypatch.setattr(reclaimable_module.os, "link", refuse)
+
+    assert mark_reclaimable(VM_HASH, "orphan") == []
+    assert read_marker(pools["pool0"] / VM_HASH) is None
+    assert list((pools["pool0"] / VM_HASH).glob("*.tmp")) == []
+    assert "Could not write the reclaimable marker" in caplog.text
 
 
 def test_an_orphan_marker_never_overwrites_an_existing_marker(pools):  # noqa: F811
