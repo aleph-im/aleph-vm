@@ -98,7 +98,15 @@ async def retire_vm(
     record = registry.get(item_hash)
     registry.forget(item_hash)
     await delete_records_for_vm(str(vm_hash))
-    await asyncio.to_thread(_release_storage, str(vm_hash), reason, record)
+    try:
+        await asyncio.to_thread(_release_storage, str(vm_hash), reason, record)
+    except Exception:
+        # The VM is gone from the supervisor and its records are dropped; a
+        # marker or purge that failed (ENOSPC, EACCES) leaves an unmarked
+        # directory the next reconcile pass picks up as an orphan. Raising
+        # here would abort the caller's sweep (check_payment, an allocation
+        # push) with this VM half-retired and the others untouched.
+        logger.exception("Storage release of %s (%s) failed; the reconciler will retry", vm_hash, reason.value)
     await asyncio.to_thread(purge_vm_backups, str(vm_hash))
     logger.info("Retired %s (%s)", vm_hash, reason.value)
     if reason is RetireReason.GONE and settings.VOLUME_RETENTION == "keep" and _after_gone is not None:

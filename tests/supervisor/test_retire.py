@@ -199,6 +199,25 @@ async def test_erase_does_not_run_the_after_gone_hook(env, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_failing_storage_release_does_not_break_the_retire(env, monkeypatch, caplog):
+    """A marker or purge that fails (ENOSPC, EACCES) must not raise out of
+    retire_vm: the VM is already gone and its records dropped, and the
+    callers sweep in loops. The next reconcile pass finds the directory."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+
+    def refuse(*args):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(retire_module, "_release_storage", refuse)
+
+    await retire_vm(VM_HASH, RetireReason.GONE, supervisor=env["supervisor"], registry=env["registry"])
+
+    assert env["registry"].get(ItemHash(VM_HASH)) is None
+    env["purge_backups"].assert_called_once()
+    assert "Storage release of" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_a_failing_after_gone_hook_does_not_break_the_retire(env, monkeypatch, caplog):
     """The GONE call sites sweep in a loop (terminal messages, unpaid VMs)
     without a local try: a reconcile pass that raises must not take the rest
