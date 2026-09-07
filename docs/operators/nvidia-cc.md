@@ -86,12 +86,12 @@ TTL-bound ledger (`CapacityManager.holds`,
 `HostInfo` or `get_machine_capability()`, so the capability advertisement
 is not proof a listed card is free to take right this instant. A request
 that loses that race is only rejected at create time, with the
-`InsufficientResourcesError` naming `confidential_gpu_device_id` covered in
+`InsufficientResourcesError` naming `confidential_gpu` covered in
 section 5. For the full per-card picture including cards attached to a VM
 or in `devtools`/`off`, check:
 
 ```bash
-curl -s http://<crn>/about/usage/system | jq '.gpu.devices[] | {device_id, cc_mode}'
+curl -s http://<crn>/about/usage/system | jq '.gpu.devices[] | {device_id, arch, cc_mode}'
 ```
 
 `cc_mode` is one of `"on"`, `"devtools"`, `"off"`, or absent (the field is
@@ -132,13 +132,18 @@ If `nvidia_cc` is absent from `/about/capability` while
   `CreateVm`.** The daemon's `snp_config_slice` probe saw the card's mode
   as `off`, `devtools`, or unknown (unprobed), not `on`. Re-run step 3's
   `--query-cc-mode` and step 4's checks.
-- **`InsufficientResourcesError` with `confidential_gpu_device_id` in its
-  `required` field.** Every CC-mode card matching the requested
-  `device_id` is currently held (by another V-PROGRAM's placement hold) or
-  attached to a running VM. This is distinct from a plain
-  `gpu_device_id` shortage (`resolve_confidential_gpus`,
+- **`InsufficientResourcesError` with `confidential_gpu` in its
+  `required` field.** Fewer CC-mode cards of the requested architecture
+  (and of the requested `models`, when the message narrows them) are free
+  than the message's `count`: the rest are held (by another V-PROGRAM's
+  placement hold) or attached to a running VM. This is distinct from a
+  plain `gpu_device_id` shortage (`resolve_confidential_gpus`,
   `src/aleph/vm/agent/capacity.py`), so the log and the scheduler can tell
   a confidential-GPU shortage from an ordinary one.
+- **`VmSetupError ... asks for N GPUs; this CRN attaches one confidential
+  GPU per VM`.** The schema allows up to eight cards, but only single-GPU
+  passthrough is validated on the RTX PRO 6000 Blackwell Server Edition.
+  The scheduler should not have placed a multi-GPU V-PROGRAM here.
 
 ## 6. What the CRN never does
 

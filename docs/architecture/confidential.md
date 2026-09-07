@@ -286,9 +286,12 @@ byte-identical to the pre-NUMA baseline.
 
 ### Confidential GPUs (NVIDIA CC)
 
-A V-PROGRAM can declare it needs one NVIDIA GPU in confidential-computing
-mode (`ConfidentialGpu` in aleph-message, `content.gpus`, capped at one
-entry). The chain from probe to verified evidence has four stages.
+A V-PROGRAM can declare it needs NVIDIA GPUs in confidential-computing
+mode (`ConfidentialGpuRequirement` in aleph-message, `content.gpu`: an
+architecture family, a count of up to eight, an optional narrowing to
+device ids). The schema carries NVIDIA's multi-GPU ceiling; each CRN caps
+the count at what its cards validate, one on the RTX PRO 6000 Blackwell
+Server Edition. The chain from probe to verified evidence has four stages.
 
 **Probe.** `rust/crates/supervisor-daemon/src/gpu_cc.rs` reads the same
 BAR0 register NVIDIA's `gpu-admin-tools` reads (offset `0x590` on
@@ -309,11 +312,15 @@ host inventory all fail closed as `InvalidBackend`, naming which condition
 failed. The runtime manifest must also declare a `gpu` block
 (`GpuRuntimeSpec`, `src/aleph/vm/vprogram/manifest.py`); a GPU V-PROGRAM
 whose runtime has no `gpu` block is refused before staging
-(`src/aleph/vm/agent/vprogram_launch.py`). Resolution against the host's
-available CC-mode cards, and the placement hold, happen in
-`resolve_confidential_gpus` (`src/aleph/vm/agent/capacity.py`), which fails
-with an `InsufficientResourcesError` naming `confidential_gpu_device_id`
-distinctly from a plain GPU shortage.
+(`src/aleph/vm/agent/vprogram_launch.py`), as is one whose runtime drives
+another architecture or whose count exceeds the CRN's cap. Resolution
+against the host's available CC-mode cards of the requested architecture,
+and the placement hold, happen in `resolve_confidential_gpus`
+(`src/aleph/vm/agent/capacity.py`), which fails with an
+`InsufficientResourcesError` naming `confidential_gpu` distinctly from a
+plain GPU shortage. Each card's architecture comes from the daemon, which
+derives it from the device id with the same table the probe uses to pick
+the register offset; the agent keeps no table of its own.
 
 **Argv.** `snp_gpu_args` (`rust/crates/supervisor-controller/src/qemu.rs`)
 emits, per card, a `pcie-root-port` and a `vfio-pci` device with no
