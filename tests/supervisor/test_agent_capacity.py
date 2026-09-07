@@ -496,6 +496,8 @@ def test_simulate_is_cumulative(mocker):
     PROGRAM_MEMORY_RESERVED_MIB (8192), leaves a 38912 MiB instance bucket:
     room for two 16384 MiB instances and not a third.
     """
+    mocker.patch.object(settings, "HOST_MEMORY_RESERVED_MIB", 2048)
+    mocker.patch.object(settings, "PROGRAM_MEMORY_RESERVED_MIB", 8192)
     _patch_host(mocker, memory_bytes=48 * 1024 * 1024 * 1024, cores=16)
     candidates = [
         (_HASH_A, _requirements(memory_mib=16384), True),
@@ -516,6 +518,8 @@ def test_simulate_counts_a_released_vm_as_freed(mocker):
     40 GiB gives a 30720 MiB bucket, so B (16384) plus C (16384) does not fit
     but C alone does: the release is the whole difference.
     """
+    mocker.patch.object(settings, "HOST_MEMORY_RESERVED_MIB", 2048)
+    mocker.patch.object(settings, "PROGRAM_MEMORY_RESERVED_MIB", 8192)
     _patch_host(mocker, memory_bytes=40 * 1024 * 1024 * 1024, cores=16)
     registry = AgentVmRegistry()
     content = _make_qemu_instance_message(memory=16384)
@@ -541,17 +545,27 @@ def test_simulate_judges_disk(mocker):
 
 def test_simulate_reserves_nothing(mocker):
     """The capacity-check endpoint calls this speculatively against several
-    CRNs, so a call must leave no trace."""
+    CRNs, so a call must leave no trace.
+
+    The candidate is sized past half the bucket on purpose. 64 GiB leaves
+    55296 MiB for instances, and 30000 fits once: had the first call committed
+    anything, 30000 + 30000 would put the second over and flip it to False. At
+    a smaller size a leaking implementation would answer True twice and the
+    test would pass while proving nothing.
+    """
+    mocker.patch.object(settings, "HOST_MEMORY_RESERVED_MIB", 2048)
+    mocker.patch.object(settings, "PROGRAM_MEMORY_RESERVED_MIB", 8192)
     _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
-    manager = _manager()
-    candidate = (_HASH_A, _requirements(memory_mib=2048), True)
+    registry = AgentVmRegistry()
+    manager = _manager(registry=registry)
+    candidate = (_HASH_A, _requirements(memory_mib=30000), True)
 
     first = manager.simulate([candidate])
     second = manager.simulate([candidate])
 
-    # The repeated call is the assertion: had the first committed anything, the
-    # second would see it and could answer differently.
     assert first[0].accepted is second[0].accepted is True
+    assert len(tuple(registry.items())) == 0
+    assert manager.holds == {}
 
 
 def test_simulate_is_cumulative_on_disk_too(mocker):
@@ -574,3 +588,35 @@ def test_simulate_is_cumulative_on_disk_too(mocker):
 
     assert [v.accepted for v in verdicts] == [True, False]
     assert verdicts[1].code == "insufficient_capacity"
+
+
+def test_simulate_ignores_a_release_of_a_vm_it_does_not_know(mocker):
+    """The scheduler's plan is its own view of the world. A hash we have no
+    record of frees nothing, and must not throw."""
+    mocker.patch.object(settings, "HOST_MEMORY_RESERVED_MIB", 2048)
+    mocker.patch.object(settings, "PROGRAM_MEMORY_RESERVED_MIB", 8192)
+    _patch_host(mocker, memory_bytes=40 * 1024 * 1024 * 1024, cores=16)
+    registry = AgentVmRegistry()
+    content = _make_qemu_instance_message(memory=16384)
+    registry.record(_HASH_B, message=content, original=content, persistent=True)
+    manager = _manager(registry=registry)
+    candidate = (_HASH_C, _requirements(memory_mib=16384), True)
+
+    verdicts = manager.simulate([candidate], releasing=frozenset({_HASH_A}))
+
+    assert verdicts[0].accepted is False
+
+
+def test_simulate_releases_vcpus_not_only_memory(mocker):
+    """vCPUs are the binding constraint here, so the release only shows up if
+    the loop subtracts them too. 2 cores at 4x overcommit caps vCPUs at 8."""
+    mocker.patch.object(settings, "VCPU_OVERCOMMIT_FACTOR", 4.0)
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=2)
+    registry = AgentVmRegistry()
+    content = _make_qemu_instance_message(memory=1024, vcpus=6)
+    registry.record(_HASH_B, message=content, original=content, persistent=True)
+    manager = _manager(registry=registry)
+    candidate = (_HASH_C, _requirements(memory_mib=1024, vcpus=6), True)
+
+    assert manager.simulate([candidate])[0].accepted is False
+    assert manager.simulate([candidate], releasing=frozenset({_HASH_B}))[0].accepted is True
