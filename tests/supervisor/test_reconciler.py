@@ -501,6 +501,23 @@ def test_evicting_a_directory_that_already_vanished_counts_nothing(pools, monkey
     assert report.evicted == [] and report.bytes_freed == 0
 
 
+def test_evict_declines_a_namespace_whose_create_started_mid_pass(pools, monkeypatch):  # noqa: F811
+    """The budget pass lists a retained VM; its owner then re-creates it.
+    creating() adopts the directory (clearing the marker) before the evictor
+    reaches the stale listing entry, and the registry record only lands when
+    the create commits, so neither the marker nor is_live protects the disks
+    the create is writing. The creating() guard must."""
+    disk = volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=8192)
+    report = reconciler_module.ReconcileReport()
+
+    with creating(VM_HASH):
+        freed = reconciler_module._evict(VM_HASH, report, dry_run=False)
+
+    assert freed == 0
+    assert disk.exists()
+    assert report.evicted == [] and report.bytes_freed == 0
+
+
 def test_a_refused_purge_is_not_counted_as_an_eviction(pools, monkeypatch):  # noqa: F811
     """purge_vm_storage refuses a directory a device-mapper target still
     holds. make_room must not then report room it did not make."""

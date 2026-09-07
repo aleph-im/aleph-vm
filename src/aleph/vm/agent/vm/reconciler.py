@@ -516,6 +516,12 @@ def _evict(
         # since this pass started listing it.
         logger.warning("Not evicting %s: a live VM owns it despite its reclaimable marker", namespace)
         return 0
+    if is_creating(namespace):
+        # The owner re-created this VM after the pass listed it: creating()
+        # adopted the directory (clearing the marker), but the registry record
+        # only lands when the create commits, so is_live cannot catch this yet.
+        logger.warning("Not evicting %s: a create in flight owns it", namespace)
+        return 0
     if not _still_on_disk(namespace):
         logger.debug("Not evicting %s: its directories are already gone", namespace)
         return 0
