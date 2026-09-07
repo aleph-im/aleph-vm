@@ -15,13 +15,13 @@ import shutil
 import tarfile
 from pathlib import Path
 from types import SimpleNamespace
-from typing import IO, Any, cast
+from typing import IO, Any, Literal, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aleph_message.models import VerifiableProgramMessage, parse_message
 from aleph_message.models.execution.vprogram import (
-    VerifiableProgramContent,
+    ConfidentialGpuRequirement,
     VerifiedVolume,
 )
 
@@ -711,14 +711,6 @@ def test_remove_vprogram_staging_is_idempotent(tmp_path, monkeypatch):
     assert not staging.exists()
 
 
-# A GPU-declaring message needs a VerifiableProgramContent.gpu field, which
-# only a post-1.4.0 aleph-message build carries; skip rather than fail on a
-# dev-deps run that predates it so CI on the released package stays green.
-requires_gpu_field = pytest.mark.skipif(
-    "gpu" not in getattr(VerifiableProgramContent, "model_fields", {}),
-    reason="aleph-message build has no VerifiableProgramContent.gpu field",
-)
-
 GPU_BLOCK = {
     "vendor": "nvidia",
     "arch": "blackwell",
@@ -733,13 +725,12 @@ VOLUME_SLOT_TEMPLATE = (
 
 
 def _with_gpu(
-    message: VerifiableProgramMessage, *, memory: int = 4096, arch: str = "blackwell", count: int = 1
+    message: VerifiableProgramMessage,
+    *,
+    memory: int = 4096,
+    arch: Literal["hopper", "blackwell"] = "blackwell",
+    count: int = 1,
 ) -> VerifiableProgramMessage:
-    # Deferred import: ConfidentialGpuRequirement does not exist on an
-    # aleph-message build that predates the gpu field, and this helper is only
-    # ever called from tests guarded by @requires_gpu_field.
-    from aleph_message.models.execution.vprogram import ConfidentialGpuRequirement
-
     content = message.content.model_copy(
         update={
             # model_copy(update=...) does not coerce nested dicts (unlike
@@ -752,7 +743,6 @@ def _with_gpu(
     return message.model_copy(update={"content": content})
 
 
-@requires_gpu_field
 @pytest.mark.asyncio
 async def test_gpu_vprogram_needs_a_gpu_runtime(tmp_path, storage_files, snp_vcpu_types):
     _stage_bundle(tmp_path, storage_files)  # MANIFEST_TEMPLATE has no gpu block
@@ -761,7 +751,6 @@ async def test_gpu_vprogram_needs_a_gpu_runtime(tmp_path, storage_files, snp_vcp
         await build_vprogram_spec(message.item_hash, message.content)
 
 
-@requires_gpu_field
 @pytest.mark.asyncio
 async def test_gpu_vprogram_enforces_the_memory_floor(tmp_path, storage_files, snp_vcpu_types):
     _stage_bundle(tmp_path, storage_files, gpu=GPU_BLOCK)
@@ -770,7 +759,6 @@ async def test_gpu_vprogram_enforces_the_memory_floor(tmp_path, storage_files, s
         await build_vprogram_spec(message.item_hash, message.content)
 
 
-@requires_gpu_field
 @pytest.mark.asyncio
 async def test_gpu_vprogram_spec_leaves_gpus_for_run_to_resolve(tmp_path, storage_files, snp_vcpu_types):
     # The fixture message carries a volume, so the manifest needs the slot
@@ -785,7 +773,6 @@ async def test_gpu_vprogram_spec_leaves_gpus_for_run_to_resolve(tmp_path, storag
     assert (rootfs.parent / f"{rootfs.name}.cmdline_extra").read_text() == "swiotlb=262144\n"
 
 
-@requires_gpu_field
 @pytest.mark.asyncio
 async def test_gpu_vprogram_rejects_a_second_gpu(tmp_path, storage_files, snp_vcpu_types):
     # One card per VM: the measured cmdline reserves a single swiotlb window
@@ -797,14 +784,11 @@ async def test_gpu_vprogram_rejects_a_second_gpu(tmp_path, storage_files, snp_vc
         await build_vprogram_spec(message.item_hash, message.content)
 
 
-@requires_gpu_field
 @pytest.mark.asyncio
 async def test_gpu_vprogram_rejects_a_foreign_vendor(tmp_path, storage_files, snp_vcpu_types):
     # The runtime drives NVIDIA cards; a message asking for another vendor
     # would be launched against a driver that cannot attest it. Built with
     # model_construct, since the schema itself would reject the vendor.
-    from aleph_message.models.execution.vprogram import ConfidentialGpuRequirement
-
     _stage_bundle(tmp_path, storage_files, gpu=GPU_BLOCK)
     message = _with_gpu(load_vprogram_message())
     content = message.content.model_copy(
@@ -818,7 +802,6 @@ async def test_gpu_vprogram_rejects_a_foreign_vendor(tmp_path, storage_files, sn
         await build_vprogram_spec(message.item_hash, content)
 
 
-@requires_gpu_field
 @pytest.mark.asyncio
 async def test_gpu_vprogram_rejects_an_architecture_the_runtime_does_not_drive(tmp_path, storage_files, snp_vcpu_types):
     # The driver lives inside the measured runtime, so a hopper request

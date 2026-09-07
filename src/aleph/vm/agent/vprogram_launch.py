@@ -190,10 +190,7 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
     """
     manifest = await fetch_runtime_manifest(str(content.runtime.ref))
 
-    # content.gpu is Optional on the schema (absent means no GPU); read it
-    # defensively so this keeps working against an aleph-message release that
-    # predates the field.
-    gpu = getattr(content, "gpu", None)
+    gpu = content.gpu
     if gpu is not None:
         # The schema allows up to eight cards, the ceiling of NVIDIA's
         # multi-GPU CC mode. One card per VM is the configuration this CRN

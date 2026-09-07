@@ -20,7 +20,7 @@ from aleph_message.models.execution.environment import (
 )
 from test_snp_instance_launch import VM_HASH, snp_instance_content
 from test_supervisor_translate import _make_qemu_instance_message
-from test_vprogram_launch import _with_gpu, load_vprogram_message, requires_gpu_field
+from test_vprogram_launch import _with_gpu, load_vprogram_message
 
 from aleph.vm.agent import run as run_module
 from aleph.vm.agent.vm_registry import AgentVmRegistry
@@ -336,7 +336,6 @@ async def test_snp_instance_port_forward_failure_cleans_staging(monkeypatch):
     assert registry.get(VM_HASH) is None
 
 
-@requires_gpu_field
 @pytest.mark.asyncio
 async def test_vprogram_create_resolves_confidential_gpus(monkeypatch):
     """A GPU-declaring V-PROGRAM resolves its family requirement against the

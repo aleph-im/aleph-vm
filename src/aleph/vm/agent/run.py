@@ -585,12 +585,11 @@ async def create_vm_execution(
         try:
             _admit(capacity, content, vm_hash, is_instance=True)
             spec, attest_port = await build_vprogram_spec(vm_hash, content)
-            # content.gpu is Optional, and the attribute may not even exist on
-            # a schema that predates the field (the pin is still aleph-message
-            # 1.4.0): resolved against the host's CC-mode cards here, after
-            # staging, mirroring the instance path's resolve_gpus call. The
-            # message names a family and a count, so the CRN picks the cards.
-            gpu = getattr(content, "gpu", None)
+            # The confidential GPU requirement is resolved against the host's
+            # CC-mode cards here, after staging, mirroring the instance path's
+            # resolve_gpus call. The message names a family and a count, so
+            # the CRN picks the cards.
+            gpu = content.gpu
             if gpu is not None:
                 resolved = await capacity.resolve_confidential_gpus(
                     arch=gpu.arch, count=gpu.count, models=gpu.models, owner=content.address
