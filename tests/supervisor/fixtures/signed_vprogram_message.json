@@ -1,0 +1,58 @@
+{
+  "chain": "ETH",
+  "channel": null,
+  "content": {
+    "address": "0x34924EF945b931d1E929375556f69CE2E7FE5dcc",
+    "allow_amend": false,
+    "environment": {
+      "internet": true
+    },
+    "metadata": {
+      "name": "demo-vprogram-exec-1.1"
+    },
+    "payment": {
+      "type": "credit"
+    },
+    "requirements": {
+      "node": {
+        "node_hash": "50fd1ed26416a945e561bf8e598412156a493e8d7bb3d6496829805a943ea419"
+      }
+    },
+    "resources": {
+      "memory": 2048,
+      "seconds": 30,
+      "vcpus": 1
+    },
+    "runtime": {
+      "comment": "",
+      "ref": "3f06acd38b47fc8045f202bc7fca49a62809fc694343fb415ebb6cb4c74ca83d"
+    },
+    "time": 1788288282.3883018,
+    "verification": {
+      "backend": "sev_snp",
+      "measurements": [
+        {
+          "platform": "sev_snp",
+          "registers": {
+            "launch": "614077fe4486516dd094eb71750cd0246cd2b199b911d5d7867b3923c4dac803d487ec654268baea7dff6790f515dca4"
+          },
+          "vcpu_type": "EPYC-v4"
+        }
+      ],
+      "policy": 196608
+    },
+    "volumes": [],
+    "workload": {
+      "hash_tree": "2ce324b3eca2728ff3df4ff4826db41f378dbfc87195bd4030d19bf09d64f8c9",
+      "ref": "f42e64eb040f5231ff4208c1aa21731e418ed7d391afbc55c38c5fb11b99a94c",
+      "roothash": "2f208acea163df2efeeed06b22cdf64ed832a809eb225f09228e128c1cc0deeb"
+    }
+  },
+  "item_content": "{\"address\":\"0x34924EF945b931d1E929375556f69CE2E7FE5dcc\",\"allow_amend\":false,\"environment\":{\"internet\":true},\"metadata\":{\"name\":\"demo-vprogram-exec-1.1\"},\"payment\":{\"type\":\"credit\"},\"requirements\":{\"node\":{\"node_hash\":\"50fd1ed26416a945e561bf8e598412156a493e8d7bb3d6496829805a943ea419\"}},\"resources\":{\"memory\":2048,\"seconds\":30,\"vcpus\":1},\"runtime\":{\"comment\":\"\",\"ref\":\"3f06acd38b47fc8045f202bc7fca49a62809fc694343fb415ebb6cb4c74ca83d\"},\"time\":1788288282.3883018,\"verification\":{\"backend\":\"sev_snp\",\"measurements\":[{\"platform\":\"sev_snp\",\"registers\":{\"launch\":\"614077fe4486516dd094eb71750cd0246cd2b199b911d5d7867b3923c4dac803d487ec654268baea7dff6790f515dca4\"},\"vcpu_type\":\"EPYC-v4\"}],\"policy\":196608},\"volumes\":[],\"workload\":{\"hash_tree\":\"2ce324b3eca2728ff3df4ff4826db41f378dbfc87195bd4030d19bf09d64f8c9\",\"ref\":\"f42e64eb040f5231ff4208c1aa21731e418ed7d391afbc55c38c5fb11b99a94c\",\"roothash\":\"2f208acea163df2efeeed06b22cdf64ed832a809eb225f09228e128c1cc0deeb\"}}",
+  "item_hash": "ef7bbb5281a7802c2f33948d997cdcce4e53c0836e52c646d70acb4e70448aba",
+  "item_type": "inline",
+  "sender": "0x0B8ee617A08AC051a8A3b430ACf7233a462A0187",
+  "signature": "0xcd0ab9b1e6d940d5df8ef95ea880b156a445681a6c5c84c95fcf3232386122206cbd56ba4b5cf130871236e4cf8aaa82d3ec4f98913dc285e5f90ba1109d4a291b",
+  "time": 1788288282.388302,
+  "type": "V-PROGRAM"
+}
