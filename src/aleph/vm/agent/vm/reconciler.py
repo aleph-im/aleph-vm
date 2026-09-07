@@ -106,8 +106,14 @@ def creating(namespace: str) -> Iterator[None]:
     a promise, so a reset order is acceptable; adopting later would mean a
     create racing the eviction of the very disks it is about to reuse.
     """
-    adopt(namespace)
+    # Register before adopting: between clear_marker and the add there would
+    # otherwise be an instant where the directory is protected by neither
+    # the marker nor the creating set, and a concurrent pass would see an
+    # unmarked, not-creating orphan. Registered first, a pass that read
+    # is_creating as False must have read it before this line, and then
+    # still sees the marker adopt() has yet to clear.
     _creating.add(namespace)
+    adopt(namespace)
     try:
         yield
     finally:
@@ -268,7 +274,7 @@ def reconcile_storage(
     report = ReconcileReport()
     _reconcile_namespaces(now, guard, report, dry_run=dry_run, is_live=is_live)
     _sweep_parts(now, guard, report, dry_run=dry_run)
-    _sweep_side_dirs(live, now, guard, report, dry_run=dry_run)
+    _sweep_side_dirs(live, now, guard, report, dry_run=dry_run, is_live=is_live)
     _enforce_retention_budget(report, dry_run=dry_run, is_live=is_live)
     if not dry_run:
         report.backups_removed = sweep_expired_backups(now)
@@ -325,8 +331,9 @@ def _reconcile_namespaces(
         if namespace in seen or not _is_orphan(directory, is_live, now, guard, dry_run=dry_run):
             continue
         seen.add(namespace)
-        if is_live(namespace):
-            # A create that committed between the live snapshot and this walk.
+        if is_live(namespace) or is_creating(namespace):
+            # A create that committed, or entered creating(), between the
+            # live snapshot and this walk.
             logger.info("Skipping %s: a VM claimed it while this pass was walking", namespace)
             continue
         if not dry_run and not _still_on_disk(namespace):
@@ -450,12 +457,18 @@ def _sweep_side_dirs(
     report: ReconcileReport,
     *,
     dry_run: bool,
+    is_live: Callable[[str], bool],
 ) -> None:
     for root, mode in _side_dir_roots():
         if not root.is_dir():
             continue
         for child in list(root.iterdir()):
             if not _is_stale_side_dir(child, mode, live, now, guard):
+                continue
+            namespace = child.name if mode == "exact" else child.name.split("_", 1)[0]
+            if is_live(namespace) or is_creating(namespace):
+                # Claimed since the listing: the same re-check the namespace
+                # pass and the evictor make immediately before removing.
                 continue
             if not dry_run:
                 try:

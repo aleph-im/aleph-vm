@@ -268,6 +268,66 @@ def test_a_hash_claimed_mid_pass_is_not_purged(pools, registry, monkeypatch):  #
     assert (pools["pool0"] / survivor).is_dir()
 
 
+def test_a_hash_entering_creating_mid_pass_is_not_purged(pools, registry, monkeypatch):  # noqa: F811
+    """The creating() twin of the registry race above: a create that enters
+    the guard after _is_orphan judged the directory unowned must keep its
+    disks (the re-check runs immediately before the purge decision)."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    disk = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    _age(disk.parent, 10_000)
+    real_is_orphan = reconciler_module._is_orphan
+
+    def orphan_then_claim(directory, is_live, now, guard, *, dry_run):
+        result = real_is_orphan(directory, is_live, now, guard, dry_run=dry_run)
+        if result:
+            reconciler_module._creating.add(directory.name)
+        return result
+
+    monkeypatch.setattr(reconciler_module, "_is_orphan", orphan_then_claim)
+
+    try:
+        report = reconcile_storage(registry, now=NOW)
+    finally:
+        reconciler_module._creating.discard(VM_HASH)
+
+    assert disk.exists()
+    assert report.purged_orphans == []
+
+
+def test_creating_registers_before_it_adopts(pools, monkeypatch):  # noqa: F811
+    """Between clear_marker and the registration there must be no instant
+    where a directory is neither marked nor creating: adopt runs with the
+    guard already up."""
+    guarded = []
+    real_adopt = reconciler_module.adopt
+
+    def adopt_and_record(namespace):
+        guarded.append(is_creating(namespace))
+        return real_adopt(namespace)
+
+    monkeypatch.setattr(reconciler_module, "adopt", adopt_and_record)
+
+    with creating(VM_HASH):
+        pass
+
+    assert guarded == [True]
+    assert not is_creating(VM_HASH)
+
+
+def test_a_side_dir_claimed_mid_pass_is_not_removed(pools, registry):  # noqa: F811
+    """The live snapshot is stale by the time the sweep removes: a VM that
+    came alive in between keeps its side directories, the same re-check the
+    namespace pass and the evictor make."""
+    session = pools["sessions"] / VM_HASH
+    session.mkdir()
+    _age(session, 10_000)
+
+    report = reconcile_storage(registry, now=NOW, live=set(), is_live=lambda namespace: namespace == VM_HASH)
+
+    assert session.exists()
+    assert report.side_dirs_removed == 0
+
+
 def test_young_side_dirs_are_inside_the_create_guard(pools, registry):  # noqa: F811
     young = pools["sessions"] / VM_HASH
     young.mkdir()
