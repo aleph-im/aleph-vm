@@ -266,6 +266,7 @@ class CapacityManager:
         candidates: list[tuple[ItemHash, ResourceRequirements, bool]],
         *,
         releasing: frozenset[ItemHash] = frozenset(),
+        available_gpus: list[GpuDevice] | None = None,
     ) -> list[AdmissionVerdict]:
         """Judge a whole plan at once.
 
@@ -284,10 +285,17 @@ class CapacityManager:
         Side-effect free: nothing here reserves or holds anything, which is
         what makes it safe for the speculative capacity-check endpoint.
 
-        GPUs are out of scope. Card availability comes from the supervisor's
-        async host info and is claimed through stateful holds, neither of which
-        fits a synchronous side-effect-free call, so a GPU plan needs a
-        separate answer.
+        GPUs are judged from ``available_gpus``, the host's unattached cards,
+        which the caller reads from the supervisor because that read is async
+        and this call is not. Matching is cumulative like the rest: two
+        candidates wanting the only card of a kind get one yes. A card under a
+        live hold counts as taken, since the hold is some user's pending
+        create.
+
+        Without ``available_gpus`` there is no inventory to judge against, so a
+        candidate that asks for a card is refused rather than admitted on
+        memory alone. An advisory yes must never be read as one that covered
+        the GPU.
 
         The third element of a candidate is the caller's memory-bucket choice,
         NOT ResourceRequirements.is_instance. The two disagree for V-PROGRAMs:
@@ -313,6 +321,8 @@ class CapacityManager:
         committed_program = max(committed_program, 0)
         committed_vcpus = max(committed_vcpus, 0)
 
+        gpu_pool = None if available_gpus is None else self._unheld_gpus(available_gpus)
+
         verdicts: list[AdmissionVerdict] = []
         committed_disk = 0
         for vm_hash, requirements, is_instance in candidates:
@@ -334,6 +344,14 @@ class CapacityManager:
                     AdmissionVerdict(vm_hash, False, "insufficient_capacity", "not enough capacity on this CRN")
                 )
                 continue
+            # Last, and only once the candidate has cleared everything else:
+            # taking cards is what makes the pool cumulative, so a candidate
+            # refused on memory must not walk off with the cards first.
+            gpu_refusal = self._take_gpus(requirements.gpu_device_ids, gpu_pool)
+            if gpu_refusal is not None:
+                logger.info("Plan candidate %s refused: %s", vm_hash, gpu_refusal)
+                verdicts.append(AdmissionVerdict(vm_hash, False, "gpu_unavailable", gpu_refusal))
+                continue
             if is_instance:
                 committed_instance += requirements.memory_mib
             else:
@@ -342,6 +360,39 @@ class CapacityManager:
             committed_disk += requirements.disk_mib
             verdicts.append(AdmissionVerdict(vm_hash, True))
         return verdicts
+
+    def _unheld_gpus(self, available_gpus: list[GpuDevice]) -> list[GpuDevice]:
+        """The cards a plan may count on: unattached and not under a live hold.
+
+        A hold is some user's pending create, so a held card is treated as
+        taken. Read-only on purpose: unlike _get_valid_hold this leaves expired
+        entries in the ledger, because simulate mutates nothing.
+        """
+        return [gpu for gpu in available_gpus if (hold := self.holds.get(gpu.pci_host)) is None or hold.is_expired()]
+
+    @staticmethod
+    def _take_gpus(device_ids: list[str], pool: list[GpuDevice] | None) -> str | None:
+        """Consume one card per requested id from ``pool``. None if it fits.
+
+        All or nothing, like reserve_gpus: a candidate that cannot get every
+        card it asked for takes none, so it does not strand cards a later
+        candidate could have used.
+        """
+        if not device_ids:
+            return None
+        if pool is None:
+            return "GPU availability was not checked for this plan"
+        taken: list[GpuDevice] = []
+        for device_id in device_ids:
+            for gpu in pool:
+                if gpu.device_id == device_id and gpu not in taken:
+                    taken.append(gpu)
+                    break
+            else:
+                return f"No available GPU matching device_id {device_id!r}"
+        for gpu in taken:
+            pool.remove(gpu)
+        return None
 
     def _committed_resources(self, exclude_vm_hash: ItemHash | None) -> tuple[int, int, int]:
         """(committed_instance_memory_mib, committed_program_memory_mib,

@@ -620,3 +620,120 @@ def test_simulate_releases_vcpus_not_only_memory(mocker):
 
     assert manager.simulate([candidate])[0].accepted is False
     assert manager.simulate([candidate], releasing=frozenset({_HASH_B}))[0].accepted is True
+
+
+# ── simulate: GPU admission ────────────────────────────────────────────────
+
+
+def _gpu_requirements(*, device_ids: list[str], memory_mib: int = 1024) -> ResourceRequirements:
+    return ResourceRequirements(
+        vcpus=1, memory_mib=memory_mib, disk_mib=0, max_volume_mib=0, is_instance=True, gpu_device_ids=device_ids
+    )
+
+
+def test_simulate_refuses_a_gpu_candidate_when_no_inventory_was_given(mocker):
+    """Without an inventory there is nothing to judge the request against. The
+    verdict is all the scheduler sees, so an unchecked GPU must not read as a
+    yes earned on memory alone."""
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
+
+    verdicts = _manager().simulate([(_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID]), True)])
+
+    assert verdicts[0].accepted is False
+    assert verdicts[0].code == "gpu_unavailable"
+
+
+def test_simulate_admits_a_gpu_candidate_the_host_can_serve(mocker):
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
+    gpu = _gpu_device()
+
+    verdicts = _manager().simulate([(_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID]), True)], available_gpus=[gpu])
+
+    assert verdicts[0].accepted is True
+
+
+def test_simulate_refuses_a_card_the_host_does_not_have(mocker):
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
+
+    verdicts = _manager().simulate(
+        [(_HASH_A, _gpu_requirements(device_ids=["10de:dead"]), True)], available_gpus=[_gpu_device()]
+    )
+
+    assert verdicts[0].accepted is False
+    assert verdicts[0].code == "gpu_unavailable"
+
+
+def test_simulate_is_cumulative_on_gpus(mocker):
+    """One card, two candidates that each want it: one yes. Judging each
+    against the same inventory would hand the same card out twice."""
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
+    candidates = [
+        (_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID]), True),
+        (_HASH_B, _gpu_requirements(device_ids=[_DEVICE_ID]), True),
+    ]
+
+    verdicts = _manager().simulate(candidates, available_gpus=[_gpu_device()])
+
+    assert [v.accepted for v in verdicts] == [True, False]
+    assert verdicts[1].code == "gpu_unavailable"
+
+
+def test_simulate_treats_a_held_card_as_taken(mocker):
+    """A hold is some user's pending create. Counting it as free would make the
+    advisory answer stronger than the one create will give."""
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
+    gpu = _gpu_device()
+    manager = _manager()
+    manager.holds[gpu.pci_host] = GpuHold(
+        user="someone-else", expiration=datetime.now(tz=timezone.utc) + timedelta(hours=1)
+    )
+
+    verdicts = manager.simulate([(_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID]), True)], available_gpus=[gpu])
+
+    assert verdicts[0].accepted is False
+
+
+def test_simulate_does_not_evict_expired_holds(mocker):
+    """An expired hold frees the card, but reaping it is a write, and simulate
+    is the one call that must not touch the ledger."""
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
+    gpu = _gpu_device()
+    manager = _manager()
+    expired = GpuHold(user="someone-else", expiration=datetime.now(tz=timezone.utc) - timedelta(hours=1))
+    manager.holds[gpu.pci_host] = expired
+
+    verdicts = manager.simulate([(_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID]), True)], available_gpus=[gpu])
+
+    assert verdicts[0].accepted is True
+    assert manager.holds[gpu.pci_host] is expired
+
+
+def test_simulate_takes_no_card_when_it_cannot_take_them_all(mocker):
+    """All or nothing, like reserve_gpus: a candidate that wanted two cards and
+    could only get one must not strand that one away from the next candidate."""
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
+    candidates = [
+        (_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID, _DEVICE_ID]), True),
+        (_HASH_B, _gpu_requirements(device_ids=[_DEVICE_ID]), True),
+    ]
+
+    verdicts = _manager().simulate(candidates, available_gpus=[_gpu_device()])
+
+    assert [v.accepted for v in verdicts] == [False, True]
+
+
+def test_simulate_does_not_take_cards_for_a_candidate_refused_on_memory(mocker):
+    """The card is only spent once everything else has cleared, so a candidate
+    that fails admission leaves the inventory for the next one."""
+    mocker.patch.object(settings, "HOST_MEMORY_RESERVED_MIB", 2048)
+    mocker.patch.object(settings, "PROGRAM_MEMORY_RESERVED_MIB", 8192)
+    _patch_host(mocker, memory_bytes=48 * 1024 * 1024 * 1024, cores=16)
+    candidates = [
+        (_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID], memory_mib=999_999), True),
+        (_HASH_B, _gpu_requirements(device_ids=[_DEVICE_ID]), True),
+    ]
+
+    verdicts = _manager().simulate(candidates, available_gpus=[_gpu_device()])
+
+    assert [v.accepted for v in verdicts] == [False, True]
+    assert verdicts[0].code == "insufficient_capacity"
