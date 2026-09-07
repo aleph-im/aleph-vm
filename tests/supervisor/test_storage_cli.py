@@ -122,7 +122,12 @@ def test_reclaim_checks_the_marker_before_dialing_the_supervisor(pools, registry
     """A typo'd or unrelated hash is refused by the purely local marker check
     alone: nothing here should wait out a supervisor dial first."""
     dialed = []
-    monkeypatch.setattr(cli, "_open_supervisor", lambda: dialed.append(True) or _fake_supervisor())
+
+    def open_supervisor():
+        dialed.append(True)
+        return _fake_supervisor()
+
+    monkeypatch.setattr(cli, "_open_supervisor", open_supervisor)
 
     code, out = _run(["reclaim", "not-a-real-hash"], registry)
 
