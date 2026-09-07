@@ -438,6 +438,19 @@ async def test_a_vm_the_supervisor_runs_is_live_even_without_a_record(pools, reg
 
 
 @pytest.mark.asyncio
+async def test_the_room_maker_protects_what_the_supervisor_listed_last(pools, registry, monkeypatch):  # noqa: F811
+    """Placement-pressure eviction runs off a synchronous hook that cannot
+    ask the supervisor; it protects the supervisor's VMs as of the last
+    pass, so a running VM whose registry record was lost is still safe."""
+    monkeypatch.setattr(reconciler_module, "_last_supervisor_hashes", set())
+    assert OTHER_HASH not in reconciler_module.known_live_hashes(registry)
+
+    await reconciler_module._live_set(_app(registry, _supervisor(OTHER_HASH)))
+
+    assert reconciler_module.known_live_hashes(registry) >= {LIVE, OTHER_HASH}
+
+
+@pytest.mark.asyncio
 async def test_startup_purges_nothing_when_the_supervisor_cannot_be_listed(pools, registry, monkeypatch, caplog):  # noqa: F811
     """No answer from the supervisor is not "it runs nothing": without the
     second opinion the live set is unknown, so the startup pass runs dry."""

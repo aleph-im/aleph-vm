@@ -24,7 +24,7 @@ from aleph.vm.agent.vcpu_probe import get_snp_launch_capability
 from aleph.vm.agent.vm.backup import BackupManager
 from aleph.vm.agent.vm.program_client import ProgramGuestClient
 from aleph.vm.agent.vm.reconciler import (
-    live_hashes,
+    known_live_hashes,
     make_room,
     reconcile_at_startup,
     reconcile_now,
@@ -515,7 +515,7 @@ def run():
     # hooks: aleph.vm.storage_pools and retire.py cannot import the
     # reconciler, so the app is what wires them together.
     storage_pools.set_room_maker(
-        lambda pool, needed: make_room(pool, needed, live=live_hashes(app["vm_registry"])),
+        lambda pool, needed: make_room(pool, needed, live=known_live_hashes(app["vm_registry"])),
     )
     set_after_gone_hook(lambda: reconcile_now(app))
     app.on_startup.append(start_node_hash_discovery)

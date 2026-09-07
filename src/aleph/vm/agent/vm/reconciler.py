@@ -198,12 +198,30 @@ async def _live_set(app: web.Application) -> tuple[set[str], int | None]:
     if supervisor is None:
         logger.warning("No supervisor handle on the app; the live set is the agent registry alone")
         return registry_live, None
+    global _last_supervisor_hashes  # noqa: PLW0603
     try:
         running = await supervisor_hashes(supervisor)
     except Exception as error:
         logger.warning("Could not list the supervisor's VMs (%s); the live set is the agent registry alone", error)
         return registry_live, None
+    _last_supervisor_hashes = running
     return registry_live | running, len(running)
+
+
+# What the supervisor listed at the last pass, for the one caller that cannot
+# ask it: the room maker runs synchronously on the placement path.
+_last_supervisor_hashes: set[str] = set()
+
+
+def known_live_hashes(registry: AgentVmRegistry) -> set[str]:
+    """``live_hashes`` plus the supervisor's VMs as of the last pass.
+
+    The reconciler judges against registry union supervisor because the
+    registry alone can lose a running VM's record; placement-pressure
+    eviction should protect the same set, and a listing a few minutes old
+    can only add names to it, never drop a live one that a pass would keep.
+    """
+    return live_hashes(registry) | _last_supervisor_hashes
 
 
 def _startup_refusal(registry: AgentVmRegistry, running: int | None) -> str | None:
