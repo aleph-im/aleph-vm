@@ -81,6 +81,7 @@ fn fixture_daemon_state(root: &Path) -> Arc<DaemonState> {
                 pci_host: "0000:01:00.0".to_string(),
                 device_id: "10de:2b85".to_string(),
                 cc_mode: None,
+                arch: None,
             },
             GpuDevice {
                 vendor: "NVIDIA".to_string(),
@@ -89,6 +90,7 @@ fn fixture_daemon_state(root: &Path) -> Arc<DaemonState> {
                 pci_host: "0000:02:00.0".to_string(),
                 device_id: "10de:26b1".to_string(),
                 cc_mode: None,
+                arch: None,
             },
         ],
         dns_nameservers: None,

@@ -312,6 +312,7 @@ impl SupervisorService {
             .cloned()
             .map(|mut gpu| {
                 gpu.cc_mode = cc_mode_of(&self.state, &gpu.pci_host);
+                gpu.arch = crate::gpu_cc::arch_from_device_id(&gpu.device_id);
                 gpu
             })
             .collect();
@@ -604,6 +605,9 @@ pub fn vm_info_message(
                 supports_x_vga: gpu.supports_x_vga,
                 cc_mode: cc_mode_of(state, &gpu.pci_host)
                     .map(|mode| mode.to_string())
+                    .unwrap_or_default(),
+                arch: crate::gpu_cc::arch_from_device_id(&gpu.device_id)
+                    .map(|arch| arch.to_string())
                     .unwrap_or_default(),
             })
             .collect(),
@@ -1499,6 +1503,7 @@ mod tests {
             pci_host: pci_host.to_string(),
             device_id: "10de:2b85".to_string(),
             cc_mode: None,
+            arch: None,
         };
         let host = HostState {
             settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
