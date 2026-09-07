@@ -7,12 +7,15 @@ that includes item_hash. Neither alone is enough.
 
 import json
 from hashlib import sha256
+from pathlib import Path
 
 import pytest
 from eth_account import Account
 from eth_account.messages import encode_defunct
 
 from aleph.vm.agent.allocation.verify import VerificationOutcome, verify_entry
+
+SIGNED_VPROGRAM = Path(__file__).parent / "fixtures" / "signed_vprogram_message.json"
 
 
 def sign_message(content_dict: dict, account, *, chain="ETH", message_type="INSTANCE") -> dict:
@@ -39,6 +42,12 @@ def sign_message(content_dict: dict, account, *, chain="ETH", message_type="INST
 @pytest.fixture
 def account():
     return Account.create()
+
+
+@pytest.fixture
+def signed_vprogram_message():
+    """A V-PROGRAM captured from api3.aleph.im, envelope fields untouched."""
+    return json.loads(SIGNED_VPROGRAM.read_text())
 
 
 @pytest.fixture
@@ -197,3 +206,49 @@ def test_a_message_that_is_not_an_object_is_rejected():
     assert outcome is VerificationOutcome.REJECTED
     assert verified is None
     assert reason
+
+
+def test_a_non_executable_type_is_rejected(account, instance_content):
+    """The module narrows to executable messages, and a POST is not one, even
+    correctly signed."""
+    message = sign_message(instance_content, account, message_type="POST")
+    entry = {"item_hash": message["item_hash"], "message": message}
+
+    outcome, verified, reason = verify_entry(entry)
+
+    assert outcome is VerificationOutcome.REJECTED
+    assert verified is None
+    assert reason
+
+
+def test_an_inline_message_without_item_content_is_rejected(account, instance_content):
+    """item_content is what the signature binds; without it there is nothing to
+    re-derive the content from."""
+    message = sign_message(instance_content, account)
+    del message["item_content"]
+    entry = {"item_hash": message["item_hash"], "message": message}
+
+    outcome, verified, reason = verify_entry(entry)
+
+    assert outcome is VerificationOutcome.REJECTED
+    assert verified is None
+    assert reason
+
+
+def test_a_real_network_message_verifies(signed_vprogram_message):
+    """A message captured from the network, signed by a wallet we do not own.
+
+    sign_message above builds its buffer the same way verification_buffer does,
+    so on its own the suite would still pass if both were wrong about what the
+    network signs. This one is only satisfiable by the real format, and it is
+    the only V-PROGRAM in the suite: the dashed type string goes into the
+    signed buffer, so it has to be exactly right.
+    """
+    entry = {"item_hash": signed_vprogram_message["item_hash"], "message": signed_vprogram_message}
+
+    outcome, verified, reason = verify_entry(entry)
+
+    assert outcome is VerificationOutcome.VERIFIED
+    assert reason == ""
+    assert str(verified.message.item_hash) == signed_vprogram_message["item_hash"]
+    assert verified.message.sender == signed_vprogram_message["sender"]
