@@ -58,6 +58,9 @@ class ReclaimableMarker:
     @classmethod
     def from_json(cls, text: str) -> ReclaimableMarker:
         data = json.loads(text)
+        if not isinstance(data, dict):
+            msg = f"marker is not a JSON object: {type(data).__name__}"
+            raise ValueError(msg)
         owner = data.get("owner")
         return cls(
             reclaimable_since=datetime.fromisoformat(data["reclaimable_since"]),
@@ -94,13 +97,25 @@ def directory_size_bytes(directory: Path) -> int:
 
 
 def read_marker(namespace_dir: Path) -> ReclaimableMarker | None:
+    """The directory's marker, or None when it has none.
+
+    A marker that does not parse is removed, not just ignored: writes are
+    atomic, so a corrupt marker is never a write in progress, and left in
+    place it would wedge the directory (the exclusive orphan write backs off
+    from any existing file, so nothing could ever re-mark or evict it). Gone,
+    the directory re-enters the orphan flow on the next pass.
+    """
     path = namespace_dir / MARKER_NAME
     if not path.is_file():
         return None
     try:
         return ReclaimableMarker.from_json(path.read_text())
-    except (OSError, ValueError, KeyError, TypeError):
-        logger.warning("Corrupt reclaimable marker at %s, ignoring it", path)
+    except OSError:
+        logger.warning("Unreadable reclaimable marker at %s, ignoring it", path)
+        return None
+    except (ValueError, KeyError, TypeError, AttributeError):
+        logger.warning("Corrupt reclaimable marker at %s, removing it", path)
+        path.unlink(missing_ok=True)
         return None
 
 

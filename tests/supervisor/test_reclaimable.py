@@ -147,6 +147,22 @@ def test_a_failed_marker_write_leaves_no_temp_file(pools, monkeypatch):  # noqa:
     assert list((pools["pool0"] / VM_HASH).glob("*.tmp")) == []
 
 
+@pytest.mark.parametrize("content", ["[]", '"x"', "null", "42", "{not json", '{"reason": "gone"}'])
+def test_a_corrupt_marker_is_removed_and_reads_as_none(pools, content):  # noqa: F811
+    """Valid JSON that is not an object used to escape read_marker as an
+    AttributeError, which iter_reclaimable() fed straight into every
+    admission check. Every corrupt shape now reads as no marker, and the file
+    goes, so the directory is not wedged forever (the exclusive orphan write
+    backs off from any existing file)."""
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    marker_path = pools["pool0"] / VM_HASH / MARKER_NAME
+    marker_path.write_text(content)
+
+    assert read_marker(pools["pool0"] / VM_HASH) is None
+    assert not marker_path.exists()
+    assert reclaimable_bytes() == 0
+
+
 def test_an_orphan_marker_never_overwrites_an_existing_marker(pools):  # noqa: F811
     """The periodic pass can decide "orphan" in the window where a GONE
     retire is writing the real marker; the gone marker carries the owner and
