@@ -617,8 +617,8 @@ def _evict(
     is_live: Callable[[str], bool] | None = None,
 ) -> int:
     if is_live is not None and is_live(namespace):
-        # A stale marker on a live VM, or a create that adopted the directory
-        # since this pass started listing it.
+        # A stale marker on a live VM, or a create that committed since this
+        # pass started listing it.
         logger.warning("Not evicting %s: a live VM owns it despite its reclaimable marker", namespace)
         return 0
     if is_creating(namespace):
