@@ -251,8 +251,13 @@ class TestCreateGuard:
         monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
         monkeypatch.setattr(run_module, "persist_record", AsyncMock())
         held: list[bool] = []
+
+        def observe_create(spec):
+            held.append(is_creating(str(_HASH)))
+            return _info()
+
         supervisor = SimpleNamespace(
-            create_vm=AsyncMock(side_effect=lambda spec: held.append(is_creating(str(_HASH))) or _info()),
+            create_vm=AsyncMock(side_effect=observe_create),
             get_vm=AsyncMock(return_value=_info()),
             add_port_forward=AsyncMock(),
             delete_vm=AsyncMock(),

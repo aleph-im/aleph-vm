@@ -78,7 +78,12 @@ class TestRoomMaker:
     def test_the_room_maker_is_asked_before_refusing(self, three_pools, monkeypatch, room_maker):
         calls = []
         monkeypatch.setattr(storage_pools_module, "_pool_free_bytes", lambda pool: 0)
-        room_maker(lambda pool, needed: calls.append((pool.index, needed)) or 0)
+
+        def evictor(pool, needed):
+            calls.append((pool.index, needed))
+            return 0
+
+        room_maker(evictor)
 
         with pytest.raises(InsufficientResourcesError):
             select_pool(size_mib=1)
@@ -104,7 +109,12 @@ class TestRoomMaker:
     def test_the_room_maker_is_not_asked_when_a_pool_already_fits(self, three_pools, monkeypatch, room_maker):
         _fake_disk_usage(monkeypatch, {pool.path: 50 * 1024**3 for pool in three_pools})
         calls = []
-        room_maker(lambda pool, needed: calls.append(pool) or 0)
+
+        def evictor(pool, needed):
+            calls.append(pool)
+            return 0
+
+        room_maker(evictor)
 
         assert select_pool(size_mib=1024) == three_pools[0]
         assert calls == []
@@ -115,7 +125,12 @@ class TestRoomMaker:
         nothing at all."""
         monkeypatch.setattr(storage_pools_module, "_pool_free_bytes", lambda pool: None)
         calls = []
-        room_maker(lambda pool, needed: calls.append(pool.index) or 0)
+
+        def evictor(pool, needed):
+            calls.append(pool.index)
+            return 0
+
+        room_maker(evictor)
 
         with pytest.raises(InsufficientResourcesError):
             select_pool(size_mib=1)
