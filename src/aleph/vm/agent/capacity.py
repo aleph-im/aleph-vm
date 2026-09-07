@@ -141,7 +141,9 @@ class CapacityManager:
         physical - HOST_MEMORY_RESERVED_MIB - PROGRAM_MEMORY_RESERVED_MIB,
         programs share PROGRAM_MEMORY_RESERVED_MIB. vCPUs are capped at
         physical cores times VCPU_OVERCOMMIT_FACTOR. Disk is checked whenever
-        disk_mib > 0, which every create path now passes (#1153).
+        disk_mib > 0: the create paths pass the message's volume total when
+        they admit a VM, and 0 in the re-checks they run once the images are
+        downloaded, which are about the images rather than the volumes.
 
         ``exclude_vm_hash`` skips that VM's own registry record from the
         committed sums: the create paths record the VM before admission (the
