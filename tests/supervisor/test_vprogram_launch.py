@@ -711,12 +711,12 @@ def test_remove_vprogram_staging_is_idempotent(tmp_path, monkeypatch):
     assert not staging.exists()
 
 
-# A GPU-declaring message needs a VerifiableProgramContent.gpus field, which
+# A GPU-declaring message needs a VerifiableProgramContent.gpu field, which
 # only a post-1.4.0 aleph-message build carries; skip rather than fail on a
 # dev-deps run that predates it so CI on the released package stays green.
 requires_gpu_field = pytest.mark.skipif(
-    "gpus" not in getattr(VerifiableProgramContent, "model_fields", {}),
-    reason="aleph-message build has no VerifiableProgramContent.gpus field",
+    "gpu" not in getattr(VerifiableProgramContent, "model_fields", {}),
+    reason="aleph-message build has no VerifiableProgramContent.gpu field",
 )
 
 GPU_BLOCK = {
@@ -732,18 +732,20 @@ VOLUME_SLOT_TEMPLATE = (
 )
 
 
-def _with_gpu(message: VerifiableProgramMessage, *, memory: int = 4096) -> VerifiableProgramMessage:
-    # Deferred import: ConfidentialGpu does not exist on an aleph-message
-    # build that predates the gpus field, and this helper is only ever
-    # called from tests guarded by @requires_gpu_field.
-    from aleph_message.models.execution.vprogram import ConfidentialGpu
+def _with_gpu(
+    message: VerifiableProgramMessage, *, memory: int = 4096, arch: str = "blackwell", count: int = 1
+) -> VerifiableProgramMessage:
+    # Deferred import: ConfidentialGpuRequirement does not exist on an
+    # aleph-message build that predates the gpu field, and this helper is only
+    # ever called from tests guarded by @requires_gpu_field.
+    from aleph_message.models.execution.vprogram import ConfidentialGpuRequirement
 
     content = message.content.model_copy(
         update={
             # model_copy(update=...) does not coerce nested dicts (unlike
-            # parse_message/model_validate), so a real ConfidentialGpu is
-            # built here to match what a validated message actually carries.
-            "gpus": [ConfidentialGpu(vendor="nvidia", device_id="10de:2b85")],
+            # parse_message/model_validate), so a real requirement is built
+            # here to match what a validated message actually carries.
+            "gpu": ConfidentialGpuRequirement(vendor="nvidia", arch=arch, count=count, mode="cc"),
             "resources": message.content.resources.model_copy(update={"memory": memory}),
         }
     )
@@ -787,40 +789,45 @@ async def test_gpu_vprogram_spec_leaves_gpus_for_run_to_resolve(tmp_path, storag
 @pytest.mark.asyncio
 async def test_gpu_vprogram_rejects_a_second_gpu(tmp_path, storage_files, snp_vcpu_types):
     # One card per VM: the measured cmdline reserves a single swiotlb window
-    # and the guest verifies one device. The schema caps the list at one, so
-    # the two-GPU content is built with model_copy to prove the launch path
-    # has its own guard rather than trusting the sender's message.
-    from aleph_message.models.execution.vprogram import ConfidentialGpu
-
+    # and the guest verifies one device. The schema allows up to eight, so a
+    # count of two is a message this CRN must refuse on its own.
     _stage_bundle(tmp_path, storage_files, gpu=GPU_BLOCK)
-    message = _with_gpu(load_vprogram_message())
-    content = message.content.model_copy(
-        update={
-            "gpus": [
-                ConfidentialGpu(vendor="nvidia", device_id="10de:2b85"),
-                ConfidentialGpu(vendor="nvidia", device_id="10de:2b85"),
-            ]
-        }
-    )
+    message = _with_gpu(load_vprogram_message(), count=2)
     with pytest.raises(VmSetupError, match="one confidential GPU"):
-        await build_vprogram_spec(message.item_hash, content)
+        await build_vprogram_spec(message.item_hash, message.content)
 
 
 @requires_gpu_field
 @pytest.mark.asyncio
 async def test_gpu_vprogram_rejects_a_foreign_vendor(tmp_path, storage_files, snp_vcpu_types):
     # The runtime drives NVIDIA cards; a message asking for another vendor
-    # would be launched against a driver that cannot attest it. Again built
-    # with model_copy, since the schema itself would reject the vendor.
-    from aleph_message.models.execution.vprogram import ConfidentialGpu
+    # would be launched against a driver that cannot attest it. Built with
+    # model_construct, since the schema itself would reject the vendor.
+    from aleph_message.models.execution.vprogram import ConfidentialGpuRequirement
 
     _stage_bundle(tmp_path, storage_files, gpu=GPU_BLOCK)
     message = _with_gpu(load_vprogram_message())
     content = message.content.model_copy(
-        update={"gpus": [ConfidentialGpu.model_construct(vendor="amd", device_id="1002:744c")]}
+        update={
+            "gpu": ConfidentialGpuRequirement.model_construct(
+                vendor="amd", arch="blackwell", count=1, models=None, mode="cc"
+            )
+        }
     )
     with pytest.raises(VmSetupError, match="amd"):
         await build_vprogram_spec(message.item_hash, content)
+
+
+@requires_gpu_field
+@pytest.mark.asyncio
+async def test_gpu_vprogram_rejects_an_architecture_the_runtime_does_not_drive(tmp_path, storage_files, snp_vcpu_types):
+    # The driver lives inside the measured runtime, so a hopper request
+    # against a blackwell runtime would boot a guest whose driver cannot
+    # bring the card up, let alone attest it.
+    _stage_bundle(tmp_path, storage_files, gpu=GPU_BLOCK)  # GPU_BLOCK is blackwell
+    message = _with_gpu(load_vprogram_message(), arch="hopper")
+    with pytest.raises(VmSetupError, match="asks for a hopper GPU but runtime"):
+        await build_vprogram_spec(message.item_hash, message.content)
 
 
 @pytest.mark.asyncio
