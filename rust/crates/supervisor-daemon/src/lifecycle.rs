@@ -3901,6 +3901,7 @@ mod tests {
             pci_host: pci_host.into(),
             device_id: "10de:2b85".into(),
             cc_mode: None,
+            arch: None,
         }
     }
 
