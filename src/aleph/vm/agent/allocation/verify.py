@@ -135,7 +135,10 @@ def verify_entry(entry: dict) -> tuple[VerificationOutcome, VerifiedMessage | No
         return VerificationOutcome.REJECTED, None, "message is not an object"
     if raw.get("item_type") != ItemType.inline.value:
         return VerificationOutcome.UNVERIFIABLE, None, ""
-    if raw.get("chain") not in VERIFIABLE_CHAINS:
+    # str() because an unhashable chain (a list, a dict) would raise out of the
+    # set membership test rather than answer, and every shape we do not handle
+    # belongs on the fetch path, not in a traceback.
+    if str(raw.get("chain")) not in VERIFIABLE_CHAINS:
         return VerificationOutcome.UNVERIFIABLE, None, ""
 
     try:
@@ -154,6 +157,6 @@ def verify_entry(entry: dict) -> tuple[VerificationOutcome, VerifiedMessage | No
 
     if not _signature_matches(message):
         logger.warning("Embedded message %s is not signed by its sender", message.item_hash)
-        return VerificationOutcome.REJECTED, None, "signature does not match the sender"
+        return VerificationOutcome.REJECTED, None, "signature is invalid or not the sender's"
 
     return VerificationOutcome.VERIFIED, VerifiedMessage(message=message, original=deepcopy(message)), ""

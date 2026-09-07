@@ -273,3 +273,13 @@ def test_an_entry_with_a_message_but_no_item_hash_is_rejected(account, instance_
     assert outcome is VerificationOutcome.REJECTED
     assert verified is None
     assert reason == "plan entry has no item_hash"
+
+
+@pytest.mark.parametrize("chain", [["ETH"], {"chain": "ETH"}, {1, 2}, None, 0])
+def test_an_unusable_chain_answers_instead_of_raising(chain):
+    """Every entry gets a verdict. An unhashable chain used to raise TypeError
+    out of the set membership test rather than answer."""
+    outcome, verified, _ = verify_entry({"item_hash": "b" * 64, "message": {"item_type": "inline", "chain": chain}})
+
+    assert outcome is VerificationOutcome.UNVERIFIABLE
+    assert verified is None
