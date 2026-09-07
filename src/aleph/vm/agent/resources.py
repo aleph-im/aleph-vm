@@ -2,7 +2,7 @@ import logging
 import math
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import psutil
 from aiohttp import web
@@ -96,6 +96,9 @@ class SevSnpProperties(BaseModel):
 
 class NvidiaCcDevice(BaseModel):
     device_id: str = Field(description="vendor:device id of a card in NVIDIA CC mode")
+    arch: Literal["hopper", "blackwell"] = Field(
+        description="NVIDIA architecture family; what a V-PROGRAM message asks for"
+    )
     model: str | None = Field(default=None, description="GPU model name on Aleph Network")
 
 
@@ -327,11 +330,19 @@ async def _get_static_machine_capability() -> MachineCapability:
 def nvidia_cc_properties(available_gpus: list[dict], network_models: dict[str, str]) -> NvidiaCcProperties | None:
     """The confidential-GPU block: only cards whose probe said `on`.
     `devtools` lifts the profiling blocks and is not confidential; an
-    unprobed card is unknown and advertises nothing."""
+    unprobed card is unknown and advertises nothing.
+
+    A card also needs the architecture the supervisor derived: that is what a
+    V-PROGRAM message names and what the scheduler matches on. A card in CC
+    mode always carries one (the probe reads a per-architecture register
+    offset, so it cannot have succeeded without knowing the family), so an
+    arch-less card here means an inventory the agent cannot reason about, and
+    it is left unadvertised rather than guessed at.
+    """
     devices = [
-        NvidiaCcDevice(device_id=gpu["device_id"], model=network_models.get(gpu["device_id"]))
+        NvidiaCcDevice(device_id=gpu["device_id"], arch=gpu["arch"], model=network_models.get(gpu["device_id"]))
         for gpu in available_gpus
-        if gpu.get("cc_mode") == "on"
+        if gpu.get("cc_mode") == "on" and gpu.get("arch")
     ]
     return NvidiaCcProperties(devices=devices) if devices else None
 

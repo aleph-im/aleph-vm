@@ -190,19 +190,29 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
     """
     manifest = await fetch_runtime_manifest(str(content.runtime.ref))
 
-    # content.gpus is Optional on the schema (absent and empty both mean no
-    # GPU); read it defensively so this keeps working against an
-    # aleph-message release that predates the field.
-    gpus = list(getattr(content, "gpus", None) or [])
-    if gpus:
-        if len(gpus) > 1:
-            msg = f"V-PROGRAM {vm_hash} declares {len(gpus)} GPUs; one confidential GPU per VM is supported"
+    # content.gpu is Optional on the schema (absent means no GPU); read it
+    # defensively so this keeps working against an aleph-message release that
+    # predates the field.
+    gpu = getattr(content, "gpu", None)
+    if gpu is not None:
+        # The schema allows up to eight cards, the ceiling of NVIDIA's
+        # multi-GPU CC mode. One card per VM is the configuration this CRN
+        # validates: single-GPU passthrough on the RTX PRO 6000 Blackwell
+        # Server Edition, with no encrypted-NVLink topology to speak of.
+        if gpu.count > 1:
+            msg = f"V-PROGRAM {vm_hash} asks for {gpu.count} GPUs; this CRN attaches one confidential GPU per VM"
             raise VmSetupError(msg)
         if manifest.gpu is None:
             msg = f"V-PROGRAM {vm_hash} declares a GPU but runtime {content.runtime.ref} has no gpu block"
             raise VmSetupError(msg)
-        if gpus[0].vendor != manifest.gpu.vendor:
-            msg = f"V-PROGRAM {vm_hash} declares a {gpus[0].vendor} GPU but the runtime drives {manifest.gpu.vendor}"
+        if gpu.vendor != manifest.gpu.vendor:
+            msg = f"V-PROGRAM {vm_hash} declares a {gpu.vendor} GPU but the runtime drives {manifest.gpu.vendor}"
+            raise VmSetupError(msg)
+        if gpu.arch != manifest.gpu.arch:
+            msg = (
+                f"V-PROGRAM {vm_hash} asks for a {gpu.arch} GPU but runtime "
+                f"{content.runtime.ref} drives {manifest.gpu.arch}"
+            )
             raise VmSetupError(msg)
         if content.resources.memory < GPU_VPROGRAM_MIN_MEMORY_MIB:
             msg = (
