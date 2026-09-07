@@ -117,7 +117,12 @@ def write_marker(namespace_dir: Path, marker: ReclaimableMarker, *, exclusive: b
     tmp = path.with_name(MARKER_NAME + (".x.tmp" if exclusive else ".tmp"))
     tmp.write_text(marker.to_json())
     if not exclusive:
-        os.replace(tmp, path)
+        try:
+            os.replace(tmp, path)
+        finally:
+            # On success the replace consumed the temp file; on failure
+            # (ENOSPC, EACCES) nothing else would ever collect it.
+            tmp.unlink(missing_ok=True)
         return True
     try:
         os.link(tmp, path)

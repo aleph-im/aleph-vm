@@ -129,6 +129,24 @@ def test_adopt_clears_every_marker_of_the_namespace(pools):  # noqa: F811
     assert adopt(VM_HASH) == 0
 
 
+def test_a_failed_marker_write_leaves_no_temp_file(pools, monkeypatch):  # noqa: F811
+    """A replace that fails (ENOSPC, EACCES) must not strand the temp file:
+    nothing else would ever collect it from the VM directory."""
+    import aleph.vm.agent.vm.reclaimable as reclaimable_module
+
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+
+    def refuse(src, dst):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(reclaimable_module.os, "replace", refuse)
+
+    with pytest.raises(OSError):
+        mark_reclaimable(VM_HASH, "gone")
+
+    assert list((pools["pool0"] / VM_HASH).glob("*.tmp")) == []
+
+
 def test_an_orphan_marker_never_overwrites_an_existing_marker(pools):  # noqa: F811
     """The periodic pass can decide "orphan" in the window where a GONE
     retire is writing the real marker; the gone marker carries the owner and
