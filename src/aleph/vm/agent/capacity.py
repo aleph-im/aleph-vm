@@ -63,6 +63,17 @@ class AdmissionVerdict:
     detail: str = ""
 
 
+def is_instance_bucket(content: ExecutableContent) -> bool:
+    """Whether this content is admitted against the instance memory bucket.
+
+    A V-PROGRAM is a full SNP VM and belongs with the instances even though it
+    is not an InstanceContent. Bucketing one as a program would both starve the
+    small program bucket and hide its memory from instance admission, so the
+    rule lives here instead of being restated wherever a bucket is picked.
+    """
+    return isinstance(content, (InstanceContent, VerifiableProgramContent))
+
+
 def requirements_from_message(content: ExecutableContent) -> ResourceRequirements:
     """Extract the resources a message requests into a message-free DTO."""
     is_instance = isinstance(content, InstanceContent)
@@ -281,7 +292,7 @@ class CapacityManager:
         requirements_from_message reports is_instance=False (the content is not
         an InstanceContent) while a V-PROGRAM is committed to the instance
         bucket, which is what _committed_resources and _admit both do. Pass
-        isinstance(content, (InstanceContent, VerifiableProgramContent)).
+        is_instance_bucket(content) rather than restating the rule.
         """
         committed_instance, committed_program, committed_vcpus = self._committed_resources(None)
         for vm_hash in releasing:
@@ -289,7 +300,7 @@ class CapacityManager:
             if record is None or not record.message.resources:
                 continue
             resources = record.message.resources
-            if isinstance(record.message, InstanceContent) or record.is_vprogram:
+            if is_instance_bucket(record.message):
                 committed_instance -= resources.memory
             else:
                 committed_program -= resources.memory
@@ -345,12 +356,7 @@ class CapacityManager:
             record_vcpus = resources.vcpus
             if not memory and not record_vcpus:
                 continue
-            # V-PROGRAMs are full SNP VMs, admitted against the instance
-            # bucket (run.py passes is_instance=True), so they must also be
-            # counted there. Bucketing them as programs would both starve the
-            # small program bucket and hide their memory from instance
-            # admission (silent over-commit).
-            if isinstance(record.message, (InstanceContent, VerifiableProgramContent)):
+            if is_instance_bucket(record.message):
                 committed_instance_memory_mib += memory
             else:
                 committed_program_memory_mib += memory
