@@ -46,7 +46,7 @@ struct Cli {
     /// attestation report, no attested TLS identity, no /dev/sev-guest.
     /// The proxy and inject-secret routes behave as in production; the
     /// attestation endpoint answers 500. Selected by the guest init when the
-    /// measured kernel cmdline carries `aleph_local=1` (which no production
+    /// measured kernel cmdline carries `aleph_insecure_unattested=1` (which no production
     /// launch path can emit without changing the launch measurement).
     /// Rejected together with --owner: owner authentication binds
     /// signatures to the served TLS key, which plain mode does not have.
@@ -87,7 +87,7 @@ async fn main() -> Result<()> {
         "starting aleph-attest-agent"
     );
 
-    // 2 to 4. Backend and identity. Plain-HTTP local mode has no TEE and
+    // 2 to 4. Backend and identity. Plain-HTTP unattested mode has no TEE and
     // therefore no attested identity: the served key is empty and the
     // attestation endpoint fails closed through NoTeeBackend.
     let (backend, identity): (Arc<dyn TeeBackend>, Option<tls::AttestedTlsIdentity>) =
@@ -185,7 +185,7 @@ async fn main() -> Result<()> {
                 .context("HTTPS server exited with error")?;
         }
         None => {
-            info!(addr = %bind_addr, "binding plain HTTP server (insecure local mode)");
+            info!(addr = %bind_addr, "binding plain HTTP server (insecure unattested mode)");
             server
                 .bind(&bind_addr)
                 .context("failed to bind HTTP server")?

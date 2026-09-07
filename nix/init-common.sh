@@ -256,10 +256,11 @@ mount_verified_volumes() {
     echo "init: ${volume_index} verified volume(s) mounted under ${guest_root}/volumes"
 }
 
-# Local (non-confidential) test mode. Set only when the measured kernel
-# cmdline carries the literal token `aleph_local=1`, which the CLI's local
-# runner (`aleph vprogram run`) appends after materializing the manifest
-# template. No production path can emit it: the manifest template is
+# Unattested (non-confidential) test mode: the agent serves plain HTTP with
+# no TEE and no attested identity, so nothing about the guest is verifiable
+# from outside. Set only when the measured kernel cmdline carries the literal
+# token `aleph_insecure_unattested=1`, which the CLI's local runner
+# (`aleph vprogram run`) appends after materializing the manifest template. No production path can emit it: the manifest template is
 # fixed, the CLI rejects unknown template tokens, and the daemon derives
 # the launch cmdline from a fixed base. A CRN that added it would change
 # the launch measurement, so every attested call would fail closed at the
@@ -268,11 +269,11 @@ mount_verified_volumes() {
 # would fail open on any non-SNP host.
 #
 # Same \b reasoning as the roothash tokens: no other token ends in
-# "aleph_local", and the trailing \b pins the value to exactly "1".
-local_mode=$(/bin/busybox sed -n 's/.*\baleph_local=1\b.*/1/p' /proc/cmdline)
+# "aleph_insecure_unattested", and the trailing \b pins the value to exactly "1".
+unattested_mode=$(/bin/busybox sed -n 's/.*\baleph_insecure_unattested=1\b.*/1/p' /proc/cmdline)
 
 # Start the in-guest attestation agent (the only externally reachable
-# listener, see setup_firewall in the callers). In local mode it serves
+# listener, see setup_firewall in the callers). In unattested mode it serves
 # plain HTTP on the same port with the same proxy path to the loopback
 # upstream, so a host-side port forward exercises exactly what the attested
 # endpoint would serve. The marker line is what `aleph vprogram run` waits
@@ -280,8 +281,8 @@ local_mode=$(/bin/busybox sed -n 's/.*\baleph_local=1\b.*/1/p' /proc/cmdline)
 # so it means "agent starting", not "agent listening": consumers must keep
 # probing tcp/8443 until it answers (the CLI and boot-smoke.sh both do).
 start_attest_agent() {
-    if [ -n "$local_mode" ]; then
-        echo "init: LOCAL MODE: attest agent serving plain HTTP without a TEE; tcp/8443 is unattested"
+    if [ -n "$unattested_mode" ]; then
+        echo "init: INSECURE UNATTESTED MODE: attest agent serving plain HTTP without a TEE on tcp/8443"
         /bin/aleph-attest-agent --port 8443 --upstream http://127.0.0.1:8080 --insecure-plain-http &
     else
         /bin/aleph-attest-agent --port 8443 --upstream http://127.0.0.1:8080 &

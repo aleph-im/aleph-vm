@@ -219,7 +219,7 @@ mod tests {
         })
     }
 
-    /// The plain-HTTP local mode runs the agent on aleph-tee's NoTeeBackend:
+    /// The plain-HTTP unattested mode runs the agent on aleph-tee's NoTeeBackend:
     /// the attestation endpoint must fail closed with a 500 (never a
     /// fabricated report).
     fn no_tee_state() -> web::Data<AppState> {

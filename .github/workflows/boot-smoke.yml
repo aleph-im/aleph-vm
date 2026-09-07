@@ -3,7 +3,7 @@ name: "V-PROGRAM boot smoke (plain QEMU)"
 
 # Boots the measured v-program image under plain QEMU on a KVM-capable
 # runner (no SEV-SNP) and runs nix/boot-smoke.sh: verity chain, firewall,
-# workload handoff, and the aleph_local=1 plain-HTTP agent path that
+# workload handoff, and the aleph_insecure_unattested=1 plain-HTTP agent path that
 # `aleph vprogram run` relies on. Same trigger surface as the golden
 # measurement check: the image build is the expensive part (~20 min cold).
 
@@ -31,7 +31,7 @@ on:
 
 jobs:
   boot-smoke:
-    name: "build image, boot under plain QEMU, probe local mode"
+    name: "build image, boot under plain QEMU, probe unattested mode"
     runs-on: ubuntu-24.04
     timeout-minutes: 90
 

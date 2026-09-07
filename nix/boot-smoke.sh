@@ -7,7 +7,7 @@
 # the attest-agent is expected to fail without /dev/sev-guest. Phase 2
 # additionally boots the fib workload with one verified data volume and
 # proves the positional device binding (vde/vdf) and the /volumes mount.
-# Phase 3 boots the workload with aleph_local=1 and proves the plain-HTTP
+# Phase 3 boots the workload with aleph_insecure_unattested=1 and proves the plain-HTTP
 # agent path (see init-common.sh start_attest_agent) answers through a
 # SLIRP port forward.
 #
@@ -103,7 +103,7 @@ markers=(
   # init.sh names the mount point ("from /mnt/root"), so match the prefix.
   "init: starting /sbin/init from "
 )
-forbidden=("init: LOCAL MODE:")
+forbidden=("init: INSECURE UNATTESTED MODE:")
 run_phase "phase 1" "console=ttyS0 root=/dev/mapper/verity-root ro roothash=$roothash"
 echo "boot smoke phase 1 OK: initrd booted, rootfs verified and mounted, firewall up, /sbin/init started" >&2
 
@@ -132,7 +132,7 @@ markers=(
   "init: 1 verified volume(s) mounted under /mnt/workload/volumes"
   "init: starting /sbin/init from /mnt/workload"
 )
-forbidden=("init: LOCAL MODE:")
+forbidden=("init: INSECURE UNATTESTED MODE:")
 run_phase "phase 2" \
   "console=ttyS0 root=/dev/mapper/verity-root ro roothash=$roothash workload_roothash=$wl_roothash verified_volumes=$vol_roothash" \
   -drive "file=$work/workload.ext4,format=raw,if=virtio,readonly=on" \
@@ -141,7 +141,7 @@ run_phase "phase 2" \
   -drive "file=$work/volume0.verity,format=raw,if=virtio,readonly=on"
 echo "boot smoke phase 2 OK: workload and verified volume verity-mounted, workload init started" >&2
 
-# Phase 3: local (non-confidential) mode. The `aleph_local=1` token makes
+# Phase 3: unattested (non-confidential) mode. The `aleph_insecure_unattested=1` token makes
 # init start the attest-agent in plain-HTTP mode; a SLIRP hostfwd to the
 # agent port then reaches the fib workload's /health through the same
 # agent-to-loopback proxy path production uses. This is the contract
@@ -167,14 +167,14 @@ probe_local_health() {
 
 markers=(
   "init: mounting /dev/mapper/verity-workload"
-  "init: LOCAL MODE: attest agent serving plain HTTP without a TEE; tcp/8443 is unattested"
+  "init: INSECURE UNATTESTED MODE: attest agent serving plain HTTP without a TEE on tcp/8443"
   "init: starting /sbin/init from /mnt/workload"
 )
 netdev_extra=",hostfwd=tcp:127.0.0.1:${local_port}-:8443"
 probe=probe_local_health
 run_phase "phase 3" \
-  "console=ttyS0 root=/dev/mapper/verity-root ro roothash=$roothash workload_roothash=$wl_roothash aleph_local=1" \
+  "console=ttyS0 root=/dev/mapper/verity-root ro roothash=$roothash workload_roothash=$wl_roothash aleph_insecure_unattested=1" \
   -drive "file=$work/workload.ext4,format=raw,if=virtio,readonly=on" \
   -drive "file=$work/workload.verity,format=raw,if=virtio,readonly=on"
-echo "boot smoke phase 3 OK: local mode booted, plain agent answered /health through the hostfwd" >&2
+echo "boot smoke phase 3 OK: unattested mode booted, plain agent answered /health through the hostfwd" >&2
 exit 0
