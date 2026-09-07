@@ -41,6 +41,7 @@ from aleph.vm.supervisor_interface.types import (
 )
 
 _ATTEST_PORT = 8443
+_SENDER = "0x1234567890abcdef1234567890abcdef12345678"
 
 
 def _snp_spec() -> CreateVmSpec:
@@ -106,7 +107,7 @@ async def test_snp_instance_create_uses_snp_builder(monkeypatch):
     the recorded port forwards include SSH (22) and the attestation port
     (8443, from build_snp_instance_spec's returned attest_port)."""
     content = snp_instance_content()
-    message = MagicMock(content=content)
+    message = MagicMock(content=content, sender=_SENDER)
     monkeypatch.setattr(
         run_module, "load_updated_message", AsyncMock(return_value=(message, MagicMock(content=content)))
     )
@@ -134,7 +135,7 @@ async def test_snp_instance_create_uses_snp_builder(monkeypatch):
         VM_HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
     )
 
-    build_snp.assert_awaited_once_with(VM_HASH, content)
+    build_snp.assert_awaited_once_with(VM_HASH, content, _SENDER)
     build_sev.assert_not_awaited()
     sent_spec = supervisor.create_vm.await_args.args[0]
     assert sent_spec.tee is not None
@@ -153,7 +154,7 @@ async def test_snp_instance_never_awaits_confidential_init(monkeypatch):
     so the path must fall straight through to finish_instance_create / the
     port-forward stage rather than the SEV await branch."""
     content = snp_instance_content()
-    message = MagicMock(content=content)
+    message = MagicMock(content=content, sender=_SENDER)
     monkeypatch.setattr(
         run_module, "load_updated_message", AsyncMock(return_value=(message, MagicMock(content=content)))
     )
@@ -200,7 +201,7 @@ async def test_snp_instance_with_gpus_rejected(monkeypatch):
             )
         }
     )
-    message = MagicMock(content=content)
+    message = MagicMock(content=content, sender=_SENDER)
     monkeypatch.setattr(
         run_module, "load_updated_message", AsyncMock(return_value=(message, MagicMock(content=content)))
     )
@@ -227,7 +228,7 @@ async def test_legacy_sev_instance_path_untouched(monkeypatch):
     build_create_vm_spec, never build_snp_instance_spec; its spec carries no
     kernel_cmdline (build_create_vm_spec never sets one)."""
     content = _make_qemu_instance_message(trusted_execution=TrustedExecutionEnvironment())
-    message = MagicMock(content=content)
+    message = MagicMock(content=content, sender=_SENDER)
     monkeypatch.setattr(
         run_module, "load_updated_message", AsyncMock(return_value=(message, MagicMock(content=content)))
     )
@@ -282,7 +283,7 @@ async def test_snp_instance_failure_cleans_staging(monkeypatch):
     remove_snp_instance_staging and forget the registry record, mirroring the
     V-PROGRAM build/create failure branch."""
     content = snp_instance_content()
-    message = MagicMock(content=content)
+    message = MagicMock(content=content, sender=_SENDER)
     monkeypatch.setattr(
         run_module, "load_updated_message", AsyncMock(return_value=(message, MagicMock(content=content)))
     )
@@ -312,7 +313,7 @@ async def test_snp_instance_port_forward_failure_cleans_staging(monkeypatch):
     be deleted and its staging removed, mirroring the create-failure branch
     (run.py's finish_instance_create/attest-gate except block)."""
     content = snp_instance_content()
-    message = MagicMock(content=content)
+    message = MagicMock(content=content, sender=_SENDER)
     monkeypatch.setattr(
         run_module, "load_updated_message", AsyncMock(return_value=(message, MagicMock(content=content)))
     )
