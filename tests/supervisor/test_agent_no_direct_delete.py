@@ -16,6 +16,8 @@ AGENT_ROOT = Path(agent_package.__file__).parent
 ALLOWED = {AGENT_ROOT / "vm" / "retire.py"}
 
 
+# "migrations" is alembic's generated DB-migration package (agent/migrations);
+# the live-migration package (agent/migration, singular) stays covered.
 @pytest.mark.parametrize(
     "path",
     sorted(p for p in AGENT_ROOT.rglob("*.py") if p not in ALLOWED and "migrations" not in p.parts),
