@@ -198,8 +198,9 @@ if [ ! -x "$guest_root/sbin/init" ]; then
     exec /bin/busybox poweroff -f
 fi
 
-# Start the attestation agent (after rootfs mount).
-/bin/aleph-attest-agent --port 8443 --upstream http://127.0.0.1:8080 &
+# Start the attestation agent (after rootfs mount). Plain HTTP in local
+# mode, see start_attest_agent in init-common.sh.
+start_attest_agent
 
 # Fail-closed supervision (same as init-compose.sh): wait on the guest's PID
 # specifically, not on all children. A bare `wait` would keep the VM, and its
