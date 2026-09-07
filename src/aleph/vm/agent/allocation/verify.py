@@ -124,11 +124,13 @@ def verify_entry(entry: dict) -> tuple[VerificationOutcome, VerifiedMessage | No
     ``reason`` is a safe, caller-facing string for REJECTED.
     """
     raw = entry.get("message")
-    if not raw:
+    if raw is None:
         return VerificationOutcome.UNVERIFIABLE, None, ""
     if not isinstance(raw, dict):
         # Everything else malformed answers REJECTED; a non-dict must not be
-        # the one shape that escapes with an AttributeError instead.
+        # the one shape that escapes with an AttributeError instead. Only a
+        # missing message means "nothing to verify": an empty string or list
+        # is a malformed one, so it is not routed to the fetch fallback.
         logger.warning("Refusing embedded message for %s: not an object", entry.get("item_hash"))
         return VerificationOutcome.REJECTED, None, "message is not an object"
     if raw.get("item_type") != ItemType.inline.value:
@@ -142,8 +144,12 @@ def verify_entry(entry: dict) -> tuple[VerificationOutcome, VerifiedMessage | No
         logger.warning("Refusing embedded message for %s: %s", entry.get("item_hash"), error)
         return VerificationOutcome.REJECTED, None, "message failed validation"
 
-    if str(message.item_hash) != str(entry.get("item_hash")):
-        logger.warning("Embedded message claims %s, plan lists %s", message.item_hash, entry.get("item_hash"))
+    requested = entry.get("item_hash")
+    if requested is None:
+        logger.warning("Plan entry carries a message (%s) but requests no item_hash", message.item_hash)
+        return VerificationOutcome.REJECTED, None, "plan entry has no item_hash"
+    if str(message.item_hash) != str(requested):
+        logger.warning("Embedded message claims %s, plan lists %s", message.item_hash, requested)
         return VerificationOutcome.REJECTED, None, "message does not match the requested item_hash"
 
     if not _signature_matches(message):

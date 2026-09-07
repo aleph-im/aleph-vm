@@ -252,3 +252,24 @@ def test_a_real_network_message_verifies(signed_vprogram_message):
     assert reason == ""
     assert str(verified.message.item_hash) == signed_vprogram_message["item_hash"]
     assert verified.message.sender == signed_vprogram_message["sender"]
+
+
+def test_an_empty_message_is_rejected_not_treated_as_absent():
+    """Only a missing message means "nothing to verify". An empty string is a
+    malformed one, and malformed answers REJECTED rather than falling back."""
+    outcome, verified, reason = verify_entry({"item_hash": "b" * 64, "message": ""})
+
+    assert outcome is VerificationOutcome.REJECTED
+    assert verified is None
+    assert reason
+
+
+def test_an_entry_with_a_message_but_no_item_hash_is_rejected(account, instance_content):
+    """Nothing pins the message to a plan entry, so it cannot be honoured."""
+    message = sign_message(instance_content, account)
+
+    outcome, verified, reason = verify_entry({"message": message})
+
+    assert outcome is VerificationOutcome.REJECTED
+    assert verified is None
+    assert reason == "plan entry has no item_hash"
