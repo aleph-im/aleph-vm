@@ -558,11 +558,19 @@ def _enforce_retention_budget(
         for directory, marker in entries:
             if not reap and total <= budget:
                 break
-            total -= marker.size_bytes
             if directory.name in report.evicted:
                 # A VM spanning two pools is purged whole on the first one.
+                total -= marker.size_bytes
                 continue
-            _evict(directory.name, report, dry_run=dry_run, is_live=is_live)
+            evicted = _evict(directory.name, report, dry_run=dry_run, is_live=is_live)
+            if evicted or not _still_on_disk(directory.name):
+                # Only bytes that actually left the disk count against the
+                # excess. A declined eviction (a live or in-flight re-create,
+                # a dm-held purge refusal) keeps its bytes: spending them
+                # anyway would stop every pass early at the same entry, a
+                # stable under-enforcement, since the marker survives and the
+                # next pass recomputes the same total.
+                total -= marker.size_bytes
 
 
 def make_room(pool: StoragePool, needed_bytes: int, *, live: Collection[str] | None = None) -> int:

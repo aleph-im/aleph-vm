@@ -501,6 +501,32 @@ def test_evicting_a_directory_that_already_vanished_counts_nothing(pools, monkey
     assert report.evicted == [] and report.bytes_freed == 0
 
 
+def test_budget_keeps_evicting_past_a_refused_purge(pools, registry, monkeypatch):  # noqa: F811
+    """A dm-held directory's bytes never left the disk, so the budget pass
+    must not spend them: doing so would stop every pass early at the same
+    entry (the marker survives, the next pass recomputes the same total) and
+    the pool would sit over budget forever. Younger entries are evicted to
+    make up for the held one."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    monkeypatch.setattr(settings, "VOLUME_RETENTION_BUDGET", "8192")
+    held = volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=8192)
+    evictable = volume(pools["pool0"], OTHER_HASH, "rootfs.qcow2", size=8192)
+    mark_reclaimable(VM_HASH, "gone", now=NOW - timedelta(days=2))
+    mark_reclaimable(OTHER_HASH, "gone", now=NOW - timedelta(days=1))
+    real_purge = reconciler_module.purge_vm_storage
+    monkeypatch.setattr(
+        reconciler_module,
+        "purge_vm_storage",
+        lambda namespace: 0 if namespace == VM_HASH else real_purge(namespace),
+    )
+
+    report = reconcile_storage(registry, now=NOW)
+
+    assert held.exists()
+    assert not evictable.exists()
+    assert report.evicted == [OTHER_HASH]
+
+
 def test_evict_declines_a_namespace_whose_create_started_mid_pass(pools, monkeypatch):  # noqa: F811
     """The budget pass lists a retained VM; its owner then re-creates it.
     creating() adopts the directory (clearing the marker) before the evictor
