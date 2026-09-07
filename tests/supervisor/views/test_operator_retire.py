@@ -503,13 +503,18 @@ async def test_operator_reinstall_tears_down_devices_before_purging(aiohttp_clie
         return_value=instance_message.sender,
     )
     order: list[str] = []
+
+    def purge(*args, **kwargs):
+        order.append("purge")
+        return []
+
     mocker.patch(
         "aleph.vm.agent.views.operator.teardown_vm_devices",
         new=AsyncMock(side_effect=lambda *args: order.append("teardown")),
     )
     mocker.patch(
         "aleph.vm.agent.views.operator.purge_vm_volumes",
-        side_effect=lambda *args, **kwargs: order.append("purge") or [],
+        side_effect=purge,
     )
     mocker.patch("aleph.vm.agent.views.operator.recreate_vm_volumes", new=AsyncMock())
 
