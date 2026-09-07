@@ -1165,6 +1165,31 @@ pub fn reboot_vm(state: &DaemonState, vm_id: &str) -> Result<(VmEntry, bool), Rp
     }
     let old_status = status_snapshot(state, &entry);
     let unit = entry.unit_name();
+    // Recreate the per-tap DHCP server with an EMPTY lease database, exactly
+    // like the stop/start pair does. The rebooted measured guest re-solicits
+    // with a fresh random IAID (busybox udhcpc6), so a DHCPv6 lease surviving
+    // from the previous boot pins the single-address range to a binding the
+    // new boot can never match: dnsmasq answers NoAddrsAvail until the lease
+    // expires and the guest loops in init before the attestation agent, with
+    // unlock unreachable for up to the whole lease time. The stop (which
+    // removes the lease file) is best-effort like the StopVm one; the start
+    // is fatal like the StartVm one, since a reboot without a leasable
+    // address is a brick. No renew can race the gap: the guest's DHCP
+    // clients exit after configuring the interface.
+    if entry.config.snp().is_some() && networking_enabled(state, &entry) {
+        let lease_file = dhcp::lease_file_path(&dhcp_lease_dir(state), vm_id);
+        if let Err(dhcp_error) = state.dhcp.stop(vm_id, &lease_file) {
+            tracing::warn!(vm_id, %dhcp_error, "cannot stop the DHCP server, continuing");
+        }
+        let tap = tap_assignment(state, vm_id)?;
+        let config = dhcp::DhcpConfig::for_snp(
+            vm_id,
+            &tap,
+            state.host.dns_nameservers.as_deref().unwrap_or(&[]),
+            &dhcp_lease_dir(state),
+        )?;
+        state.dhcp.start(&config)?;
+    }
     // RestartUnit only queues a job: wait until the unit is confirmed
     // active so the reported status is truthful.
     state.units.restart(&unit)?;
@@ -4493,6 +4518,91 @@ mod tests {
         assert!(
             harness.dhcp.started().is_empty(),
             "a plain VM never gets a DHCP server, including on restart"
+        );
+    }
+
+    #[test]
+    fn rebooting_an_snp_vm_recreates_the_dhcp_server_with_a_fresh_lease_db() {
+        // A reboot must give the guest a DHCP server with an EMPTY lease
+        // database, like the stop/start pair does: the rebooted guest
+        // re-solicits with a fresh random IAID (busybox udhcpc6), so a
+        // surviving DHCPv6 lease pins the single-address range to a binding
+        // the new boot can never match and the guest loops on NoAddrsAvail
+        // in init, before the attestation agent (seen on mainnet, instance
+        // abe65110). stop removes the lease file; both must precede the unit
+        // restart so the booting guest never races a stale server.
+        let harness = harness();
+        let log = crate::test_fixtures::EventLog::new();
+        harness.dhcp.set_event_log(log.clone());
+        harness.systemd.set_event_log(log.clone());
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('e');
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let request = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+
+        let (entry, _) = create_vm(state, request).unwrap();
+        assert_eq!(harness.dhcp.started().len(), 1);
+        let before = log.events().len();
+
+        reboot_vm(state, &vm_id).unwrap();
+        assert_eq!(
+            harness.dhcp.stopped(),
+            vec![vm_id.clone()],
+            "the reboot wipes the lease database via the stop path"
+        );
+        let started = harness.dhcp.started();
+        assert_eq!(started.len(), 2, "the reboot stands a fresh server up");
+        assert_eq!(started[1].vm_hash, vm_id);
+        assert_eq!(started[1].device_name, format!("vmtap{}", entry.vm_index));
+        assert_eq!(
+            started[1].guest_ip,
+            entry.ipv4.as_ref().unwrap().address,
+            "the fresh server still hands out the allocated IP"
+        );
+        assert!(harness.dhcp.is_running(&vm_id));
+
+        let events: Vec<String> = log.events().split_off(before);
+        let dhcp_stop = events
+            .iter()
+            .position(|event| event.starts_with("dhcp: stop "))
+            .expect("the reboot must stop the old server");
+        let dhcp_start = events
+            .iter()
+            .position(|event| event.starts_with("dhcp: start "))
+            .expect("the reboot must start a fresh server");
+        let unit_restart = events
+            .iter()
+            .position(|event| event.starts_with("systemd: restart "))
+            .expect("the reboot must restart the unit");
+        assert!(
+            dhcp_stop < dhcp_start && dhcp_start < unit_restart,
+            "reboot ordering broken: {events:?}"
+        );
+    }
+
+    #[test]
+    fn rebooting_a_plain_vm_touches_no_dhcp_server() {
+        // The reboot path's DHCP recreation is gated on SNP like the create,
+        // restart and teardown paths: a plain persistent VM keeps cloud-init
+        // static config and must neither gain a server nor spuriously stop a
+        // nonexistent one.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+
+        create_vm(state, spec(&vm_id, &root)).unwrap();
+        reboot_vm(state, &vm_id).unwrap();
+        assert!(
+            harness.dhcp.started().is_empty(),
+            "a plain VM never gets a DHCP server, including on reboot"
+        );
+        assert!(
+            harness.dhcp.stopped().is_empty(),
+            "a plain VM reboot touches no DHCP server, got {:?}",
+            harness.dhcp.stopped()
         );
     }
 
