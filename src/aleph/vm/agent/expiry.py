@@ -50,7 +50,11 @@ class ExpiryManager:
             await asyncio.sleep(timeout)
             logger.info("Idle timeout reached for %s, reaping", vm_id)
             # An idle on-demand program is recreated on the next request:
-            # RECREATE keeps its host-port forwards and disks.
+            # RECREATE keeps its host-port forwards and disks so the program
+            # comes back on the same ports. That reservation is deliberate
+            # and lasts as long as the program does: when it is forgotten
+            # (GONE from the scheduler) or erased by its owner, retire_vm
+            # deletes the records, port forwards included.
             await retire_vm(str(vm_id), RetireReason.RECREATE, supervisor=self.supervisor)
             reaped = True
         except asyncio.CancelledError:
