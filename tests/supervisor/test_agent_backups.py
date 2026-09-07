@@ -721,8 +721,10 @@ def test_sweep_survives_a_backup_that_vanishes_mid_pass(backup_dir, monkeypatch)
     real_stat = Path.stat
 
     def stat_then_vanish(self, *args, **kwargs):
-        if self == vanishing and vanishing.exists():
-            vanishing.unlink()
+        # No Path calls in here besides unlink: on Python 3.12 Path.exists()
+        # goes through Path.stat, which is this very patch, and recurses.
+        if self == vanishing:
+            vanishing.unlink(missing_ok=True)
         return real_stat(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "stat", stat_then_vanish)
