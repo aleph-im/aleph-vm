@@ -107,35 +107,44 @@ never survives on disk, so there is nothing to reattach to.
 Admission happens in two layers that never overlap in what they check:
 
 - **Agent-side policy** (`src/aleph/vm/agent/capacity.py`,
-  `CapacityManager.check_capacity`) runs before every `create_vm` call, after
-  the spec is built (so a failed download or bundle fetch never consumes
-  capacity). It enforces two-bucket memory accounting: instances (and
-  V-PROGRAMs, which are full SNP VMs admitted against the instance bucket)
-  share `physical - HOST_MEMORY_RESERVED_MIB - PROGRAM_MEMORY_RESERVED_MIB`;
+  `CapacityManager.check_message`) runs once per create, from the message
+  and before any download or allocation, so a host without room refuses
+  before the downloader has written anything. It is the single admission
+  path of every create-path caller in `src/aleph/vm/agent/run.py`
+  (`create_vm_execution`, which covers instances, programs and V-PROGRAMs,
+  and `_ensure_program_vm`, the on-demand program path), of the cold
+  migration import (`src/aleph/vm/agent/migration/runner.py`) and of the
+  `/control/reserve_resources` dry-run endpoint (`operate_reserve_resources`
+  in `src/aleph/vm/agent/views/__init__.py`), which reports capacity ahead
+  of a scheduler placement decision without creating anything. It enforces
+  two-bucket memory accounting: instances (and V-PROGRAMs, which are full
+  SNP VMs admitted against the instance bucket) share
+  `physical - HOST_MEMORY_RESERVED_MIB - PROGRAM_MEMORY_RESERVED_MIB`;
   programs share `PROGRAM_MEMORY_RESERVED_MIB` alone. vCPUs are capped at
-  `physical_cores * VCPU_OVERCOMMIT_FACTOR` across both buckets. Every real
-  create-path caller in `src/aleph/vm/agent/run.py` (`create_vm_execution`,
-  which covers instances, programs and V-PROGRAMs, and `_ensure_program_vm`,
-  the on-demand program path) passes `disk_mib=0` and no `max_volume_mib`,
-  so `check_capacity`'s disk checks no-op on create: disk is not actually
-  gated at create time. `check_capacity` also implements an
-  aggregate-free-space check and a single-largest-volume-fits-the-roomiest-
-  pool check (`_check_max_volume`), but the only caller that exercises them
-  with real figures is the separate `/control/reserve_resources` dry-run
-  endpoint (`operate_reserve_resources` in
-  `src/aleph/vm/agent/views/__init__.py`), which reports capacity ahead of a
-  scheduler placement decision without creating anything. The VM's own
-  early registry record (recorded before the spec build, to make owner-auth
-  answerable during a slow confidential download) is excluded from the
-  committed memory/vCPU sums via `exclude_vm_hash`, or a create would count
-  its own request against itself. GPU admission is a separate reservation
-  ledger (`CapacityManager.holds`, keyed by concrete `pci_host`) with a
-  short-lived hold/resolve two-step: `reserve_gpus` (used by the same
+  `physical_cores * VCPU_OVERCOMMIT_FACTOR` across both buckets. Disk is
+  judged from the sizes the message declares (the instance rootfs and every
+  `size_mib` volume): the total must fit the pools' free space plus what the
+  reclaimer could free, and the single largest volume must fit one pool
+  (`_check_max_volume`). A re-create is not charged for what it already
+  holds: each declared volume is matched to its existing file by name inside
+  `{pool}/{vm_hash}/`, the credit is capped at the declared size, one file
+  discounts at most one volume, and the largest volume's held bytes are
+  credited to the pool holding its file rather than shrinking the
+  requirement. Files that back no declared volume never discount. Since
+  `creating()` adopts a retained directory before admission runs, held
+  bytes are neither counted as reclaimable nor discounted twice. The VM's
+  own early registry record (recorded before the spec build, to make
+  owner-auth answerable during a slow confidential download) is excluded
+  from the committed memory/vCPU sums via `exclude_vm_hash`, or a create
+  would count its own request against itself. GPU admission is a separate
+  reservation ledger (`CapacityManager.holds`, keyed by concrete `pci_host`)
+  with a short-lived hold/resolve two-step: `reserve_gpus` (used by the same
   dry-run endpoint) holds a card for a user for `RESERVATION_TTL_SECONDS`,
-  `resolve_gpus` (called from the create path) consumes the caller's own
-  holds and skips cards held by another user. So create-time admission is,
-  in practice, memory plus vCPUs plus GPU holds; disk admission is a
-  dry-run-only feature of the same `CapacityManager`.
+  `resolve_gpus` (called from the create path after the spec is built)
+  consumes the caller's own holds and skips cards held by another user.
+  `check_capacity` remains underneath as the scalar seam that `simulate`
+  (batch placement advice) uses; it cannot apply the held-volume discount,
+  so an advisory answer is at most more conservative than the enforced one.
 - **Supervisor mechanism backstops** (`check_memory_backstop`,
   `validate_spec_gpus` in `lifecycle.rs`) run under `creation_lock` inside
   `create_vm_inner` itself: committed memory (summed from every tracked

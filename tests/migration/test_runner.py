@@ -22,10 +22,14 @@ from aleph.vm.supervisor_interface.errors import VmNotFoundError
 
 
 def _fake_capacity():
-    """Agent-side admission stub: capacity always passes, no GPUs requested."""
+    """Agent-side admission stub: capacity always passes, no GPUs requested.
+
+    Only ``check_message`` is exposed: the import admits from the message
+    like every create path, and a reintroduced direct ``check_capacity`` call
+    fails loudly here rather than silently skipping disk admission."""
     from types import SimpleNamespace
 
-    return SimpleNamespace(check_capacity=MagicMock(), resolve_gpus=AsyncMock(return_value=[]))
+    return SimpleNamespace(check_message=MagicMock(), resolve_gpus=AsyncMock(return_value=[]))
 
 
 @pytest.fixture(autouse=True)
@@ -894,3 +898,56 @@ async def test_a_failure_after_create_vm_retires_the_half_imported_vm(
 
     assert job.state == MigrationState.IMPORT_FAILED
     retire.assert_awaited_once_with(vm_hash, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)
+
+
+@pytest.mark.asyncio
+async def test_import_admits_from_the_message_before_any_download(tmp_path, monkeypatch):
+    """The import admits like every create path: from the message, before a
+    byte of the overlay is streamed. A destination without room refuses
+    before the transfer, so nothing is staged and nothing needs cleaning."""
+    from aleph.vm.agent.migration.jobs import DiskFileInfo, ImportJob
+    from aleph.vm.agent.migration.runner import run_import
+
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    monkeypatch.setattr(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
+    monkeypatch.setattr(settings, "INSTANCE_DEFAULT_HYPERVISOR", HypervisorType.qemu)
+
+    fake_message = MagicMock()
+    fake_message.type = MessageType.instance
+    fake_message.content.environment.hypervisor = HypervisorType.qemu
+    fake_message.content.environment.trusted_execution = None
+    fake_message.content.rootfs.parent.ref = "parentref"
+
+    download = AsyncMock()
+    monkeypatch.setattr(
+        "aleph.vm.agent.migration.runner.load_updated_message",
+        AsyncMock(return_value=(fake_message, fake_message)),
+    )
+    get_parent = AsyncMock(return_value=tmp_path / "parent.qcow2")
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.get_rootfs_base_path", get_parent)
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.download_disk_from_source", download)
+
+    capacity = _fake_capacity()
+    capacity.check_message.side_effect = RuntimeError("no room for 20 GiB")
+    job = ImportJob(
+        vm_hash=vm_hash,
+        state=MigrationState.IMPORTING,
+        started_at=datetime.now(timezone.utc),
+        source_host="src",
+        source_port=443,
+    )
+    await run_import(
+        job,
+        _import_supervisor(has_vm=False),
+        capacity=capacity,
+        registry=AgentVmRegistry(),
+        disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=10, sha256="0" * 64, download_path="/x")],
+        export_token="t",
+    )
+
+    capacity.check_message.assert_called_once_with(fake_message.content, exclude_vm_hash=vm_hash)
+    assert job.state == MigrationState.IMPORT_FAILED
+    assert "no room" in job.error
+    get_parent.assert_not_awaited()
+    download.assert_not_awaited()
+    assert not (tmp_path / str(vm_hash)).exists()

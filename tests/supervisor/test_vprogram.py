@@ -344,16 +344,16 @@ async def test_create_vm_execution_vprogram_build_failure_forgets_record(mocker)
 
 
 @pytest.mark.asyncio
-async def test_create_vm_execution_vprogram_capacity_failure_forgets_record(mocker):
-    """Capacity admission runs after the bundle is staged and before create_vm:
-    an InsufficientResourcesError there must forget the record and never reach
-    create_vm (a distinct failure path from a build failure)."""
+async def test_create_vm_execution_vprogram_capacity_failure_refuses_before_staging(mocker):
+    """Admission runs from the message, before build_vprogram_spec stages a
+    byte: an InsufficientResourcesError never reaches the downloader, and the
+    early owner record is forgotten."""
     message = load_vprogram_message()
     mocker.patch("aleph.vm.agent.run.load_updated_message", new_callable=AsyncMock, return_value=(message, message))
-    mocker.patch("aleph.vm.agent.run.build_vprogram_spec", new_callable=AsyncMock, return_value=(MagicMock(), 8443))
+    build = mocker.patch("aleph.vm.agent.run.build_vprogram_spec", new_callable=AsyncMock)
 
     capacity = MagicMock()
-    capacity.check_capacity.side_effect = InsufficientResourcesError("no room", required={}, available={})
+    capacity.check_message.side_effect = InsufficientResourcesError("no room", required={}, available={})
     # retire_vm(FAILED_CREATE) always quiesces through the supervisor first
     # (swallowing VmNotFoundError), even though no VM was ever created here.
     supervisor = MagicMock(create_vm=AsyncMock(), delete_vm=AsyncMock())
@@ -368,7 +368,9 @@ async def test_create_vm_execution_vprogram_capacity_failure_forgets_record(mock
             persistent=True,
         )
 
+    build.assert_not_awaited()
     supervisor.create_vm.assert_not_awaited()
+    capacity.check_message.assert_called_once_with(message.content, exclude_vm_hash=message.item_hash)
     assert message.item_hash not in registry
 
 

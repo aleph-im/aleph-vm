@@ -101,7 +101,7 @@ class FakeProgramClient:
 
 def _fake_capacity() -> SimpleNamespace:
     """Agent-side admission stub: capacity always passes."""
-    return SimpleNamespace(check_capacity=MagicMock(), resolve_gpus=AsyncMock(return_value=[]))
+    return SimpleNamespace(check_message=MagicMock(), resolve_gpus=AsyncMock(return_value=[]))
 
 
 class FakeRequest:
