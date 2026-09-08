@@ -364,12 +364,90 @@ async def test_a_dropped_vm_is_torn_down_even_if_it_already_died(reconciler, mon
 
 
 @pytest.mark.asyncio
-async def test_a_vm_still_being_created_is_not_torn_down(reconciler, monkeypatch):
-    """DEFINED is mid-creation: deleting it races the create still in flight."""
+@pytest.mark.parametrize("status", [VmStatus.DEFINED, VmStatus.BOOTING])
+async def test_a_vm_still_being_created_is_not_torn_down(reconciler, monkeypatch, status):
+    """Both are mid-creation: deleting one races the create still in flight."""
     _record_starts(reconciler, monkeypatch)
-    reconciler.supervisor.list_vms.return_value = [_info(HASH_B, status=VmStatus.DEFINED)]
+    reconciler.supervisor.list_vms.return_value = [_info(HASH_B, status=status)]
     reconciler.submit(_plan())
 
     await reconciler._converge_once()
 
     reconciler_module.teardown_vm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_vm_waiting_on_its_confidential_session_is_not_started_again(reconciler, monkeypatch):
+    """A confidential VM sits in a non-live status until its owner uploads the
+    session certificates, so status alone reads as one that needs creating.
+    Creating it again would throw away the VM the owner is about to boot."""
+    starts = _record_starts(reconciler, monkeypatch)
+    awaiting = _info(HASH_C, status=VmStatus.STOPPED)
+    awaiting.awaiting_confidential_init = True
+    reconciler.supervisor.list_vms.return_value = [awaiting]
+    reconciler.submit(_plan(HASH_C))
+
+    await reconciler._converge_once()
+
+    assert starts.attempts == 0
+
+
+# ── The loop around a pass ─────────────────────────────────────────────────
+
+
+def _stop_after(reconciler, monkeypatch, passes: int, *, failing: int | None = None):
+    """Drive run() for a fixed number of passes, then cancel out of it."""
+    seen: list[int] = []
+
+    async def fake_converge():
+        seen.append(len(seen) + 1)
+        if failing is not None and len(seen) == failing:
+            msg = "pass blew up"
+            raise RuntimeError(msg)
+        if len(seen) == passes:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(reconciler, "_converge_once", fake_converge)
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_the_loop_converges_again_when_it_is_woken(reconciler, monkeypatch):
+    """A wake-up already set must be seen rather than waited out: the interval
+    is the backstop, not the pace."""
+    monkeypatch.setattr(settings, "ALLOCATION_RECONCILE_INTERVAL", 3600)
+    seen = _stop_after(reconciler, monkeypatch, passes=2)
+    reconciler._wakeup.set()
+
+    # Bounded, so a wake-up cleared before the wait fails here in a second
+    # rather than sitting out the backstop it was supposed to pre-empt.
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(reconciler.run(), timeout=1)
+
+    assert len(seen) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_quiet_interval_does_not_end_the_loop(reconciler, monkeypatch):
+    """Nothing wakes it, so the backstop expires and wait_for raises. Letting
+    that escape would end convergence for the life of the process."""
+    monkeypatch.setattr(settings, "ALLOCATION_RECONCILE_INTERVAL", 0.01)
+    seen = _stop_after(reconciler, monkeypatch, passes=2)
+
+    with pytest.raises(asyncio.CancelledError):
+        await reconciler.run()
+
+    assert len(seen) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_pass_that_raises_does_not_end_the_loop(reconciler, monkeypatch):
+    """One bad pass is not a reason to stop converging: the next one may find
+    the supervisor answering again."""
+    monkeypatch.setattr(settings, "ALLOCATION_RECONCILE_INTERVAL", 0.01)
+    seen = _stop_after(reconciler, monkeypatch, passes=2, failing=1)
+
+    with pytest.raises(asyncio.CancelledError):
+        await reconciler.run()
+
+    assert len(seen) == 2
