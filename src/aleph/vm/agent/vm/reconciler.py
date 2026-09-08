@@ -67,7 +67,11 @@ logger = logging.getLogger(__name__)
 MOUNT_ROOT = Path("/mnt")
 STAGING_KINDS = ("vprogram", "snp-instance")
 
-_creating: set[str] = set()
+# Namespace to the number of creates in flight for it. A count rather than
+# a set: a scheduler push and an operator reinstall take no common per-hash
+# lock, so two creating() spans for one hash can overlap, and the first to
+# exit must not unguard the second.
+_creating: dict[str, int] = {}
 
 
 @dataclass
@@ -112,12 +116,16 @@ def creating(namespace: str) -> Iterator[None]:
     # unmarked, not-creating orphan. Registered first, a pass that read
     # is_creating as False must have read it before this line, and then
     # still sees the marker adopt() has yet to clear.
-    _creating.add(namespace)
+    _creating[namespace] = _creating.get(namespace, 0) + 1
     adopt(namespace)
     try:
         yield
     finally:
-        _creating.discard(namespace)
+        remaining = _creating[namespace] - 1
+        if remaining:
+            _creating[namespace] = remaining
+        else:
+            del _creating[namespace]
 
 
 def is_creating(namespace: str) -> bool:

@@ -280,7 +280,7 @@ def test_a_hash_entering_creating_mid_pass_is_not_purged(pools, registry, monkey
     def orphan_then_claim(directory, is_live, now, guard, *, dry_run):
         result = real_is_orphan(directory, is_live, now, guard, dry_run=dry_run)
         if result:
-            reconciler_module._creating.add(directory.name)
+            reconciler_module._creating[directory.name] = 1
         return result
 
     monkeypatch.setattr(reconciler_module, "_is_orphan", orphan_then_claim)
@@ -288,10 +288,21 @@ def test_a_hash_entering_creating_mid_pass_is_not_purged(pools, registry, monkey
     try:
         report = reconcile_storage(registry, now=NOW)
     finally:
-        reconciler_module._creating.discard(VM_HASH)
+        reconciler_module._creating.pop(VM_HASH, None)
 
     assert disk.exists()
     assert report.purged_orphans == []
+
+
+def test_overlapping_creates_of_one_hash_stay_guarded_until_the_last_exits(pools):  # noqa: F811
+    """A scheduler push and an operator reinstall take no common per-hash
+    lock, so two creating() spans for one hash can overlap: the first exit
+    must not unguard the second."""
+    with creating(VM_HASH):
+        with creating(VM_HASH):
+            assert is_creating(VM_HASH)
+        assert is_creating(VM_HASH)
+    assert not is_creating(VM_HASH)
 
 
 def test_creating_registers_before_it_adopts(pools, monkeypatch):  # noqa: F811
