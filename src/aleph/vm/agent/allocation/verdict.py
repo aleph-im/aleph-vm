@@ -47,13 +47,23 @@ class _Capacity(Protocol):
 LIVE_STATUSES = (VmStatus.RUNNING, VmStatus.BOOTING, VmStatus.DEFINED)
 
 
-def compute_plan_id(hashes: list[str]) -> str:
+def compute_plan_id(planned: list[str], rejected: list[str]) -> str:
     """A stable identity for a plan, for correlation in logs and responses.
 
-    Order-independent, so the scheduler re-pushing the same set in a different
-    order is visibly the same plan.
+    Order-independent within each half, so the scheduler re-pushing the same
+    set in a different order is visibly the same plan.
+
+    The two halves are digested apart and then together: one merged sorted list
+    gives the same identity to a push that planned A and refused B as to one
+    that planned B and refused A. Digesting rather than joining with a
+    separator keeps that true for a rejected key, which is whatever junk the
+    push carried in place of a hash and may hold the separator itself.
     """
-    return "sha256:" + sha256("\n".join(sorted(hashes)).encode()).hexdigest()
+
+    def digest(hashes: list[str]) -> str:
+        return sha256("\n".join(sorted(hashes)).encode()).hexdigest()
+
+    return "sha256:" + sha256(f"{digest(planned)}:{digest(rejected)}".encode()).hexdigest()
 
 
 def build_plan(body: dict, *, now: datetime) -> tuple[AllocationPlan, dict[str, dict]]:
@@ -80,7 +90,7 @@ def build_plan(body: dict, *, now: datetime) -> tuple[AllocationPlan, dict[str, 
             rejected[vm_hash] = {"code": "invalid_message", "message": reason}
             continue
         entries[vm_hash] = PlannedVm(vm_hash=vm_hash, verified=verified)
-    plan_id = compute_plan_id([str(h) for h in entries] + [str(h) for h in rejected])
+    plan_id = compute_plan_id([str(h) for h in entries], [str(h) for h in rejected])
     return AllocationPlan(plan_id=plan_id, received_at=now, entries=entries), rejected
 
 

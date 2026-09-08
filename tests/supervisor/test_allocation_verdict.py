@@ -180,6 +180,20 @@ def test_a_different_plan_produces_a_different_plan_id():
     assert first.plan_id != second.plan_id
 
 
+def test_swapping_which_half_a_hash_lands_in_changes_the_plan_id():
+    """One merged sorted list gave the same identity to a push that planned A
+    and refused B as to one that planned B and refused A."""
+    planned_a = {"vms": [{"item_hash": str(HASH_A)}, {"item_hash": str(HASH_B), "message": "not-an-object"}]}
+    planned_b = {"vms": [{"item_hash": str(HASH_B)}, {"item_hash": str(HASH_A), "message": "not-an-object"}]}
+
+    first, first_rejected = build_plan(planned_a, now=NOW)
+    second, second_rejected = build_plan(planned_b, now=NOW)
+
+    assert list(first.entries) == [HASH_A] and list(first_rejected) == [HASH_B]
+    assert list(second.entries) == [HASH_B] and list(second_rejected) == [HASH_A]
+    assert first.plan_id != second.plan_id
+
+
 def test_an_entry_with_an_unusable_item_hash_is_rejected_not_raised():
     """build_plan is the validation boundary for a body the scheduler controls,
     so one bad entry must not take the whole push down with it."""
