@@ -414,11 +414,30 @@ def test_make_room_counts_only_the_bytes_it_frees_on_that_pool(pools, monkeypatc
     mark_reclaimable(VM_HASH, "gone", now=NOW - timedelta(days=2))
     _fake_disk_usage(monkeypatch, 0)
 
-    freed = make_room(get_pools()[0], needed_bytes=1024**2)
+    freed = make_room(get_pools()[0], needed_bytes=8192)
 
     # The VM is purged whole, but only pool 0's 8 KiB help a pool 0 create.
     assert freed == 8192
     assert not on_pool0.exists() and not on_pool1.exists()
+
+
+def test_make_room_evicts_nothing_when_the_create_could_never_fit(pools, monkeypatch):  # noqa: F811
+    """The largest-volume admission check can pass a create that no single
+    pool fits even with every retained directory gone (it looks at the sum).
+    Placement then asks the room maker on each pool in turn: without this
+    bound each of them would evict every retained VM it has and still refuse,
+    wiping retained data across the node for a create that fails anyway."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    retained = volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=8192)
+    other = volume(pools["pool0"], OTHER_HASH, "rootfs.qcow2", size=8192)
+    mark_reclaimable(VM_HASH, "gone", now=NOW - timedelta(days=2))
+    mark_reclaimable(OTHER_HASH, "gone", now=NOW - timedelta(days=1))
+    _fake_disk_usage(monkeypatch, 0)
+
+    freed = make_room(get_pools()[0], needed_bytes=GIB)
+
+    assert freed == 0
+    assert retained.exists() and other.exists()
 
 
 def test_make_room_never_evicts_a_live_namespace(pools, monkeypatch):  # noqa: F811

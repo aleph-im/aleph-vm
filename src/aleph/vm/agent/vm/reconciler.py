@@ -660,9 +660,13 @@ def make_room(pool: StoragePool, needed_bytes: int, *, live: Collection[str] | N
 
     Admission pressure, not a quota: the pool's own free space is what has
     to reach ``needed_bytes``, so a pool that already fits the create loses
-    nothing. The second bound (``freed >= needed_bytes``) only exists so an
-    unreadable or lying filesystem cannot turn this into a loop over every
-    retained VM on the pool.
+    nothing, and a pool that could not fit it even with every retained
+    directory gone loses nothing either (placement then fails, but without
+    having wiped retained data for it, on this pool or the next one it
+    tries). The third bound (``freed >= needed_bytes``) only exists so a
+    lying filesystem cannot turn this into a loop over every retained VM on
+    the pool; a pool whose free space cannot be read at all is never evicted
+    from.
 
     A marker on a directory a live VM owns is a bug (``_is_orphan`` clears
     those on every pass), but this runs on its own, off the create path, so
@@ -675,9 +679,23 @@ def make_room(pool: StoragePool, needed_bytes: int, *, live: Collection[str] | N
     why every removal here tolerates a directory that vanished first.
     """
     protected = _snapshot_is_live(live or ())
+    free = _pool_free(pool)
+    if free >= needed_bytes:
+        return 0
+    entries = _reclaimable_on(pool)
+    reclaimable = sum(directory_size_bytes(directory) for directory, _marker in entries)
+    if free + reclaimable < needed_bytes:
+        logger.info(
+            "Not making room on %s: %d bytes free plus %d retained cannot fit %d bytes",
+            pool.path,
+            free,
+            reclaimable,
+            needed_bytes,
+        )
+        return 0
     freed = 0
     report = ReconcileReport()
-    for directory, _marker in _reclaimable_on(pool):
+    for directory, _marker in entries:
         if _pool_free(pool) >= needed_bytes or freed >= needed_bytes:
             break
         if not directory.is_dir():
