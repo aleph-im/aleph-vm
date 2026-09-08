@@ -1,0 +1,333 @@
+from __future__ import annotations
+
+import os
+import time
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from aleph.vm.storage import download_file, download_file_in_chunks
+from aleph.vm.supervisor_interface.errors import FileTooLargeError
+
+
+def _session(chunks: list[bytes], content_length: int | None):
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.content_length = content_length
+    reads = iter(chunks + [b""])
+    resp.content.read = AsyncMock(side_effect=lambda n: next(reads))
+    session = MagicMock()
+    session.get = AsyncMock(return_value=resp)
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    return session, resp
+
+
+@pytest.mark.asyncio
+async def test_content_length_above_the_cap_is_refused_before_writing(tmp_path):
+    session, resp = _session([b"x" * 10], content_length=10)
+    with patch("aleph.vm.storage.aiohttp.ClientSession", return_value=session):
+        with pytest.raises(FileTooLargeError):
+            await download_file_in_chunks("http://x/f", tmp_path / "f.part", max_bytes=5)
+    resp.content.read.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_stream_past_the_cap_is_aborted(tmp_path):
+    session, _ = _session([b"x" * 4, b"x" * 4], content_length=None)
+    part = tmp_path / "f.part"
+    with patch("aleph.vm.storage.aiohttp.ClientSession", return_value=session):
+        with pytest.raises(FileTooLargeError):
+            await download_file_in_chunks("http://x/f", part, max_bytes=5)
+
+
+@pytest.mark.asyncio
+async def test_download_file_unlinks_the_part_and_does_not_retry(tmp_path):
+    attempts = []
+
+    async def too_large(url, tmp_path_, max_bytes=None):
+        attempts.append(1)
+        tmp_path_.write_bytes(b"partial")
+        raise FileTooLargeError("too big")
+
+    with patch("aleph.vm.storage.download_file_in_chunks", side_effect=too_large):
+        with pytest.raises(FileTooLargeError):
+            await download_file("http://x/f", tmp_path / "f", max_bytes=5)
+    assert attempts == [1]
+    assert not (tmp_path / "f.part").exists()
+    assert not (tmp_path / "f").exists()
+
+
+@pytest.mark.asyncio
+async def test_existing_file_is_touched_on_hit(tmp_path):
+    target = tmp_path / "f"
+    target.write_bytes(b"cached")
+    old = time.time() - 100_000
+    os.utime(target, (old, old))
+
+    await download_file("http://x/f", target)
+
+    assert target.stat().st_mtime > old + 50_000
+
+
+@pytest.mark.asyncio
+async def test_existing_file_touch_failure_does_not_fail_the_cache_hit(tmp_path):
+    """A cache hit served by a non-owning, non-jailman user can't utime the
+    cached file (chown_to_jailman ran after the original download); that must
+    not turn a perfectly usable cache hit into a failure."""
+    target = tmp_path / "f"
+    target.write_bytes(b"cached")
+
+    with patch("aleph.vm.storage.os.utime", side_effect=PermissionError("no permission")):
+        await download_file("http://x/f", target)
+
+    assert target.is_file()
+    assert target.read_bytes() == b"cached"
+
+
+@pytest.mark.asyncio
+async def test_get_existing_file_passes_the_runtime_cap(mocker, tmp_path):
+    """MAX_DATA_ARCHIVE_SIZE only ever gated a program's `data` archive.
+    get_existing_file serves immutable volumes, the SNP and V-PROGRAM runtime
+    bundles and a V-PROGRAM's workload image, none of which was ever bounded
+    by 10 MB and all of which are routinely larger."""
+    import aleph.vm.storage as storage_module
+    from aleph.vm.conf import settings
+
+    mocker.patch.object(settings, "DATA_CACHE", tmp_path / "data")
+    mocker.patch.object(settings, "FAKE_DATA_PROGRAM", None)
+    mocker.patch.object(storage_module, "_get_content_url", AsyncMock(return_value="http://x/f"))
+    mocker.patch.object(storage_module, "chown_to_jailman", AsyncMock())
+    download = mocker.patch.object(storage_module, "download_file", AsyncMock())
+
+    await storage_module.get_existing_file("ref")
+
+    download.assert_awaited_once_with(
+        "http://x/f", tmp_path / "data" / "ref", max_bytes=settings.MAX_RUNTIME_ARCHIVE_SIZE
+    )
+
+
+def _existing_file_env(mocker, tmp_path):
+    import aleph.vm.storage as storage_module
+    from aleph.vm.conf import settings
+
+    cache = tmp_path / "data"
+    cache.mkdir()
+    mocker.patch.object(settings, "DATA_CACHE", cache)
+    mocker.patch.object(settings, "FAKE_DATA_PROGRAM", None)
+    mocker.patch.object(storage_module, "_get_content_url", AsyncMock(return_value="http://x/f"))
+    mocker.patch.object(storage_module, "chown_to_jailman", AsyncMock())
+    return cache
+
+
+@pytest.mark.asyncio
+async def test_get_existing_file_streams_a_volume_larger_than_the_data_cap(mocker, tmp_path):
+    """End to end through download_file's retry and cleanup wrapper: a 12 MB
+    immutable volume used to be refused with a 400 by the 10 MB data cap."""
+    import aleph.vm.storage as storage_module
+
+    cache = _existing_file_env(mocker, tmp_path)
+    megabyte = b"x" * (1024 * 1024)
+    session, _ = _session([megabyte] * 12, content_length=12 * 1024 * 1024)
+
+    with patch("aleph.vm.storage.aiohttp.ClientSession", return_value=session):
+        path = await storage_module.get_existing_file("ref")
+
+    assert path == cache / "ref"
+    assert path.stat().st_size == 12 * 1024 * 1024
+    assert not (cache / "ref.part").exists()
+
+
+@pytest.mark.asyncio
+async def test_get_existing_file_above_the_runtime_cap_leaves_no_part(mocker, tmp_path):
+    import aleph.vm.storage as storage_module
+    from aleph.vm.conf import settings
+
+    cache = _existing_file_env(mocker, tmp_path)
+    session, resp = _session([b"x"], content_length=settings.MAX_RUNTIME_ARCHIVE_SIZE + 1)
+
+    with patch("aleph.vm.storage.aiohttp.ClientSession", return_value=session):
+        with pytest.raises(FileTooLargeError):
+            await storage_module.get_existing_file("ref")
+
+    resp.content.read.assert_not_called()
+    assert not (cache / "ref.part").exists()
+    assert not (cache / "ref").exists()
+
+
+@pytest.mark.asyncio
+async def test_getters_pass_their_caps(mocker, tmp_path):
+    import aleph.vm.storage as storage_module
+    from aleph.vm.conf import settings
+
+    mocker.patch.object(settings, "CODE_CACHE", tmp_path / "code")
+    mocker.patch.object(settings, "DATA_CACHE", tmp_path / "data")
+    mocker.patch.object(settings, "RUNTIME_CACHE", tmp_path / "runtime")
+    mocker.patch.object(settings, "FAKE_DATA_PROGRAM", None)
+    mocker.patch.object(storage_module, "_get_content_url", AsyncMock(return_value="http://x/f"))
+    mocker.patch.object(storage_module, "check_squashfs_integrity", AsyncMock())
+    mocker.patch.object(storage_module, "chown_to_jailman", AsyncMock())
+    download = mocker.patch.object(storage_module, "download_file", AsyncMock())
+
+    await storage_module.get_code_path("ref")
+    await storage_module.get_data_path("ref")
+    await storage_module.get_runtime_path("ref")
+    await storage_module.get_rootfs_base_path("ref")
+
+    caps = [call.kwargs["max_bytes"] for call in download.await_args_list]
+    assert caps == [
+        settings.MAX_PROGRAM_ARCHIVE_SIZE,
+        settings.MAX_DATA_ARCHIVE_SIZE,
+        settings.MAX_RUNTIME_ARCHIVE_SIZE,
+        settings.MAX_RUNTIME_ARCHIVE_SIZE,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cache_admission_hook_runs_before_writing(tmp_path):
+    import aleph.vm.storage as storage_module
+
+    seen = []
+    storage_module.set_cache_admission(lambda path, length, cap: seen.append((path, length, cap)))
+    session, _ = _session([b"x" * 4], content_length=4)
+    try:
+        with patch("aleph.vm.storage.aiohttp.ClientSession", return_value=session):
+            await download_file_in_chunks("http://x/f", tmp_path / "f.part")
+    finally:
+        storage_module.set_cache_admission(None)
+    assert seen == [(tmp_path / "f.part", 4, None)]
+
+
+@pytest.mark.asyncio
+async def test_a_download_without_a_content_length_reports_its_cap_as_a_cap(tmp_path):
+    """The hook is told what the server said and what bounds it, separately.
+    Collapsing the two here is what made a chunked response ask the cache for
+    the whole MAX_RUNTIME_ARCHIVE_SIZE."""
+    import aleph.vm.storage as storage_module
+
+    seen = []
+    storage_module.set_cache_admission(lambda path, length, cap: seen.append((path, length, cap)))
+    session, _ = _session([b"x" * 4], content_length=None)
+    try:
+        with patch("aleph.vm.storage.aiohttp.ClientSession", return_value=session):
+            await download_file_in_chunks("http://x/f", tmp_path / "f.part", max_bytes=999)
+    finally:
+        storage_module.set_cache_admission(None)
+        storage_module.release_download(tmp_path / "f.part")
+    assert seen == [(tmp_path / "f.part", None, 999)]
+
+
+@pytest.mark.asyncio
+async def test_an_admitted_download_is_reserved_until_the_part_is_gone(tmp_path):
+    """What admission promised has to stay charged while it is being written,
+    or the next create admits the same room a second time."""
+    import aleph.vm.storage as storage_module
+
+    reserved_mid_download = {}
+
+    async def fake_chunks(url, part, max_bytes=None):
+        # What download_file_in_chunks does once the admission hook returns.
+        storage_module.reserve_download(part, max_bytes)
+        reserved_mid_download.update(storage_module.reserved_downloads())
+
+    with patch("aleph.vm.storage.download_file_in_chunks", side_effect=fake_chunks):
+        await download_file("http://x/f", tmp_path / "f", max_bytes=999)
+
+    assert reserved_mid_download == {tmp_path / "f.part": 999}
+    assert storage_module.reserved_downloads() == {}
+
+
+@pytest.mark.asyncio
+async def test_a_refusing_cache_admission_writes_nothing(tmp_path):
+    import aleph.vm.storage as storage_module
+    from aleph.vm.resources import InsufficientResourcesError
+
+    def refuse(path, length, cap):
+        raise InsufficientResourcesError("no room", required={}, available={})
+
+    storage_module.set_cache_admission(refuse)
+    session, resp = _session([b"x" * 4], content_length=4)
+    try:
+        with patch("aleph.vm.storage.aiohttp.ClientSession", return_value=session):
+            with pytest.raises(InsufficientResourcesError):
+                await download_file_in_chunks("http://x/f", tmp_path / "f.part")
+    finally:
+        storage_module.set_cache_admission(None)
+    resp.content.read.assert_not_called()
+    assert not (tmp_path / "f.part").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_cache_hit_evicted_mid_touch_falls_through_to_the_download(tmp_path):
+    """The cache pass can unlink an entry between the is_file() check and the
+    mtime touch: reporting that as a hit would hand back a path that is gone."""
+    target = tmp_path / "f"
+    target.write_bytes(b"cached")
+
+    async def fake_download(url, part, max_bytes=None):
+        part.write_bytes(b"fresh")
+
+    with patch("aleph.vm.storage.os.utime", side_effect=FileNotFoundError("gone")):
+        with patch("aleph.vm.storage.download_file_in_chunks", side_effect=fake_download):
+            await download_file("http://x/f", target)
+
+    assert target.read_bytes() == b"fresh"
+
+
+def _runtime_cache_env(mocker, tmp_path):
+    import aleph.vm.storage as storage_module
+    from aleph.vm.conf import settings
+
+    cache = tmp_path / "runtime"
+    cache.mkdir()
+    entry = cache / "ref"
+    entry.write_bytes(b"image")
+    old = time.time() - 100_000
+    os.utime(entry, (old, old))
+    mocker.patch.object(settings, "RUNTIME_CACHE", cache)
+    mocker.patch.object(settings, "FAKE_DATA_PROGRAM", None)
+    mocker.patch.object(settings, "USE_FAKE_INSTANCE_BASE", False)
+    mocker.patch.object(storage_module, "check_squashfs_integrity", AsyncMock())
+    mocker.patch.object(storage_module, "chown_to_jailman", AsyncMock())
+    return entry, old, mocker.patch.object(storage_module, "_get_content_url", AsyncMock())
+
+
+@pytest.mark.asyncio
+async def test_a_runtime_cache_hit_is_touched(mocker, tmp_path):
+    """The runtime cache is the largest one, and its entries are the ones a
+    hundred VMs boot from: without the touch its LRU is download order, and
+    the entry every VM on the node uses looks like the oldest thing there."""
+    import aleph.vm.storage as storage_module
+
+    entry, old, url = _runtime_cache_env(mocker, tmp_path)
+
+    assert await storage_module.get_runtime_path("ref") == entry
+
+    assert entry.stat().st_mtime > old + 50_000
+    # A hit is a hit: no message lookup, no download.
+    url.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_instance_base_cache_hit_is_touched(mocker, tmp_path):
+    import aleph.vm.storage as storage_module
+
+    entry, old, url = _runtime_cache_env(mocker, tmp_path)
+
+    assert await storage_module.get_rootfs_base_path("ref") == entry
+
+    assert entry.stat().st_mtime > old + 50_000
+    url.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_runtime_entry_evicted_mid_touch_is_downloaded_again(mocker, tmp_path):
+    import aleph.vm.storage as storage_module
+
+    entry, _old, url = _runtime_cache_env(mocker, tmp_path)
+    url.return_value = "http://x/f"
+    download = mocker.patch.object(storage_module, "download_file", AsyncMock())
+    with patch("aleph.vm.storage.os.utime", side_effect=FileNotFoundError("gone")):
+        await storage_module.get_runtime_path("ref")
+
+    download.assert_awaited_once()

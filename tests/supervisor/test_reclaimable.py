@@ -5,7 +5,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from aleph_message.models import InstanceContent, ProgramContent
+from aleph_message.models import (
+    InstanceContent,
+    ProgramContent,
+    VerifiableProgramContent,
+)
 from reclaim_fixtures import OTHER_HASH, VM_HASH, pools, volume  # noqa: F401
 
 from aleph.vm.agent.vm.reclaimable import (
@@ -19,6 +23,7 @@ from aleph.vm.agent.vm.reclaimable import (
     mark_reclaimable,
     read_marker,
     reclaimable_bytes,
+    refs_from_content,
     write_marker,
 )
 from aleph.vm.storage import get_message
@@ -342,3 +347,41 @@ def test_the_cache_is_invalidated_after_the_publish_too(pools, monkeypatch):  # 
 
     assert seen_mid_write == [0]
     assert reclaimable_bytes() == 4096
+
+
+def test_refs_from_content_covers_a_vprogram_workload(mocker):
+    """A V-PROGRAM's workload image and hash tree are attached as the VM's
+    disks straight from DATA_CACHE, so they are refs like any other."""
+    content = mocker.MagicMock(spec=VerifiableProgramContent)
+    content.runtime = mocker.MagicMock(ref="manifest")
+    content.volumes = []
+    content.workload = mocker.MagicMock(ref="workload", hash_tree="hashtree")
+    content.environment = mocker.MagicMock(trusted_execution=None)
+
+    assert refs_from_content(content, vm_hash="vmhash") == {"manifest", "workload", "hashtree", "vmhash"}
+
+
+def test_refs_from_content_covers_trusted_execution(mocker):
+    content = mocker.MagicMock(spec=InstanceContent)
+    content.rootfs = mocker.MagicMock()
+    content.rootfs.parent = mocker.MagicMock(ref="base")
+    content.volumes = []
+    content.environment = mocker.MagicMock()
+    content.environment.trusted_execution = mocker.MagicMock(firmware="firmware", runtime="tee-runtime")
+
+    assert refs_from_content(content) == {"base", "firmware", "tee-runtime"}
+
+
+def test_depends_on_is_the_parent_subset_of_the_same_enumeration(mocker):
+    """One traversal, two questions: the marker pins the parent images its
+    volumes are built on, not everything the message names."""
+    content = mocker.MagicMock(spec=VerifiableProgramContent)
+    content.runtime = mocker.MagicMock(ref="manifest")
+    parent_backed = mocker.MagicMock(ref=None)
+    parent_backed.parent = mocker.MagicMock(ref="parent")
+    content.volumes = [parent_backed]
+    content.workload = mocker.MagicMock(ref="workload", hash_tree="hashtree")
+    content.environment = mocker.MagicMock(trusted_execution=None)
+
+    assert depends_on_from_content(content) == ("parent",)
+    assert set(depends_on_from_content(content)) <= refs_from_content(content)

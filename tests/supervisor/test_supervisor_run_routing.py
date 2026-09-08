@@ -881,3 +881,42 @@ def test_program_error_mapper_maps_startup_failure():
     with pytest.raises(HTTPInternalServerError) as excinfo:
         run_module._raise_http_for_program_error(run_module.VmStartupError("never reached RUNNING"), ItemHash(_HASH))
     assert excinfo.value.reason == "VM failed to start"
+
+
+def test_program_error_mapper_maps_file_too_large_to_bad_request():
+    """An oversized resource is the message's fault, not the node's: it must
+    surface as a 400, the same bucket as ResourceDownloadError, not a 500."""
+    from aiohttp.web_exceptions import HTTPBadRequest
+
+    from aleph.vm.supervisor_interface.errors import FileTooLargeError
+
+    with pytest.raises(HTTPBadRequest) as excinfo:
+        run_module._raise_http_for_program_error(FileTooLargeError("f is too big"), ItemHash(_HASH))
+    assert excinfo.value.reason == "f is too big"
+
+
+@pytest.mark.asyncio
+async def test_create_execution_maps_file_too_large_to_bad_request(monkeypatch):
+    """The instance/v-program create path gives FileTooLargeError the same
+    400 treatment as the on-demand program mapper."""
+    from aiohttp.web_exceptions import HTTPBadRequest
+
+    from aleph.vm.supervisor_interface.errors import FileTooLargeError
+
+    content = _make_qemu_instance_message(hypervisor=HypervisorType.qemu)
+    message = MagicMock(content=content)
+    monkeypatch.setattr(
+        run_module, "load_updated_message", AsyncMock(return_value=(message, MagicMock(content=content)))
+    )
+    monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock(side_effect=FileTooLargeError("f is too big")))
+    monkeypatch.setattr(run_module, "get_user_settings", AsyncMock(return_value={}))
+
+    with pytest.raises(HTTPBadRequest) as excinfo:
+        await run_module.create_vm_execution_or_raise_http_error(
+            _HASH,
+            supervisor=_fake_supervisor(),
+            registry=AgentVmRegistry(),
+            capacity=_fake_capacity(),
+            persistent=True,
+        )
+    assert excinfo.value.reason == "f is too big"

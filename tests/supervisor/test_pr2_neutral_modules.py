@@ -120,6 +120,8 @@ def test_get_backup_directory_explicit(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_download_volume_by_ref(monkeypatch, tmp_path):
+    from aleph.vm.conf import settings
+
     monkeypatch.setattr(
         "aleph.vm.storage._get_content_url",
         AsyncMock(return_value="http://example/volume"),
@@ -130,7 +132,7 @@ async def test_download_volume_by_ref(monkeypatch, tmp_path):
     dest = await backup_staging.download_volume_by_ref("abc123", tmp_path)
 
     assert dest == tmp_path / "abc123.qcow2"
-    download_file.assert_awaited_once_with("http://example/volume", dest)
+    download_file.assert_awaited_once_with("http://example/volume", dest, max_bytes=settings.MAX_RUNTIME_ARCHIVE_SIZE)
 
 
 # --------------------------------------------------------------------------- #

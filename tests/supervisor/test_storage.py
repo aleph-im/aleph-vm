@@ -178,7 +178,7 @@ async def test_download_file_retries_on_timeout(tmp_path):
     local_path = tmp_path / "runtime"
     calls = {"n": 0}
 
-    async def _flaky(_url, _target_path):
+    async def _flaky(_url, _target_path, max_bytes=None):
         calls["n"] += 1
         if calls["n"] < 3:
             raise TimeoutError
@@ -196,7 +196,7 @@ async def test_download_file_aborts_after_exhausting_retries_on_timeout(tmp_path
     """If every attempt times out, the error propagates after the retries are exhausted."""
     local_path = tmp_path / "runtime"
 
-    async def _always_timeout(_url, _target_path):
+    async def _always_timeout(_url, _target_path, max_bytes=None):
         raise TimeoutError
 
     with patch("aleph.vm.storage.download_file_in_chunks", side_effect=_always_timeout):
