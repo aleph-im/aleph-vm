@@ -148,7 +148,15 @@ def compute_verdict(
     capacity: _Capacity,
     node_hash: str | None = None,
 ) -> PlanVerdict:
-    """The immediate answer: what we take, what we drop, what we refuse."""
+    """The immediate answer: what we take, what we drop, what we refuse.
+
+    No GPU inventory reaches simulate from here, so a candidate asking for a
+    card is refused rather than admitted on memory alone. Reading the host's
+    cards is an async call on the supervisor and this stays await-free, for
+    the reason at the top of the module, so that read belongs to the handler
+    that will make this answer authoritative and has yet to be written. Until
+    it is, no plan can place a GPU VM.
+    """
     verdict = PlanVerdict()
     by_hash = {ItemHash(info.vm_id): info for info in infos}
     unchanged: set[ItemHash] = set()
