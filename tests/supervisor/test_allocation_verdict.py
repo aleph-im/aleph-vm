@@ -218,3 +218,31 @@ def test_a_planned_vm_the_supervisor_holds_dead_is_not_judged_against_itself():
     )
 
     assert HASH_C in capacity.simulate.call_args.kwargs["releasing"]
+
+
+def test_compute_verdict_drives_the_real_capacity_manager(mocker):
+    """Every other test here hands compute_verdict a double, so the shape of
+    CapacityManager.simulate is never exercised: when the candidate tuple lost
+    its third element, the double kept agreeing with a signature production no
+    longer had and all of these stayed green. Wire the real one in once.
+    """
+    from unittest.mock import AsyncMock
+
+    from aleph.vm.agent.capacity import CapacityManager
+    from aleph.vm.agent.vm_registry import AgentVmRegistry
+    from aleph.vm.supervisor_interface.types import HostInfo
+
+    mocker.patch(
+        "aleph.vm.agent.capacity.psutil.virtual_memory",
+        return_value=mocker.Mock(total=64 * 1024 * 1024 * 1024),
+    )
+    mocker.patch("aleph.vm.agent.capacity.psutil.cpu_count", return_value=16)
+    mocker.patch.object(CapacityManager, "_available_disk_bytes", return_value=100 * 1024**3)
+    # The per-volume check reads the pools directly, not through _available_disk_bytes.
+    mocker.patch("aleph.vm.agent.capacity.storage_pools.roomiest_pool_free_bytes", return_value=100 * 1024**3)
+    supervisor = SimpleNamespace(get_host_info=AsyncMock(return_value=HostInfo(gpu_inventory=[], available_gpus=[])))
+    capacity = CapacityManager(supervisor, AgentVmRegistry())
+
+    verdict = compute_verdict(_plan(HASH_C), infos=[], registry=_registry({}), capacity=capacity)
+
+    assert verdict.accepted == [HASH_C]

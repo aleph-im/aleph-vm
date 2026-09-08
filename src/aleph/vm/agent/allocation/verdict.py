@@ -10,12 +10,7 @@ from datetime import datetime
 from hashlib import sha256
 from typing import Protocol
 
-from aleph_message.models import (
-    ExecutableContent,
-    InstanceContent,
-    ItemHash,
-    VerifiableProgramContent,
-)
+from aleph_message.models import ExecutableContent, ItemHash
 
 from aleph.vm.agent.allocation.plan import AllocationPlan, PlannedVm, PlanVerdict
 from aleph.vm.agent.allocation.teardown import is_removable_by_allocation
@@ -42,7 +37,7 @@ class _Capacity(Protocol):
 
     def simulate(
         self,
-        candidates: list[tuple[ItemHash, ResourceRequirements, bool]],
+        candidates: list[tuple[ItemHash, ResourceRequirements]],
         *,
         releasing: frozenset[ItemHash] = ...,
     ) -> list[AdmissionVerdict]: ...
@@ -172,10 +167,7 @@ def compute_verdict(
                 "message": "this instance is allocated to a different node",
             }
             continue
-        # A v-program belongs in the instance memory bucket but is not an
-        # InstanceContent, the same distinction _admit makes in run.py.
-        is_instance = isinstance(content, (InstanceContent, VerifiableProgramContent))
-        candidates.append((vm_hash, requirements_from_message(content), is_instance))
+        candidates.append((vm_hash, requirements_from_message(content)))
 
     for admission in capacity.simulate(candidates, releasing=frozenset(verdict.removing) | recreating):
         if admission.accepted:
