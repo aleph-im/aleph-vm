@@ -681,6 +681,21 @@ async def test_two_reconcile_passes_do_not_overlap(pools, registry, monkeypatch)
     assert order == ["enter", "exit", "enter", "exit"]
 
 
+def test_an_adopt_that_raises_does_not_leave_the_guard_up(pools, monkeypatch):  # noqa: F811
+    """adopt() runs inside creating()'s try: a marker that cannot be unlinked
+    must not leave the namespace exempt from every future pass."""
+
+    def refuse(namespace):
+        raise PermissionError("marker is read-only")
+
+    monkeypatch.setattr(reconciler_module, "adopt", refuse)
+
+    with pytest.raises(PermissionError), creating(VM_HASH):
+        pass
+
+    assert not is_creating(VM_HASH)
+
+
 def test_a_directory_that_fails_does_not_abort_the_pass(pools, registry, monkeypatch, caplog):  # noqa: F811
     """One namespace whose marking raises is logged and skipped; the next one
     is still handled, like a failing item in the parts and side-dir sweeps."""

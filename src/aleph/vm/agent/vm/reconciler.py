@@ -117,8 +117,11 @@ def creating(namespace: str) -> Iterator[None]:
     # is_creating as False must have read it before this line, and then
     # still sees the marker adopt() has yet to clear.
     _creating[namespace] = _creating.get(namespace, 0) + 1
-    adopt(namespace)
     try:
+        # Inside the try: an adopt that raises (a marker that cannot be
+        # unlinked) must not leave the guard up for good, which would exempt
+        # the namespace from every future pass.
+        adopt(namespace)
         yield
     finally:
         remaining = _creating[namespace] - 1
