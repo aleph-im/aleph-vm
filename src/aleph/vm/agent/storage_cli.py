@@ -74,8 +74,10 @@ SUPERVISOR_CONNECT_TIMEOUT_SECS = 3.0
 # Exit code for a reconcile that silently downgraded to a dry run because the
 # supervisor could not be asked and --trust-registry was not given. Distinct
 # from an explicit --dry-run, which is a success (exit 0): nothing was
-# downgraded, the caller asked for a preview and got one.
-DEGRADED_EXIT_CODE = 2
+# downgraded, the caller asked for a preview and got one. Not 2, which
+# argparse uses for a usage error: a wrapper script must be able to tell a
+# degraded pass from a bad argument without parsing stderr.
+DEGRADED_EXIT_CODE = 3
 
 logger = logging.getLogger(__name__)
 
@@ -215,13 +217,22 @@ def _status(registry: AgentVmRegistry, out: TextIO) -> int:
     return 0
 
 
-def _list(out: TextIO, *, reclaimable_only: bool) -> int:
+def _list(registry: AgentVmRegistry, out: TextIO, *, reclaimable_only: bool) -> int:
+    # REASON is the marker's reason for a reclaimable directory. An unmarked
+    # directory is "live" only when the registry knows its hash; otherwise
+    # it is "unmarked", which is what an operator triaging by hand needs to
+    # see: an orphan no pass has reached yet must not read as a live VM.
+    # Registry only, like status: list never dials the supervisor.
+    live = live_hashes(registry)
     out.write("HASH\tPOOL\tSIZE\tREASON\tAGE\n")
     for directory in iter_namespace_dirs():
         marker = read_marker(directory)
         if reclaimable_only and marker is None:
             continue
-        reason = marker.reason if marker else "live"
+        if marker:
+            reason = marker.reason
+        else:
+            reason = "live" if directory.name in live else "unmarked"
         age = _age(marker.reclaimable_since) if marker else "-"
         out.write(f"{directory.name}\t{directory.parent}\t{_human(directory_size_bytes(directory))}\t{reason}\t{age}\n")
     return 0
@@ -298,7 +309,7 @@ def run(args: argparse.Namespace, registry: AgentVmRegistry, out: TextIO) -> int
     if args.command == "status":
         return _status(registry, out)
     if args.command == "list":
-        return _list(out, reclaimable_only=args.reclaimable)
+        return _list(registry, out, reclaimable_only=args.reclaimable)
     if args.command == "reclaim":
         return _reclaim(registry, args.vm_hash, out, trust_registry=args.trust_registry)
     if args.command == "reconcile":

@@ -91,11 +91,15 @@ def test_status_lists_pools_and_caches(pools, registry, monkeypatch):  # noqa: F
 def test_list_shows_every_vm_dir_and_reclaimable_filters(pools, registry):  # noqa: F811
     volume(pools["pool0"], LIVE, "rootfs.qcow2")
     volume(pools["pool1"], VM_HASH, "rootfs.qcow2")
+    volume(pools["pool1"], OTHER_HASH, "rootfs.qcow2")
     mark_reclaimable(VM_HASH, "orphan", now=NOW - timedelta(days=3))
 
     code, out = _run(["list"], registry)
     assert code == 0
-    assert LIVE in out and VM_HASH in out
+    rows = {line.split("\t")[0]: line.split("\t")[3] for line in out.splitlines()[1:]}
+    # An unmarked directory is "live" only on the registry's word; an
+    # unmarked orphan no pass has reached yet must not read as a live VM.
+    assert rows == {LIVE: "live", VM_HASH: "orphan", OTHER_HASH: "unmarked"}
 
     code, out = _run(["list", "--reclaimable"], registry)
     assert LIVE not in out and VM_HASH in out and "orphan" in out

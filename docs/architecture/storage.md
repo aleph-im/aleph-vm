@@ -545,8 +545,11 @@ process*:
 
 - `storage status`: per pool, live / reclaimable / cache / free bytes
   against the budgets. Read-only, registry live set only.
-- `storage list [--reclaimable]`: hash, pool, size, reason, age. Read-only,
-  registry live set only.
+- `storage list [--reclaimable]`: hash, pool, size, reason, age. The reason
+  is the marker's for a reclaimable directory; an unmarked directory reads
+  `live` when the registry knows its hash and `unmarked` otherwise (an
+  orphan no pass has reached yet is not a live VM). Read-only, registry
+  live set only.
 - `storage reclaim <hash> [--trust-registry]`: purge one reclaimable
   directory now. Checks the `.reclaimable` marker first, purely locally, so
   a typo or an unrelated hash fails instantly rather than waiting on a
@@ -588,7 +591,9 @@ reached and an explicit `--dry-run` was not requested, `reconcile` still
 runs as a dry run (a preview, nothing removed) but treats this as an error:
 it prints a warning to stderr (`"registry-only"`, not `"trusted"`: the
 report on stdout stays parseable, uninterrupted by the warning) and exits
-`2`, unless `--trust-registry` says to purge on the registry alone. An
+`3` (not `2`, which argparse uses for a usage error, so a wrapper script
+can tell the two apart), unless `--trust-registry` says to purge on the
+registry alone. An
 explicit `--dry-run` always stays exit `0`, whether or not the supervisor
 answered: nothing was silently downgraded, the caller asked for a preview
 and got one. `reclaim` refuses outright unless `--trust-registry` is given.
