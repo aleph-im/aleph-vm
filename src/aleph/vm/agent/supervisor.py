@@ -324,7 +324,9 @@ def setup_webapp(supervisor: Supervisor):
     )
 
     async def _start_allocation_reconciler(app: web.Application) -> None:
-        app["_allocation_reconciler"] = asyncio.get_running_loop().create_task(app["allocation_reconciler"].run())
+        app["_allocation_reconciler"] = create_task_log_exceptions(
+            app["allocation_reconciler"].run(), name="allocation reconciler"
+        )
 
     async def _stop_allocation_reconciler(app: web.Application) -> None:
         task = app.get("_allocation_reconciler")
