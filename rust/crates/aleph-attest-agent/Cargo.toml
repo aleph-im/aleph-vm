@@ -43,3 +43,4 @@ libc = "0.2"
 [dev-dependencies]
 # Constructs valid/invalid owner-signed envelopes in the inject-secret tests.
 k256 = { version = "0.13", features = ["ecdsa"] }
+tempfile = "3"
