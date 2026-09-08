@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aleph_message.models import ItemHash
@@ -11,10 +11,10 @@ from test_supervisor_translate import _make_qemu_instance_message
 
 from aleph.vm.agent.allocation.plan import AllocationPlan, PlannedVm
 from aleph.vm.agent.allocation.verdict import build_plan, compute_verdict
-from aleph.vm.agent.capacity import AdmissionVerdict
+from aleph.vm.agent.capacity import AdmissionVerdict, CapacityManager
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
-from aleph.vm.supervisor_interface.types import ConfidentialMode, VmStatus
+from aleph.vm.supervisor_interface.types import ConfidentialMode, HostInfo, VmStatus
 
 NOW = datetime(2026, 8, 25, tzinfo=timezone.utc)
 HASH_A = ItemHash("a" * 64)
@@ -323,12 +323,6 @@ def _real_capacity(mocker, *, memory_gib=64, registry=None):
     The double the other tests use answers whatever it was handed, so nothing
     it agrees to says anything about what simulate does with a plan.
     """
-    from unittest.mock import AsyncMock
-
-    from aleph.vm.agent.capacity import CapacityManager
-    from aleph.vm.agent.vm_registry import AgentVmRegistry
-    from aleph.vm.supervisor_interface.types import HostInfo
-
     mocker.patch(
         "aleph.vm.agent.capacity.psutil.virtual_memory",
         return_value=mocker.Mock(total=memory_gib * 1024**3),

@@ -154,7 +154,6 @@ def compute_verdict(
     unchanged: set[ItemHash] = set()
 
     for vm_hash, info in by_hash.items():
-        record = registry.get(vm_hash)
         if vm_hash in plan.entries:
             if info.status in LIVE_STATUSES or info.awaiting_confidential_init:
                 unchanged.add(vm_hash)
@@ -168,6 +167,7 @@ def compute_verdict(
             # or refused for another node it would credit memory nobody is
             # freeing at all.
             continue
+        record = registry.get(vm_hash)
         # A VM the supervisor runs that we hold no record for is left alone
         # and reported as neither dropped nor kept. We know nothing about what
         # it is owed, and an allocation push is not the place to find out.
