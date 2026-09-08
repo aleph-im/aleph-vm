@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use actix_web::web::{self, Bytes};
 use actix_web::{HttpRequest, HttpResponse};
@@ -59,7 +60,15 @@ pub struct GpuState {
     pub boot_claims: serde_json::Value,
     /// One SPDM exchange at a time: concurrent callers queue.
     pub lock: tokio::sync::Mutex<()>,
+    /// How long a caller queues for the exchange before being told to
+    /// retry. A collection takes well under a second, so a queue this deep
+    /// means the collector is wedged; failing fast keeps a pile-up from
+    /// holding worker threads for the whole collector timeout each.
+    pub lock_wait: Duration,
 }
+
+/// Default for [`GpuState::lock_wait`].
+pub const GPU_LOCK_WAIT: Duration = Duration::from_secs(10);
 
 /// Upper bound on the decoded nonce accepted by the attestation endpoint.
 ///
@@ -147,7 +156,11 @@ pub async fn gpu_attestation_endpoint(
         Err(resp) => return resp,
     };
     let nonce = gpu_nonce(&state.served_public_key_raw, &client_nonce);
-    let _serialized = gpu.lock.lock().await;
+    let Ok(_serialized) = tokio::time::timeout(gpu.lock_wait, gpu.lock.lock()).await else {
+        return HttpResponse::ServiceUnavailable()
+            .insert_header(("Retry-After", "10"))
+            .json(serde_json::json!({"error": "gpu attestation busy"}));
+    };
     // The collector is a blocking child process; keep it off the async workers.
     let gpu_for_task = Arc::clone(gpu);
     let collected = web::block(move || gpu_for_task.source.collect(&nonce)).await;
@@ -393,6 +406,7 @@ mod tests {
             source: Box::new(FakeGpu),
             boot_claims: serde_json::json!([{"measres": "Success"}]),
             lock: tokio::sync::Mutex::new(()),
+            lock_wait: GPU_LOCK_WAIT,
         })));
         let client_nonce = hex::encode(b"client-nonce");
         let (status, body) = gpu_attest(state, &client_nonce).await;
@@ -421,10 +435,30 @@ mod tests {
             source: Box::new(FakeGpu),
             boot_claims: serde_json::Value::Null,
             lock: tokio::sync::Mutex::new(()),
+            lock_wait: GPU_LOCK_WAIT,
         })));
         let (status, _) = gpu_attest(state.clone(), &"a".repeat(MAX_NONCE_LEN * 2 + 2)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let (status, _) = gpu_attest(state, "zz").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    /// A caller that cannot get its turn at the GPU within the wait is told
+    /// to retry, instead of queueing behind a wedged collection.
+    #[actix_web::test]
+    async fn gpu_route_is_503_while_the_exchange_stays_busy() {
+        let gpu = Arc::new(GpuState {
+            source: Box::new(FakeGpu),
+            boot_claims: serde_json::Value::Null,
+            lock: tokio::sync::Mutex::new(()),
+            lock_wait: Duration::from_millis(50),
+        });
+        let held = gpu.lock.lock().await;
+        let (status, body) = gpu_attest(gpu_state(Some(Arc::clone(&gpu))), "00").await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"], "gpu attestation busy");
+        drop(held);
+        let (status, _) = gpu_attest(gpu_state(Some(gpu)), "00").await;
+        assert_eq!(status, StatusCode::OK);
     }
 }

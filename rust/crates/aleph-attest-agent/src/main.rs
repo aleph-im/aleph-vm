@@ -147,6 +147,7 @@ async fn main() -> Result<()> {
                 source: Box::new(source),
                 boot_claims,
                 lock: tokio::sync::Mutex::new(()),
+                lock_wait: proxy::GPU_LOCK_WAIT,
             }))
         }
         _ => None,

@@ -11,7 +11,8 @@
 
 use std::io::Read;
 use std::process::Command;
-use std::time::Duration;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -39,6 +40,12 @@ pub trait GpuEvidenceSource: Send + Sync {
 /// driver is wedged and the request should fail rather than pile up.
 pub const COLLECT_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// More than any evidence document: eight GPUs with full certificate
+/// chains stay well under a megabyte. A collector still writing past this
+/// is wedged or not the collector we measured, and the request fails
+/// instead of growing the guest's memory until the timeout.
+pub const MAX_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
+
 #[derive(Deserialize)]
 struct CollectorOutput {
     evidences: Vec<GpuEvidence>,
@@ -53,6 +60,9 @@ struct CollectorOutput {
 pub struct CollectorProcess {
     pub program: String,
     pub args: Vec<String>,
+    /// Bound on one collection, child and pipe drain included; tests lower
+    /// it so the kill path runs in milliseconds.
+    pub timeout: Duration,
 }
 
 impl CollectorProcess {
@@ -62,6 +72,7 @@ impl CollectorProcess {
         Ok(Self {
             program,
             args: parts.collect(),
+            timeout: COLLECT_TIMEOUT,
         })
     }
 
@@ -94,6 +105,57 @@ impl CollectorProcess {
     }
 }
 
+/// Drain one pipe on its own thread, so a collector writing more than the
+/// pipe buffer holds (64 KiB) never blocks on a write we are not reading.
+/// The buffer comes back over a channel rather than a join handle, so the
+/// caller can give up on it at its deadline. Past the cap the pipe is
+/// dropped, which ends the writer with EPIPE instead of letting it fill
+/// memory.
+fn drain(
+    mut pipe: impl Read + Send + 'static,
+    what: &'static str,
+) -> mpsc::Receiver<Result<Vec<u8>>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let read = pipe
+            .by_ref()
+            .take(MAX_OUTPUT_BYTES + 1)
+            .read_to_end(&mut buf)
+            .with_context(|| format!("reading the GPU collector's {what}"));
+        let result = match read {
+            Ok(_) if buf.len() as u64 > MAX_OUTPUT_BYTES => Err(anyhow::anyhow!(
+                "GPU collector {what} exceeds {MAX_OUTPUT_BYTES} bytes"
+            )),
+            Ok(_) => Ok(buf),
+            Err(e) => Err(e),
+        };
+        drop(pipe);
+        let _ = tx.send(result);
+    });
+    rx
+}
+
+/// Wait for a drained pipe until the deadline. A pipe still open after the
+/// child exited is held by something the child spawned; waiting for that
+/// would pin this worker and the caller's mutex for as long as it lives.
+/// The reader thread stays behind, detached, and ends when the pipe
+/// finally closes.
+fn receive_by(
+    rx: &mpsc::Receiver<Result<Vec<u8>>>,
+    deadline: Instant,
+    what: &str,
+    timeout: Duration,
+) -> Result<Vec<u8>> {
+    match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            bail!("GPU collector exited but its {what} stayed open past {timeout:?}")
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => bail!("{what} reader thread panicked"),
+    }
+}
+
 impl GpuEvidenceSource for CollectorProcess {
     fn collect(&self, nonce: &[u8; 32]) -> Result<Vec<GpuEvidence>> {
         let nonce_hex = hex::encode(nonce);
@@ -105,26 +167,13 @@ impl GpuEvidenceSource for CollectorProcess {
             .stderr(std::process::Stdio::piped())
             .spawn()
             .with_context(|| format!("cannot start GPU collector {}", self.program))?;
+        let deadline = Instant::now() + self.timeout;
 
-        // Take ownership of pipes and spawn reader threads to avoid deadlock:
-        // if collector writes >64 KiB, it blocks on the pipe write; without
-        // draining on separate threads, try_wait loops forever and times out.
-        let mut stdout = child.stdout.take().context("expected piped stdout")?;
-        let mut stderr = child.stderr.take().context("expected piped stderr")?;
+        let stdout = child.stdout.take().context("expected piped stdout")?;
+        let stderr = child.stderr.take().context("expected piped stderr")?;
+        let stdout_rx = drain(stdout, "stdout");
+        let stderr_rx = drain(stderr, "stderr");
 
-        let stdout_handle = std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = stdout.read_to_end(&mut buf);
-            buf
-        });
-
-        let stderr_handle = std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = stderr.read_to_end(&mut buf);
-            buf
-        });
-
-        let started = std::time::Instant::now();
         loop {
             if child
                 .try_wait()
@@ -133,21 +182,18 @@ impl GpuEvidenceSource for CollectorProcess {
             {
                 break;
             }
-            if started.elapsed() > COLLECT_TIMEOUT {
+            if Instant::now() >= deadline {
+                // The reader threads are left behind on purpose: joining
+                // them could block on a pipe a surviving grandchild holds.
                 let _ = child.kill();
                 let _ = child.wait();
-                bail!("GPU collector exceeded {COLLECT_TIMEOUT:?}");
+                bail!("GPU collector exceeded {:?}", self.timeout);
             }
             std::thread::sleep(Duration::from_millis(50));
         }
 
-        // Join reader threads
-        let stdout_buf = stdout_handle
-            .join()
-            .map_err(|_| anyhow::anyhow!("stdout reader thread panicked"))?;
-        let stderr_buf = stderr_handle
-            .join()
-            .map_err(|_| anyhow::anyhow!("stderr reader thread panicked"))?;
+        let stdout_buf = receive_by(&stdout_rx, deadline, "stdout", self.timeout)?;
+        let stderr_buf = receive_by(&stderr_rx, deadline, "stderr", self.timeout)?;
 
         let status = child
             .wait()
@@ -170,6 +216,17 @@ mod tests {
     use super::*;
 
     const ONE_GPU: &str = r#"{"evidences":[{"arch":"BLACKWELL","nonce":"NONCE","evidence":"EeAB","certificate":"LS0t"}],"result_code":0,"result_message":"Ok"}"#;
+
+    /// Write an executable shell script and return a collector running it.
+    fn script_collector(name: &str, body: &str) -> (tempfile::TempDir, CollectorProcess) {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join(name);
+        std::fs::write(&script, format!("#!/bin/sh\n{body}")).unwrap();
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let collector = CollectorProcess::from_command_line(script.to_str().unwrap()).unwrap();
+        (dir, collector)
+    }
 
     #[test]
     fn evidence_serializes_in_the_nvattest_shape() {
@@ -231,6 +288,7 @@ mod tests {
         .unwrap();
         assert_eq!(collector.program, "/bin/busybox");
         assert_eq!(collector.args.last().unwrap(), "--nonce");
+        assert_eq!(collector.timeout, COLLECT_TIMEOUT);
         assert!(CollectorProcess::from_command_line("   ").is_err());
     }
 
@@ -238,16 +296,10 @@ mod tests {
     /// as the last argument and the JSON on stdout must be parsed.
     #[test]
     fn collect_runs_the_program_with_the_nonce_appended() {
-        let dir = tempfile::tempdir().unwrap();
-        let script = dir.path().join("fake-nvattest.sh");
-        std::fs::write(
-            &script,
-            "#!/bin/sh\nnonce=\"$1\"\nprintf '{\"evidences\":[{\"arch\":\"HOPPER\",\"nonce\":\"%s\",\"evidence\":\"ZQ==\",\"certificate\":\"Yw==\"}],\"result_code\":0,\"result_message\":\"Ok\"}' \"$nonce\"\n",
-        )
-        .unwrap();
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let collector = CollectorProcess::from_command_line(script.to_str().unwrap()).unwrap();
+        let (_dir, collector) = script_collector(
+            "fake-nvattest.sh",
+            "nonce=\"$1\"\nprintf '{\"evidences\":[{\"arch\":\"HOPPER\",\"nonce\":\"%s\",\"evidence\":\"ZQ==\",\"certificate\":\"Yw==\"}],\"result_code\":0,\"result_message\":\"Ok\"}' \"$nonce\"\n",
+        );
         let nonce = [0x5au8; 32];
         let out = collector.collect(&nonce).unwrap();
         assert_eq!(out[0].nonce, "5a".repeat(32));
@@ -265,23 +317,64 @@ mod tests {
     /// The fix drains stdout and stderr on separate threads while polling try_wait.
     #[test]
     fn collect_handles_large_output_without_deadlock() {
-        let dir = tempfile::tempdir().unwrap();
-        let script = dir.path().join("large-output.sh");
         // Output ~200 KiB JSON: pipe buffer overflow without the drain fix.
         let padding = "x".repeat(200000);
-        let script_content = format!(
-            "#!/bin/sh\nnonce=\"$1\"\nprintf '{{\"evidences\":[{{\"arch\":\"HOPPER\",\"nonce\":\"%s\",\"evidence\":\"ZQ==\",\"certificate\":\"Yw==\"}}],\"result_code\":0,\"result_message\":\"{}\"}}' \"$nonce\"\n",
-            padding
+        let (_dir, collector) = script_collector(
+            "large-output.sh",
+            &format!(
+                "nonce=\"$1\"\nprintf '{{\"evidences\":[{{\"arch\":\"HOPPER\",\"nonce\":\"%s\",\"evidence\":\"ZQ==\",\"certificate\":\"Yw==\"}}],\"result_code\":0,\"result_message\":\"{}\"}}' \"$nonce\"\n",
+                padding
+            ),
         );
-        std::fs::write(&script, script_content).unwrap();
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let collector = CollectorProcess::from_command_line(script.to_str().unwrap()).unwrap();
         let nonce = [0xabu8; 32];
         // Must complete within COLLECT_TIMEOUT (60 s), not deadlock.
         let out = collector.collect(&nonce).unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].arch, "HOPPER");
         assert_eq!(out[0].nonce, "ab".repeat(32));
+    }
+
+    /// A collector that never exits is killed at the timeout, and the call
+    /// returns then rather than waiting on the child.
+    #[test]
+    fn collect_kills_a_collector_that_exceeds_the_timeout() {
+        let (_dir, mut collector) = script_collector("wedged.sh", "sleep 30\n");
+        collector.timeout = Duration::from_millis(200);
+        let started = Instant::now();
+        let err = collector.collect(&[0u8; 32]).unwrap_err();
+        assert!(err.to_string().contains("exceeded"), "{err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    /// The deadline also covers the pipe drain: a helper that inherits stdout
+    /// and outlives the collector must not turn the call into an unbounded
+    /// wait, since the caller holds the GPU mutex for its whole duration.
+    #[test]
+    fn collect_gives_up_on_a_pipe_a_survivor_keeps_open() {
+        let (_dir, mut collector) = script_collector("survivor.sh", "sleep 5 &\nexit 0\n");
+        collector.timeout = Duration::from_millis(300);
+        let started = Instant::now();
+        let err = collector.collect(&[0u8; 32]).unwrap_err();
+        assert!(err.to_string().contains("stayed open"), "{err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    /// Output past the cap fails the collection instead of being buffered.
+    #[test]
+    fn collect_rejects_output_beyond_the_cap() {
+        let (_dir, collector) = script_collector(
+            "flood.sh",
+            &format!("head -c {} /dev/zero\n", MAX_OUTPUT_BYTES + 1024),
+        );
+        let err = collector.collect(&[0u8; 32]).unwrap_err();
+        assert!(err.to_string().contains("exceeds"), "{err}");
     }
 }
