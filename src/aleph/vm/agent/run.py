@@ -205,13 +205,23 @@ async def _reconcile_forwards(supervisor: Supervisor, vm_id: VmId, desired_specs
             await supervisor.add_port_forward(spec)
 
 
-async def reconcile_port_forwards(supervisor: Supervisor, vm_id: VmId, content) -> None:
+async def reconcile_port_forwards(supervisor: Supervisor, vm_id: VmId, content, *, strict: bool = False) -> None:
     """Drive the hypervisor's forwards to match the aggregate settings.
 
     Agent policy half of the old fetch_port_redirect_config_and_setup: compute
     the desired set, then converge through ``_reconcile_forwards``.
+
+    ``strict=`` follows ``resolve_port_forwards``' contract and the caller's
+    situation: a caller reconciling a VM that already has forwards (the
+    aggregate watcher, the user-triggered refresh endpoint) must pass
+    ``strict=True``, because converging onto the SSH-only fallback after a
+    transient aggregate-fetch failure would tear the user's own forwards
+    down. A caller establishing a VM's FIRST forwards (the legacy-SEV
+    post-init setup in the operator API) keeps the lenient default: there is
+    nothing to tear down yet, and the SSH-only fallback at least makes the
+    VM reachable, mirroring the create path.
     """
-    await _reconcile_forwards(supervisor, vm_id, await resolve_instance_desired_forwards(vm_id, content))
+    await _reconcile_forwards(supervisor, vm_id, await resolve_instance_desired_forwards(vm_id, content, strict=strict))
 
 
 def resolve_vprogram_port_forwards(vm_id: VmId, attest_port: int | None) -> list[PortForwardSpec]:
