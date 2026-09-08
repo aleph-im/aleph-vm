@@ -561,6 +561,14 @@ def _evict(
         # only lands when the create commits, so is_live cannot catch this yet.
         logger.warning("Not evicting %s: a create in flight owns it", namespace)
         return 0
+    # A residual window remains on the periodic pass, which runs in a worker
+    # thread: a create can enter creating() on the event loop between this
+    # check and the purge below and adopt a directory that is about to go.
+    # Closing it would take a lock shared with creating() and held across the
+    # rmtree, stalling every create for the length of a purge, so it is left
+    # open; the window is a few instructions wide and needs the pool to be
+    # over budget at that instant. The room maker's evictions run on the
+    # event loop itself, where creating() cannot interleave at all.
     if not _still_on_disk(namespace):
         logger.debug("Not evicting %s: its directories are already gone", namespace)
         return 0
