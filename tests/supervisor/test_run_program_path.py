@@ -159,15 +159,21 @@ async def test_reuses_running_configured_vm(patched_build):
 
 
 @pytest.mark.asyncio
-async def test_recreates_unconfigured_running_vm(patched_build):
+async def test_recreates_unconfigured_running_vm(patched_build, monkeypatch):
     """A running VM this agent process never configured cannot be trusted to
-    accept run_code (the runtime takes one config push per boot): recreate."""
+    accept run_code (the runtime takes one config push per boot): recreate.
+    retire_vm(RECREATE) is what tears the old instance down, not a plain
+    delete_vm."""
+    from aleph.vm.agent.vm.retire import RetireReason
+
     supervisor = SimpleNamespace(
         get_vm=AsyncMock(side_effect=[_info(VmStatus.RUNNING), VmNotFoundError(VM_ID), _info(VmStatus.RUNNING)]),
         create_vm=AsyncMock(return_value=_info(VmStatus.RUNNING)),
         delete_vm=AsyncMock(),
     )
     program_client = FakeProgramClient(ready=False)
+    retire = AsyncMock()
+    monkeypatch.setattr(run_module, "retire_vm", retire)
 
     await run_module._ensure_program_vm(
         VM_HASH,
@@ -179,13 +185,18 @@ async def test_recreates_unconfigured_running_vm(patched_build):
         program_client=program_client,
     )
 
-    supervisor.delete_vm.assert_awaited()  # old instance torn down
+    retire.assert_awaited_once_with(VM_HASH, RetireReason.RECREATE, supervisor=supervisor)
+    supervisor.delete_vm.assert_not_awaited()
     supervisor.create_vm.assert_awaited_once()
     assert program_client.setups == [VM_ID]
 
 
 @pytest.mark.asyncio
-async def test_setup_failure_tears_down(patched_build):
+async def test_setup_failure_tears_down(patched_build, monkeypatch):
+    """A config-push failure retires the half-started VM as FAILED_CREATE
+    (no pre-existing volumes here, so not RECREATE)."""
+    from aleph.vm.agent.vm.retire import RetireReason
+
     supervisor = SimpleNamespace(
         get_vm=AsyncMock(side_effect=[VmNotFoundError(VM_ID), _info(VmStatus.RUNNING)]),
         create_vm=AsyncMock(return_value=_info(VmStatus.RUNNING)),
@@ -194,6 +205,8 @@ async def test_setup_failure_tears_down(patched_build):
     registry = AgentVmRegistry()
     program_client = FakeProgramClient()
     program_client.setup_program = AsyncMock(side_effect=RuntimeError("config push failed"))  # type: ignore[method-assign]
+    retire = AsyncMock()
+    monkeypatch.setattr(run_module, "retire_vm", retire)
 
     with pytest.raises(web.HTTPInternalServerError):
         await run_module._ensure_program_vm(
@@ -206,8 +219,8 @@ async def test_setup_failure_tears_down(patched_build):
             program_client=program_client,
         )
 
-    supervisor.delete_vm.assert_awaited()
-    assert registry.get(VM_HASH) is None
+    retire.assert_awaited_once_with(VM_HASH, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)
+    supervisor.delete_vm.assert_not_awaited()
     run_module.persist_record.assert_not_awaited()
 
 

@@ -215,7 +215,7 @@ async def test_expiry_reap_cancels_update_watch():
     # task completes, so awaiting the task is enough to observe the cancellation.
     await asyncio.wait_for(expiry._tasks[vm_id], timeout=WAIT_TIMEOUT)
 
-    assert sup.deleted == [(_HASH, False)]  # expiry reaped: plain dealloc
+    assert sup.deleted == [(_HASH, True)]  # expiry reaped: RECREATE keeps port mappings
     assert watcher.cancel(vm_id) is False  # the watch was cancelled (gone)
 
 

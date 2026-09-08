@@ -208,31 +208,51 @@ async def create_backup_archive(
 def cleanup_expired_backups(
     backup_dir: Path,
     ttl_hours: int = BACKUP_TTL_HOURS,
+    *,
+    now: float | None = None,
 ) -> int:
     """Remove backup archives older than ``ttl_hours``.
 
-    Also removes the companion .sha256 sidecar files.
+    Also removes the companion .sha256 and .tar.meta.json sidecar files.
+
+    ``now`` is the timestamp the TTL is evaluated against, defaulting to the
+    wall clock. The reconciler passes the one ``now`` it threads through a
+    whole pass, so a run is deterministic and does not drift between the
+    archives it looks at.
+
+    Every file is handled on its own: another sweep, or ``purge_vm_backups``
+    for a VM being retired, can remove an archive between the listing and the
+    unlink. Losing that race is normal, and it must not abort the rest of the
+    pass.
 
     Returns:
         Number of expired archives deleted.
     """
-    cutoff = time.time() - (ttl_hours * 3600)
+    cutoff = (now if now is not None else time.time()) - (ttl_hours * 3600)
     deleted = 0
 
     # A .tar.partial older than the TTL is an archive whose writer died
     # mid-backup (live ones are renamed to .tar within minutes).
     for partial in backup_dir.glob("*.tar.partial"):
-        if partial.stat().st_mtime < cutoff:
-            partial.unlink()
-            logger.info("Deleted stale partial backup %s", partial.name)
+        try:
+            if partial.stat().st_mtime < cutoff:
+                partial.unlink()
+                logger.info("Deleted stale partial backup %s", partial.name)
+        except OSError:
+            logger.debug("Skipping %s: it went away or is not readable", partial, exc_info=True)
 
     for tar_file in backup_dir.glob("*.tar"):
-        if tar_file.stat().st_mtime < cutoff:
+        try:
+            if tar_file.stat().st_mtime >= cutoff:
+                continue
             tar_file.unlink()
             tar_file.with_suffix(".tar.sha256").unlink(missing_ok=True)
             tar_file.with_suffix(".tar.meta.json").unlink(missing_ok=True)
-            logger.info("Deleted expired backup %s", tar_file.name)
-            deleted += 1
+        except OSError:
+            logger.debug("Skipping %s: it went away or is not readable", tar_file, exc_info=True)
+            continue
+        logger.info("Deleted expired backup %s", tar_file.name)
+        deleted += 1
 
     return deleted
 

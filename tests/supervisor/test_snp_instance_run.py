@@ -279,9 +279,12 @@ async def test_legacy_sev_instance_path_untouched(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_snp_instance_failure_cleans_staging(monkeypatch):
-    """supervisor.create_vm raises: the failure path must call
-    remove_snp_instance_staging and forget the registry record, mirroring the
-    V-PROGRAM build/create failure branch."""
+    """supervisor.create_vm raises: the failure path must retire the VM as
+    FAILED_CREATE (which drops the record and purges any staged bundle),
+    mirroring the V-PROGRAM build/create failure branch. No pre-existing
+    volumes here, so FAILED_CREATE, not RECREATE."""
+    from aleph.vm.agent.vm.retire import RetireReason
+
     content = snp_instance_content()
     message = MagicMock(content=content, sender=_SENDER)
     monkeypatch.setattr(
@@ -290,8 +293,8 @@ async def test_snp_instance_failure_cleans_staging(monkeypatch):
     spec = _snp_spec()
     monkeypatch.setattr(run_module, "build_snp_instance_spec", AsyncMock(return_value=(spec, _ATTEST_PORT)))
     monkeypatch.setattr(run_module, "resolve_instance_attestation_port", AsyncMock(return_value=_ATTEST_PORT))
-    remove_staging = MagicMock()
-    monkeypatch.setattr(run_module, "remove_snp_instance_staging", remove_staging)
+    retire = AsyncMock()
+    monkeypatch.setattr(run_module, "retire_vm", retire)
 
     supervisor = _fake_supervisor()
     supervisor.create_vm = AsyncMock(side_effect=RuntimeError("qemu spawn failed"))
@@ -302,16 +305,19 @@ async def test_snp_instance_failure_cleans_staging(monkeypatch):
             VM_HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
         )
 
-    remove_staging.assert_called_once_with(VM_HASH)
-    assert registry.get(VM_HASH) is None
+    retire.assert_awaited_once_with(VM_HASH, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)
+    supervisor.delete_vm.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_snp_instance_port_forward_failure_cleans_staging(monkeypatch):
     """The second teardown path: create_vm succeeds but the port-forward
     application inside finish_instance_create fails. The half-started VM must
-    be deleted and its staging removed, mirroring the create-failure branch
-    (run.py's finish_instance_create/attest-gate except block)."""
+    retire as FAILED_CREATE (records, staging and volumes go), mirroring the
+    create-failure branch (run.py's finish_instance_create/attest-gate except
+    block)."""
+    from aleph.vm.agent.vm.retire import RetireReason
+
     content = snp_instance_content()
     message = MagicMock(content=content, sender=_SENDER)
     monkeypatch.setattr(
@@ -319,12 +325,15 @@ async def test_snp_instance_port_forward_failure_cleans_staging(monkeypatch):
     )
     spec = _snp_spec()
     monkeypatch.setattr(run_module, "build_snp_instance_spec", AsyncMock(return_value=(spec, _ATTEST_PORT)))
+    # finish_instance_create runs for real: the attestation port is part of
+    # the desired forward set it applies, so the raising add_port_forward
+    # below lands the failure in the second except block.
     monkeypatch.setattr(run_module, "resolve_instance_attestation_port", AsyncMock(return_value=_ATTEST_PORT))
     monkeypatch.setattr(run_module, "get_user_settings", AsyncMock(return_value={}))
     monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
     monkeypatch.setattr(run_module, "_wait_until_attest_endpoint_listens", AsyncMock())
-    remove_staging = MagicMock()
-    monkeypatch.setattr(run_module, "remove_snp_instance_staging", remove_staging)
+    retire = AsyncMock()
+    monkeypatch.setattr(run_module, "retire_vm", retire)
 
     supervisor = _fake_supervisor()  # create_vm returns RUNNING, not awaiting init
     supervisor.add_port_forward = AsyncMock(side_effect=RuntimeError("nftables rule failed"))
@@ -335,6 +344,5 @@ async def test_snp_instance_port_forward_failure_cleans_staging(monkeypatch):
             VM_HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
         )
 
-    remove_staging.assert_called_once_with(VM_HASH)
-    supervisor.delete_vm.assert_awaited_once()
-    assert registry.get(VM_HASH) is None
+    retire.assert_awaited_once_with(VM_HASH, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)
+    supervisor.delete_vm.assert_not_awaited()

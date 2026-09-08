@@ -5,6 +5,7 @@ from aleph_message.models import Chain, InstanceContent, ItemHash, PaymentType
 from aleph_message.status import MessageStatus
 
 from aleph.vm.agent.tasks import _group_executions_by_payment, check_payment
+from aleph.vm.agent.vm.retire import RetireReason
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
 from aleph.vm.supervisor_interface.types import (
@@ -69,6 +70,24 @@ def _make_info(vm_hash: str, *, started_at_ns: int = 0, confidential: bool = Fal
         started_at_ns=started_at_ns,
         confidential_mode=ConfidentialMode.SEV if confidential else ConfidentialMode.NONE,
     )
+
+
+@pytest.mark.asyncio
+async def test_check_payment_tolerates_a_non_hash_vm_id(mocker):
+    """One supervisor id that is not an item hash must not take the whole
+    payment sweep down: it is dropped at the snapshot (the reconciler's
+    supervisor_hashes rule) and the other VMs are still checked."""
+    mocker.patch("aleph.vm.agent.tasks.get_community_wallet_address", return_value="0x23C7")
+    status = mocker.patch("aleph.vm.agent.tasks.get_message_status", return_value=MessageStatus.PROCESSED)
+    retire = mocker.patch("aleph.vm.agent.tasks.retire_vm", new_callable=AsyncMock)
+
+    checked = "cafe" * 16  # not FAKE_INSTANCE_ID, which the sweep skips
+    supervisor = _make_supervisor([_make_info("not-an-item-hash"), _make_info(checked)])
+
+    await check_payment(supervisor=supervisor, registry=_make_registry())
+
+    status.assert_awaited_once_with(ItemHash(checked))
+    retire.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -162,6 +181,7 @@ async def test_not_enough_flow(mocker, fake_instance_content):
     mocker.patch("aleph.vm.agent.tasks.get_stream", return_value=2, autospec=True)
     mocker.patch("aleph.vm.agent.tasks.get_message_status", return_value=MessageStatus.PROCESSED)
     mocker.patch("aleph.vm.agent.tasks.compute_required_flow", return_value=5)
+    retire = mocker.patch("aleph.vm.agent.tasks.retire_vm", new_callable=AsyncMock)
     message = InstanceContent.model_validate(fake_instance_content)
 
     hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
@@ -175,10 +195,10 @@ async def test_not_enough_flow(mocker, fake_instance_content):
 
     await check_payment(supervisor=supervisor, registry=registry)
 
-    # Insufficient-funds stop: supervisor.delete_vm is called, registry.forget is NOT called
-    # (VM may be re-paid and restarted).
-    supervisor.delete_vm.assert_awaited_once_with(VmId(str(hash)))
-    assert ItemHash(hash) in registry
+    # Insufficient-funds stop: retire_vm is called with GONE, not supervisor.delete_vm
+    # directly.
+    retire.assert_awaited_once_with(ItemHash(hash), RetireReason.GONE, supervisor=supervisor, registry=registry)
+    supervisor.delete_vm.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -199,6 +219,7 @@ async def test_not_enough_community_flow(mocker, fake_instance_content):
     mocker.patch("aleph.vm.agent.tasks.get_community_wallet_address", return_value=mock_community_wallet_address)
     mocker.patch("aleph.vm.agent.tasks.get_message_status", return_value=MessageStatus.PROCESSED)
     mocker.patch("aleph.vm.agent.tasks.compute_required_flow", return_value=5)
+    retire = mocker.patch("aleph.vm.agent.tasks.retire_vm", new_callable=AsyncMock)
     message = InstanceContent.model_validate(fake_instance_content)
 
     hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
@@ -212,9 +233,10 @@ async def test_not_enough_community_flow(mocker, fake_instance_content):
 
     await check_payment(supervisor=supervisor, registry=registry)
 
-    # Insufficient-funds stop: supervisor.delete_vm is called, registry.forget is NOT called.
-    supervisor.delete_vm.assert_awaited_once_with(VmId(str(hash)))
-    assert ItemHash(hash) in registry
+    # Insufficient-funds stop: retire_vm is called with GONE, not supervisor.delete_vm
+    # directly.
+    retire.assert_awaited_once_with(ItemHash(hash), RetireReason.GONE, supervisor=supervisor, registry=registry)
+    supervisor.delete_vm.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -258,7 +280,7 @@ async def test_removed_message_status(mocker, fake_instance_content):
     mocker.patch("aleph.vm.agent.tasks.get_community_wallet_address", return_value=mock_community_wallet_address)
     mocker.patch("aleph.vm.agent.tasks.get_message_status", return_value=MessageStatus.REMOVED)
     mocker.patch("aleph.vm.agent.tasks.compute_required_flow", return_value=5)
-    mock_delete_records = mocker.patch("aleph.vm.agent.tasks.delete_records_for_vm", new_callable=mocker.AsyncMock)
+    retire = mocker.patch("aleph.vm.agent.tasks.retire_vm", new_callable=AsyncMock)
     message = InstanceContent.model_validate(fake_instance_content)
 
     hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadece"
@@ -278,9 +300,65 @@ async def test_removed_message_status(mocker, fake_instance_content):
     supervisor.delete_vm.assert_not_called()
 
     await check_payment(supervisor=supervisor, registry=registry)
-    # Terminal-status dealloc: supervisor.delete_vm (which owns port-mapping
-    # cleanup hypervisor-side) + registry.forget + delete the persisted record.
-    supervisor.delete_vm.assert_awaited_once_with(VmId(str(hash)))
-    mock_delete_records.assert_awaited_once_with(hash)
-    assert ItemHash(hash) not in registry
-    # pool.stop_vm and pool.forget_vm must NOT be called
+    # Terminal-status dealloc retires the VM as GONE: retire_vm owns the
+    # supervisor quiesce, the registry forget and the persisted record cleanup.
+    retire.assert_awaited_once_with(ItemHash(hash), RetireReason.GONE, supervisor=supervisor, registry=registry)
+    supervisor.delete_vm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_terminal_status_retires_as_gone(mocker, fake_instance_content):
+    from aleph.vm.agent import tasks
+
+    mocker.patch.object(settings, "ALLOW_VM_NETWORKING", False)
+    mocker.patch.object(settings, "PAYMENT_RECEIVER_ADDRESS", "0xD39C335404a78E0BDCf6D50F29B86EFd57924288")
+    mocker.patch("aleph.vm.agent.tasks.get_message_status", return_value=MessageStatus.FORGOTTEN)
+    mocker.patch("aleph.vm.agent.tasks.get_community_wallet_address", return_value="0x" + "1" * 40)
+    # The payment loops still run over the same snapshot: keep them satisfied
+    # so only the terminal-status branch retires anything.
+    mocker.patch("aleph.vm.agent.tasks.is_after_community_wallet_start", return_value=True)
+    mocker.patch("aleph.vm.agent.tasks.get_stream", return_value=10_000, autospec=True)
+    mocker.patch("aleph.vm.agent.tasks.compute_required_flow", return_value=0)
+    retire = mocker.patch("aleph.vm.agent.tasks.retire_vm", new_callable=AsyncMock)
+    tasks._terminal_strike_count.clear()
+
+    # settings.FAKE_INSTANCE_ID is explicitly skipped by the terminal-status
+    # loop (it has no real on-chain message to check), so use a distinct hash
+    # here, same as test_removed_message_status does.
+    hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadecf"
+    vm_hash = ItemHash(hash)
+    registry = _make_registry()
+    message = InstanceContent.model_validate(fake_instance_content)
+    registry.record(vm_hash, message=message, original=message, persistent=True)
+    info = _make_info(hash)
+    supervisor = _make_supervisor([info])
+
+    for _ in range(tasks.STOP_AFTER_CONFIRMATIONS):
+        await check_payment(supervisor=supervisor, registry=registry)
+
+    retire.assert_awaited_once_with(vm_hash, RetireReason.GONE, supervisor=supervisor, registry=registry)
+    supervisor.delete_vm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_insufficient_stream_retires_as_gone(mocker, fake_instance_content):
+    mocker.patch.object(settings, "ALLOW_VM_NETWORKING", False)
+    mocker.patch.object(settings, "PAYMENT_RECEIVER_ADDRESS", "0xD39C335404a78E0BDCf6D50F29B86EFd57924288")
+    mocker.patch("aleph.vm.agent.tasks.get_community_wallet_address", return_value="0x" + "1" * 40)
+    mocker.patch("aleph.vm.agent.tasks.is_after_community_wallet_start", return_value=True)
+    mocker.patch("aleph.vm.agent.tasks.get_stream", return_value=2, autospec=True)
+    mocker.patch("aleph.vm.agent.tasks.get_message_status", return_value=MessageStatus.PROCESSED)
+    mocker.patch("aleph.vm.agent.tasks.compute_required_flow", return_value=5)
+    retire = mocker.patch("aleph.vm.agent.tasks.retire_vm", new_callable=AsyncMock)
+    registry = _make_registry()
+    message = InstanceContent.model_validate(fake_instance_content)
+
+    hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+    vm_hash = ItemHash(hash)
+    registry.record(vm_hash, message=message, original=message, persistent=False)
+    info = _make_info(hash)
+    supervisor = _make_supervisor([info])
+
+    await check_payment(supervisor=supervisor, registry=registry)
+
+    retire.assert_awaited_once_with(vm_hash, RetireReason.GONE, supervisor=supervisor, registry=registry)

@@ -24,6 +24,7 @@ from aleph_message.models import ExecutableContent, ItemHash, VerifiableProgramC
 from aleph_message.models.execution.instance import InstanceContent
 
 from aleph.vm import storage_pools
+from aleph.vm.agent.vm.reclaimable import reclaimable_bytes
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
 from aleph.vm.resources import GpuDevice, InsufficientResourcesError
@@ -434,7 +435,15 @@ class CapacityManager:
     def _committed_resources(self, excluded: Collection[ItemHash]) -> tuple[int, int, int]:
         """(committed_instance_memory_mib, committed_program_memory_mib,
         committed_vcpus) summed over the registry, skipping the records of
-        ``excluded`` (see ``check_capacity`` and ``simulate``)."""
+        ``excluded`` (see ``check_capacity`` and ``simulate``).
+
+        A record is not proof that a VM runs. A create that fails against
+        volumes that already existed retires RECREATE and deliberately keeps
+        its record (``run._retire_after_create_failure``), so the sums here
+        can include a VM that never started, until the next allocation cycle
+        replaces or retires it. That is conservative (it under-admits, never
+        over-admits) and it never blocks the retry of that VM's own create,
+        which excludes its own hash."""
         committed_instance_memory_mib = 0
         committed_program_memory_mib = 0
         committed_vcpus = 0
@@ -458,10 +467,19 @@ class CapacityManager:
         """None when ``max_volume_mib`` fits the roomiest eligible pool, else
         an error string describing the shortfall. No pool holds a volume
         split across disks, so this catches a request the aggregate free
-        figure alone would wrongly admit."""
+        figure alone would wrongly admit.
+
+        A pool's room is its free bytes plus the reclaimable bytes it holds,
+        for the same reason the aggregate figure counts them: placement
+        evicts that pool's retained directories before it refuses the volume.
+        """
         if max_volume_mib <= 0:
             return None
-        roomiest_mib = storage_pools.roomiest_pool_free_bytes() // (1024 * 1024)
+        roomiest_bytes = max(
+            (free + reclaimable_bytes(pool.path) for pool, free in storage_pools.eligible_pool_free_bytes()),
+            default=0,
+        )
+        roomiest_mib = roomiest_bytes // (1024 * 1024)
         if max_volume_mib <= roomiest_mib:
             return None
         return f"Disk (largest single volume): required {max_volume_mib} MiB, roomiest pool has {roomiest_mib} MiB"
@@ -475,8 +493,11 @@ class CapacityManager:
         reserved-but-unused delta it adds per execution is 0 for every
         spec-built VM (spec disks carry no size). Unreachable pools (missing
         dir, dead disk) contribute 0 rather than failing admission outright.
+
+        Reclaimable (retained) bytes count as free: the reconciler evicts them
+        on demand when a placement needs the room.
         """
-        return max(storage_pools.pools_disk_usage()[1], 0)
+        return max(storage_pools.pools_disk_usage()[1], 0) + reclaimable_bytes()
 
     async def _available_gpus(self) -> list[GpuDevice]:
         """Host cards not attached to any VM, per the supervisor's HostInfo."""

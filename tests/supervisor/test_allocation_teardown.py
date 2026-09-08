@@ -12,7 +12,7 @@ import pytest
 from aleph_message.models import ItemHash
 
 from aleph.vm.agent.allocation.teardown import is_removable_by_allocation, teardown_vm
-from aleph.vm.supervisor_interface.errors import VmNotFoundError
+from aleph.vm.agent.vm.retire import RetireReason
 from aleph.vm.supervisor_interface.types import ConfidentialMode, GpuDevice, PciAddress
 
 _HASH = ItemHash("deadbeef" * 8)
@@ -61,40 +61,16 @@ class TestRemovability:
 
 class TestTeardown:
     @pytest.mark.asyncio
-    async def test_deletes_forgets_and_clears_every_side_channel(self, monkeypatch):
-        delete_records = AsyncMock()
-        vprogram_staging = MagicMock()
-        snp_staging = MagicMock()
-        monkeypatch.setattr("aleph.vm.agent.allocation.teardown.delete_records_for_vm", delete_records)
-        monkeypatch.setattr("aleph.vm.agent.allocation.teardown.remove_vprogram_staging", vprogram_staging)
-        monkeypatch.setattr("aleph.vm.agent.allocation.teardown.remove_snp_instance_staging", snp_staging)
+    async def test_teardown_retires_the_vm_as_gone(self, monkeypatch):
+        """The composite this module used to spell out by hand (supervisor
+        delete, registry forget, DB rows, staging) is exactly what GONE does,
+        so stopping is one retire_vm call and nothing else."""
+        retire = AsyncMock()
+        monkeypatch.setattr("aleph.vm.agent.allocation.teardown.retire_vm", retire)
         supervisor = SimpleNamespace(delete_vm=AsyncMock())
         registry = MagicMock()
 
         await teardown_vm(_HASH, supervisor=supervisor, registry=registry)
 
-        supervisor.delete_vm.assert_awaited_once()
-        registry.forget.assert_called_once_with(_HASH)
-        delete_records.assert_awaited_once_with(str(_HASH))
-        vprogram_staging.assert_called_once_with(_HASH)
-        snp_staging.assert_called_once_with(_HASH)
-
-    @pytest.mark.asyncio
-    async def test_a_vm_the_supervisor_does_not_know_is_still_cleaned_up(self, monkeypatch):
-        """The supervisor forgetting first must not strand the agent's own
-        state: the registry entry, the DB rows and the staging dirs are ours."""
-        delete_records = AsyncMock()
-        vprogram_staging = MagicMock()
-        snp_staging = MagicMock()
-        monkeypatch.setattr("aleph.vm.agent.allocation.teardown.delete_records_for_vm", delete_records)
-        monkeypatch.setattr("aleph.vm.agent.allocation.teardown.remove_vprogram_staging", vprogram_staging)
-        monkeypatch.setattr("aleph.vm.agent.allocation.teardown.remove_snp_instance_staging", snp_staging)
-        supervisor = SimpleNamespace(delete_vm=AsyncMock(side_effect=VmNotFoundError(str(_HASH))))
-        registry = MagicMock()
-
-        await teardown_vm(_HASH, supervisor=supervisor, registry=registry)
-
-        registry.forget.assert_called_once_with(_HASH)
-        delete_records.assert_awaited_once_with(str(_HASH))
-        vprogram_staging.assert_called_once_with(_HASH)
-        snp_staging.assert_called_once_with(_HASH)
+        retire.assert_awaited_once_with(_HASH, RetireReason.GONE, supervisor=supervisor, registry=registry)
+        supervisor.delete_vm.assert_not_awaited()

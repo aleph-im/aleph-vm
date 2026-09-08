@@ -31,7 +31,7 @@ async def test_schedule_reaps_after_timeout():
     expiry.schedule(vm_id, 0.001)
     await asyncio.wait_for(expiry._tasks[vm_id], timeout=WAIT_TIMEOUT)
 
-    assert sup.deleted == [("vm-a", False)]
+    assert sup.deleted == [("vm-a", True)]  # RECREATE keeps port mappings
     assert expiry.cancel(vm_id) is False  # task removed itself after firing
 
 
@@ -67,7 +67,7 @@ async def test_reschedule_replaces_pending_timer():
     await asyncio.gather(first, return_exceptions=True)
 
     assert first.cancelled()
-    assert sup.deleted == [("vm-a", False)]  # fired once, on the second timer
+    assert sup.deleted == [("vm-a", True)]  # fired once, on the second timer (RECREATE)
 
 
 @pytest.mark.asyncio
@@ -80,7 +80,7 @@ async def test_expire_swallows_vm_not_found():
     # Awaiting the task directly also surfaces any exception _expire let through.
     await asyncio.wait_for(expiry._tasks[vm_id], timeout=WAIT_TIMEOUT)
 
-    assert sup.deleted == [("vm-gone", False)]
+    assert sup.deleted == [("vm-gone", True)]
     assert expiry.cancel(vm_id) is False
 
 
