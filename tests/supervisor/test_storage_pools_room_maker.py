@@ -73,7 +73,7 @@ def room_maker():
 class TestRoomMaker:
     """Placement asks the agent's evictor before refusing: reclaimable bytes
     are advertised as free, so a create that does not fit must first get the
-    chance to take the space back (spec section 1)."""
+    chance to take the space back."""
 
     def test_the_room_maker_is_asked_before_refusing(self, three_pools, monkeypatch, room_maker):
         calls = []

@@ -98,8 +98,8 @@ def creating(namespace: str) -> Iterator[None]:
 
     Every create path must be wrapped in this: it is the only thing that
     keeps a reconcile pass off a half-built VM once the create outlives
-    VOLUME_CREATE_GUARD, and the only place a retained directory is adopted
-    (spec section 3). A create that stages files, allocates volumes or
+    VOLUME_CREATE_GUARD, and the only place a retained directory is adopted.
+    A create that stages files, allocates volumes or
     writes a session directory outside this context can have them removed
     from under it by the next pass.
 
@@ -757,7 +757,7 @@ def _log_startup_preview(preview: ReconcileReport, *, refusal: str | None = None
 
     On an upgraded node the first pass finds every directory leaked by the
     bugs this work fixes, which under ``reap`` is a one-shot cleanup of
-    potentially a lot of data (spec section 6). The per-pool breakdown is
+    potentially a lot of data. The per-pool breakdown is
     what lets an operator match the log against the disk whose free space
     jumped.
 

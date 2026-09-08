@@ -294,7 +294,7 @@ def set_room_maker(fn: RoomMaker | None) -> None:
     """Register the agent's evictor: called with (pool, needed_bytes) when no
     pool fits a placement, before the placement is refused.
 
-    Retained volumes are advertised as free capacity (spec section 1), so a
+    Retained volumes are advertised as free capacity, so a
     placement that does not fit has to be given the chance to take that space
     back before it fails. This module cannot import the reconciler (it is
     agent-side and imports this one), so the agent registers the hook at

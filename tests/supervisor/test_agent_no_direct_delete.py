@@ -1,7 +1,7 @@
 """Every agent delete goes through retire_vm.
 
 A call site that reaches supervisor.delete_vm directly has no reason, and a
-delete without a reason is how disks leaked (spec S1). retire.py is the one
+delete without a reason is how disks leaked. retire.py is the one
 allowed caller."""
 
 from __future__ import annotations

@@ -65,8 +65,8 @@ def test_get_gpu_devices():
 
 def test_disk_usage_counts_reclaimable_bytes_as_available(mocker):
     """What the node advertises must match what it will admit: retained
-    volumes are evicted on demand, so they are available disk, not usage
-    (spec section 1). Advertising less than admission accepts would make the
+    volumes are evicted on demand, so they are available disk, not usage.
+    Advertising less than admission accepts would make the
     scheduler stop sending work the node can still take."""
     from types import SimpleNamespace
 

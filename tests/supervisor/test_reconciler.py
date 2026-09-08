@@ -534,8 +534,7 @@ async def test_a_refusing_startup_never_promises_a_purge(pools, registry, monkey
 @pytest.mark.asyncio
 async def test_startup_hook_logs_a_preview_then_reconciles(pools, registry, monkeypatch, caplog):  # noqa: F811
     """The one-shot cleanup on an upgraded node is announced before it runs:
-    an operator reading the log must be able to explain why free space jumped
-    (spec section 6, migration)."""
+    an operator reading the log must be able to explain why free space jumped."""
     monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
     old = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
     _age(old.parent, 10_000)

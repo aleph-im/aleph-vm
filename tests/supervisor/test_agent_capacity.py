@@ -942,8 +942,7 @@ def test_requirements_put_a_vprogram_in_the_instance_bucket():
 
 def test_available_disk_counts_reclaimable_bytes_as_free(mocker):
     """Retained volumes are a cache, not usage: they are advertised as free
-    because the reconciler evicts them when a placement needs the room
-    (spec section 1)."""
+    because the reconciler evicts them when a placement needs the room."""
     mocker.patch("aleph.vm.agent.capacity.storage_pools.pools_disk_usage", return_value=(100, 10))
     mocker.patch("aleph.vm.agent.capacity.reclaimable_bytes", return_value=5)
     assert CapacityManager._available_disk_bytes() == 15
@@ -952,7 +951,7 @@ def test_available_disk_counts_reclaimable_bytes_as_free(mocker):
 def test_max_volume_check_counts_that_pools_reclaimable_bytes(mocker):
     """Retention is a budgeted cache: a volume that fits once the pool's
     retained directories are evicted must be admitted, since the room maker
-    evicts them at placement time (spec section 1)."""
+    evicts them at placement time."""
     manager = _manager()
     _patch_host(mocker, memory_bytes=64 * 1024**3, cores=16, disk_bytes=900 * 1024**3)
     # 200 GiB free, 300 GiB retained: a 400 GiB volume still fits.

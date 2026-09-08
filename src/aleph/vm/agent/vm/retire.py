@@ -3,8 +3,8 @@
 Every path that used to call ``supervisor.delete_vm`` and then some subset
 of ``registry.forget``, ``delete_records_for_vm`` and ``remove_*_staging``
 goes through ``retire_vm`` with a reason. The reason has no default: a call
-site must say what it means, which is what was missing when disks leaked
-(spec S1). The supervisor's DeleteVm is quiescence only; storage policy is
+site must say what it means, which is what was missing when disks leaked.
+The supervisor's DeleteVm is quiescence only; storage policy is
 decided here, agent-side, and never crosses the wire.
 
 FAILED_CREATE is only for a create that allocated nothing pre-existing: the

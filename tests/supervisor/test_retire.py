@@ -158,7 +158,7 @@ async def test_retire_is_idempotent(env, monkeypatch):
 @pytest.mark.asyncio
 async def test_gone_under_keep_runs_the_after_gone_hook(env, monkeypatch):
     """Retention is a budget, so it is enforced the moment a VM becomes
-    reclaimable, not only at the next periodic pass (spec section 1)."""
+    reclaimable, not only at the next periodic pass."""
     monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
     hook = AsyncMock()
     retire_module.set_after_gone_hook(hook)
