@@ -273,10 +273,10 @@ impl SupervisorService {
         // Probe every unattached NVIDIA card's CC mode before reporting the
         // inventory, so a freshly-idled card's mode is current. mmap of a
         // BAR is a blocking syscall; run it off the tokio worker.
-        // refresh_cc_modes reads the attached set itself, fresh, on the
-        // blocking task: the `attached` snapshot above can go stale between
-        // here and the probe (a concurrent CreateVm can attach a card in
-        // between), and the probe gate must never trust a stale snapshot.
+        // refresh_cc_modes takes its own world read guard and keeps it for
+        // the whole probe: the `attached` snapshot above can go stale the
+        // moment a concurrent CreateVm registers a card, and the probe gate
+        // must never trust a snapshot it no longer holds the lock for.
         {
             let state = self.state.clone();
             tokio::task::spawn_blocking(move || refresh_cc_modes(&state))
@@ -421,24 +421,24 @@ fn refresh_cc_modes(state: &DaemonState) {
     refresh_cc_modes_with(state, crate::gpu_cc::probe_cc_mode);
 }
 
-/// `refresh_cc_modes`, with the probe injected for testing. The attached
-/// set is read fresh from the world view here, on the blocking task,
-/// immediately before use: `host_info`'s own snapshot (taken before this
-/// task was spawned) can go stale the instant a concurrent CreateVm
-/// registers a new attachment, and probing a card the guest is about to
-/// own would violate "never read under a guest".
+/// `refresh_cc_modes`, with the probe injected for testing. The world read
+/// guard is held across the whole loop, not just while the attached set is
+/// collected: CreateVm registers a VM's cards in the world view under the
+/// write lock before it boots anything, so under this guard a card is
+/// either already attached (and skipped) or cannot become attached until
+/// the probe is done. That is what makes "never read under a guest" hold
+/// rather than merely likely. Each probe is a sysfs open and a one-page
+/// mmap, microseconds, so a writer waiting on the guard barely notices.
 fn refresh_cc_modes_with(
     state: &DaemonState,
     probe: impl Fn(&str, &str) -> Result<Option<crate::gpu_cc::CcMode>, DaemonError>,
 ) {
-    let attached: HashSet<String> = {
-        let world = state.world.blocking_read();
-        world
-            .entries
-            .values()
-            .flat_map(|entry| entry.config.gpus.iter().map(|gpu| gpu.pci_host.clone()))
-            .collect()
-    };
+    let world = state.world.blocking_read();
+    let attached: HashSet<String> = world
+        .entries
+        .values()
+        .flat_map(|entry| entry.config.gpus.iter().map(|gpu| gpu.pci_host.clone()))
+        .collect();
     for gpu in &state.host.gpus {
         if attached.contains(&gpu.pci_host) || gpu.vendor != "NVIDIA" {
             continue;
@@ -1448,9 +1448,9 @@ mod tests {
         // Two NVIDIA cards in the inventory; one is attached to a VM's
         // config in the world view. The probe must never run against the
         // attached card, and the attached set must come from the world
-        // view read inside the function, not a caller-supplied snapshot
-        // (a concurrent CreateVm can attach a card between a snapshot
-        // taken before spawn_blocking and the probe running on it).
+        // view under the function's own read guard, not a caller-supplied
+        // snapshot (a concurrent CreateVm can attach a card between a
+        // snapshot taken before spawn_blocking and the probe running on it).
         let host = HostState {
             settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
             host_ipv4: String::new(),

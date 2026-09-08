@@ -124,12 +124,16 @@ pub fn read_bar0_u32(resource0: &Path, offset: u64) -> Result<u32, DaemonError> 
             resource0.display()
         )));
     }
-    let page = 4096u64;
+    // SAFETY: sysconf reads a constant and has no preconditions.
+    let page = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
+        .ok()
+        .filter(|page| page.is_power_of_two())
+        .ok_or_else(|| DaemonError::GpuProbe("cannot determine the page size".to_string()))?;
     let base = offset & !(page - 1);
     let within = (offset - base) as usize;
     // SAFETY: a read-only shared mapping of one page of an open file; the
     // pointer is checked against MAP_FAILED; the offset is 4-byte aligned,
-    // so within is 4-aligned and within + 4 <= 4096, keeping the read inside
+    // so within is 4-aligned and within + 4 <= page, keeping the read inside
     // the mapped page; and the mapping is released before returning.
     unsafe {
         let mapped = libc::mmap(
@@ -216,17 +220,25 @@ mod tests {
         // A regular file stands in for resource0: mmap works the same way.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("resource0");
-        let mut bytes = vec![0u8; 0x2000];
+        // Large enough to hold both architectures' registers: the Hopper
+        // offset sits past the first page, so it also exercises a non-zero
+        // mapping base.
+        let mut bytes = vec![0u8; 0x1182d0];
         bytes[0x590..0x594].copy_from_slice(&0x0000_0101u32.to_le_bytes());
-        bytes[0x1182cc % 0x2000..][..4].copy_from_slice(&3u32.to_le_bytes());
+        bytes[0x1182cc..0x1182d0].copy_from_slice(&3u32.to_le_bytes());
         std::fs::write(&path, &bytes).unwrap();
         assert_eq!(read_bar0_u32(&path, 0x590).unwrap(), 0x101);
         assert_eq!(
             cc_mode_from_register(read_bar0_u32(&path, 0x590).unwrap()),
             Some(CcMode::On)
         );
-        // Past the end of the mapping is a clean error, never a fault.
-        assert!(read_bar0_u32(&path, 0x4000).is_err());
+        assert_eq!(read_bar0_u32(&path, 0x1182cc).unwrap(), 3);
+        assert_eq!(
+            cc_mode_from_register(read_bar0_u32(&path, 0x1182cc).unwrap()),
+            Some(CcMode::Devtools)
+        );
+        // Past the end of the file is a clean error, never a fault.
+        assert!(read_bar0_u32(&path, 0x20_0000).is_err());
     }
 
     #[test]
