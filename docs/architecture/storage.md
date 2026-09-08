@@ -292,6 +292,15 @@ keeping. A create that fails on a VM whose volumes already existed retires
 `RECREATE` instead, since the create paths are also the re-create paths for
 a host-persistent VM.
 
+A payment shortfall is a stopped payment: when the held balance, the credit
+balance or the stream no longer covers the VMs it pays for, the payment
+monitor retires them `GONE`, so under the default `reap` their volumes are
+purged at once. This is a change from 1.x, which stopped such a VM but kept
+its record and disks for a later top-up, and then never reclaimed them. A
+node that wants to give a re-paying owner a grace period runs
+`VOLUME_RETENTION=keep`: the marker carries the owner, and a re-created VM
+adopts its retained directory untouched.
+
 ### The `.reclaimable` marker
 
 A namespace directory with no marker belongs to a live VM. Under

@@ -387,6 +387,15 @@ mount-point directories only; and its startup pass refuses to purge
 anything at all when the supervisor cannot be listed, or when the registry
 rehydrated empty while the supervisor still runs VMs.
 
+A payment shortfall is a stopped payment: when the held balance, the credit
+balance or the stream no longer covers the VMs it pays for, the payment
+monitor retires them `GONE`, so under the default `reap` their volumes are
+purged at once. This is a change from 1.x, which stopped such a VM but kept
+its record and disks for a later top-up, and then never reclaimed them. A
+node that wants to give a re-paying owner a grace period runs
+`VOLUME_RETENTION=keep`: the marker carries the owner, and a re-created VM
+adopts its retained directory untouched.
+
 `ERASE` is answered whenever the node still holds something for the hash:
 a registry record, or a retained directory left by a `GONE` under `keep`.
 The supervisor's own knowledge of the VM is not a precondition (it forgets
