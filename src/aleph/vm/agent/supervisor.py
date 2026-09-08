@@ -521,7 +521,7 @@ def run():
     set_after_gone_hook(lambda: reconcile_now(app))
     # And the third hook of the same kind: a download about to start asks the
     # cache budget for room, so a create that would blow it is refused before
-    # the bytes land rather than after (spec section 4).
+    # the bytes land rather than after.
     storage.set_cache_admission(
         lambda tmp_path, content_length, max_bytes: admit_download(
             app["vm_registry"], tmp_path, content_length, max_bytes

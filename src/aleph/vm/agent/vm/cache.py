@@ -16,13 +16,13 @@ budget, this logs and stops, because that is a capacity problem admission
 should have refused, not something eviction can fix. An entry a
 ``.reclaimable`` marker names in ``depends_on`` is a parent image a retained
 overlay is built on: reclaiming the overlay comes first, and only then does
-its parent become evictable (spec section 4).
+its parent become evictable.
 
 A parent image also has a shared read-only loop device and a
 ``/dev/mapper/<ref>`` device on top of it, built once by
 ``storage.create_devmapper`` for every VM using that image. Unlinking the
 file while those exist frees nothing (the loop pins the inode), so the
-device teardown belongs here, with the eviction (spec section 5), and an
+device teardown belongs here, with the eviction, and an
 image whose device still has holders is not evicted at all.
 
 Residual race, accepted: a create that has downloaded a cache entry but has
@@ -694,7 +694,7 @@ def admit_download(
     ``download_file_in_chunks`` as soon as the response headers are in.
     Evicting first is the point: the budget is a cap on what is kept, not on
     what may be fetched, and only a load that stays over the budget with
-    nothing safely evictable left is refused (spec section 4).
+    nothing safely evictable left is refused.
 
     An admitted download is then charged to its ``.part`` path until
     ``download_file`` releases it, so the next admission sees the room this
