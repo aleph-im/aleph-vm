@@ -24,8 +24,13 @@ from aleph.vm.agent.allocation.plan import (
     by_hash,
 )
 from aleph.vm.agent.allocation.teardown import is_removable_by_allocation, teardown_vm
+from aleph.vm.agent.capacity import CapacityManager
+from aleph.vm.agent.expiry import ExpiryManager
 from aleph.vm.agent.run import start_persistent_vm
+from aleph.vm.agent.update_watcher import UpdateWatcher
+from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
+from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.types import VmInfo, VmStatus
 
 logger = logging.getLogger(__name__)
@@ -43,11 +48,11 @@ class AllocationReconciler:
     def __init__(
         self,
         *,
-        supervisor,
-        registry,
-        capacity,
-        expiry,
-        update_watcher,
+        supervisor: Supervisor,
+        registry: AgentVmRegistry,
+        capacity: CapacityManager,
+        expiry: ExpiryManager,
+        update_watcher: UpdateWatcher,
         pubsub_getter: Callable[[], object | None],
         now: Callable[[], datetime] | None = None,
     ) -> None:
