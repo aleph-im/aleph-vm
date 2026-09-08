@@ -273,9 +273,11 @@ class CapacityManager:
 
         Cumulative: each accepted candidate is committed before the next is
         judged, so three VMs that only fit twice get two yeses and one no. This
-        covers memory, vCPUs and disk. Disk needs the accumulator because free
-        space is read live and no record of it exists until the volumes are
-        actually written.
+        covers memory, vCPUs and aggregate disk. Disk needs the accumulator
+        because free space is read live and no record of it exists until the
+        volumes are actually written. Aggregate only: the per-volume check asks
+        whether the roomiest pool could hold the largest volume, and which pool
+        a volume lands on is a placement decision nothing models here.
 
         A candidate's own registry record never counts against it. A hash can
         already be recorded here and still be a candidate: a recreate, or an
@@ -304,6 +306,11 @@ class CapacityManager:
         memory alone. An advisory yes must never be read as one that covered
         the GPU.
 
+        Releases are not credited back for cards either, and for the same
+        reason as disk: the inventory is the cards not currently attached, so a
+        card still held by a VM the plan stops is absent from it. "Stop B,
+        allocate C onto B's card" is answered no even though doing it in that
+        order would work.
 
         The third element of a candidate is the caller's memory-bucket choice,
         NOT ResourceRequirements.is_instance. The two disagree for V-PROGRAMs:

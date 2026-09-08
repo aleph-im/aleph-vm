@@ -789,3 +789,39 @@ def test_simulate_does_not_credit_a_candidate_twice_when_also_released(mocker):
     verdicts = manager.simulate(candidates, releasing=frozenset({_HASH_A}))
 
     assert [v.accepted for v in verdicts] == [True, False]
+
+
+def test_simulate_does_not_credit_disk_back_on_release(mocker):
+    """Stopping a VM does not delete its volumes, so the space is still gone.
+    Crediting it would make the advisory answer stronger than the enforced one.
+    """
+    mocker.patch("aleph.vm.agent.capacity.storage_pools.roomiest_pool_free_bytes", return_value=100 * 1024**3)
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16, disk_bytes=10 * 1024**3)
+    registry = AgentVmRegistry()
+    content = _make_qemu_instance_message(memory=1024)
+    registry.record(_HASH_B, message=content, original=content, persistent=True)
+    manager = _manager(registry=registry)
+    candidate = (_HASH_C, _requirements(memory_mib=1024, disk_mib=50_000), True)
+
+    assert manager.simulate([candidate], releasing=frozenset({_HASH_B}))[0].accepted is False
+
+
+def test_simulate_credits_a_released_program_to_the_program_bucket(mocker):
+    """The release loop buckets the same way the committed sums do, so a
+    released program frees the program bucket and not the instance one.
+
+    The program bucket is PROGRAM_MEMORY_RESERVED_MIB (4096) on its own: one
+    3072 MiB program fits, two do not.
+    """
+    mocker.patch.object(settings, "HOST_MEMORY_RESERVED_MIB", 2048)
+    mocker.patch.object(settings, "PROGRAM_MEMORY_RESERVED_MIB", 4096)
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
+    registry = AgentVmRegistry()
+    # Any non-InstanceContent record lands in the program bucket.
+    content = SimpleNamespace(resources=SimpleNamespace(memory=3072, vcpus=1))
+    registry.record(_HASH_B, message=content, original=content, persistent=True)
+    manager = _manager(registry=registry)
+    candidate = (_HASH_C, _requirements(memory_mib=3072), False)
+
+    assert manager.simulate([candidate])[0].accepted is False
+    assert manager.simulate([candidate], releasing=frozenset({_HASH_B}))[0].accepted is True
