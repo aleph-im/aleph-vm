@@ -372,9 +372,9 @@ class CapacityManager:
         volume, if any: see ``_check_max_volume``, which credits it to the one
         pool that holds it.
 
-        Callers that hold a message should go through ``check_message``, which
-        derives every figure here from it; the scalars are the seam for the
-        paths that build a request themselves (the migration import).
+        Callers that hold a message go through ``check_message``, which
+        derives every figure here from it; the scalars are the seam for
+        ``simulate`` and for a caller that builds a request itself.
 
         ``exclude_vm_hash`` skips that VM's own registry record from the
         committed sums: the create paths record the VM before admission (the
