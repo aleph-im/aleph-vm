@@ -280,6 +280,15 @@ async def run_import(
                     msg = "Migration not supported for confidential VMs"
                     raise RuntimeError(msg)
 
+                # The same single admission path as the create paths, from the
+                # message and before any transfer: memory, vCPUs and the
+                # declared disk sizes are judged now, so a destination without
+                # room refuses before it streams an overlay it would then
+                # discard. A retried import is not charged for overlays already
+                # staged under its hash. GPU requests are resolved to concrete
+                # host cards after the build, as on a normal create.
+                capacity.check_message(message.content, exclude_vm_hash=job.vm_hash)
+
                 job.current_step = "downloading_parent"
                 parent_ref = message.content.rootfs.parent.ref
                 parent_path = await get_rootfs_base_path(parent_ref)
@@ -343,16 +352,9 @@ async def run_import(
                 # recreating it, so create_vm reuses the staged disk (no
                 # re-download).
                 spec = await build_create_vm_spec(job.vm_hash, message.content)
-                # Same agent-side admission as the normal create: bucket from the
-                # message type, GPU requests resolved to concrete host cards on
-                # this destination (owner = message.address).
-                capacity.check_capacity(
-                    memory_mib=message.content.resources.memory,
-                    vcpus=message.content.resources.vcpus,
-                    disk_mib=0,
-                    is_instance=True,
-                    exclude_vm_hash=job.vm_hash,
-                )
+                # GPU requests resolved to concrete host cards on this
+                # destination (owner = message.address), admission itself ran
+                # before the download.
                 requested_gpus = requested_gpu_ids(message.content)
                 if requested_gpus:
                     resolved_gpus = await capacity.resolve_gpus(requested_gpus, owner=message.content.address)
