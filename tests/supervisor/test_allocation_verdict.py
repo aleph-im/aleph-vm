@@ -12,6 +12,8 @@ from test_supervisor_translate import _make_qemu_instance_message
 from aleph.vm.agent.allocation.plan import AllocationPlan, PlannedVm
 from aleph.vm.agent.allocation.verdict import build_plan, compute_verdict
 from aleph.vm.agent.capacity import AdmissionVerdict
+from aleph.vm.agent.vm_registry import AgentVmRegistry
+from aleph.vm.conf import settings
 from aleph.vm.supervisor_interface.types import ConfidentialMode, VmStatus
 
 NOW = datetime(2026, 8, 25, tzinfo=timezone.utc)
@@ -48,12 +50,13 @@ def _capacity(verdicts):
     return SimpleNamespace(simulate=MagicMock(return_value=verdicts))
 
 
-def _plan(*hashes, verified=True, content=None):
+def _verified(content=None):
     message = SimpleNamespace(content=content or _make_qemu_instance_message())
-    entries = {
-        h: PlannedVm(vm_hash=h, verified=SimpleNamespace(message=message, original=message) if verified else None)
-        for h in hashes
-    }
+    return SimpleNamespace(message=message, original=message)
+
+
+def _plan(*hashes, verified=True, content=None):
+    entries = {h: PlannedVm(vm_hash=h, verified=_verified(content) if verified else None) for h in hashes}
     return AllocationPlan(plan_id="sha256:test", received_at=NOW, entries=entries)
 
 
@@ -250,27 +253,11 @@ def test_a_pinned_vm_is_not_refused_when_we_do_not_know_our_own_hash():
     assert verdict.rejected[HASH_C]["code"] == "node_hash_unknown"
 
 
-def test_a_planned_vm_the_supervisor_holds_dead_is_not_judged_against_itself():
-    """A recreate: the stale registry record still counts as committed, so it
-    has to be discounted or the VM is admitted against its own resources. The
-    enforced path does this with check_capacity's exclude_vm_hash."""
-    capacity = _capacity([AdmissionVerdict(HASH_C, True)])
+def _real_capacity(mocker, *, memory_gib=64, registry=None):
+    """A real CapacityManager over a stubbed host.
 
-    compute_verdict(
-        _plan(HASH_C),
-        infos=[_info(HASH_C, status=VmStatus.STOPPED)],
-        registry=_registry({HASH_C: _record()}),
-        capacity=capacity,
-    )
-
-    assert HASH_C in capacity.simulate.call_args.kwargs["releasing"]
-
-
-def test_compute_verdict_drives_the_real_capacity_manager(mocker):
-    """Every other test here hands compute_verdict a double, so the shape of
-    CapacityManager.simulate is never exercised: when the candidate tuple lost
-    its third element, the double kept agreeing with a signature production no
-    longer had and all of these stayed green. Wire the real one in once.
+    The double the other tests use answers whatever it was handed, so nothing
+    it agrees to says anything about what simulate does with a plan.
     """
     from unittest.mock import AsyncMock
 
@@ -280,7 +267,7 @@ def test_compute_verdict_drives_the_real_capacity_manager(mocker):
 
     mocker.patch(
         "aleph.vm.agent.capacity.psutil.virtual_memory",
-        return_value=mocker.Mock(total=64 * 1024 * 1024 * 1024),
+        return_value=mocker.Mock(total=memory_gib * 1024**3),
     )
     mocker.patch("aleph.vm.agent.capacity.psutil.cpu_count", return_value=16)
     mocker.patch.object(CapacityManager, "_available_disk_bytes", return_value=100 * 1024**3)
@@ -292,8 +279,77 @@ def test_compute_verdict_drives_the_real_capacity_manager(mocker):
     )
     mocker.patch("aleph.vm.agent.capacity.reclaimable_bytes", return_value=0)
     supervisor = SimpleNamespace(get_host_info=AsyncMock(return_value=HostInfo(gpu_inventory=[], available_gpus=[])))
-    capacity = CapacityManager(supervisor, AgentVmRegistry())
+    return CapacityManager(supervisor, registry or AgentVmRegistry())
+
+
+def _tight_host(mocker):
+    """40 GiB, less the two reservations, leaves a 30720 MiB instance bucket:
+    room for one 16384 MiB instance and not two."""
+    mocker.patch.object(settings, "HOST_MEMORY_RESERVED_MIB", 2048)
+    mocker.patch.object(settings, "PROGRAM_MEMORY_RESERVED_MIB", 8192)
+
+
+def _registry_holding(vm_hash, memory_mib):
+    registry = AgentVmRegistry()
+    recorded = _make_qemu_instance_message(memory=memory_mib)
+    registry.record(vm_hash, message=recorded, original=recorded, persistent=True)
+    return registry
+
+
+def test_compute_verdict_drives_the_real_capacity_manager(mocker):
+    """Every other test here hands compute_verdict a double, so the shape of
+    CapacityManager.simulate is never exercised: when the candidate tuple lost
+    its third element, the double kept agreeing with a signature production no
+    longer had and all of these stayed green. Wire the real one in once.
+    """
+    capacity = _real_capacity(mocker)
 
     verdict = compute_verdict(_plan(HASH_C), infos=[], registry=_registry({}), capacity=capacity)
 
     assert verdict.accepted == [HASH_C]
+
+
+def test_a_recreate_is_not_judged_against_its_own_stale_record(mocker):
+    """The supervisor holds C dead and the registry still has its record, so
+    the memory it asks for is counted twice unless the record is discounted.
+    simulate does that for every candidate, which is why compute_verdict no
+    longer lists a recreate as released.
+    """
+    _tight_host(mocker)
+    registry = _registry_holding(HASH_C, 16384)
+    capacity = _real_capacity(mocker, memory_gib=40, registry=registry)
+
+    verdict = compute_verdict(
+        _plan(HASH_C, content=_make_qemu_instance_message(memory=16384)),
+        infos=[_info(HASH_C, status=VmStatus.STOPPED)],
+        registry=registry,
+        capacity=capacity,
+    )
+
+    assert verdict.accepted == [HASH_C]
+
+
+def test_a_recreate_still_waiting_on_its_message_frees_nothing(mocker):
+    """C is planned but carries no message, so it is pending a CCN fetch and
+    nothing is stopping it. Releasing it would hand its 16384 MiB to A and
+    answer yes where the enforced path, which still sees C's record, answers
+    no: an advisory verdict must never be the stronger of the two.
+    """
+    _tight_host(mocker)
+    registry = _registry_holding(HASH_C, 16384)
+    capacity = _real_capacity(mocker, memory_gib=40, registry=registry)
+    plan = AllocationPlan(
+        plan_id="sha256:test",
+        received_at=NOW,
+        entries={
+            HASH_C: PlannedVm(vm_hash=HASH_C, verified=None),
+            HASH_A: PlannedVm(vm_hash=HASH_A, verified=_verified(_make_qemu_instance_message(memory=16384))),
+        },
+    )
+
+    verdict = compute_verdict(
+        plan, infos=[_info(HASH_C, status=VmStatus.STOPPED)], registry=registry, capacity=capacity
+    )
+
+    assert verdict.pending == [HASH_C]
+    assert verdict.rejected[HASH_A]["code"] == "insufficient_capacity"

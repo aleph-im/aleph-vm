@@ -148,11 +148,6 @@ def compute_verdict(
     verdict = PlanVerdict()
     by_hash = {ItemHash(info.vm_id): info for info in infos}
     unchanged: set[ItemHash] = set()
-    # Planned VMs the supervisor holds in a dead state are about to be created
-    # again. Their registry records still count as committed, so admission has
-    # to discount them or a recreate is judged against its own resources; the
-    # enforced path does the same thing with check_capacity's exclude_vm_hash.
-    recreating: set[ItemHash] = set()
 
     for vm_hash, info in by_hash.items():
         record = registry.get(vm_hash)
@@ -160,9 +155,18 @@ def compute_verdict(
             if info.status in LIVE_STATUSES or info.awaiting_confidential_init:
                 unchanged.add(vm_hash)
                 verdict.unchanged.append(vm_hash)
-            elif record is not None:
-                recreating.add(vm_hash)
+            # A planned VM the supervisor holds dead is about to be created
+            # again, and its stale record still counts as committed, but that
+            # is simulate's business: it leaves every candidate's own record
+            # out of the sums the way check_capacity's exclude_vm_hash does.
+            # Listing it as released here would credit that memory to the
+            # other candidates too, and for one still waiting on its message
+            # or refused for another node it would credit memory nobody is
+            # freeing at all.
             continue
+        # A VM the supervisor runs that we hold no record for is left alone
+        # and reported as neither dropped nor kept. We know nothing about what
+        # it is owed, and an allocation push is not the place to find out.
         if record is None or info.status is not VmStatus.RUNNING:
             continue
         if is_removable_by_allocation(record, info):
@@ -198,7 +202,7 @@ def compute_verdict(
             continue
         candidates.append((vm_hash, requirements_from_message(content)))
 
-    for admission in capacity.simulate(candidates, releasing=frozenset(verdict.removing) | recreating):
+    for admission in capacity.simulate(candidates, releasing=frozenset(verdict.removing)):
         if admission.accepted:
             verdict.accepted.append(admission.vm_hash)
         else:
