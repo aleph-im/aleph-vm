@@ -94,6 +94,22 @@ def test_an_entry_without_a_verified_message_is_pending():
     assert verdict.rejected == {}
 
 
+def test_a_vm_id_that_is_not_a_hash_is_dropped_not_raised_on():
+    """The supervisor's list is not ours to vouch for: an operator's own VM, or
+    a second tenant's, carries an id we cannot parse. Converting it unguarded
+    took the whole push down over a VM the push says nothing about, which is
+    the rule build_plan already holds its own entries to."""
+    verdict = compute_verdict(
+        _plan(HASH_C),
+        infos=[_info("operator-scratch-vm"), _info(HASH_B)],
+        registry=_registry({HASH_B: _record()}),
+        capacity=_capacity([AdmissionVerdict(HASH_C, True)]),
+    )
+
+    assert verdict.accepted == [HASH_C]
+    assert verdict.removing == [HASH_B]
+
+
 def test_a_running_vm_absent_from_the_plan_is_removing():
     verdict = compute_verdict(
         _plan(), infos=[_info(HASH_B)], registry=_registry({HASH_B: _record()}), capacity=_capacity([])
