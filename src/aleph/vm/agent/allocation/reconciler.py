@@ -143,7 +143,14 @@ class AllocationReconciler:
             if record is None or not is_removable_by_allocation(record, info):
                 continue
             logger.info("Plan %s dropped %s; tearing it down", plan.plan_id, vm_hash)
-            await teardown_vm(vm_hash, supervisor=self.supervisor, registry=self.registry)
+            try:
+                await teardown_vm(vm_hash, supervisor=self.supervisor, registry=self.registry)
+            except Exception:
+                # Isolated per VM, the way _start_one isolates a start. One VM
+                # the supervisor will not delete used to abort the pass here,
+                # before a single start ran, and teardowns carry no backoff, so
+                # it did that on every interval for as long as it kept failing.
+                logger.exception("Tearing down %s failed; leaving it for the next pass", vm_hash)
 
     async def _start_missing(self, plan: AllocationPlan, infos: list[VmInfo]) -> None:
         live = {

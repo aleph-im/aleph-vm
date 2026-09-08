@@ -133,6 +133,21 @@ async def test_a_stream_paid_vm_is_never_torn_down(reconciler, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_teardown_that_keeps_failing_does_not_block_the_starts(reconciler, monkeypatch):
+    """Starts are isolated per VM; teardowns were not, so one VM the supervisor
+    refused to delete aborted the pass before _start_missing ran, on every
+    interval, and teardowns have no backoff to slow that down."""
+    starts = _record_starts(reconciler, monkeypatch)
+    monkeypatch.setattr(reconciler_module, "teardown_vm", AsyncMock(side_effect=RuntimeError("delete failed")))
+    reconciler.supervisor.list_vms.return_value = [_info(HASH_B)]
+    reconciler.submit(_plan(HASH_C))
+
+    await reconciler._converge_once()
+
+    assert starts.attempts == 1
+
+
+@pytest.mark.asyncio
 async def test_a_vm_id_that_is_not_a_hash_does_not_wedge_the_pass(reconciler, monkeypatch):
     """The supervisor's list is not ours to vouch for: an operator's own VM, or
     a second tenant's, carries an id we cannot parse. Converting it unguarded
