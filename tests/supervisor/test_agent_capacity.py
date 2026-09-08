@@ -31,6 +31,7 @@ _DEVICE_ID = "10de:2504"
 _HASH_A = ItemHash("a" * 64)
 _HASH_B = ItemHash("b" * 64)
 _HASH_C = ItemHash("c" * 64)
+_HASH_D = ItemHash("d" * 64)
 
 
 def _gpu_device(pci_host: str = "0000:01:00.0", *, device_id: str = _DEVICE_ID) -> GpuDevice:
@@ -737,3 +738,54 @@ def test_simulate_does_not_take_cards_for_a_candidate_refused_on_memory(mocker):
 
     assert [v.accepted for v in verdicts] == [False, True]
     assert verdicts[0].code == "insufficient_capacity"
+
+
+def test_simulate_does_not_let_a_recorded_candidate_refuse_itself(mocker):
+    """A hash can be recorded here and still be a candidate: a recreate, or an
+    owner record from a create that died part way. Counting the record and the
+    request both would judge the VM against its own memory.
+
+    40 GiB leaves 30720 MiB, and 16384 twice does not fit, so a double count
+    turns this into a no.
+    """
+    mocker.patch.object(settings, "HOST_MEMORY_RESERVED_MIB", 2048)
+    mocker.patch.object(settings, "PROGRAM_MEMORY_RESERVED_MIB", 8192)
+    _patch_host(mocker, memory_bytes=40 * 1024 * 1024 * 1024, cores=16)
+    registry = AgentVmRegistry()
+    content = _make_qemu_instance_message(memory=16384)
+    registry.record(_HASH_A, message=content, original=content, persistent=True)
+    manager = _manager(registry=registry)
+
+    verdicts = manager.simulate([(_HASH_A, _requirements(memory_mib=16384), True)])
+
+    assert verdicts[0].accepted is True
+
+
+def test_simulate_does_not_credit_a_candidate_twice_when_also_released(mocker):
+    """A caller that discounts the record itself, by listing the hash in
+    releasing, must not get the memory back a second time.
+
+    30720 MiB bucket. D holds 8192 and stays, so A (16384, already recorded and
+    also a candidate) is judged against 8192 and fits, leaving 24576 committed
+    and no room for B's 8192. Subtracting A a second time would drop the
+    committed sum to 0 instead, and B would wrongly fit. The other record
+    matters: without it the second subtraction goes negative and the clamp
+    hides the bug.
+    """
+    mocker.patch.object(settings, "HOST_MEMORY_RESERVED_MIB", 2048)
+    mocker.patch.object(settings, "PROGRAM_MEMORY_RESERVED_MIB", 8192)
+    _patch_host(mocker, memory_bytes=40 * 1024 * 1024 * 1024, cores=16)
+    registry = AgentVmRegistry()
+    recorded = _make_qemu_instance_message(memory=16384)
+    registry.record(_HASH_A, message=recorded, original=recorded, persistent=True)
+    staying = _make_qemu_instance_message(memory=8192)
+    registry.record(_HASH_D, message=staying, original=staying, persistent=True)
+    manager = _manager(registry=registry)
+    candidates = [
+        (_HASH_A, _requirements(memory_mib=16384), True),
+        (_HASH_B, _requirements(memory_mib=8192), True),
+    ]
+
+    verdicts = manager.simulate(candidates, releasing=frozenset({_HASH_A}))
+
+    assert [v.accepted for v in verdicts] == [True, False]

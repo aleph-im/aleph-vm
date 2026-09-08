@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
@@ -151,7 +152,7 @@ class CapacityManager:
         record must not count against its own request.
         """
         committed_instance_memory_mib, committed_program_memory_mib, committed_vcpus = self._committed_resources(
-            exclude_vm_hash
+            () if exclude_vm_hash is None else (exclude_vm_hash,)
         )
         self._check_against(
             memory_mib=memory_mib,
@@ -276,6 +277,12 @@ class CapacityManager:
         space is read live and no record of it exists until the volumes are
         actually written.
 
+        A candidate's own registry record never counts against it. A hash can
+        already be recorded here and still be a candidate: a recreate, or an
+        owner record left by a create that failed part way. Counting both the
+        record and the request would make the VM refuse itself, so the record
+        is discounted the way check_capacity's exclude_vm_hash does it.
+
         Release-aware: hashes the plan is about to stop are subtracted from the
         committed sums, so "allocate C, delete B" admits C against B's memory.
         Their disk is not credited back: nothing has been deleted yet, so the
@@ -297,6 +304,7 @@ class CapacityManager:
         memory alone. An advisory yes must never be read as one that covered
         the GPU.
 
+
         The third element of a candidate is the caller's memory-bucket choice,
         NOT ResourceRequirements.is_instance. The two disagree for V-PROGRAMs:
         requirements_from_message reports is_instance=False (the content is not
@@ -304,8 +312,13 @@ class CapacityManager:
         bucket, which is what _committed_resources and _admit both do. Pass
         is_instance_bucket(content) rather than restating the rule.
         """
-        committed_instance, committed_program, committed_vcpus = self._committed_resources(None)
+        candidate_hashes = {vm_hash for vm_hash, _, _ in candidates}
+        committed_instance, committed_program, committed_vcpus = self._committed_resources(candidate_hashes)
         for vm_hash in releasing:
+            if vm_hash in candidate_hashes:
+                # Already discounted above. Subtracting again would credit the
+                # same VM twice and admit against memory nobody freed.
+                continue
             record = self.registry.get(vm_hash)
             if record is None or not record.message.resources:
                 continue
@@ -394,15 +407,15 @@ class CapacityManager:
             pool.remove(gpu)
         return None
 
-    def _committed_resources(self, exclude_vm_hash: ItemHash | None) -> tuple[int, int, int]:
+    def _committed_resources(self, excluded: Collection[ItemHash]) -> tuple[int, int, int]:
         """(committed_instance_memory_mib, committed_program_memory_mib,
-        committed_vcpus) summed over the registry, skipping
-        ``exclude_vm_hash``'s own record (see ``check_capacity``)."""
+        committed_vcpus) summed over the registry, skipping the records of
+        ``excluded`` (see ``check_capacity`` and ``simulate``)."""
         committed_instance_memory_mib = 0
         committed_program_memory_mib = 0
         committed_vcpus = 0
         for vm_hash, record in tuple(self.registry.items()):
-            if exclude_vm_hash is not None and vm_hash == exclude_vm_hash:
+            if vm_hash in excluded:
                 continue
             resources = record.message.resources
             memory = resources.memory
