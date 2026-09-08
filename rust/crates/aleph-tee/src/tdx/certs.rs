@@ -188,6 +188,64 @@ pub fn verify_pck_chain(
     Ok(leaf.to_owned())
 }
 
+/// Verify an Intel collateral issuer chain (signer certificate, then its
+/// issuing intermediate) up to the pinned root, and return the signer.
+///
+/// Used for the TCB Info and QE Identity signatures. Unlike the PCK chain
+/// the root is not embedded, so the intermediate is checked directly
+/// against the pin. Intel publishes no CRL for these signers, matching the
+/// DCAP reference, so none is applied here.
+pub fn verify_signer_chain(chain_pem: &[u8], now: SystemTime) -> Result<X509> {
+    let now = asn1_now(now)?;
+    let chain = X509::stack_from_pem(chain_pem).context("failed to parse the issuer chain PEM")?;
+    if chain.len() != 2 {
+        bail!(
+            "expected 2 certificates in the issuer chain (signer, intermediate), got {}",
+            chain.len()
+        );
+    }
+    let (signer, intermediate) = (&chain[0], &chain[1]);
+
+    let pinned = pinned_intel_root()?;
+    let pinned_key = pinned
+        .public_key()
+        .context("failed to extract the pinned root public key")?;
+    if !intermediate
+        .verify(&pinned_key)
+        .context("failed to check the intermediate signature")?
+    {
+        bail!("the issuer chain intermediate is not signed by the pinned Intel root");
+    }
+    let intermediate_key = intermediate
+        .public_key()
+        .context("failed to extract the intermediate public key")?;
+    if !signer
+        .verify(&intermediate_key)
+        .context("failed to check the signer signature")?
+    {
+        bail!("the collateral signer certificate is not signed by the intermediate CA");
+    }
+    check_window(
+        "the pinned root certificate",
+        pinned.not_before(),
+        pinned.not_after(),
+        &now,
+    )?;
+    check_window(
+        "the intermediate certificate",
+        intermediate.not_before(),
+        intermediate.not_after(),
+        &now,
+    )?;
+    check_window(
+        "the signer certificate",
+        signer.not_before(),
+        signer.not_after(),
+        &now,
+    )?;
+    Ok(signer.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
