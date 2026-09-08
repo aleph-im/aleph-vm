@@ -31,6 +31,7 @@ from aleph.vm.agent.migration.jobs import (
     import_jobs,
 )
 from aleph.vm.agent.migration.runner import run_export, run_import
+from aleph.vm.agent.vm.retire import RetireReason, retire_vm
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
 from aleph.vm.supervisor_interface.types import (
@@ -291,6 +292,7 @@ async def migration_import(request: web.Request) -> web.Response:
             job,
             supervisor,
             capacity=request.app["capacity"],
+            registry=request.app["vm_registry"],
             disk_files=params.disk_files,
             export_token=params.export_token,
             prior_task=prior_task,
@@ -386,13 +388,11 @@ async def migration_cleanup(request: web.Request) -> web.Response:
     try:
         if job.ttl_task is not None and not job.ttl_task.done():
             job.ttl_task.cancel()
-        # The source VM has migrated away: drop it from the pool through the
-        # standard lifecycle RPC, which stops it, forgets the definition and
-        # removes the controller config. The disks are deliberately left in
-        # place: the destination owns the data now, and DeleteVm never touches
-        # storage anyway (the agent owns it). They are the operator's to
-        # reclaim once the migration is confirmed good.
-        await supervisor.delete_vm(VmId(str(vm_hash)))
+        # The source VM has migrated away: the destination owns the data now.
+        # Retire it as GONE: the supervisor stops it and forgets the
+        # definition, the agent drops the record and applies
+        # VOLUME_RETENTION to the disks it left behind.
+        await retire_vm(vm_hash, RetireReason.GONE, supervisor=supervisor, registry=request.app["vm_registry"])
         for path in job.export_paths:
             try:
                 Path(path).unlink(missing_ok=True)

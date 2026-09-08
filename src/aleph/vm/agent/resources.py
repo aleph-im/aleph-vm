@@ -14,6 +14,7 @@ from aleph.vm.agent.vcpu_probe import (
     get_snp_launch_capability,
     get_supported_snp_vcpu_types,
 )
+from aleph.vm.agent.vm.reclaimable import reclaimable_bytes
 from aleph.vm.conf import settings
 from aleph.vm.resources import GpuDevice
 from aleph.vm.sevclient import SevClient
@@ -319,11 +320,18 @@ def hugepages_free_bytes(sysfs_path: Path = HUGEPAGES_SYSFS_PATH) -> int:
 def _disk_usage_from_pools(host_info) -> DiskUsage:
     """Aggregate capacity across every volume pool (same-filesystem pools
     counted once). Usage-aware available disk comes from the supervisor's
-    HostInfo; a gRPC supervisor that has not implemented it yet reports 0."""
+    HostInfo; a gRPC supervisor that has not implemented it yet reports 0.
+
+    Reclaimable (retained) bytes are added to whichever free figure is used:
+    what the node advertises has to match what admission accepts, and
+    admission counts them (a placement evicts them before it refuses). A node
+    advertising less than it will take is a node the scheduler stops feeding.
+    """
     total_bytes, free_bytes = pools_disk_usage()
+    available_bytes = host_info.available_disk_bytes or free_bytes
     return DiskUsage(
         total_kB=total_bytes // 1000,
-        available_kB=(host_info.available_disk_bytes // 1000 if host_info.available_disk_bytes else free_bytes // 1000),
+        available_kB=(available_bytes + reclaimable_bytes()) // 1000,
     )
 
 

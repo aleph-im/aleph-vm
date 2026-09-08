@@ -28,7 +28,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO
 
-from aleph.vm.agent.vm.purge import ROOTFS_STEM, iter_volume_files
+from aleph_message.models import ItemHash
+
+from aleph.vm.agent.vm.purge import ROOTFS_STEM, _checked_namespace, iter_volume_files
 from aleph.vm.backup.archive import (
     backup_metadata,
     check_disk_space_for_multiple,
@@ -71,6 +73,38 @@ def validate_backup_id(vm_hash: str, backup_id: str) -> None:
     malformed = not backup_id or "/" in backup_id or "\\" in backup_id or ".." in backup_id
     if malformed or not backup_id.startswith(f"{vm_hash}-"):
         raise BackupNotFoundError(backup_id)
+
+
+def purge_vm_backups(vm_hash: ItemHash | str) -> int:
+    """Delete every backup archive of a VM (the .tar and its sidecars).
+
+    Called by retire_vm for every reason but RECREATE: a VM that is gone,
+    erased or never committed has no owner left to hold its backups.
+
+    The hash goes through the same validation as every other delete
+    primitive: it is interpolated into a glob pattern here, and a delete path
+    never builds a pattern or a path out of an unchecked name.
+    """
+    namespace = _checked_namespace(vm_hash)
+    backup_dir = get_backup_directory()
+    removed = 0
+    for archive in backup_dir.glob(f"{namespace}-*.tar"):
+        archive.with_suffix(".tar.sha256").unlink(missing_ok=True)
+        archive.with_suffix(".tar.meta.json").unlink(missing_ok=True)
+        archive.unlink(missing_ok=True)
+        removed += 1
+    return removed
+
+
+def sweep_expired_backups(now: datetime) -> int:
+    """Remove every archive (of any VM) past the backup TTL, evaluated at
+    ``now``.
+
+    The reconciler's backup pass: the same sweep ``start_backup`` runs, on
+    the same TTL and through the same helper, but driven by the ``now`` the
+    pass threads through its other sweeps instead of by the wall clock.
+    """
+    return cleanup_expired_backups(get_backup_directory(), now=now.timestamp())
 
 
 @dataclass(frozen=True)

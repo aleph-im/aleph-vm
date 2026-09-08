@@ -67,7 +67,10 @@ async def _make_writable_volume(
         msg = f"Format {parent_format} for {volume} unhandled by QEMU hypervisor"
         raise VmSetupError(msg)
 
-    dest_path = volume_path_for(namespace, f"{volume_name}.qcow2", volume.size_mib)
+    # Off the loop: placement reads every pool's free space and can call the
+    # reclaimer's evictor (storage_pools.set_room_maker), which walks pools and
+    # removes directories.
+    dest_path = await asyncio.to_thread(volume_path_for, namespace, f"{volume_name}.qcow2", volume.size_mib)
     # Do not override if user asked for host persistence.
     if dest_path.exists() and volume.persistence == VolumePersistence.host:
         return dest_path
