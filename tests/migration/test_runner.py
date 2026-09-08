@@ -824,3 +824,73 @@ async def test_import_holds_the_create_guard_and_records_the_vm(tmp_path, monkey
     assert guard_while_downloading == [True]
     assert registry.get(vm_hash) is not None
     assert not is_creating(str(vm_hash))
+
+
+@pytest.mark.asyncio
+async def test_a_failure_after_create_vm_retires_the_half_imported_vm(
+    tmp_path, monkeypatch, stub_finish_instance_create
+):
+    """finish_instance_create failing leaves a VM that is up, registered and
+    unreachable (no port forwards). The import tears it down the way a fresh
+    create does when it fails after create_vm: FAILED_CREATE, since a failed
+    import discards its staged disks anyway, so a kept record would describe
+    disks that are gone."""
+    from aleph.vm.agent.migration.jobs import DiskFileInfo, ImportJob
+    from aleph.vm.agent.migration.runner import run_import
+    from aleph.vm.agent.vm.retire import RetireReason
+
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    monkeypatch.setattr(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
+    monkeypatch.setattr(settings, "INSTANCE_DEFAULT_HYPERVISOR", HypervisorType.qemu)
+
+    parent_path = tmp_path / "parent.qcow2"
+    parent_path.write_bytes(b"parent")
+
+    fake_message = MagicMock()
+    fake_message.type = MessageType.instance
+    fake_message.content.environment.hypervisor = HypervisorType.qemu
+    fake_message.content.environment.trusted_execution = None
+    fake_message.content.rootfs.parent.ref = "parentref"
+    fake_message.content.requirements = None
+
+    async def fake_download(session, url, dest_path, token, *, expected_sha256, on_chunk=None):
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest_path.write_bytes(b"downloaded")
+        return 10
+
+    monkeypatch.setattr(
+        "aleph.vm.agent.migration.runner.load_updated_message",
+        AsyncMock(return_value=(fake_message, fake_message)),
+    )
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.get_rootfs_base_path", AsyncMock(return_value=parent_path))
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.detect_parent_format", AsyncMock(return_value="qcow2"))
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.download_disk_from_source", fake_download)
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.rebase_overlay", AsyncMock())
+    monkeypatch.setattr(
+        "aleph.vm.agent.migration.runner.build_create_vm_spec",
+        AsyncMock(return_value=MagicMock(vm_id=vm_hash)),
+    )
+    retire = AsyncMock()
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.retire_vm", retire)
+    stub_finish_instance_create.side_effect = RuntimeError("port forwards failed")
+
+    registry = AgentVmRegistry()
+    supervisor = _import_supervisor()
+    job = ImportJob(
+        vm_hash=vm_hash,
+        state=MigrationState.IMPORTING,
+        started_at=datetime.now(timezone.utc),
+        source_host="src",
+        source_port=443,
+    )
+    await run_import(
+        job,
+        supervisor,
+        capacity=_fake_capacity(),
+        registry=registry,
+        disk_files=[DiskFileInfo(name="rootfs.qcow2", size_bytes=10, sha256="0" * 64, download_path="/x")],
+        export_token="t",
+    )
+
+    assert job.state == MigrationState.IMPORT_FAILED
+    retire.assert_awaited_once_with(vm_hash, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)

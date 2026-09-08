@@ -35,6 +35,7 @@ from aleph.vm.agent.migration.jobs import (
 from aleph.vm.agent.run import finish_instance_create
 from aleph.vm.agent.translate import build_create_vm_spec
 from aleph.vm.agent.vm.reconciler import creating
+from aleph.vm.agent.vm.retire import RetireReason, retire_vm
 from aleph.vm.agent.vm_registry import AgentVmRegistry, persist_record
 from aleph.vm.conf import settings
 from aleph.vm.storage import get_rootfs_base_path
@@ -249,6 +250,7 @@ async def run_import(
             logger.debug("Prior import task for %s ended with error: %s", job.vm_hash, e)
     sem = get_migration_semaphore()
     start = time.monotonic()
+    vm_created = False
     async with sem:
         try:
             # The whole import runs under the create guard. Nothing here is in
@@ -356,6 +358,7 @@ async def run_import(
                     resolved_gpus = await capacity.resolve_gpus(requested_gpus, owner=message.content.address)
                     spec = replace(spec, gpus=resolved_gpus)
                 await supervisor.create_vm(spec)
+                vm_created = True
 
                 # The agent records its own knowledge of the VM, exactly as
                 # create_vm_execution does. The registry is what the storage
@@ -387,6 +390,20 @@ async def run_import(
             job.error = str(error)
             job.finished_at = datetime.now(timezone.utc)
             job.state = MigrationState.IMPORT_FAILED
+
+            if vm_created:
+                # The same teardown a fresh create gets when it fails after
+                # create_vm (run._retire_after_create_failure): a VM that is
+                # up but never got its port forwards is unreachable and holds
+                # memory, vCPUs and disks for nothing. A failed import already
+                # discards the staged disks (the rmtree below), so this is a
+                # FAILED_CREATE, not a RECREATE: the record it would keep would
+                # describe disks that are gone. The device teardown and the
+                # purge inside retire_vm make the rmtree a no-op.
+                try:
+                    await retire_vm(job.vm_hash, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)
+                except Exception:
+                    logger.exception("Teardown of the half-imported %s failed", job.vm_hash)
 
             if job.dest_dir is not None and not await _vm_exists(supervisor, job.vm_hash):
                 shutil.rmtree(job.dest_dir, ignore_errors=True)
