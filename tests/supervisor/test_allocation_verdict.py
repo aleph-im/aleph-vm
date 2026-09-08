@@ -32,9 +32,9 @@ def _info(vm_hash, *, status=VmStatus.RUNNING, gpus=(), confidential=Confidentia
     )
 
 
-def _record(*, stream=False, credit=False, vprogram=False):
+def _record(*, stream=False, credit=False, vprogram=False, persistent=True):
     return SimpleNamespace(
-        persistent=True,
+        persistent=persistent,
         uses_payment_stream=stream,
         uses_payment_credit=credit,
         is_vprogram=vprogram,
@@ -109,6 +109,60 @@ def test_a_stream_paid_vm_absent_from_the_plan_is_retained_with_its_reason():
 
     assert verdict.removing == []
     assert verdict.retained[HASH_B] == "payment_stream"
+
+
+@pytest.mark.parametrize(
+    ("record", "info", "reason"),
+    [
+        (_record(persistent=False), _info(HASH_B), "non_persistent"),
+        (_record(stream=True), _info(HASH_B), "payment_stream"),
+        (_record(credit=True), _info(HASH_B), "payment_credit"),
+        (_record(), _info(HASH_B, gpus=["0000:01:00.0"]), "gpu"),
+        (_record(), _info(HASH_B, confidential=ConfidentialMode.SEV_SNP), "confidential"),
+    ],
+)
+def test_every_reason_an_allocation_may_not_stop_a_vm_is_reported(record, info, reason):
+    """_retention_reason has to stay a mirror of is_removable_by_allocation:
+    a VM the one keeps and the other has no reason for comes back as
+    operator_policy, which says nothing to the scheduler."""
+    verdict = compute_verdict(_plan(), infos=[info], registry=_registry({HASH_B: record}), capacity=_capacity([]))
+
+    assert verdict.removing == []
+    assert verdict.retained[HASH_B] == reason
+
+
+def test_a_vm_waiting_on_its_confidential_session_is_left_alone():
+    """A confidential VM is created but not started: only its owner can boot
+    it, by uploading the session certificates. It is not running, so the
+    status alone reads as a recreate, and re-creating it would throw away the
+    VM the owner is about to send its secret to."""
+    awaiting = _info(HASH_A, status=VmStatus.STOPPED)
+    awaiting.awaiting_confidential_init = True
+
+    verdict = compute_verdict(
+        _plan(HASH_A), infos=[awaiting], registry=_registry({HASH_A: _record()}), capacity=_capacity([])
+    )
+
+    assert verdict.unchanged == [HASH_A]
+    assert verdict.accepted == []
+
+
+@pytest.mark.parametrize(
+    ("record", "info"),
+    [
+        (None, _info(HASH_B)),
+        (_record(), _info(HASH_B, status=VmStatus.STOPPED)),
+    ],
+    ids=["no record of it", "not running"],
+)
+def test_a_vm_outside_the_plan_we_cannot_speak_for_is_not_reported(record, info):
+    """Neither dropped nor kept. One we hold no record for we know nothing
+    about, and one already stopped needs nothing done to it."""
+    verdict = compute_verdict(
+        _plan(), infos=[info], registry=_registry({HASH_B: record} if record else {}), capacity=_capacity([])
+    )
+
+    assert verdict.removing == [] and verdict.retained == {}
 
 
 def test_a_vprogram_absent_from_the_plan_is_removing_despite_being_confidential():

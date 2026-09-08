@@ -125,6 +125,9 @@ def _retention_reason(record: AgentVmRecord, info: VmInfo) -> str:
         return "gpu"
     if info.confidential_mode is not ConfidentialMode.NONE:
         return "confidential"
+    # Unreachable while the branches above mirror is_removable_by_allocation,
+    # which is the point: a reason it grows that this does not answers here
+    # rather than passing a VM off as removable.
     return "operator_policy"
 
 
