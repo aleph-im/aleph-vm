@@ -30,10 +30,15 @@ from aleph_message.models import ItemHash
 
 from aleph.vm.agent.metrics import delete_records_for_vm
 from aleph.vm.agent.vm.backup import purge_vm_backups
-from aleph.vm.agent.vm.purge import purge_vm_side_dirs, purge_vm_storage
+from aleph.vm.agent.vm.purge import (
+    _checked_namespace,
+    purge_vm_side_dirs,
+    purge_vm_storage,
+)
 from aleph.vm.agent.vm.reclaimable import depends_on_from_content, mark_reclaimable
 from aleph.vm.agent.vm_registry import AgentVmRecord, AgentVmRegistry
 from aleph.vm.conf import settings
+from aleph.vm.storage import remove_devmapper
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
 from aleph.vm.supervisor_interface.types import VmId
@@ -63,6 +68,42 @@ def set_after_gone_hook(hook: AfterGoneHook | None) -> None:
     """
     global _after_gone  # noqa: PLW0603
     _after_gone = hook
+
+
+async def teardown_vm_devices(namespace: str, record: AgentVmRecord | None) -> None:
+    """Remove the device-mapper snapshots and loop devices of a VM's
+    parent-backed volumes.
+
+    The agent creates them (``storage.create_devmapper``) and nothing else
+    removes them, so this is the only inverse. Best effort: a failure is
+    logged and never aborts the retire, which still drops the records and
+    releases the rest of the storage. The volume file then stays behind,
+    pinned by its loop device, and the purge's dm guard refuses to unlink it
+    (that would free nothing and would not reset the volume either, since
+    ``create_devmapper`` reuses a live device). Nothing retries the teardown
+    once the record is gone: such a device waits for an operator.
+    """
+    if record is None:
+        return
+    try:
+        namespace = _checked_namespace(namespace)
+    except ValueError:
+        # Unreachable from the callers, which pass an ItemHash, but the
+        # best-effort contract holds for the check too: a teardown that
+        # cannot run must not abort the retire between the forget and the
+        # storage release.
+        logger.exception("Device teardown of %r skipped", namespace)
+        return
+    for volume in getattr(record.message, "volumes", None) or []:
+        # An instance rootfs is a qcow2 overlay, not a dm snapshot, and it is
+        # not in `volumes` anyway; only a volume with a parent went through
+        # create_devmapper.
+        if getattr(volume, "parent", None) is None or not getattr(volume, "name", None):
+            continue
+        try:
+            await remove_devmapper(namespace, volume.name)
+        except Exception:
+            logger.exception("Device teardown of %s/%s failed", namespace, volume.name)
 
 
 async def retire_vm(
@@ -98,6 +139,10 @@ async def retire_vm(
     record = registry.get(item_hash)
     registry.forget(item_hash)
     await delete_records_for_vm(str(vm_hash))
+    # Before the storage pass: a volume file held by a live dm target cannot
+    # be unlinked usefully, and the marker written for a kept volume would
+    # describe a size the loop device still pins.
+    await teardown_vm_devices(str(vm_hash), record)
     try:
         await asyncio.to_thread(_release_storage, str(vm_hash), reason, record)
     except Exception:
