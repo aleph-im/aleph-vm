@@ -239,6 +239,25 @@ async def test_backoff_doubles_and_is_capped(reconciler, monkeypatch, clock):
 
 
 @pytest.mark.asyncio
+async def test_a_start_that_fails_after_the_plan_drops_it_is_not_remembered(reconciler, monkeypatch):
+    """submit() prunes the state of a VM it drops, but a create already in
+    flight recorded its failure afterwards and put the record back, so
+    state_for went on reporting a VM nothing would ever retry."""
+
+    async def fake_start(vm_hash, _pubsub, **_kwargs):
+        reconciler.submit(_plan())
+        msg = "download failed"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(reconciler_module, "start_persistent_vm", fake_start)
+    reconciler.submit(_plan(HASH_C))
+
+    await reconciler._converge_once()
+
+    assert reconciler.state_for(HASH_C) == (None, None)
+
+
+@pytest.mark.asyncio
 async def test_a_vm_that_leaves_the_plan_loses_its_failure_record(reconciler, monkeypatch):
     """Otherwise a hash the scheduler gave up on is retried forever."""
     _record_starts(reconciler, monkeypatch, fail=True)

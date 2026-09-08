@@ -188,6 +188,14 @@ class AllocationReconciler:
                 update_watcher=self.update_watcher,
             )
         except Exception as error:
+            if self._desired is None or vm_hash not in self._desired.entries:
+                # A newer plan dropped this VM while its create was in flight.
+                # submit() has already pruned its state, and recording the
+                # failure now would put it back for a VM nothing will retry,
+                # leaving state_for reporting on something we have stopped
+                # caring about until the next push clears it again.
+                logger.info("Start of %s failed after the plan dropped it: %s", vm_hash, error)
+                return
             self._record_failure(vm_hash, error)
             return
         self._forget(vm_hash)
