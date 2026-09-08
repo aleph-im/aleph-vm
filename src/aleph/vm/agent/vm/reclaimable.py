@@ -135,24 +135,26 @@ def write_marker(namespace_dir: Path, marker: ReclaimableMarker, *, exclusive: b
     invalidate_reclaimable_cache()
     try:
         tmp.write_text(marker.to_json())
-        if not exclusive:
-            os.replace(tmp, path)
-            return True
-        try:
+        if exclusive:
             os.link(tmp, path)
-        except FileExistsError:
-            return False
-        except OSError:
-            # No hardlinks on this filesystem, or no space: the directory
-            # simply stays unmarked and the next pass tries again. Raising
-            # here would abort the whole reconcile pass for one directory.
-            logger.warning("Could not write the reclaimable marker at %s", path, exc_info=True)
-            return False
-        return True
+        else:
+            os.replace(tmp, path)
+    except FileExistsError:
+        # Exclusive only: another writer claimed the directory first.
+        return False
+    except OSError:
+        # No space, no permission, no hardlinks on this filesystem: the
+        # directory simply stays unmarked and the next pass tries again.
+        # Raising would abort the whole reconcile pass for one directory,
+        # and at startup the agent's boot, on a full pool: the one condition
+        # the reconciler exists to relieve.
+        logger.warning("Could not write the reclaimable marker at %s", path, exc_info=True)
+        return False
     finally:
-        # On success the replace consumed the temp file; on any failure
+        # On success the publish consumed the temp file; on any failure
         # (ENOSPC, EACCES, a failed write) nothing else would ever collect it.
         tmp.unlink(missing_ok=True)
+    return True
 
 
 def clear_marker(namespace_dir: Path) -> bool:

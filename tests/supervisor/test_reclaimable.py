@@ -130,9 +130,12 @@ def test_adopt_clears_every_marker_of_the_namespace(pools):  # noqa: F811
     assert adopt(VM_HASH) == 0
 
 
-def test_a_failed_marker_write_leaves_no_temp_file(pools, monkeypatch):  # noqa: F811
+def test_a_failed_marker_write_leaves_no_temp_file(pools, monkeypatch, caplog):  # noqa: F811
     """A replace that fails (ENOSPC, EACCES) must not strand the temp file:
-    nothing else would ever collect it from the VM directory."""
+    nothing else would ever collect it from the VM directory. Nor may it
+    raise: a GONE retire and the namespace pass both call this, and at
+    startup the pass runs inside the on_startup hook, where a raise on a
+    full pool would stop the agent from booting."""
     import aleph.vm.agent.vm.reclaimable as reclaimable_module
 
     volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
@@ -142,10 +145,11 @@ def test_a_failed_marker_write_leaves_no_temp_file(pools, monkeypatch):  # noqa:
 
     monkeypatch.setattr(reclaimable_module.os, "replace", refuse)
 
-    with pytest.raises(OSError):
-        mark_reclaimable(VM_HASH, "gone")
+    assert mark_reclaimable(VM_HASH, "gone") == []
 
+    assert read_marker(pools["pool0"] / VM_HASH) is None
     assert list((pools["pool0"] / VM_HASH).glob("*.tmp")) == []
+    assert "Could not write the reclaimable marker" in caplog.text
 
 
 @pytest.mark.parametrize("content", ["[]", '"x"', "null", "42", "{not json", '{"reason": "gone"}'])
@@ -196,8 +200,7 @@ def test_a_failed_marker_write_of_the_temp_file_leaves_nothing_behind(pools, mon
 
     monkeypatch.setattr(Path, "write_text", refuse)
 
-    with pytest.raises(OSError):
-        mark_reclaimable(VM_HASH, "gone")
+    assert mark_reclaimable(VM_HASH, "gone") == []
 
     assert list((pools["pool0"] / VM_HASH).glob("*.tmp")) == []
 

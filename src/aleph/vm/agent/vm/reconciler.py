@@ -354,36 +354,62 @@ def _reconcile_namespaces(
             continue
         # A VM spanning two pools is handled once: purging or marking covers
         # every pool it is on.
-        if namespace in seen or not _is_orphan(directory, is_live, now, guard, dry_run=dry_run):
+        if namespace in seen:
             continue
-        seen.add(namespace)
-        if is_live(namespace) or is_creating(namespace):
-            # A create that committed, or entered creating(), between the
-            # live snapshot and this walk.
-            logger.info("Skipping %s: a VM claimed it while this pass was walking", namespace)
-            continue
-        if not dry_run and not _still_on_disk(namespace):
-            logger.debug("Skipping %s: another pass got there first", namespace)
-            continue
-        if settings.VOLUME_RETENTION == "keep":
-            report.marked_orphans.append(namespace)
-            if not dry_run:
-                mark_reclaimable(namespace, "orphan", now=now)
-        else:
-            freed = _dir_bytes(namespace)
-            if dry_run:
-                report.purged_orphans.append(namespace)
-                report.bytes_freed += freed
-                continue
-            purge_vm_storage(namespace)
-            if _still_on_disk(namespace):
-                # purge_vm_storage refuses a directory a device-mapper target
-                # still holds. Nothing was freed, so nothing may be reported
-                # as freed; the next pass tries again.
-                logger.warning("Purge of %s left directories behind; not counting them as reclaimed", namespace)
-                continue
-            report.purged_orphans.append(namespace)
-            report.bytes_freed += freed
+        try:
+            if _reconcile_namespace(directory, now, guard, report, dry_run=dry_run, is_live=is_live):
+                seen.add(namespace)
+        except Exception:
+            # One directory must not take the pass down with it, nor the
+            # agent's boot when this is the startup pass: the parts and
+            # side-directory sweeps skip a failing item the same way, and the
+            # next pass retries this one.
+            logger.exception("Reconcile of %s failed; leaving it for the next pass", namespace)
+            seen.add(namespace)
+
+
+def _reconcile_namespace(
+    directory: Path,
+    now: datetime,
+    guard: timedelta,
+    report: ReconcileReport,
+    *,
+    dry_run: bool,
+    is_live: Callable[[str], bool],
+) -> bool:
+    """Apply the retention policy to one directory. True when it was judged
+    an orphan, so the namespace pass covers a VM spanning two pools once."""
+    namespace = directory.name
+    if not _is_orphan(directory, is_live, now, guard, dry_run=dry_run):
+        return False
+    if is_live(namespace) or is_creating(namespace):
+        # A create that committed, or entered creating(), between the
+        # live snapshot and this walk.
+        logger.info("Skipping %s: a VM claimed it while this pass was walking", namespace)
+        return True
+    if not dry_run and not _still_on_disk(namespace):
+        logger.debug("Skipping %s: another pass got there first", namespace)
+        return True
+    if settings.VOLUME_RETENTION == "keep":
+        if not dry_run:
+            mark_reclaimable(namespace, "orphan", now=now)
+        report.marked_orphans.append(namespace)
+        return True
+    freed = _dir_bytes(namespace)
+    if dry_run:
+        report.purged_orphans.append(namespace)
+        report.bytes_freed += freed
+        return True
+    purge_vm_storage(namespace)
+    if _still_on_disk(namespace):
+        # purge_vm_storage refuses a directory a device-mapper target
+        # still holds. Nothing was freed, so nothing may be reported
+        # as freed; the next pass tries again.
+        logger.warning("Purge of %s left directories behind; not counting them as reclaimed", namespace)
+        return True
+    report.purged_orphans.append(namespace)
+    report.bytes_freed += freed
+    return True
 
 
 def _part_roots() -> Iterator[Path]:
@@ -770,12 +796,19 @@ async def reconcile_at_startup(app: web.Application) -> None:
     rehydration left the registry empty while the supervisor still runs VMs.
     """
     registry = app["vm_registry"]
-    async with _pass_lock(app):
-        live, running = await _live_set(app)
-        refusal = _startup_refusal(registry, running)
-        _log_startup_preview(await _pass(registry, live, dry_run=True), refusal=refusal)
-        if refusal is None:
-            await _pass(registry, live, dry_run=False)
+    try:
+        async with _pass_lock(app):
+            live, running = await _live_set(app)
+            refusal = _startup_refusal(registry, running)
+            _log_startup_preview(await _pass(registry, live, dry_run=True), refusal=refusal)
+            if refusal is None:
+                await _pass(registry, live, dry_run=False)
+    except Exception:
+        # Housekeeping never blocks the boot: an on_startup hook that raises
+        # stops the agent, and a full or read-only pool is exactly what this
+        # pass is meant to relieve, not a reason to loop the operator into
+        # fixing it by hand. The periodic pass retries.
+        logger.exception("Startup storage reconcile failed; the periodic pass will retry")
 
 
 async def periodic_reconcile(app: web.Application) -> None:

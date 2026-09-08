@@ -661,3 +661,44 @@ async def test_two_reconcile_passes_do_not_overlap(pools, registry, monkeypatch)
     await asyncio.gather(reconcile_now(app), reconcile_now(app))
 
     assert order == ["enter", "exit", "enter", "exit"]
+
+
+def test_a_directory_that_fails_does_not_abort_the_pass(pools, registry, monkeypatch, caplog):  # noqa: F811
+    """One namespace whose marking raises is logged and skipped; the next one
+    is still handled, like a failing item in the parts and side-dir sweeps."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    first = volume(pools["pool0"], "aaaa" * 16, "rootfs.qcow2")
+    second = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    _age(first.parent, 10_000)
+    _age(second.parent, 10_000)
+    real_mark = reconciler_module.mark_reclaimable
+
+    def mark_unless_first(namespace, *args, **kwargs):
+        if namespace == "aaaa" * 16:
+            raise OSError("no space left on device")
+        return real_mark(namespace, *args, **kwargs)
+
+    monkeypatch.setattr(reconciler_module, "mark_reclaimable", mark_unless_first)
+
+    report = reconcile_storage(registry, now=NOW)
+
+    assert report.marked_orphans == [VM_HASH]
+    assert read_marker(second.parent) is not None
+    assert read_marker(first.parent) is None
+    assert "Reconcile of aaaa" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_failing_startup_pass_does_not_stop_the_boot(pools, registry, monkeypatch, caplog):  # noqa: F811
+    """reconcile_at_startup is an on_startup hook: a raise there stops the
+    agent, and a full pool (the condition the pass exists to relieve) would
+    become a boot loop."""
+
+    def broken_pass(*args, **kwargs):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(reconciler_module, "reconcile_storage", broken_pass)
+
+    await reconcile_at_startup(_app(registry))
+
+    assert "Startup storage reconcile failed" in caplog.text
