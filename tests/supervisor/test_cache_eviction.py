@@ -548,7 +548,7 @@ def test_a_retained_dir_a_create_is_using_is_not_reclaimed_for_its_parent(pools,
     parent = _entry(pools["runtime"], "parent", size=4096)
     adopted = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
     mark_reclaimable(VM_HASH, "gone", ("parent",), now=NOW)
-    monkeypatch.setattr(reconciler_module, "_creating", {VM_HASH})
+    monkeypatch.setattr(reconciler_module, "_creating", {VM_HASH: 1})
 
     assert evict_caches(registry) == []
     assert parent.exists() and adopted.exists()

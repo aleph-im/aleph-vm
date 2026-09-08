@@ -955,7 +955,7 @@ def test_make_room_never_evicts_a_directory_a_create_is_using(pools, monkeypatch
     monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
     retained = volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=8192)
     mark_reclaimable(VM_HASH, "gone", now=NOW - timedelta(days=2))
-    monkeypatch.setattr(reconciler_module, "_creating", {VM_HASH})
+    monkeypatch.setattr(reconciler_module, "_creating", {VM_HASH: 1})
     _fake_disk_usage(monkeypatch, 0)
 
     freed = make_room(get_pools()[0], needed_bytes=8192)
