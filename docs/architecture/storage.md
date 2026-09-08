@@ -596,12 +596,22 @@ and got one. `reclaim` refuses outright unless `--trust-registry` is given.
 
 Neither command can see a create the daemon is in the middle of:
 `reconciler.is_creating()` is in-process state of the running agent, so a
-CLI invocation (a separate process) never sees it. A create that has
-outlived `VOLUME_CREATE_GUARD` and has not yet landed in the registry or in
-`list_vms` looks exactly like an orphan to a real `reconcile` run from the
-CLI, which can then remove it out from under the daemon. `reconcile --help`
-says so; the daemon's own pass (startup, periodic, at-GONE) is preferred
-whenever the daemon is up, and this command is mainly for when it is not.
+CLI invocation (a separate process) never sees it. What protects such a
+create from the CLI is the age of its directory alone: the directory purge
+and the orphan-device teardown (`orphan_device_namespaces`) both skip a
+namespace whose directory is younger than `VOLUME_CREATE_GUARD`. The
+registry record reaches the DB only once the VM runs and `list_vms`
+answers only once `create_vm` returned, so a create that has outlived the
+guard before either happened looks exactly like an orphan to a real
+`reconcile` run from the CLI, which can then remove its directory and its
+devices out from under the daemon. A CLI pass also holds no lock against
+the daemon's own passes (`_pass_lock` is in-process too) and can run
+concurrently with one; that is benign, since purges are idempotent and
+tolerate a directory that vanished mid-pass and markers are written
+exclusively, but it is one more reason to prefer the daemon's pass.
+`reconcile --help` says so; the daemon's own pass (startup, periodic,
+at-GONE) is preferred whenever the daemon is up, and this command is mainly
+for when it is not.
 
 ### First start on an existing node
 

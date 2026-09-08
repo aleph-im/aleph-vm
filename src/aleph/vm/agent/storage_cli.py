@@ -18,11 +18,18 @@ supervisor.
 What this process still cannot see, even with the supervisor reachable: a
 create the daemon is in the middle of. ``reconciler.is_creating()`` is an
 in-process set the running agent populates for the duration of a create; a
-CLI invocation is a separate process and never sees it, so a create that has
-outlived ``VOLUME_CREATE_GUARD`` and has not yet landed in the registry or
-in ``list_vms`` looks exactly like an orphan to a real ``reconcile`` here.
-The daemon's own pass (startup, periodic, at-GONE) is always preferred when
-the daemon is up; this command exists mainly for when it is not.
+CLI invocation is a separate process and never sees it. What protects such
+a create here is only the age of its directory: the directory purge and the
+orphan-device teardown both leave a namespace whose directory is younger
+than ``VOLUME_CREATE_GUARD`` alone, so a create that has outlived the guard
+and has not yet landed in the registry DB or in ``list_vms`` looks exactly
+like an orphan to a real ``reconcile`` here, directory and devices alike.
+A CLI pass also shares no lock with the daemon's own passes and can run
+concurrently with one; that is benign (purges are idempotent and tolerate a
+directory that vanished under them, markers are written exclusively), but
+it is one more reason the daemon's own pass (startup, periodic, at-GONE) is
+always preferred when the daemon is up; this command exists mainly for when
+it is not.
 """
 
 from __future__ import annotations
@@ -96,10 +103,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "Run one reconciler pass against the agent registry (unioned with the supervisor's "
             "list_vms() when it can be reached). This process cannot see a create the daemon is "
             "currently in the middle of: is_creating() is in-process state of the running agent, "
-            "so a create that has outlived VOLUME_CREATE_GUARD and is not yet in the registry or "
-            "list_vms looks like an orphan here and a real pass can remove it. Prefer the daemon's "
-            "own pass (it runs at startup, periodically, and after every GONE) when the daemon is "
-            "up; use this command mainly when it is not."
+            "and only the age of the directory protects such a create here, so a create that has "
+            "outlived VOLUME_CREATE_GUARD and is not yet in the registry DB or list_vms looks like "
+            "an orphan and a real pass can remove its directory and its devices. Prefer the "
+            "daemon's own pass (it runs at startup, periodically, and after every GONE) when the "
+            "daemon is up; use this command mainly when it is not."
         ),
     )
     reconcile_parser.add_argument("--dry-run", action="store_true")

@@ -912,6 +912,27 @@ async def test_a_create_in_flight_keeps_its_devices(pools, registry, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_a_young_directory_keeps_its_devices_without_the_in_process_guard(pools, registry, monkeypatch, tmp_path):  # noqa: F811
+    """What a pass from another process sees of a create in flight: no
+    creating() entry, no registry record yet, no list_vms answer, only a
+    directory younger than VOLUME_CREATE_GUARD. The devices get the same
+    guard the directory purge gives the directory."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    young = volume(pools["pool0"], VM_HASH, "rootfs.btrfs").parent
+    _fake_mapper(monkeypatch, tmp_path, f"{VM_HASH}_rootfs")
+    torn: list[str] = []
+    monkeypatch.setattr(reconciler_module, "teardown_namespace_devices", AsyncMock(side_effect=torn.append))
+
+    await reconcile_now(_app(registry, _supervisor()))
+    assert torn == []
+    assert young.exists()
+
+    _age(young, 10_000)
+    await reconcile_now(_app(registry, _supervisor()))
+    assert torn == [VM_HASH]
+
+
+@pytest.mark.asyncio
 async def test_no_device_is_torn_down_when_the_supervisor_cannot_be_listed(pools, registry, monkeypatch, tmp_path):  # noqa: F811
     """A VM the supervisor would have listed is live; removing its dm device
     takes its disk with it."""
