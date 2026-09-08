@@ -545,7 +545,7 @@ def test_simulate_counts_a_released_vm_as_freed(mocker):
 def test_simulate_judges_disk(mocker):
     # _patch_host only stubs _available_disk_bytes; the per-pool check reads
     # storage_pools directly, so stub it too or it hits the real filesystem.
-    mocker.patch("aleph.vm.agent.capacity.storage_pools.roomiest_pool_free_bytes", return_value=1024 * 1024 * 1024)
+    _patch_pools(mocker, 1024 * 1024 * 1024)
     _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16, disk_bytes=1024 * 1024 * 1024)
 
     verdicts = _manager().simulate([(_HASH_A, _requirements(memory_mib=1024, disk_mib=100_000))])
@@ -588,7 +588,7 @@ def test_simulate_is_cumulative_on_disk_too(mocker):
     10 GiB free, two candidates wanting 6000 MiB each: the first fits, the
     second does not.
     """
-    mocker.patch("aleph.vm.agent.capacity.storage_pools.roomiest_pool_free_bytes", return_value=20 * 1024**3)
+    _patch_pools(mocker, 20 * 1024**3)
     _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16, disk_bytes=10 * 1024**3)
     candidates = [
         (_HASH_A, _requirements(memory_mib=1024, disk_mib=6000)),
@@ -805,7 +805,7 @@ def test_simulate_does_not_credit_disk_back_on_release(mocker):
     """Stopping a VM does not delete its volumes, so the space is still gone.
     Crediting it would make the advisory answer stronger than the enforced one.
     """
-    mocker.patch("aleph.vm.agent.capacity.storage_pools.roomiest_pool_free_bytes", return_value=100 * 1024**3)
+    _patch_pools(mocker, 100 * 1024**3)
     _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16, disk_bytes=10 * 1024**3)
     registry = AgentVmRegistry()
     content = _make_qemu_instance_message(memory=1024)
