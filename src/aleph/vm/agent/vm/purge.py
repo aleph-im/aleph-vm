@@ -86,6 +86,9 @@ def iter_volume_files(
             yield entry
 
 
+_PARTIAL_SUFFIXES = frozenset({".part", ".tmp"})
+
+
 def vm_has_volumes(vm_hash: ItemHash | str) -> bool:
     """True when the VM already owns at least one volume file on disk.
 
@@ -93,8 +96,13 @@ def vm_has_volumes(vm_hash: ItemHash | str) -> bool:
     exist, e.g. host-persistent storage that a failed create must not wipe)
     apart from a fresh create (nothing allocated yet, safe to purge on
     failure).
+
+    A half-written file (``.part``, ``.tmp``) from an earlier attempt is not
+    a volume: the downloader only renames it into place once complete, and
+    counting it would make a fresh create look like a re-create, keeping a
+    record and a directory that hold nothing bootable.
     """
-    return any(iter_volume_files(vm_hash))
+    return any(volume.suffix not in _PARTIAL_SUFFIXES for volume in iter_volume_files(vm_hash))
 
 
 def _held_by_device_mapper(namespace: str, volume: Path) -> bool:

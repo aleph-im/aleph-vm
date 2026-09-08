@@ -172,6 +172,16 @@ def test_vm_has_volumes_true_once_any_volume_exists(pools):
     assert vm_has_volumes(VM_HASH) is True
 
 
+def test_vm_has_volumes_ignores_a_partial_download(pools):
+    """A `.part` left by an interrupted attempt is not a volume: counting it
+    would turn the next fresh create into a re-create, which on failure
+    keeps a record and a directory holding nothing bootable."""
+    _volume(pools["pool0"], VM_HASH, "rootfs.qcow2.part")
+    _volume(pools["pool0"], VM_HASH, "data.btrfs.tmp")
+
+    assert vm_has_volumes(VM_HASH) is False
+
+
 def test_vm_has_volumes_true_for_a_data_volume_on_another_pool(pools):
     """Any volume on any pool counts, not just the rootfs on pool 0."""
     _volume(pools["pool1"], VM_HASH, "data.ext4")
