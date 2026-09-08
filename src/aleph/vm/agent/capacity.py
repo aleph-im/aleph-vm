@@ -122,6 +122,13 @@ class HeldVolume:
 
     ``size_bytes`` is what the file allocates on disk, capped at the size the
     volume declares: a file cannot discount more than the message asks for.
+
+    Allocated bytes, not the declared size, on purpose. Admission demands
+    room for a volume to grow to what it declares, and a fresh create is
+    charged that in full even though its new file starts sparse. Charging a
+    recreate the declared size minus what its file already occupies is the
+    same rule, not a stricter one; crediting the declared size instead would
+    admit a VM whose disk has nowhere left to grow.
     """
 
     path: Path
@@ -241,6 +248,15 @@ def held_volumes(vm_hash: ItemHash | str, volumes: list[DeclaredVolume]) -> list
 
     Each hit is capped at the size its volume declares, so a file that grew
     past its declaration cannot credit the difference either.
+
+    One residual case is matched on purpose: a volume matches its stem under
+    every suffix its kind can take, so a file left in another format (a
+    ``data.qcow2`` where this node now allocates ``data.ext4``, after a
+    hypervisor-default or storage-layer change) discounts a volume the
+    create will allocate afresh. The relaxation is bounded by that volume's
+    declared size, and placement checks real free space at allocation, so
+    such a create fails late rather than over-committing. Deriving the one
+    exact filename belongs with the storage layer's naming, not here.
     """
     existing = existing_volume_files(vm_hash)
     held: list[HeldVolume | None] = []
