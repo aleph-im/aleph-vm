@@ -24,15 +24,17 @@
 //!
 //! The fix, encoded here:
 //!   * Each scheme is prefixed with a distinct domain constant (with a trailing
-//!     separator byte), so the two namespaces can never collide.
+//!     separator byte), so the namespaces can never collide.
 //!   * The fresh scheme hashes the SERVED public key together with the nonce, so
 //!     a fresh report is bound to the exact TLS channel it was produced for and
 //!     cannot be relayed against a different key.
 //!   * The raw nonce is never placed into `report_data`; it is always hashed
 //!     under a domain, so no caller-controlled bytes land in the report verbatim.
 //!
-//! Both schemes write `SHA-384(...)` (48 bytes) into the first 48 bytes of the
-//! 64-byte field and leave the remaining 16 bytes zero.
+//! Both `report_data` schemes write `SHA-384(...)` (48 bytes) into the first
+//! 48 bytes of the 64-byte field and leave the remaining 16 bytes zero. The
+//! GPU nonce scheme below is not a `report_data` at all: it is the 32-byte
+//! SPDM nonce the GPU signs, derived under its own domain.
 
 use sha2::{Digest, Sha256, Sha384};
 

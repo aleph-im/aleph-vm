@@ -245,9 +245,12 @@ it is trusted beyond what the measured image implies, and the client never
 skips a cryptographic check because a claim says it passed.
 
 Errors: 400 on an over-long or non-hex nonce (same bound as the SNP route),
-503 with `{"error": "gpu not attested"}` when boot-time verification did not
-complete (unreachable in practice, since init powers off), 500 with a bare
-message when NVML fails; detail stays in the guest log.
+404 on a runtime without GPU attestation (the agent was started without the
+GPU flags), 503 with `{"error": "gpu attestation busy"}` and `Retry-After`
+when another collection has held the GPU for more than ten seconds, 500 with
+a bare message when the collector fails; detail stays in the guest log. There
+is no "not attested" state to report: init powers the guest off when
+boot-time verification fails, so the agent never starts.
 
 The existing `AttestationReport` and the `/.well-known/attestation` response
 are untouched. A separate route keeps older clients parsing exactly what they
