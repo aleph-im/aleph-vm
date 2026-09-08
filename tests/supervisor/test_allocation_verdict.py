@@ -1,6 +1,7 @@
 """The immediate answer to a plan push: what we take, drop, refuse or keep."""
 
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -238,8 +239,13 @@ def test_compute_verdict_drives_the_real_capacity_manager(mocker):
     )
     mocker.patch("aleph.vm.agent.capacity.psutil.cpu_count", return_value=16)
     mocker.patch.object(CapacityManager, "_available_disk_bytes", return_value=100 * 1024**3)
-    # The per-volume check reads the pools directly, not through _available_disk_bytes.
-    mocker.patch("aleph.vm.agent.capacity.storage_pools.roomiest_pool_free_bytes", return_value=100 * 1024**3)
+    # The per-volume check walks the pools directly, not _available_disk_bytes,
+    # and asks each what it could reclaim. Neither exists on a CI runner.
+    mocker.patch(
+        "aleph.vm.agent.capacity.storage_pools.eligible_pool_free_bytes",
+        return_value=[(SimpleNamespace(path=Path("/pool0"), index=0), 100 * 1024**3)],
+    )
+    mocker.patch("aleph.vm.agent.capacity.reclaimable_bytes", return_value=0)
     supervisor = SimpleNamespace(get_host_info=AsyncMock(return_value=HostInfo(gpu_inventory=[], available_gpus=[])))
     capacity = CapacityManager(supervisor, AgentVmRegistry())
 
