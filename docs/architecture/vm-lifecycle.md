@@ -136,7 +136,9 @@ Admission happens in two layers that never overlap in what they check:
   own early registry record (recorded before the spec build, to make
   owner-auth answerable during a slow confidential download) is excluded
   from the committed memory/vCPU sums via `exclude_vm_hash`, or a create
-  would count its own request against itself. GPU admission is a separate
+  would count its own request against itself. Cache downloads are admitted
+  separately, against `CACHE_BUDGET`, inside the downloader itself (see
+  [storage.md](storage.md)). GPU admission is a separate
   reservation ledger (`CapacityManager.holds`, keyed by concrete `pci_host`)
   with a short-lived hold/resolve two-step: `reserve_gpus` (used by the same
   dry-run endpoint) holds a card for a user for `RESERVATION_TTL_SECONDS`,
@@ -423,8 +425,13 @@ path); `purge_vm_storage` removes those directories, the confidential
 session directory and the SNP/V-PROGRAM staging directory. A `.btrfs`
 volume whose device-mapper target is still present is refused with an
 error rather than unlinked (the loop device would pin the inode and
-`create_devmapper` would skip the rebuild), until dm teardown on stop
-exists.
+`create_devmapper` would skip the rebuild). That refusal is a backstop
+rather than a dead end: `retire_vm` tears the VM's dm snapshots and loop
+devices down before the storage pass (`teardown_vm_devices`, from the
+message's volumes, or `teardown_namespace_devices` off `/dev/mapper` when
+no record is left), and the reconciler does the same for every namespace
+no live VM owns before its walk, so a refused directory is reclaimed on
+the pass after its devices go.
 
 What `DeleteVm` does: stop the VM (tearing down its network state exactly
 as `StopVm` would, and releasing every handle the daemon holds on the VM's
