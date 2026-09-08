@@ -57,8 +57,15 @@ struct Cli {
 
     /// Path to the per-GPU claims JSON NVIDIA's local verifier wrote at boot.
     /// Enables the GPU attestation route; absent on runtimes without a GPU.
-    /// Requires --gpu-collector.
-    #[arg(long, requires = "gpu_collector")]
+    /// Requires --gpu-collector. Rejected together with --insecure-plain-http:
+    /// GPU evidence is bound to the served TLS key, which plain mode does
+    /// not have, so serving it there would hand out unbound evidence over an
+    /// unauthenticated channel.
+    #[arg(
+        long,
+        requires = "gpu_collector",
+        conflicts_with = "insecure_plain_http"
+    )]
     gpu_claims: Option<std::path::PathBuf>,
 
     /// Command line that collects GPU evidence and prints nvattest's
@@ -66,6 +73,19 @@ struct Cli {
     /// argument. Requires --gpu-claims.
     #[arg(long, requires = "gpu_claims")]
     gpu_collector: Option<String>,
+}
+
+/// The boot claims are the `claims` array init cut out of NVIDIA's verifier
+/// output with a text tool. Requiring a non-empty JSON array here catches a
+/// broken extraction at start-up, where the guest log shows it, instead of
+/// serving whatever matched to every client.
+fn parse_boot_claims(raw: &[u8]) -> Result<serde_json::Value> {
+    let claims: serde_json::Value = serde_json::from_slice(raw).context("not JSON")?;
+    match claims.as_array() {
+        Some(array) if !array.is_empty() => Ok(claims),
+        Some(_) => anyhow::bail!("the claims array is empty"),
+        None => anyhow::bail!("expected a JSON array of per-GPU claims"),
+    }
 }
 
 /// Normalize and validate a `--owner` value: lowercase it, then require it is
@@ -139,8 +159,7 @@ async fn main() -> Result<()> {
         (Some(path), Some(command)) => {
             let raw = std::fs::read(path)
                 .with_context(|| format!("cannot read --gpu-claims {}", path.display()))?;
-            let boot_claims: serde_json::Value =
-                serde_json::from_slice(&raw).context("--gpu-claims is not JSON")?;
+            let boot_claims = parse_boot_claims(&raw).context("--gpu-claims")?;
             let source = CollectorProcess::from_command_line(command).context("--gpu-collector")?;
             info!(program = %source.program, "GPU attestation route enabled");
             Some(Arc::new(GpuState {
@@ -252,5 +271,36 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn gpu_flags_come_together_and_never_with_plain_http() {
+        let both = [
+            "--gpu-claims",
+            "/run/claims.json",
+            "--gpu-collector",
+            "/bin/collect",
+        ];
+        let cli = Cli::parse_from(["aleph-attest-agent"].into_iter().chain(both));
+        assert!(cli.gpu_claims.is_some() && cli.gpu_collector.is_some());
+        assert!(Cli::try_parse_from(["aleph-attest-agent", "--gpu-claims", "/run/c"]).is_err());
+        assert!(Cli::try_parse_from(["aleph-attest-agent", "--gpu-collector", "/bin/c"]).is_err());
+        assert!(
+            Cli::try_parse_from(
+                ["aleph-attest-agent", "--insecure-plain-http"]
+                    .into_iter()
+                    .chain(both)
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn boot_claims_must_be_a_non_empty_array() {
+        assert!(parse_boot_claims(br#"[{"measres": "Success"}]"#).is_ok());
+        assert!(parse_boot_claims(b"[]").is_err());
+        assert!(parse_boot_claims(b"null").is_err());
+        assert!(parse_boot_claims(br#"{"measres": "Success"}"#).is_err());
+        assert!(parse_boot_claims(b"not json").is_err());
     }
 }
