@@ -533,12 +533,32 @@ async def remove_devmapper(namespace: str, volume_name: str) -> None:
     ``create_devmapper`` returns early while the dm device exists (which is
     what ``purge._held_by_device_mapper`` guards against).
     """
+    if not NAMESPACE_PATTERN.match(namespace):
+        logger.error("Refusing device teardown for an implausible VM hash: %r", namespace)
+        return
     mapped_name = device_name_for(namespace, volume_name)
     if mapped_name is None:
-        logger.error("Refusing to remove an implausible device-mapper name: %r/%r", namespace, volume_name)
+        logger.error(
+            "Refusing device teardown of VM %s for a volume name dmsetup could not have created: %r",
+            namespace,
+            volume_name,
+        )
         return
 
     mapper = Path(DEVICE_MAPPER_DIRECTORY)
+    mount_path = MOUNT_ROOT / mapped_name
+    if mount_path.is_mount():
+        # resize_and_tune_file_system mounts the fresh snapshot here to grow
+        # its filesystem and unmounts it on the way out, with nothing to
+        # guarantee the unmount if the agent dies in between. A mount that
+        # outlived it keeps the device busy, so "dmsetup remove --retry"
+        # would fail the same way on every attempt and the teardown could
+        # never succeed. Best effort: if the unmount fails, the removal
+        # below reports the busy device.
+        try:
+            await run_in_subprocess(["umount", str(mount_path)])
+        except Exception:
+            logger.warning("Could not unmount %s before removing its device", mount_path, exc_info=True)
     if (mapper / mapped_name).is_block_device():
         # --retry: udev and blkid settle on the device for a moment after the
         # VM exits, and a first "device or resource busy" must not strand it.
@@ -549,7 +569,6 @@ async def remove_devmapper(namespace: str, volume_name: str) -> None:
     if backing_file is not None:
         await detach_loop_devices(backing_file)
 
-    mount_path = MOUNT_ROOT / mapped_name
     if mount_path.is_dir() and not mount_path.is_mount():
         try:
             mount_path.rmdir()

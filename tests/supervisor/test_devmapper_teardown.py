@@ -161,3 +161,44 @@ async def test_remove_devmapper_refuses_a_name_dmsetup_could_not_have_created(
     await remove_devmapper(namespace, volume_name)
 
     assert commands == []
+
+
+@pytest.mark.asyncio
+async def test_remove_devmapper_unmounts_a_leftover_resize_mount_first(pools, mocker, monkeypatch, tmp_path):  # noqa: F811
+    """An agent that died between the resize mount and its umount leaves the
+    snapshot mounted; dmsetup remove would then fail busy on every attempt."""
+    volume(pools["pool0"], VM_HASH, "data.btrfs")
+    mapped = Path("/dev/mapper") / f"{VM_HASH}_data"
+    _present_devices(monkeypatch, {mapped}, [])
+    mount_root = tmp_path / "mnt"
+    mount_path = mount_root / f"{VM_HASH}_data"
+    mount_path.mkdir(parents=True)
+    monkeypatch.setattr(storage_module, "MOUNT_ROOT", mount_root)
+    mounted = {mount_path}
+    monkeypatch.setattr(Path, "is_mount", lambda self: self in mounted)
+    calls: list[list[str]] = []
+
+    async def fake_run(command, check=True, stdin_input=None):
+        calls.append([str(c) for c in command])
+        if command[0] == "umount":
+            mounted.discard(Path(command[1]))
+        return b""
+
+    mocker.patch.object(storage_module, "run_in_subprocess", side_effect=fake_run)
+
+    await remove_devmapper(VM_HASH, "data")
+
+    assert calls[:2] == [["umount", str(mount_path)], ["dmsetup", "remove", "--retry", f"{VM_HASH}_data"]]
+    assert not mount_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_remove_devmapper_does_not_unmount_what_is_not_mounted(pools, commands, monkeypatch, tmp_path):  # noqa: F811
+    volume(pools["pool0"], VM_HASH, "data.btrfs")
+    mapped = Path("/dev/mapper") / f"{VM_HASH}_data"
+    _present_devices(monkeypatch, {mapped}, [])
+    monkeypatch.setattr(storage_module, "MOUNT_ROOT", tmp_path / "mnt")
+
+    await remove_devmapper(VM_HASH, "data")
+
+    assert not any(c[0] == "umount" for c in commands)
