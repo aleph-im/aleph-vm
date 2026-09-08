@@ -72,9 +72,12 @@ impl TcbStatus {
 /// latter is routine QE software mitigation) and rejects everything else.
 /// `ConfigurationNeeded` is rejected by default because it typically flags
 /// BIOS state such as SMT. `Revoked` is never acceptable: that rejection is
-/// enforced in `evaluate_tcb` regardless of `accepted_statuses`, so putting
-/// it in the set has no effect. That asymmetry with the SNP override, which
-/// admits any concrete named TCB, is deliberate.
+/// enforced in `check_policy` regardless of `accepted_statuses`, so putting
+/// it in the set has no effect. That asymmetry with the SEV-SNP side is
+/// deliberate: there the aleph-rs SDK's `--min-tcb` floor override
+/// (`aleph_sdk::attest::TcbFloorOverride`) admits any concrete named TCB,
+/// because an SNP TCB is a set of version numbers with no Intel-style
+/// "keys compromised" verdict attached.
 #[derive(Debug, Clone)]
 pub struct TdxTcbPolicy {
     pub accepted_statuses: BTreeSet<TcbStatus>,
@@ -283,7 +286,19 @@ fn parse_rfc3339_z(s: &str) -> Result<SystemTime> {
     };
     let (year, month, day) = (field(0..4)?, field(5..7)?, field(8..10)?);
     let (hour, minute, second) = (field(11..13)?, field(14..16)?, field(17..19)?);
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => bail!("date out of range in {s:?}"),
+    };
+    if !(1..=days_in_month).contains(&day)
+        || !(0..=23).contains(&hour)
+        || !(0..=59).contains(&minute)
+        || !(0..=59).contains(&second)
+    {
         bail!("date out of range in {s:?}");
     }
     // days_from_civil (Howard Hinnant): days since the unix epoch.
@@ -360,6 +375,29 @@ fn hex_fixed<const N: usize>(what: &str, s: &str) -> Result<[u8; N]> {
         .map_err(|_| anyhow::anyhow!("{what} has the wrong length, expected {N} bytes"))
 }
 
+/// The TCB levels in the order the walk consumes them: highest first, by
+/// SGX component SVNs (lexicographic), then PCE SVN, then TDX component SVNs.
+///
+/// Intel publishes the levels in this order already, but the walk must not
+/// depend on it: both DCAP references sort before walking (Intel's
+/// `TcbLevel::operator>` over a sorted container, dcap-qvl's
+/// `canonicalize_tcb_levels`), and the first satisfied level of an
+/// unsorted list could carry a better status than a higher level the
+/// platform also satisfies.
+fn canonical_levels(tcb_info: &TcbInfo) -> Vec<&TcbLevel> {
+    let key = |level: &TcbLevel| -> (Vec<u8>, u16, Vec<u8>) {
+        (
+            level.tcb.sgxtcbcomponents.iter().map(|c| c.svn).collect(),
+            level.tcb.pcesvn,
+            level.tcb.tdxtcbcomponents.iter().map(|c| c.svn).collect(),
+        )
+    };
+    let mut levels: Vec<&TcbLevel> = tcb_info.tcb_levels.iter().collect();
+    // Stable: levels the key cannot separate keep their document order.
+    levels.sort_by_cached_key(|level| std::cmp::Reverse(key(level)));
+    levels
+}
+
 /// Walk the TCB levels (highest first) to the platform's actual status.
 ///
 /// A level is satisfied when every one of the platform's SGX component SVNs
@@ -370,7 +408,7 @@ fn walk_platform_tcb(
     platform: &PckPlatform,
     tee_tcb_svn: &[u8; 16],
 ) -> Result<(TcbStatus, Vec<String>)> {
-    for level in &tcb_info.tcb_levels {
+    for level in canonical_levels(tcb_info) {
         if level.tcb.sgxtcbcomponents.len() != 16 || level.tcb.tdxtcbcomponents.len() != 16 {
             bail!("TCB level does not carry 16 SGX and 16 TDX components");
         }
@@ -464,6 +502,10 @@ fn tdx_module_status(
     let Some(levels) = identity_levels else {
         return Ok(None);
     };
+    // Highest ISVSVN first, like the platform walk: never trust the
+    // document order.
+    let mut levels: Vec<&TdxModuleTcbLevel> = levels.iter().collect();
+    levels.sort_by_key(|level| std::cmp::Reverse(level.tcb.isvsvn));
     for level in levels {
         if module_svn >= level.tcb.isvsvn {
             return Ok(Some((
@@ -518,7 +560,11 @@ fn qe_identity_status(qe: &QeIdentity, qe_report: &[u8; 384]) -> Result<(TcbStat
     }
 
     let isv_svn = u16::from_le_bytes([qe_report[QE_ISV_SVN], qe_report[QE_ISV_SVN + 1]]);
-    for level in &qe.tcb_levels {
+    // Highest ISVSVN first, like the platform walk: never trust the
+    // document order.
+    let mut levels: Vec<&QeTcbLevel> = qe.tcb_levels.iter().collect();
+    levels.sort_by_key(|level| std::cmp::Reverse(level.tcb.isvsvn));
+    for level in levels {
         if isv_svn >= level.tcb.isvsvn {
             return Ok((
                 TcbStatus::parse(&level.tcb_status)?,
@@ -692,6 +738,106 @@ mod tests {
         );
         assert!(parse_rfc3339_z("2025-06-19 10:16:03").is_err());
         assert!(parse_rfc3339_z("2025-13-19T10:16:03Z").is_err());
+        // Time fields and day-of-month are range-checked too: a lenient
+        // parser would silently roll these into a neighbouring timestamp.
+        assert!(parse_rfc3339_z("2025-06-19T24:00:00Z").is_err());
+        assert!(parse_rfc3339_z("2025-06-19T10:60:00Z").is_err());
+        assert!(parse_rfc3339_z("2025-06-19T10:16:60Z").is_err());
+        assert!(parse_rfc3339_z("2025-02-30T00:00:00Z").is_err());
+        assert!(parse_rfc3339_z("2025-04-31T00:00:00Z").is_err());
+        assert!(parse_rfc3339_z("2024-02-29T23:59:59Z").is_ok());
+    }
+
+    #[test]
+    fn rejects_not_yet_valid_tcb_info() {
+        // One second before the TCB Info issueDate (2025-06-19T10:16:03Z):
+        // the other direction of the document window.
+        let quote = parse_tdx_quote(QUOTE_V4).unwrap();
+        let collateral = TdxCollateral::from_json(COLLATERAL_V4).unwrap();
+        let early = UNIX_EPOCH + Duration::from_secs(1_750_328_162);
+        let err = evaluate_tcb(
+            &quote,
+            &collateral,
+            &pck_leaf(QUOTE_V4),
+            early,
+            &TdxTcbPolicy::default(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("not yet valid"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_tcb_info_under_an_impostor_chain() {
+        // A TCB Info signed by a chain that does not lead to the pinned
+        // Intel root: same subject names, fresh keys. verify_signer_chain
+        // is what gives the document signatures their meaning, so it needs
+        // its own adversarial case, mirroring the PCK chain's foreign-root
+        // test in verify.rs.
+        use openssl::asn1::Asn1Time;
+        use openssl::ec::{EcGroup, EcKey};
+        use openssl::nid::Nid;
+        use openssl::pkey::PKey;
+        use openssl::x509::{X509Builder, X509NameBuilder};
+
+        fn name(cn: &str) -> openssl::x509::X509Name {
+            let mut b = X509NameBuilder::new().unwrap();
+            b.append_entry_by_text("CN", cn).unwrap();
+            b.build()
+        }
+        fn cert(
+            subject: &str,
+            issuer: &str,
+            key: &PKey<openssl::pkey::Private>,
+            signer: &PKey<openssl::pkey::Private>,
+        ) -> X509 {
+            let mut b = X509Builder::new().unwrap();
+            b.set_subject_name(&name(subject)).unwrap();
+            b.set_issuer_name(&name(issuer)).unwrap();
+            b.set_pubkey(key).unwrap();
+            b.set_not_before(&Asn1Time::from_unix(1_700_000_000).unwrap())
+                .unwrap();
+            b.set_not_after(&Asn1Time::from_unix(1_900_000_000).unwrap())
+                .unwrap();
+            b.sign(signer, MessageDigest::sha256()).unwrap();
+            b.build()
+        }
+        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+        let root_key = PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap();
+        let signer_key = PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap();
+        let impostor_root = cert(
+            "Intel SGX Root CA",
+            "Intel SGX Root CA",
+            &root_key,
+            &root_key,
+        );
+        let impostor_signer = cert(
+            "Intel SGX TCB Signing",
+            "Intel SGX Root CA",
+            &signer_key,
+            &root_key,
+        );
+        let mut pem = String::from_utf8(impostor_signer.to_pem().unwrap()).unwrap();
+        pem.push_str(&String::from_utf8(impostor_root.to_pem().unwrap()).unwrap());
+
+        let quote = parse_tdx_quote(QUOTE_V4).unwrap();
+        let mut collateral = TdxCollateral::from_json(COLLATERAL_V4).unwrap();
+        collateral.tcb_info_issuer_chain = pem;
+        let err = format!(
+            "{:#}",
+            evaluate_tcb(
+                &quote,
+                &collateral,
+                &pck_leaf(QUOTE_V4),
+                now_v4(),
+                &TdxTcbPolicy::default(),
+            )
+            .unwrap_err()
+        );
+        assert!(
+            err.contains("not signed by the pinned Intel root"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -815,6 +961,47 @@ mod tests {
     }
 
     #[test]
+    fn walk_does_not_trust_document_order() {
+        // Two levels the platform satisfies, listed lowest first, where the
+        // lower one carries the better status. Both DCAP references sort
+        // the levels highest-first before walking (Intel's TcbLevel
+        // operator>, dcap-qvl's canonicalize_tcb_levels), so the higher
+        // level's OutOfDate is the answer, not the first match in the
+        // document.
+        let quote = parse_tdx_quote(QUOTE_V4).unwrap();
+        let platform = parse_pck_platform(&pck_leaf(QUOTE_V4)).unwrap();
+        let zeros = vec![serde_json::json!({"svn": 0}); 16];
+        let tcb_info: TcbInfo = serde_json::from_value(serde_json::json!({
+            "id": "TDX",
+            "version": 3,
+            "issueDate": "2025-06-19T10:16:03Z",
+            "nextUpdate": "2025-07-19T10:16:03Z",
+            "fmspc": "b0c06f000000",
+            "tcbLevels": [
+                {
+                    "tcb": {
+                        "sgxtcbcomponents": zeros,
+                        "tdxtcbcomponents": zeros,
+                        "pcesvn": 0
+                    },
+                    "tcbStatus": "UpToDate"
+                },
+                {
+                    "tcb": {
+                        "sgxtcbcomponents": zeros,
+                        "tdxtcbcomponents": zeros,
+                        "pcesvn": 1
+                    },
+                    "tcbStatus": "OutOfDate"
+                }
+            ]
+        }))
+        .unwrap();
+        let (status, _) = walk_platform_tcb(&tcb_info, &platform, &quote.body.tee_tcb_svn).unwrap();
+        assert_eq!(status, TcbStatus::OutOfDate);
+    }
+
+    #[test]
     fn policy_rejects_out_of_date_but_can_accept_it() {
         use TcbStatus::*;
         assert!(
@@ -837,5 +1024,16 @@ mod tests {
             OutOfDateConfigurationNeeded
         );
         assert_eq!(UpToDate.converge(SwHardeningNeeded), SwHardeningNeeded);
+        // The rule is deliberately not mirrored: Intel's convergeTcbStatuses
+        // (EvaluateTcb.cpp) only reacts to an OutOfDate or Revoked
+        // component, so an out-of-date platform under a
+        // configuration-needed component stays OutOfDate. dcap-qvl's
+        // converge_with_component agrees.
+        assert_eq!(OutOfDate.converge(ConfigurationNeeded), OutOfDate);
+        assert_eq!(
+            OutOfDate.converge(ConfigurationAndSwHardeningNeeded),
+            OutOfDate
+        );
+        assert_eq!(SwHardeningNeeded.converge(Revoked), Revoked);
     }
 }
