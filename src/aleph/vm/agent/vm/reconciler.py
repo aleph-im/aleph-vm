@@ -393,6 +393,14 @@ def _part_roots() -> Iterator[Path]:
     A namespace a create holds is skipped whole: a migration import streams
     multi-GB disks into it for far longer than VOLUME_CREATE_GUARD, and its
     ``.part`` files belong to that transfer however old they look.
+
+    Only the creating set is consulted, not the live set: a running VM's
+    directory is walked. That is sound only because every path that
+    downloads into a namespace (the create paths, a reinstall's volume
+    rebuild, a migration import) runs under ``creating()``. A new download
+    path that streams into the directory of a running VM outside the guard
+    would have its ``.part`` files removed from under it once they outlive
+    the guard.
     """
     for cache in (settings.RUNTIME_CACHE, settings.CODE_CACHE, settings.DATA_CACHE, settings.MESSAGE_CACHE):
         if cache:
