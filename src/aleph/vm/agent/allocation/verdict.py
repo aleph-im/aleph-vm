@@ -71,10 +71,21 @@ def build_plan(body: dict, *, now: datetime) -> tuple[AllocationPlan, dict[str, 
 
     Rejected entries are returned separately: they are answered in the response
     and never enter the plan, so nothing downstream can act on them.
+
+    A bad entry is data to reject, but a body we cannot read raises. An empty
+    plan is a real instruction, the one that stops everything this node runs,
+    so a shape we cannot make sense of must never be read as one: ``vms: 5``
+    and ``vms: null`` used to raise a bare TypeError here, and ``vms: "abc"``
+    was quietly walked character by character into a plan of nothing at all.
+    The list has to be there and be a list; the handler answers 400.
     """
+    vms = body.get("vms") if isinstance(body, dict) else None
+    if not isinstance(vms, list):
+        msg = "plan body has no 'vms' list"
+        raise ValueError(msg)
     entries: dict[ItemHash, PlannedVm] = {}
     rejected: dict[str, dict] = {}
-    for entry in body.get("vms", []):
+    for entry in vms:
         # This is the validation boundary for a body the scheduler controls, so
         # a bad entry is data to reject, never an exception: one unusable hash
         # must not take down the whole push.

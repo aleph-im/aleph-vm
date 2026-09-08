@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
 from aleph_message.models import ItemHash
 from test_supervisor_translate import _make_qemu_instance_message
 
@@ -178,6 +179,22 @@ def test_a_different_plan_produces_a_different_plan_id():
     second, _ = build_plan({"vms": [{"item_hash": str(HASH_B)}]}, now=NOW)
 
     assert first.plan_id != second.plan_id
+
+
+@pytest.mark.parametrize("body", [{"vms": 5}, {"vms": None}, {"vms": "abc"}, {}, []])
+def test_a_body_we_cannot_read_is_refused_not_read_as_an_empty_plan(body):
+    """An empty plan stops everything this node runs, so a malformed body must
+    not resolve to one. The string case is the dangerous one: it was walked
+    character by character and answered as a plan of nothing at all."""
+    with pytest.raises(ValueError, match="vms"):
+        build_plan(body, now=NOW)
+
+
+def test_an_explicitly_empty_plan_is_still_accepted():
+    """The scheduler wanting nothing here is a real push, not a malformed one."""
+    plan, rejected = build_plan({"vms": []}, now=NOW)
+
+    assert plan.entries == {} and rejected == {}
 
 
 def test_a_hash_refused_once_does_not_enter_the_plan_on_a_second_entry():
