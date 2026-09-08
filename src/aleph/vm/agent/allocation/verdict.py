@@ -85,9 +85,17 @@ def build_plan(body: dict, *, now: datetime) -> tuple[AllocationPlan, dict[str, 
             logger.warning("Refusing plan entry with an unusable item_hash: %r", raw_hash)
             rejected[str(raw_hash)] = {"code": "invalid_message", "message": "unusable item_hash"}
             continue
+        if vm_hash in rejected:
+            # The same hash pushed twice, refused once. A later entry must not
+            # talk the plan into carrying a hash the answer says was refused.
+            logger.warning("Ignoring a repeat entry for %s: already refused by this push", vm_hash)
+            continue
         outcome, verified, reason = verify_entry(entry)
         if outcome is VerificationOutcome.REJECTED:
             rejected[vm_hash] = {"code": "invalid_message", "message": reason}
+            # The other order of the same duplicate: an earlier entry may
+            # already have put this hash in the plan.
+            entries.pop(vm_hash, None)
             continue
         entries[vm_hash] = PlannedVm(vm_hash=vm_hash, verified=verified)
     plan_id = compute_plan_id([str(h) for h in entries], [str(h) for h in rejected])

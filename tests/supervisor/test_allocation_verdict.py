@@ -180,6 +180,20 @@ def test_a_different_plan_produces_a_different_plan_id():
     assert first.plan_id != second.plan_id
 
 
+def test_a_hash_refused_once_does_not_enter_the_plan_on_a_second_entry():
+    """A duplicate hash used to land in both halves of the answer, telling the
+    scheduler the same VM was refused and pending at once, and the plan then
+    carried an entry the answer had refused."""
+    refused_first = {"vms": [{"item_hash": str(HASH_A), "message": "not-an-object"}, {"item_hash": str(HASH_A)}]}
+    refused_second = {"vms": [{"item_hash": str(HASH_A)}, {"item_hash": str(HASH_A), "message": "not-an-object"}]}
+
+    for body in (refused_first, refused_second):
+        plan, rejected = build_plan(body, now=NOW)
+
+        assert HASH_A in rejected
+        assert list(plan.entries) == []
+
+
 def test_swapping_which_half_a_hash_lands_in_changes_the_plan_id():
     """One merged sorted list gave the same identity to a push that planned A
     and refused B as to one that planned B and refused A."""
