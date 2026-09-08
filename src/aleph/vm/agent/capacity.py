@@ -46,6 +46,8 @@ class ResourceRequirements:
     memory_mib: int
     disk_mib: int
     max_volume_mib: int = 0
+    # The memory bucket, from is_instance_bucket: True for a V-PROGRAM even
+    # though it is not an InstanceContent.
     is_instance: bool = False
     gpu_device_ids: list[str] = field(default_factory=list)
 
@@ -77,7 +79,7 @@ def is_instance_bucket(content: ExecutableContent) -> bool:
 
 def requirements_from_message(content: ExecutableContent) -> ResourceRequirements:
     """Extract the resources a message requests into a message-free DTO."""
-    is_instance = isinstance(content, InstanceContent)
+    is_instance = is_instance_bucket(content)
     volume_sizes_mib: list[int] = []
     if isinstance(content, InstanceContent) and content.rootfs:
         volume_sizes_mib.append(content.rootfs.size_mib)
@@ -264,7 +266,7 @@ class CapacityManager:
 
     def simulate(
         self,
-        candidates: list[tuple[ItemHash, ResourceRequirements, bool]],
+        candidates: list[tuple[ItemHash, ResourceRequirements]],
         *,
         releasing: frozenset[ItemHash] = frozenset(),
         available_gpus: list[GpuDevice] | None = None,
@@ -312,14 +314,8 @@ class CapacityManager:
         allocate C onto B's card" is answered no even though doing it in that
         order would work.
 
-        The third element of a candidate is the caller's memory-bucket choice,
-        NOT ResourceRequirements.is_instance. The two disagree for V-PROGRAMs:
-        requirements_from_message reports is_instance=False (the content is not
-        an InstanceContent) while a V-PROGRAM is committed to the instance
-        bucket, which is what _committed_resources and _admit both do. Pass
-        is_instance_bucket(content) rather than restating the rule.
         """
-        candidate_hashes = {vm_hash for vm_hash, _, _ in candidates}
+        candidate_hashes = {vm_hash for vm_hash, _ in candidates}
         committed_instance, committed_program, committed_vcpus = self._committed_resources(candidate_hashes)
         for vm_hash in releasing:
             if vm_hash in candidate_hashes:
@@ -342,7 +338,7 @@ class CapacityManager:
 
         verdicts: list[AdmissionVerdict] = []
         committed_disk = 0
-        for vm_hash, requirements, is_instance in candidates:
+        for vm_hash, requirements in candidates:
             refusal: tuple[str, str] | None = None
             try:
                 self._check_against(
@@ -350,7 +346,7 @@ class CapacityManager:
                     vcpus=requirements.vcpus,
                     disk_mib=requirements.disk_mib,
                     max_volume_mib=requirements.max_volume_mib,
-                    is_instance=is_instance,
+                    is_instance=requirements.is_instance,
                     committed_instance_memory_mib=committed_instance,
                     committed_program_memory_mib=committed_program,
                     committed_vcpus=committed_vcpus,
@@ -380,7 +376,7 @@ class CapacityManager:
                     committed_program += kept[1]
                     committed_vcpus += kept[2]
                 continue
-            if is_instance:
+            if requirements.is_instance:
                 committed_instance += requirements.memory_mib
             else:
                 committed_program += requirements.memory_mib

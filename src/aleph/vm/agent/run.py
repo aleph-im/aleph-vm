@@ -434,10 +434,6 @@ def _admit(capacity: CapacityManager, content: ExecutableContent, vm_hash: ItemH
     creates the volume files, so a disk check after it would measure space this
     VM has already taken. Refusing here also means a host with no room never
     pays for the download.
-
-    The memory bucket comes from is_instance_bucket rather than from
-    requirements_from_message, which reports is_instance=False for a V-PROGRAM
-    because the content is not an InstanceContent.
     """
     requirements = requirements_from_message(content)
     capacity.check_capacity(
@@ -445,7 +441,7 @@ def _admit(capacity: CapacityManager, content: ExecutableContent, vm_hash: ItemH
         vcpus=requirements.vcpus,
         disk_mib=requirements.disk_mib,
         max_volume_mib=requirements.max_volume_mib,
-        is_instance=is_instance_bucket(content),
+        is_instance=requirements.is_instance,
         exclude_vm_hash=vm_hash,
     )
 

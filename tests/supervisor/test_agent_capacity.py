@@ -483,9 +483,11 @@ def test_available_disk_bytes_is_the_pooled_aggregate(mocker):
 # ── simulate: batch admission for a whole plan ─────────────────────────────
 
 
-def _requirements(*, memory_mib: int, vcpus: int = 1, disk_mib: int = 0) -> ResourceRequirements:
+def _requirements(
+    *, memory_mib: int, vcpus: int = 1, disk_mib: int = 0, is_instance: bool = True
+) -> ResourceRequirements:
     return ResourceRequirements(
-        vcpus=vcpus, memory_mib=memory_mib, disk_mib=disk_mib, max_volume_mib=disk_mib, is_instance=True
+        vcpus=vcpus, memory_mib=memory_mib, disk_mib=disk_mib, max_volume_mib=disk_mib, is_instance=is_instance
     )
 
 
@@ -501,9 +503,9 @@ def test_simulate_is_cumulative(mocker):
     mocker.patch.object(settings, "PROGRAM_MEMORY_RESERVED_MIB", 8192)
     _patch_host(mocker, memory_bytes=48 * 1024 * 1024 * 1024, cores=16)
     candidates = [
-        (_HASH_A, _requirements(memory_mib=16384), True),
-        (_HASH_B, _requirements(memory_mib=16384), True),
-        (_HASH_C, _requirements(memory_mib=16384), True),
+        (_HASH_A, _requirements(memory_mib=16384)),
+        (_HASH_B, _requirements(memory_mib=16384)),
+        (_HASH_C, _requirements(memory_mib=16384)),
     ]
 
     verdicts = _manager().simulate(candidates)
@@ -526,7 +528,7 @@ def test_simulate_counts_a_released_vm_as_freed(mocker):
     content = _make_qemu_instance_message(memory=16384)
     registry.record(_HASH_B, message=content, original=content, persistent=True)
     manager = _manager(registry=registry)
-    candidate = (_HASH_C, _requirements(memory_mib=16384), True)
+    candidate = (_HASH_C, _requirements(memory_mib=16384))
 
     assert manager.simulate([candidate])[0].accepted is False
     assert manager.simulate([candidate], releasing=frozenset({_HASH_B}))[0].accepted is True
@@ -538,7 +540,7 @@ def test_simulate_judges_disk(mocker):
     mocker.patch("aleph.vm.agent.capacity.storage_pools.roomiest_pool_free_bytes", return_value=1024 * 1024 * 1024)
     _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16, disk_bytes=1024 * 1024 * 1024)
 
-    verdicts = _manager().simulate([(_HASH_A, _requirements(memory_mib=1024, disk_mib=100_000), True)])
+    verdicts = _manager().simulate([(_HASH_A, _requirements(memory_mib=1024, disk_mib=100_000))])
 
     assert verdicts[0].accepted is False
     assert verdicts[0].code == "insufficient_capacity"
@@ -559,7 +561,7 @@ def test_simulate_reserves_nothing(mocker):
     _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
     registry = AgentVmRegistry()
     manager = _manager(registry=registry)
-    candidate = (_HASH_A, _requirements(memory_mib=30000), True)
+    candidate = (_HASH_A, _requirements(memory_mib=30000))
 
     first = manager.simulate([candidate])
     second = manager.simulate([candidate])
@@ -581,8 +583,8 @@ def test_simulate_is_cumulative_on_disk_too(mocker):
     mocker.patch("aleph.vm.agent.capacity.storage_pools.roomiest_pool_free_bytes", return_value=20 * 1024**3)
     _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16, disk_bytes=10 * 1024**3)
     candidates = [
-        (_HASH_A, _requirements(memory_mib=1024, disk_mib=6000), True),
-        (_HASH_B, _requirements(memory_mib=1024, disk_mib=6000), True),
+        (_HASH_A, _requirements(memory_mib=1024, disk_mib=6000)),
+        (_HASH_B, _requirements(memory_mib=1024, disk_mib=6000)),
     ]
 
     verdicts = _manager().simulate(candidates)
@@ -601,7 +603,7 @@ def test_simulate_ignores_a_release_of_a_vm_it_does_not_know(mocker):
     content = _make_qemu_instance_message(memory=16384)
     registry.record(_HASH_B, message=content, original=content, persistent=True)
     manager = _manager(registry=registry)
-    candidate = (_HASH_C, _requirements(memory_mib=16384), True)
+    candidate = (_HASH_C, _requirements(memory_mib=16384))
 
     verdicts = manager.simulate([candidate], releasing=frozenset({_HASH_A}))
 
@@ -617,7 +619,7 @@ def test_simulate_releases_vcpus_not_only_memory(mocker):
     content = _make_qemu_instance_message(memory=1024, vcpus=6)
     registry.record(_HASH_B, message=content, original=content, persistent=True)
     manager = _manager(registry=registry)
-    candidate = (_HASH_C, _requirements(memory_mib=1024, vcpus=6), True)
+    candidate = (_HASH_C, _requirements(memory_mib=1024, vcpus=6))
 
     assert manager.simulate([candidate])[0].accepted is False
     assert manager.simulate([candidate], releasing=frozenset({_HASH_B}))[0].accepted is True
@@ -638,7 +640,7 @@ def test_simulate_refuses_a_gpu_candidate_when_no_inventory_was_given(mocker):
     yes earned on memory alone."""
     _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
 
-    verdicts = _manager().simulate([(_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID]), True)])
+    verdicts = _manager().simulate([(_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID]))])
 
     assert verdicts[0].accepted is False
     assert verdicts[0].code == "gpu_unavailable"
@@ -648,7 +650,7 @@ def test_simulate_admits_a_gpu_candidate_the_host_can_serve(mocker):
     _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
     gpu = _gpu_device()
 
-    verdicts = _manager().simulate([(_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID]), True)], available_gpus=[gpu])
+    verdicts = _manager().simulate([(_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID]))], available_gpus=[gpu])
 
     assert verdicts[0].accepted is True
 
@@ -657,7 +659,7 @@ def test_simulate_refuses_a_card_the_host_does_not_have(mocker):
     _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
 
     verdicts = _manager().simulate(
-        [(_HASH_A, _gpu_requirements(device_ids=["10de:dead"]), True)], available_gpus=[_gpu_device()]
+        [(_HASH_A, _gpu_requirements(device_ids=["10de:dead"]))], available_gpus=[_gpu_device()]
     )
 
     assert verdicts[0].accepted is False
@@ -669,8 +671,8 @@ def test_simulate_is_cumulative_on_gpus(mocker):
     against the same inventory would hand the same card out twice."""
     _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
     candidates = [
-        (_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID]), True),
-        (_HASH_B, _gpu_requirements(device_ids=[_DEVICE_ID]), True),
+        (_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID])),
+        (_HASH_B, _gpu_requirements(device_ids=[_DEVICE_ID])),
     ]
 
     verdicts = _manager().simulate(candidates, available_gpus=[_gpu_device()])
@@ -689,7 +691,7 @@ def test_simulate_treats_a_held_card_as_taken(mocker):
         user="someone-else", expiration=datetime.now(tz=timezone.utc) + timedelta(hours=1)
     )
 
-    verdicts = manager.simulate([(_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID]), True)], available_gpus=[gpu])
+    verdicts = manager.simulate([(_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID]))], available_gpus=[gpu])
 
     assert verdicts[0].accepted is False
 
@@ -703,7 +705,7 @@ def test_simulate_does_not_evict_expired_holds(mocker):
     expired = GpuHold(user="someone-else", expiration=datetime.now(tz=timezone.utc) - timedelta(hours=1))
     manager.holds[gpu.pci_host] = expired
 
-    verdicts = manager.simulate([(_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID]), True)], available_gpus=[gpu])
+    verdicts = manager.simulate([(_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID]))], available_gpus=[gpu])
 
     assert verdicts[0].accepted is True
     assert manager.holds[gpu.pci_host] is expired
@@ -714,8 +716,8 @@ def test_simulate_takes_no_card_when_it_cannot_take_them_all(mocker):
     could only get one must not strand that one away from the next candidate."""
     _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
     candidates = [
-        (_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID, _DEVICE_ID]), True),
-        (_HASH_B, _gpu_requirements(device_ids=[_DEVICE_ID]), True),
+        (_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID, _DEVICE_ID])),
+        (_HASH_B, _gpu_requirements(device_ids=[_DEVICE_ID])),
     ]
 
     verdicts = _manager().simulate(candidates, available_gpus=[_gpu_device()])
@@ -730,8 +732,8 @@ def test_simulate_does_not_take_cards_for_a_candidate_refused_on_memory(mocker):
     mocker.patch.object(settings, "PROGRAM_MEMORY_RESERVED_MIB", 8192)
     _patch_host(mocker, memory_bytes=48 * 1024 * 1024 * 1024, cores=16)
     candidates = [
-        (_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID], memory_mib=999_999), True),
-        (_HASH_B, _gpu_requirements(device_ids=[_DEVICE_ID]), True),
+        (_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID], memory_mib=999_999)),
+        (_HASH_B, _gpu_requirements(device_ids=[_DEVICE_ID])),
     ]
 
     verdicts = _manager().simulate(candidates, available_gpus=[_gpu_device()])
@@ -756,7 +758,7 @@ def test_simulate_does_not_let_a_recorded_candidate_refuse_itself(mocker):
     registry.record(_HASH_A, message=content, original=content, persistent=True)
     manager = _manager(registry=registry)
 
-    verdicts = manager.simulate([(_HASH_A, _requirements(memory_mib=16384), True)])
+    verdicts = manager.simulate([(_HASH_A, _requirements(memory_mib=16384))])
 
     assert verdicts[0].accepted is True
 
@@ -782,8 +784,8 @@ def test_simulate_does_not_credit_a_candidate_twice_when_also_released(mocker):
     registry.record(_HASH_D, message=staying, original=staying, persistent=True)
     manager = _manager(registry=registry)
     candidates = [
-        (_HASH_A, _requirements(memory_mib=16384), True),
-        (_HASH_B, _requirements(memory_mib=8192), True),
+        (_HASH_A, _requirements(memory_mib=16384)),
+        (_HASH_B, _requirements(memory_mib=8192)),
     ]
 
     verdicts = manager.simulate(candidates, releasing=frozenset({_HASH_A}))
@@ -801,7 +803,7 @@ def test_simulate_does_not_credit_disk_back_on_release(mocker):
     content = _make_qemu_instance_message(memory=1024)
     registry.record(_HASH_B, message=content, original=content, persistent=True)
     manager = _manager(registry=registry)
-    candidate = (_HASH_C, _requirements(memory_mib=1024, disk_mib=50_000), True)
+    candidate = (_HASH_C, _requirements(memory_mib=1024, disk_mib=50_000))
 
     assert manager.simulate([candidate], releasing=frozenset({_HASH_B}))[0].accepted is False
 
@@ -821,7 +823,7 @@ def test_simulate_credits_a_released_program_to_the_program_bucket(mocker):
     content = SimpleNamespace(resources=SimpleNamespace(memory=3072, vcpus=1))
     registry.record(_HASH_B, message=content, original=content, persistent=True)
     manager = _manager(registry=registry)
-    candidate = (_HASH_C, _requirements(memory_mib=3072), False)
+    candidate = (_HASH_C, _requirements(memory_mib=3072, is_instance=False))
 
     assert manager.simulate([candidate])[0].accepted is False
     assert manager.simulate([candidate], releasing=frozenset({_HASH_B}))[0].accepted is True
@@ -844,8 +846,8 @@ def test_simulate_puts_a_refused_candidates_record_back(mocker):
     registry.record(_HASH_A, message=content, original=content, persistent=True)
     manager = _manager(registry=registry)
     candidates = [
-        (_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID], memory_mib=16384), True),
-        (_HASH_B, _requirements(memory_mib=24576), True),
+        (_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID], memory_mib=16384)),
+        (_HASH_B, _requirements(memory_mib=24576)),
     ]
 
     verdicts = manager.simulate(candidates)
@@ -865,8 +867,8 @@ def test_simulate_puts_the_record_back_when_the_refusal_was_capacity(mocker):
     registry.record(_HASH_A, message=content, original=content, persistent=True)
     manager = _manager(registry=registry)
     candidates = [
-        (_HASH_A, _requirements(memory_mib=999_999), True),
-        (_HASH_B, _requirements(memory_mib=24576), True),
+        (_HASH_A, _requirements(memory_mib=999_999)),
+        (_HASH_B, _requirements(memory_mib=24576)),
     ]
 
     verdicts = manager.simulate(candidates)
@@ -885,8 +887,8 @@ def test_simulate_keeps_a_refused_candidate_released_if_the_plan_stops_it(mocker
     registry.record(_HASH_A, message=content, original=content, persistent=True)
     manager = _manager(registry=registry)
     candidates = [
-        (_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID], memory_mib=16384), True),
-        (_HASH_B, _requirements(memory_mib=24576), True),
+        (_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID], memory_mib=16384)),
+        (_HASH_B, _requirements(memory_mib=24576)),
     ]
 
     verdicts = manager.simulate(candidates, releasing=frozenset({_HASH_A}))
@@ -899,7 +901,32 @@ def test_simulate_does_not_echo_the_requested_device_id_back(mocker):
     the scheduler, and it already knows what it asked for."""
     _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
 
-    verdicts = _manager().simulate([(_HASH_A, _gpu_requirements(device_ids=["10de:evil"]), True)])
+    verdicts = _manager().simulate([(_HASH_A, _gpu_requirements(device_ids=["10de:evil"]))])
 
     assert verdicts[0].accepted is False
     assert "evil" not in verdicts[0].detail
+
+
+def test_simulate_is_cumulative_on_vcpus(mocker):
+    """vCPUs accumulate like memory does. 2 cores at 4x overcommit caps them at
+    8, so two 6-vCPU candidates fit once between them."""
+    mocker.patch.object(settings, "VCPU_OVERCOMMIT_FACTOR", 4.0)
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=2)
+    candidates = [
+        (_HASH_A, _requirements(memory_mib=1024, vcpus=6)),
+        (_HASH_B, _requirements(memory_mib=1024, vcpus=6)),
+    ]
+
+    verdicts = _manager().simulate(candidates)
+
+    assert [v.accepted for v in verdicts] == [True, False]
+
+
+def test_requirements_put_a_vprogram_in_the_instance_bucket():
+    """The bucket travels on the requirements, so a caller cannot pick the
+    wrong one for a V-PROGRAM by reaching for the obvious field."""
+    from test_vprogram import load_vprogram_message
+
+    content = load_vprogram_message().content
+
+    assert requirements_from_message(content).is_instance is True
