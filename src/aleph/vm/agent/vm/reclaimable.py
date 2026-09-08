@@ -132,6 +132,9 @@ def write_marker(namespace_dir: Path, marker: ReclaimableMarker, *, exclusive: b
     """
     path = namespace_dir / MARKER_NAME
     tmp = path.with_name(MARKER_NAME + (".x.tmp" if exclusive else ".tmp"))
+    # Invalidated on both sides of the publish: a reader between the two
+    # would otherwise cache the pre-change sum, and a marker write does not
+    # touch the pool directory's mtime, so the fingerprint would not notice.
     invalidate_reclaimable_cache()
     try:
         tmp.write_text(marker.to_json())
@@ -154,6 +157,7 @@ def write_marker(namespace_dir: Path, marker: ReclaimableMarker, *, exclusive: b
         # On success the publish consumed the temp file; on any failure
         # (ENOSPC, EACCES, a failed write) nothing else would ever collect it.
         tmp.unlink(missing_ok=True)
+        invalidate_reclaimable_cache()
     return True
 
 
@@ -166,6 +170,8 @@ def clear_marker(namespace_dir: Path) -> bool:
         path.unlink()
     except FileNotFoundError:
         return False
+    finally:
+        invalidate_reclaimable_cache()
     return True
 
 

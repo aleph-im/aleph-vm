@@ -319,3 +319,26 @@ def test_depends_on_deduplicates_parent_refs(mocker):
     volume_other.parent = mocker.MagicMock(ref="other")
     content.volumes = [volume_same, volume_other]
     assert depends_on_from_content(content) == ("same", "other")
+
+
+def test_the_cache_is_invalidated_after_the_publish_too(pools, monkeypatch):  # noqa: F811
+    """A reader that computes between the pre-write invalidation and the
+    os.replace caches the pre-change sum; the pool directory's mtime does not
+    move on a marker write, so the fingerprint would keep that stale value
+    for the whole TTL. Invalidating after the publish closes the window."""
+    import aleph.vm.agent.vm.reclaimable as reclaimable_module
+
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=4096)
+    real_replace = reclaimable_module.os.replace
+    seen_mid_write = []
+
+    def read_then_replace(src, dst):
+        seen_mid_write.append(reclaimable_bytes())
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(reclaimable_module.os, "replace", read_then_replace)
+
+    mark_reclaimable(VM_HASH, "gone")
+
+    assert seen_mid_write == [0]
+    assert reclaimable_bytes() == 4096
