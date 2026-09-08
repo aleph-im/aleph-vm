@@ -76,13 +76,24 @@ async def teardown_vm_devices(namespace: str, record: AgentVmRecord | None) -> N
 
     The agent creates them (``storage.create_devmapper``) and nothing else
     removes them, so this is the only inverse. Best effort: a failure is
-    logged and the volume file stays behind, where the reconciler's dm guard
-    leaves it for the next pass rather than unlinking a file a loop device
-    still pins.
+    logged and never aborts the retire, which still drops the records and
+    releases the rest of the storage. The volume file then stays behind,
+    pinned by its loop device, and the purge's dm guard refuses to unlink it
+    (that would free nothing and would not reset the volume either, since
+    ``create_devmapper`` reuses a live device). Nothing retries the teardown
+    once the record is gone: such a device waits for an operator.
     """
     if record is None:
         return
-    namespace = _checked_namespace(namespace)
+    try:
+        namespace = _checked_namespace(namespace)
+    except ValueError:
+        # Unreachable from the callers, which pass an ItemHash, but the
+        # best-effort contract holds for the check too: a teardown that
+        # cannot run must not abort the retire between the forget and the
+        # storage release.
+        logger.exception("Device teardown of %r skipped", namespace)
+        return
     for volume in getattr(record.message, "volumes", None) or []:
         # An instance rootfs is a qcow2 overlay, not a dm snapshot, and it is
         # not in `volumes` anyway; only a volume with a parent went through

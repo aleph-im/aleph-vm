@@ -309,3 +309,20 @@ async def test_devices_are_torn_down_after_the_quiesce_and_before_the_storage_pa
     await retire_vm(VM_HASH, RetireReason.GONE, supervisor=env["supervisor"], registry=env["registry"])
 
     assert order == ["delete_vm", "teardown", "release_storage"]
+
+
+@pytest.mark.asyncio
+async def test_device_teardown_of_an_implausible_hash_is_skipped_not_raised(mocker, caplog):
+    """The namespace check is part of the best-effort contract: it logs and
+    returns like a failed dmsetup, instead of raising out of the retire."""
+    from aleph.vm.agent.vm.retire import teardown_vm_devices
+
+    remove = mocker.patch.object(retire_module, "remove_devmapper", new_callable=AsyncMock)
+    record = MagicMock()
+    _parent_backed_volumes(record)
+
+    with caplog.at_level("ERROR"):
+        await teardown_vm_devices("../../etc", record)
+
+    remove.assert_not_awaited()
+    assert "skipped" in caplog.text
