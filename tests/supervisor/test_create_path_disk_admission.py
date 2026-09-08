@@ -8,7 +8,7 @@ downloads the resources and creates the volume files: by then the space is
 already allocated and requiring it again would double-count it.
 
 So the admission gate moves ahead of the build, where refusing still saves the
-download, and the post-build call goes away (spec section 2): memory and vCPUs
+download, and the post-build call goes away: memory and vCPUs
 are judged in the same single pass as disk, and only GPU resolution stays after
 the build.
 """
@@ -143,7 +143,7 @@ class TestInstancePath:
 
     @pytest.mark.asyncio
     async def test_admission_runs_once(self, monkeypatch):
-        """The post-build re-check is gone (spec section 2): one message, one
+        """The post-build re-check is gone: one message, one
         admission decision."""
         content = _patch_message(monkeypatch, _make_qemu_instance_message(hypervisor=HypervisorType.qemu))
         monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock())
