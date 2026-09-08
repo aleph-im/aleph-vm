@@ -133,6 +133,22 @@ async def test_a_stream_paid_vm_is_never_torn_down(reconciler, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_vm_id_that_is_not_a_hash_does_not_wedge_the_pass(reconciler, monkeypatch):
+    """The supervisor's list is not ours to vouch for: an operator's own VM, or
+    a second tenant's, carries an id we cannot parse. Converting it unguarded
+    raised out of the pass before any teardown or start ran, and since run()
+    logs and retries, the reconciler went on looking alive while converging
+    nothing for as long as that VM existed."""
+    starts = _record_starts(reconciler, monkeypatch)
+    reconciler.supervisor.list_vms.return_value = [_info("operator-scratch-vm")]
+    reconciler.submit(_plan(HASH_C))
+
+    await reconciler._converge_once()
+
+    assert starts.attempts == 1
+
+
+@pytest.mark.asyncio
 async def test_a_planned_vm_the_supervisor_does_not_have_is_started(reconciler, monkeypatch):
     _record_starts(reconciler, monkeypatch)
     reconciler.submit(_plan(HASH_C))

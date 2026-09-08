@@ -13,12 +13,15 @@ import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
+from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash
 
 from aleph.vm.agent.allocation.plan import (
+    LIVE_STATUSES,
     AllocationPlan,
     AllocationState,
     FailureRecord,
+    by_hash,
 )
 from aleph.vm.agent.allocation.teardown import is_removable_by_allocation, teardown_vm
 from aleph.vm.agent.run import start_persistent_vm
@@ -26,10 +29,6 @@ from aleph.vm.conf import settings
 from aleph.vm.supervisor_interface.types import VmInfo, VmStatus
 
 logger = logging.getLogger(__name__)
-
-# A VM in one of these states is the supervisor's business already: creating it
-# again would be a second VM under the same hash.
-LIVE_STATUSES = (VmStatus.RUNNING, VmStatus.BOOTING, VmStatus.DEFINED)
 
 # States a dropped VM can be torn down from. DEFINED and BOOTING are excluded
 # deliberately: those are mid-creation, and deleting one races the creation
@@ -87,7 +86,14 @@ class AllocationReconciler:
 
     def notify_vm_down(self, vm_id: str) -> None:
         """A VM went STOPPED or FAILED. If the plan still wants it, converge."""
-        if self._desired and ItemHash(vm_id) in self._desired.entries:
+        if self._desired is None:
+            return
+        try:
+            vm_hash = ItemHash(str(vm_id))
+        except (UnknownHashError, ValueError):
+            # Not ours to converge, and the event stream is no place to raise.
+            return
+        if vm_hash in self._desired.entries:
             self._wakeup.set()
 
     def planned_hashes(self) -> set[ItemHash]:
@@ -130,8 +136,7 @@ class AllocationReconciler:
         await self._start_missing(plan, infos)
 
     async def _teardown_dropped(self, plan: AllocationPlan, infos: list[VmInfo]) -> None:
-        for info in infos:
-            vm_hash = ItemHash(info.vm_id)
+        for vm_hash, info in by_hash(infos).items():
             if vm_hash in plan.entries or info.status not in TEARDOWN_STATUSES:
                 continue
             record = self.registry.get(vm_hash)
@@ -142,7 +147,9 @@ class AllocationReconciler:
 
     async def _start_missing(self, plan: AllocationPlan, infos: list[VmInfo]) -> None:
         live = {
-            ItemHash(info.vm_id) for info in infos if info.status in LIVE_STATUSES or info.awaiting_confidential_init
+            vm_hash
+            for vm_hash, info in by_hash(infos).items()
+            if info.status in LIVE_STATUSES or info.awaiting_confidential_init
         }
         now = self._now()
         todo = [vm_hash for vm_hash in plan.entries if vm_hash not in live and self._retry_due(vm_hash, now)]

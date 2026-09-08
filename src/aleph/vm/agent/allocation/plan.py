@@ -5,13 +5,39 @@ reconciler with no plan deletes nothing: acting on a stale plan risks tearing
 down VMs that were migrated elsewhere during the downtime.
 """
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
+from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash
 
 from aleph.vm.agent.allocation.verify import VerifiedMessage
+from aleph.vm.supervisor_interface.types import VmInfo, VmStatus
+
+logger = logging.getLogger(__name__)
+
+# A VM in one of these states is the supervisor's business already: creating it
+# again would be a second VM under the same hash.
+LIVE_STATUSES = (VmStatus.RUNNING, VmStatus.BOOTING, VmStatus.DEFINED)
+
+
+def by_hash(infos: list[VmInfo]) -> dict[ItemHash, VmInfo]:
+    """The supervisor's VMs, keyed by item hash.
+
+    An id that is not one is dropped rather than raised on, the way
+    supervisor_hashes and check_payment drop theirs: it names a VM the plan
+    says nothing about, so letting it through would take down a whole push or
+    wedge a whole convergence pass over something neither is about.
+    """
+    known: dict[ItemHash, VmInfo] = {}
+    for info in infos:
+        try:
+            known[ItemHash(str(info.vm_id))] = info
+        except (UnknownHashError, ValueError):
+            logger.warning("The supervisor lists a VM whose id is not an item hash: %r", info.vm_id)
+    return known
 
 
 class AllocationState(str, Enum):
