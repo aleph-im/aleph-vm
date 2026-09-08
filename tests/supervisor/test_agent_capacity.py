@@ -825,3 +825,81 @@ def test_simulate_credits_a_released_program_to_the_program_bucket(mocker):
 
     assert manager.simulate([candidate])[0].accepted is False
     assert manager.simulate([candidate], releasing=frozenset({_HASH_B}))[0].accepted is True
+
+
+def test_simulate_puts_a_refused_candidates_record_back(mocker):
+    """Discounting a candidate's record bets that its request will replace it.
+    A refused candidate leaves the recorded VM running, so the bet is off and
+    the rest of the batch has to see that memory again.
+
+    30720 MiB bucket. A is recorded at 16384 and refused on its GPU, so B's
+    24576 does not fit: 16384 + 24576 is over. Leaving A discounted would judge
+    B against an empty node and hand back a yes that create would refuse.
+    """
+    mocker.patch.object(settings, "HOST_MEMORY_RESERVED_MIB", 2048)
+    mocker.patch.object(settings, "PROGRAM_MEMORY_RESERVED_MIB", 8192)
+    _patch_host(mocker, memory_bytes=40 * 1024 * 1024 * 1024, cores=16)
+    registry = AgentVmRegistry()
+    content = _make_qemu_instance_message(memory=16384)
+    registry.record(_HASH_A, message=content, original=content, persistent=True)
+    manager = _manager(registry=registry)
+    candidates = [
+        (_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID], memory_mib=16384), True),
+        (_HASH_B, _requirements(memory_mib=24576), True),
+    ]
+
+    verdicts = manager.simulate(candidates)
+
+    assert [v.accepted for v in verdicts] == [False, False]
+    assert verdicts[0].code == "gpu_unavailable"
+    assert verdicts[1].code == "insufficient_capacity"
+
+
+def test_simulate_puts_the_record_back_when_the_refusal_was_capacity(mocker):
+    """Same restoration, through the other refusal branch."""
+    mocker.patch.object(settings, "HOST_MEMORY_RESERVED_MIB", 2048)
+    mocker.patch.object(settings, "PROGRAM_MEMORY_RESERVED_MIB", 8192)
+    _patch_host(mocker, memory_bytes=40 * 1024 * 1024 * 1024, cores=16)
+    registry = AgentVmRegistry()
+    content = _make_qemu_instance_message(memory=16384)
+    registry.record(_HASH_A, message=content, original=content, persistent=True)
+    manager = _manager(registry=registry)
+    candidates = [
+        (_HASH_A, _requirements(memory_mib=999_999), True),
+        (_HASH_B, _requirements(memory_mib=24576), True),
+    ]
+
+    verdicts = manager.simulate(candidates)
+
+    assert [v.accepted for v in verdicts] == [False, False]
+
+
+def test_simulate_keeps_a_refused_candidate_released_if_the_plan_stops_it(mocker):
+    """A refused candidate the plan is also stopping stays discounted: the
+    release frees it whatever the verdict on recreating it was."""
+    mocker.patch.object(settings, "HOST_MEMORY_RESERVED_MIB", 2048)
+    mocker.patch.object(settings, "PROGRAM_MEMORY_RESERVED_MIB", 8192)
+    _patch_host(mocker, memory_bytes=40 * 1024 * 1024 * 1024, cores=16)
+    registry = AgentVmRegistry()
+    content = _make_qemu_instance_message(memory=16384)
+    registry.record(_HASH_A, message=content, original=content, persistent=True)
+    manager = _manager(registry=registry)
+    candidates = [
+        (_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID], memory_mib=16384), True),
+        (_HASH_B, _requirements(memory_mib=24576), True),
+    ]
+
+    verdicts = manager.simulate(candidates, releasing=frozenset({_HASH_A}))
+
+    assert [v.accepted for v in verdicts] == [False, True]
+
+
+def test_simulate_does_not_echo_the_requested_device_id_back(mocker):
+    """device_id is free-form text off the message. The verdict is what goes to
+    the scheduler, and it already knows what it asked for."""
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
+
+    verdicts = _manager().simulate([(_HASH_A, _gpu_requirements(device_ids=["10de:evil"]), True)])
+
+    assert verdicts[0].accepted is False
+    assert "evil" not in verdicts[0].detail

@@ -326,15 +326,12 @@ class CapacityManager:
                 # Already discounted above. Subtracting again would credit the
                 # same VM twice and admit against memory nobody freed.
                 continue
-            record = self.registry.get(vm_hash)
-            if record is None or not record.message.resources:
+            freed = self._record_commitment(vm_hash)
+            if freed is None:
                 continue
-            resources = record.message.resources
-            if is_instance_bucket(record.message):
-                committed_instance -= resources.memory
-            else:
-                committed_program -= resources.memory
-            committed_vcpus -= resources.vcpus
+            committed_instance -= freed[0]
+            committed_program -= freed[1]
+            committed_vcpus -= freed[2]
         # A registry inconsistency must not make admission more permissive than
         # an empty node.
         committed_instance = max(committed_instance, 0)
@@ -346,6 +343,7 @@ class CapacityManager:
         verdicts: list[AdmissionVerdict] = []
         committed_disk = 0
         for vm_hash, requirements, is_instance in candidates:
+            refusal: tuple[str, str] | None = None
             try:
                 self._check_against(
                     memory_mib=requirements.memory_mib,
@@ -360,17 +358,27 @@ class CapacityManager:
                 )
             except InsufficientResourcesError as error:
                 logger.info("Plan candidate %s refused: %s", vm_hash, error)
-                verdicts.append(
-                    AdmissionVerdict(vm_hash, False, "insufficient_capacity", "not enough capacity on this CRN")
-                )
-                continue
-            # Last, and only once the candidate has cleared everything else:
-            # taking cards is what makes the pool cumulative, so a candidate
-            # refused on memory must not walk off with the cards first.
-            gpu_refusal = self._take_gpus(requirements.gpu_device_ids, gpu_pool)
-            if gpu_refusal is not None:
-                logger.info("Plan candidate %s refused: %s", vm_hash, gpu_refusal)
-                verdicts.append(AdmissionVerdict(vm_hash, False, "gpu_unavailable", gpu_refusal))
+                refusal = ("insufficient_capacity", "not enough capacity on this CRN")
+            if refusal is None:
+                # Last, and only once the candidate has cleared everything
+                # else: taking cards is what makes the pool cumulative, so a
+                # candidate refused on memory must not walk off with them.
+                gpu_refusal = self._take_gpus(requirements.gpu_device_ids, gpu_pool)
+                if gpu_refusal is not None:
+                    logger.info("Plan candidate %s refused: %s", vm_hash, gpu_refusal)
+                    refusal = ("gpu_unavailable", "no available GPU matches this request")
+            if refusal is not None:
+                verdicts.append(AdmissionVerdict(vm_hash, False, *refusal))
+                # Discounting the record was a bet that the request would
+                # replace it. It did not: whatever is recorded here is still
+                # here, so it has to weigh on the rest of the batch again.
+                # Unless the plan is stopping it anyway, in which case the
+                # release already accounts for it.
+                kept = None if vm_hash in releasing else self._record_commitment(vm_hash)
+                if kept is not None:
+                    committed_instance += kept[0]
+                    committed_program += kept[1]
+                    committed_vcpus += kept[2]
                 continue
             if is_instance:
                 committed_instance += requirements.memory_mib
@@ -380,6 +388,19 @@ class CapacityManager:
             committed_disk += requirements.disk_mib
             verdicts.append(AdmissionVerdict(vm_hash, True))
         return verdicts
+
+    def _record_commitment(self, vm_hash: ItemHash) -> tuple[int, int, int] | None:
+        """What this VM's registry record adds to (instance, program, vcpus).
+
+        None when there is no record, or one with no resources to speak of.
+        """
+        record = self.registry.get(vm_hash)
+        if record is None or not record.message.resources:
+            return None
+        resources = record.message.resources
+        if is_instance_bucket(record.message):
+            return resources.memory, 0, resources.vcpus
+        return 0, resources.memory, resources.vcpus
 
     def _unheld_gpus(self, available_gpus: list[GpuDevice]) -> list[GpuDevice]:
         """The cards a plan may count on: unattached and not under a live hold.
