@@ -55,13 +55,14 @@ def compute_plan_id(planned: list[str], rejected: list[str]) -> str:
 
     The two halves are digested apart and then together: one merged sorted list
     gives the same identity to a push that planned A and refused B as to one
-    that planned B and refused A. Digesting rather than joining with a
-    separator keeps that true for a rejected key, which is whatever junk the
-    push carried in place of a hash and may hold the separator itself.
+    that planned B and refused A. Every key is digested on its own before the
+    join, for the same reason one level down: a rejected key is whatever junk
+    the push carried in place of a hash, so joining the keys directly lets a
+    single key holding the separator pass for the two either side of it.
     """
 
     def digest(hashes: list[str]) -> str:
-        return sha256("\n".join(sorted(hashes)).encode()).hexdigest()
+        return sha256("\n".join(sorted(sha256(key.encode()).hexdigest() for key in hashes)).encode()).hexdigest()
 
     return "sha256:" + sha256(f"{digest(planned)}:{digest(rejected)}".encode()).hexdigest()
 

@@ -254,6 +254,16 @@ def test_an_explicitly_empty_plan_is_still_accepted():
     assert plan.entries == {} and rejected == {}
 
 
+def test_a_rejected_key_holding_the_separator_does_not_pass_for_two():
+    """Rejected keys are whatever the push sent in place of a hash, so one
+    refusing a single key with a newline in it must not share an identity with
+    one refusing the two keys either side of that newline."""
+    one, _ = build_plan({"vms": [{"item_hash": "a\nb"}]}, now=NOW)
+    two, _ = build_plan({"vms": [{"item_hash": "a"}, {"item_hash": "b"}]}, now=NOW)
+
+    assert one.plan_id != two.plan_id
+
+
 def test_a_hash_refused_once_does_not_enter_the_plan_on_a_second_entry():
     """A duplicate hash used to land in both halves of the answer, telling the
     scheduler the same VM was refused and pending at once, and the plan then
