@@ -1,3 +1,4 @@
+import logging
 import math
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,8 @@ from aleph.vm.conf import settings
 from aleph.vm.resources import GpuDevice
 from aleph.vm.sevclient import SevClient
 from aleph.vm.storage_pools import pools_disk_usage
+from aleph.vm.supervisor_interface.abc import Supervisor
+from aleph.vm.supervisor_interface.errors import SupervisorError
 from aleph.vm.utils import (
     async_cache,
     check_amd_sev_es_supported,
@@ -26,6 +29,8 @@ from aleph.vm.utils import (
     check_amd_sev_supported,
     cors_allow_all,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class Period(BaseModel):
@@ -296,7 +301,22 @@ def nvidia_cc_properties(available_gpus: list[dict], network_models: dict[str, s
     return NvidiaCcProperties(devices=devices) if devices else None
 
 
-async def get_machine_capability(supervisor) -> MachineCapability:
+async def _nvidia_cc_capability(supervisor: Supervisor) -> NvidiaCcProperties | None:
+    """The confidential-GPU block, or nothing when the supervisor cannot be
+    asked. The block is additive information: the capability endpoint never
+    depended on the supervisor before it existed, and a supervisor outage
+    must not take the endpoint down with it."""
+    try:
+        host_info = await supervisor.get_host_info()
+    except SupervisorError as error:
+        logger.warning("Cannot read the GPU inventory from the supervisor, withholding nvidia_cc: %s", error)
+        return None
+    await update_aggregate_settings()
+    network_models = {gpu.device_id: gpu.model for gpu in get_compatible_gpus()}
+    return nvidia_cc_properties(list(host_info.available_gpus), network_models)
+
+
+async def get_machine_capability(supervisor: Supervisor) -> MachineCapability:
     """What ``/about/capability`` reports. Static part cached, TEE block
     re-evaluated per call so a recovered probe is advertised again.
 
@@ -314,12 +334,9 @@ async def get_machine_capability(supervisor) -> MachineCapability:
     capability = await get_snp_launch_capability()
     tee = None
     if capability.supported_vcpu_types:
-        host_info = await supervisor.get_host_info()
-        await update_aggregate_settings()
-        network_models = {gpu.device_id: gpu.model for gpu in get_compatible_gpus()}
         tee = TeeProperties(
             sev_snp=SevSnpProperties(supported_vcpu_types=capability.supported_vcpu_types),
-            nvidia_cc=nvidia_cc_properties(list(host_info.available_gpus), network_models),
+            nvidia_cc=await _nvidia_cc_capability(supervisor),
         )
     reason = capability.unavailable_reason if check_amd_sev_snp_supported() else None
     return static.model_copy(update={"tee": tee, "tee_unavailable_reason": reason})

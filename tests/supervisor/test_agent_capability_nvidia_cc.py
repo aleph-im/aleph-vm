@@ -74,3 +74,35 @@ async def test_capability_gates_nvidia_cc_on_snp(mocker):
     capability = await resources.get_machine_capability(supervisor)
     assert capability.tee.sev_snp.supported_vcpu_types == ["EPYC-v4"]
     assert capability.tee.nvidia_cc.devices[0].device_id == "10de:2b85"
+
+
+@pytest.mark.asyncio
+async def test_capability_survives_a_supervisor_outage(mocker):
+    """The GPU block is additive: a supervisor the agent cannot reach
+    withholds it and leaves the rest of the capability report intact."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from aleph.vm.agent import resources
+    from aleph.vm.supervisor_interface.errors import InternalSupervisorError
+
+    mocker.patch.object(
+        resources,
+        "_get_static_machine_capability",
+        AsyncMock(return_value=SimpleNamespace(model_copy=lambda update: SimpleNamespace(**update))),
+    )
+    mocker.patch.object(resources, "check_amd_sev_snp_supported", return_value=True)
+    mocker.patch.object(
+        resources,
+        "get_snp_launch_capability",
+        AsyncMock(return_value=SimpleNamespace(supported_vcpu_types=["EPYC-v4"], unavailable_reason=None)),
+    )
+    aggregate = mocker.patch.object(resources, "update_aggregate_settings", AsyncMock())
+    supervisor = SimpleNamespace(get_host_info=AsyncMock(side_effect=InternalSupervisorError("socket down")))
+
+    capability = await resources.get_machine_capability(supervisor)
+
+    assert capability.tee.sev_snp.supported_vcpu_types == ["EPYC-v4"]
+    assert capability.tee.nvidia_cc is None
+    assert capability.tee_unavailable_reason is None
+    aggregate.assert_not_awaited()
