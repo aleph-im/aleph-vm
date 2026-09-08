@@ -7,6 +7,7 @@ import re
 _UNITS = {"": 1, "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
 _ABSOLUTE = re.compile(r"^(\d+)\s*([KMGT]?)$")
 _PERCENT = re.compile(r"^(\d+(?:\.\d+)?)\s*%$")
+_MAX_PERCENT = 100.0
 
 
 def parse_budget(value: str | int, total_bytes: int) -> int:
@@ -16,14 +17,17 @@ def parse_budget(value: str | int, total_bytes: int) -> int:
     """
     if isinstance(value, int):
         if value < 0:
-            raise ValueError(f"Negative budget: {value}")
+            msg = f"Negative budget: {value}"
+            raise ValueError(msg)
         return value
     text = value.strip().upper()
     if match := _PERCENT.match(text):
         percent = float(match.group(1))
-        if percent > 100:
-            raise ValueError(f"Budget above 100%: {value!r}")
-        return int(total_bytes * percent / 100)
+        if percent > _MAX_PERCENT:
+            msg = f"Budget above 100%: {value!r}"
+            raise ValueError(msg)
+        return int(total_bytes * percent / _MAX_PERCENT)
     if match := _ABSOLUTE.match(text):
         return int(match.group(1)) * _UNITS[match.group(2)]
-    raise ValueError(f"Unparseable budget: {value!r} (expected e.g. '10%', '50G' or a byte count)")
+    msg = f"Unparseable budget: {value!r} (expected e.g. '10%', '50G' or a byte count)"
+    raise ValueError(msg)
