@@ -218,10 +218,22 @@ mod tests {
     const ONE_GPU: &str = r#"{"evidences":[{"arch":"BLACKWELL","nonce":"NONCE","evidence":"EeAB","certificate":"LS0t"}],"result_code":0,"result_message":"Ok"}"#;
 
     /// Write a shell script and return a collector running it through
-    /// /bin/sh. The file is deliberately not exec'd itself: a fork from
-    /// another test thread can still hold the just-written script open, and
-    /// exec would then fail ETXTBSY. The nonce still lands last, so the
-    /// script reads it as $1.
+    /// /bin/sh. The nonce still lands last, so the script reads it as $1.
+    ///
+    /// The written file is deliberately never the exec target, and that is
+    /// load-bearing rather than a style choice. `exec` refuses a file that
+    /// anyone still holds open for writing, with ETXTBSY, and the refusal is
+    /// per inode: the kernel counts writers of the inode being exec'd. These
+    /// tests run in parallel threads of one process, so `fork` for any one
+    /// test's spawn duplicates the whole file table and briefly gives that
+    /// child a writable descriptor on a script another thread has just
+    /// written; CLOEXEC does not help, since it only fires at the owning
+    /// thread's own exec, not at an unrelated fork. Exec'ing the script
+    /// itself therefore failed intermittently with "Text file busy",
+    /// twice in CI and locally. Exec'ing /bin/sh cannot: nothing in this
+    /// suite ever opens /bin/sh for writing, so its writer count is always
+    /// zero, whatever descriptors a concurrent fork happens to carry.
+    /// Handing the path back to exec directly reintroduces that flake.
     fn script_collector(name: &str, body: &str) -> (tempfile::TempDir, CollectorProcess) {
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join(name);
