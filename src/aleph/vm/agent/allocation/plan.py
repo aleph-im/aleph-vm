@@ -85,11 +85,16 @@ class FailureRecord:
     verbatim by an unauthenticated endpoint, so what it can hold is a code out
     of a closed set (each with its own published sentence) and nothing an
     exception wrote. The detail lives in the log.
+
+    ``last_failed_at`` is when the latest attempt was charged, which is what
+    decides whether a VM that is up again has been up long enough to forget
+    the record. There is no field for the first one: nothing published it or
+    read it, and how long a VM has been in trouble is a question the log
+    answers.
     """
 
     code: AllocationFailureCode
     attempts: int
-    first_failed_at: datetime
     last_failed_at: datetime
     next_retry_at: datetime
 
