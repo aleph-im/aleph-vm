@@ -2221,12 +2221,17 @@ fn snp_config_slice_with(
     let kernel_cmdline = match read_optional_sidecar(&extra_path)? {
         Some(contents) => {
             let extra = contents.trim();
+            // The kernel parses the value with base auto-detection, so a
+            // leading zero would make it octal and the guest's bounce buffer
+            // would not be the size the manifest measured.
             let allowed = extra.strip_prefix("swiotlb=").is_some_and(|digits| {
-                (1..=9).contains(&digits.len()) && digits.bytes().all(|b| b.is_ascii_digit())
+                (1..=9).contains(&digits.len())
+                    && !digits.starts_with('0')
+                    && digits.bytes().all(|b| b.is_ascii_digit())
             });
             if !allowed {
                 return Err(RpcError::InvalidBackend(format!(
-                    "cmdline_extra sidecar {extra_path} carries {extra:?}; only swiotlb=<digits> is allowed"
+                    "cmdline_extra sidecar {extra_path} carries {extra:?}; only swiotlb=<decimal digits> is allowed"
                 )));
             }
             format!("{kernel_cmdline} {extra}")
@@ -5212,6 +5217,8 @@ mod tests {
             "swiotlb=262144 init=/bin/sh",
             "swiotlb=",
             "swiotlb=1234567890",
+            "swiotlb=0262144",
+            "swiotlb=0",
             "root=/dev/vdb",
         ] {
             let harness = harness();
