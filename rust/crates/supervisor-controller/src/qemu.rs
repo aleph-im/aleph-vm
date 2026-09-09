@@ -1274,6 +1274,19 @@ mod tests {
                 .iter()
                 .any(|a| a.contains("x-vga"))
         );
+        // No window means no fw_cfg entry and OVMF's default 64-bit MMIO
+        // window, which a data-center card's BAR1 outgrows. The daemon always
+        // sizes a window for attached cards; only a hand-written config
+        // reaches this arm, and it must not grow a fallback of its own.
+        assert_eq!(
+            snp_gpu_args(&gpus, None),
+            vec![
+                "-device",
+                "pcie-root-port,id=rp0,bus=pcie.0,chassis=1",
+                "-device",
+                "vfio-pci,host=06:00.0,bus=rp0,rombar=0",
+            ]
+        );
         assert!(snp_gpu_args(&[], Some(1024)).is_empty());
     }
 }
