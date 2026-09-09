@@ -42,19 +42,23 @@ pub fn controller_unit_name(vm_hash: &str) -> String {
 /// What systemd says about one controller unit, reduced to the answers the
 /// status mapping distinguishes.
 ///
-/// The plain active flag cannot tell a guest on its way up from one that
-/// died, and the daemon needs that distinction: a unit still activating is a
-/// VM booting, while a unit that failed or fell inactive under a VM the
-/// daemon has seen alive is a guest that exited on its own.
+/// The plain active flag cannot tell a unit systemd is still working on from
+/// one that has settled, and the daemon needs that distinction: a unit with a
+/// start or stop job in flight is a VM on its way somewhere, while a unit
+/// that has settled at failed or inactive under a VM the daemon has seen
+/// alive, with nobody stopping it, is a guest that exited on its own.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum UnitLiveness {
     /// The unit is up: `active`, or `reloading` on its way through a reload.
     Active,
-    /// systemd has a start job in flight (`activating`). Nothing has failed.
-    Activating,
-    /// The unit is down: `failed`, `inactive`, `deactivating`, or not loaded
-    /// at all (a template instance never started, or one systemd garbage
-    /// collected after it stopped).
+    /// systemd has a job in flight: `activating` on the way up,
+    /// `deactivating` on the way down. Either way something asked for the
+    /// change and the outcome is not settled, so neither is a guest that
+    /// died on its own.
+    Transitional,
+    /// The unit has settled down: `failed`, `inactive`, or not loaded at all
+    /// (a template instance never started, or one systemd garbage collected
+    /// after it stopped).
     Dead,
     /// Nothing was observed: no unit was queried, or the bus did not answer.
     /// Never a conclusion about the guest.
@@ -69,8 +73,8 @@ impl UnitLiveness {
     pub fn from_active_state(state: &str) -> Self {
         match state {
             "active" | "reloading" => Self::Active,
-            "activating" => Self::Activating,
-            "failed" | "inactive" | "deactivating" | NOT_LOADED => Self::Dead,
+            "activating" | "deactivating" => Self::Transitional,
+            "failed" | "inactive" | NOT_LOADED => Self::Dead,
             _ => Self::Unknown,
         }
     }
