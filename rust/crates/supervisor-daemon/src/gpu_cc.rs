@@ -83,13 +83,23 @@ pub fn cc_mode_from_register(value: u32) -> Option<CcMode> {
     }
 }
 
+/// Where the kernel lists PCI devices.
+pub const SYSFS_PCI_DEVICES: &str = "/sys/bus/pci/devices";
+
+/// The card's directory under `/sys/bus/pci/devices`.
 pub fn sysfs_device_dir(pci_host: &str) -> PathBuf {
+    sysfs_device_dir_under(Path::new(SYSFS_PCI_DEVICES), pci_host)
+}
+
+/// `sysfs_device_dir` under an explicit devices directory, so a fixture
+/// tree can stand in for sysfs. A pci_host without a domain gets 0000.
+pub fn sysfs_device_dir_under(devices_dir: &Path, pci_host: &str) -> PathBuf {
     let full = if pci_host.matches(':').count() == 1 {
         format!("0000:{pci_host}")
     } else {
         pci_host.to_string()
     };
-    PathBuf::from("/sys/bus/pci/devices").join(full)
+    devices_dir.join(full)
 }
 
 /// Read one 32-bit register from a BAR0 mapping. sysfs `resourceN` files

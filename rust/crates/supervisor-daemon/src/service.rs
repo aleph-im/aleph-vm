@@ -177,8 +177,9 @@ pub struct DaemonState {
     pub numa_ledger: std::sync::Mutex<crate::numa::NumaAllocator>,
     /// The cached NVIDIA CC mode of each probed card, keyed by pci_host.
     /// Populated by `refresh_cc_modes` (called from `get_host_info`) for
-    /// every NVIDIA card no VM currently owns; a card never probed, or
-    /// whose last probe failed, has no entry.
+    /// every NVIDIA card no VM currently owns, and by the SEV-SNP GPU gate
+    /// when a create probes its cards; a card never probed, or whose last
+    /// probe failed, has no entry.
     pub gpu_cc_modes: std::sync::Mutex<HashMap<String, crate::gpu_cc::CcMode>>,
     /// How a card's CC mode is read: the BAR0 register in production,
     /// `gpu_cc::no_probe` on hermetic state so tests never open sysfs.
