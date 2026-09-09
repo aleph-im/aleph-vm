@@ -274,10 +274,12 @@ def setup_webapp(supervisor: Supervisor):
     recreation, GPU reservation, persistent programs) goes through the
     `Supervisor` interface.
     """
-    # The ceiling on a buffered body. Each signed route enforces its own cap
-    # below it (allocation_auth), and the largest of those is a plan body,
-    # so this has to admit one: aiohttp's 1 MiB default cut a plan off inside
-    # the verifier, which reported it as a bad signature.
+    # The ceiling on any buffered body, signed or not. It has to admit a plan
+    # body, the largest thing a signed route takes: aiohttp's 1 MiB default
+    # cut a plan off inside the verifier, which reported it as a bad
+    # signature. The signed routes each enforce their own, smaller cap below
+    # it (allocation_auth); the operator routes, which authenticate by JWK,
+    # go from a 1 MiB ceiling to this one, which the control plane can bear.
     app = web.Application(middlewares=[drain_middleware, error_middleware], client_max_size=MAX_SIGNED_PLAN_BODY_BYTES)
     app.on_response_prepare.append(on_prepare_server_version)
     # Agent-owned drain flag: drain_middleware rejects new VM requests when set;
