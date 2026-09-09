@@ -36,16 +36,23 @@ The answer is `202 Accepted` and sorts every hash in the push into a bucket:
 | `pending` | Admitted in principle, but the push carried no message to size it by, so the node will fetch it first |
 | `unchanged` | Already running here, nothing to do |
 | `removing` | Running here, dropped by this plan, teardown started |
-| `rejected` | Refused, as a map of hash to `{code, message}` |
+| `rejected` | Refused, as a map of hash to `{code, message}`. An entry whose hash the node could not read is keyed by its position in the push instead, as `vms[<i>]` |
 | `retained` | Listed for teardown but not removable by an allocation, as a map of hash to reason |
 | `status_url` | `/v2/about/executions/list` |
 
 `rejected` codes are short machine strings with a human `message` beside
 them, for example `invalid_message` for an entry whose embedded message does
 not verify, `node_mismatch` for a message pinned to another node, and the
-capacity refusals. `retained` reasons name why an allocation may not stop
-the VM: `non_persistent`, `payment_stream`, `payment_credit`, `gpu`,
-`confidential`, or `operator_policy`.
+capacity refusals. A `rejected` key is normally the VM hash, but an entry
+the node could not read a hash out of at all is answered under its index in
+the pushed list, as `vms[3]`: it names no VM here, and echoing back whatever
+string the push sent would be unbounded text off the request.
+
+`retained` reasons name why an allocation may not stop the VM:
+`non_persistent`, `payment_stream`, `payment_credit`, `gpu` or
+`confidential`. A V-PROGRAM is never retained: the scheduler is its single
+source of truth, so a plan that drops one stops it even though it is
+credit-paid and confidential.
 
 Four rules matter when reading that answer:
 
@@ -84,9 +91,11 @@ The same body, judged the same way, with no side effects: nothing is
 recorded and nothing is held, so a scheduler can ask several CRNs before
 committing to one. Every entry is treated as a candidate, and nothing
 running on the node is read as dropped. Each hash comes back
-`{"accepted": true}` or `{"accepted": false, "code": ..., "message": ...}`.
-An entry with no embedded message answers `message_required`: there is
-nothing to size, and a check does not go and fetch it.
+`{"accepted": true}` or `{"accepted": false, "code": ..., "message": ...}`,
+under the same keys the allocation answer uses: the VM hash, or `vms[<i>]`
+for an entry whose hash the node could not read. An entry with no embedded
+message answers `message_required`: there is nothing to size, and a check
+does not go and fetch it.
 
 A pass on this endpoint is advisory. The real allocation judges again and
 can still refuse.
