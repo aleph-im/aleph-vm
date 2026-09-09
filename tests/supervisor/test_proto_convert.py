@@ -325,3 +325,18 @@ def test_measurement_carries_sev_info_and_launch_measure():
     out = conv.measurement_from_pb(conv.measurement_to_pb(m))
     assert out.launch_measure == "bWVhc3VyZQ=="
     assert out.sev_info == m.sev_info
+
+
+def test_gpu_device_cc_mode_round_trips():
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2 as pb
+    from aleph.vm.supervisor_interface.wire.proto_convert import (
+        gpu_device_from_pb,
+        gpu_device_to_pb,
+    )
+
+    msg = pb.GpuDevice(pci_host="06:00.0", device_id="10de:2b85", model="", supports_x_vga=False, cc_mode="on")
+    device = gpu_device_from_pb(msg)
+    assert device.cc_mode == "on"
+    assert gpu_device_to_pb(device).cc_mode == "on"
+    # Empty on the wire means unknown, never a mode.
+    assert gpu_device_from_pb(pb.GpuDevice(pci_host="06:00.0")).cc_mode is None
