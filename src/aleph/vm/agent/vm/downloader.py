@@ -68,7 +68,7 @@ async def _make_writable_volume(
         raise VmSetupError(msg)
 
     # Off the loop: placement reads every pool's free space and can call the
-    # reclaimer's evictor (storage_pools.set_room_maker), which walks pools and
+    # reclaimer's evictor (the agent's room_maker hook), which walks pools and
     # removes directories.
     dest_path = await asyncio.to_thread(volume_path_for, namespace, f"{volume_name}.qcow2", volume.size_mib)
     # Do not override if user asked for host persistence.

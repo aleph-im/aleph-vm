@@ -568,7 +568,6 @@ def run():
         ),
         room_maker=lambda pool, needed: make_room(pool, needed, live=known_live_hashes(app["vm_registry"])),
     )
-    app["agent_hooks"] = hooks
     install_hooks(hooks)
     app.on_startup.append(start_node_hash_discovery)
     app.on_cleanup.append(stop_node_hash_discovery)

@@ -461,7 +461,7 @@ async def create_volume_file(
     volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
     # Assume that the main filesystem format is BTRFS
     # Off the loop: placement reads every pool's free space and can call the
-    # reclaimer's evictor (storage_pools.set_room_maker), which walks pools and
+    # reclaimer's evictor (the agent's room_maker hook), which walks pools and
     # removes directories.
     path = await asyncio.to_thread(
         volume_path_for, namespace, f"{volume_name}.btrfs", volume.size_mib, pool0_only=pool0_only

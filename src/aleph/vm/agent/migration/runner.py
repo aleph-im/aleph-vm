@@ -299,7 +299,7 @@ async def run_import(
                 # is (the downloader's volume lookup scans every pool).
                 incoming_mib = sum(df.size_bytes for df in disk_files) // (1024 * 1024)
                 # Off the loop: placement reads every pool's free space and can
-                # call the reclaimer's evictor (storage_pools.set_room_maker),
+                # call the reclaimer's evictor (the agent's room_maker hook),
                 # which walks pools and removes directories.
                 pool = await asyncio.to_thread(select_pool, incoming_mib)
                 dest_dir = pool.path / str(job.vm_hash)
