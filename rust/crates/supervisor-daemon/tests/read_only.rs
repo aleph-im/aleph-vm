@@ -13,6 +13,8 @@ use std::time::Duration;
 use hyper_util::rt::TokioIo;
 use prost::Message;
 use supervisor_daemon::config::Settings;
+use supervisor_daemon::error::DaemonError;
+use supervisor_daemon::gpu_cc::{self, CcMode, CcProbe};
 use supervisor_daemon::logs::{LogEntry, LogStream, StaticLogSource};
 use supervisor_daemon::lspci::GpuDevice;
 use supervisor_daemon::server::{self, SocketGuard};
@@ -46,6 +48,11 @@ fn populate_execution_root(root: &Path) {
 }
 
 fn fixture_daemon_state(root: &Path) -> Arc<DaemonState> {
+    fixture_daemon_state_probing(root, gpu_cc::no_probe)
+}
+
+/// The fixture state with a CC mode probe of the test's choosing.
+fn fixture_daemon_state_probing(root: &Path, probe: CcProbe) -> Arc<DaemonState> {
     let mut settings = Settings::from_vars(
         [(
             "ALEPH_VM_EXECUTION_ROOT".to_string(),
@@ -79,6 +86,7 @@ fn fixture_daemon_state(root: &Path) -> Arc<DaemonState> {
                 device_class: "0300".to_string(),
                 pci_host: "0000:01:00.0".to_string(),
                 device_id: "10de:2b85".to_string(),
+                cc_mode: None,
             },
             GpuDevice {
                 vendor: "NVIDIA".to_string(),
@@ -86,12 +94,13 @@ fn fixture_daemon_state(root: &Path) -> Arc<DaemonState> {
                 device_class: "0300".to_string(),
                 pci_host: "0000:02:00.0".to_string(),
                 device_id: "10de:26b1".to_string(),
+                cc_mode: None,
             },
         ],
         dns_nameservers: None,
     };
     let world = build_world_view(&host.settings, units.as_ref(), &host.gpus);
-    Arc::new(DaemonState::hermetic(
+    let mut state = DaemonState::hermetic(
         host,
         world,
         units,
@@ -112,7 +121,9 @@ fn fixture_daemon_state(root: &Path) -> Arc<DaemonState> {
                 source: LogStream::Stdout,
             },
         ])),
-    ))
+    );
+    state.gpu_cc_probe = probe;
+    Arc::new(state)
 }
 
 async fn connect(socket_path: PathBuf) -> Channel {
@@ -378,6 +389,63 @@ async fn serves_the_read_only_world_over_the_socket() {
             .collect::<Vec<_>>(),
         ["guest warning", "guest ready"]
     );
+
+    shutdown_tx.send(true).unwrap();
+    server_task.await.unwrap().unwrap();
+}
+
+/// A probe that finds every card in CC mode, whatever its device id: the
+/// test below is about what GetHostInfo does with an answer, not about
+/// which cards can give one.
+fn every_card_is_cc_on(_pci_host: &str, _device_id: &str) -> Result<Option<CcMode>, DaemonError> {
+    Ok(Some(CcMode::On))
+}
+
+#[tokio::test]
+async fn get_host_info_reports_probed_cc_modes_and_omits_unprobed_ones() {
+    let tmp = tempfile::tempdir().unwrap();
+    populate_execution_root(tmp.path());
+    // The probe answers "on" for any card it is asked about. GetHostInfo
+    // asks about the free card ("0000:02:00.0"), which also shows up in
+    // available_gpus_json, and must not ask about the attached one
+    // ("0000:01:00.0"), which therefore stays unprobed.
+    let state = fixture_daemon_state_probing(tmp.path(), every_card_is_cc_on);
+    let socket_path = state.host.settings.supervisor_grpc_socket.clone();
+
+    let guard = Arc::new(SocketGuard::new(socket_path.clone()));
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let server_task = tokio::spawn(server::serve(state, guard, shutdown_rx));
+    wait_for_socket(&socket_path).await;
+    let mut client = SupervisorClient::new(connect(socket_path.clone()).await);
+
+    let info = client
+        .get_host_info(pb::GetHostInfoRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+    let inventory: Vec<serde_json::Value> = serde_json::from_str(&info.gpu_inventory_json).unwrap();
+    let available: Vec<serde_json::Value> =
+        serde_json::from_str(&info.available_gpus_json).unwrap();
+
+    let by_pci_host = |list: &[serde_json::Value], pci_host: &str| {
+        list.iter()
+            .find(|gpu| gpu["pci_host"] == pci_host)
+            .unwrap()
+            .clone()
+    };
+    let probed = by_pci_host(&inventory, "0000:02:00.0");
+    assert_eq!(probed["cc_mode"], "on");
+    let unprobed = by_pci_host(&inventory, "0000:01:00.0");
+    assert!(
+        unprobed.get("cc_mode").is_none(),
+        "an unprobed card must carry no cc_mode key: {unprobed}"
+    );
+
+    // available_gpus_json withholds the attached card, so the only entry
+    // left is the free, probed one; it carries the same cc_mode.
+    assert_eq!(available.len(), 1);
+    assert_eq!(available[0]["pci_host"], "0000:02:00.0");
+    assert_eq!(available[0]["cc_mode"], "on");
 
     shutdown_tx.send(true).unwrap();
     server_task.await.unwrap().unwrap();

@@ -175,6 +175,14 @@ pub struct DaemonState {
     /// tracking for `AllowedCPUs` pinning. In-memory; rebuilt at boot from
     /// each adopted VM's effective placement (its `AllowedCPUs` drop-in).
     pub numa_ledger: std::sync::Mutex<crate::numa::NumaAllocator>,
+    /// The cached NVIDIA CC mode of each probed card, keyed by pci_host.
+    /// Populated by `refresh_cc_modes` (called from `get_host_info`) for
+    /// every NVIDIA card no VM currently owns; a card never probed, or
+    /// whose last probe failed, has no entry.
+    pub gpu_cc_modes: std::sync::Mutex<HashMap<String, crate::gpu_cc::CcMode>>,
+    /// How a card's CC mode is read: the BAR0 register in production,
+    /// `gpu_cc::no_probe` on hermetic state so tests never open sysfs.
+    pub gpu_cc_probe: crate::gpu_cc::CcProbe,
 }
 
 /// See [`DaemonState::log_follows`].
@@ -213,6 +221,8 @@ impl DaemonState {
             numa_ledger: std::sync::Mutex::new(crate::numa::NumaAllocator::new(
                 crate::numa::NumaTopology::empty(),
             )),
+            gpu_cc_modes: std::sync::Mutex::new(HashMap::new()),
+            gpu_cc_probe: crate::gpu_cc::no_probe,
         }
     }
 
@@ -251,7 +261,6 @@ impl SupervisorService {
 
     async fn host_info(&self) -> Result<pb::HostInfo, DaemonError> {
         let (kernel_version, hostname) = host::uname_release_and_nodename()?;
-        let inventory_json = gpu_json(&self.state.host.gpus)?;
         // Available = inventory minus the GPUs the world view's controller
         // configs attach (ledger entry 14, closed: post-#1023 Python
         // rebuilds the attachments for VMs adopted running; the config
@@ -265,10 +274,34 @@ impl SupervisorService {
                 .flat_map(|entry| entry.config.gpus.iter().map(|gpu| gpu.pci_host.clone()))
                 .collect()
         };
-        let available: Vec<&GpuDevice> = self
+        // Probe every unattached NVIDIA card's CC mode before reporting the
+        // inventory, so a freshly-idled card's mode is current. mmap of a
+        // BAR is a blocking syscall; run it off the tokio worker.
+        // refresh_cc_modes takes its own world read guard and keeps it for
+        // the whole probe: the `attached` snapshot above can go stale the
+        // moment a concurrent CreateVm registers a card, and the probe gate
+        // must never trust a snapshot it no longer holds the lock for.
+        {
+            let state = self.state.clone();
+            tokio::task::spawn_blocking(move || refresh_cc_modes(&state))
+                .await
+                .map_err(|error| {
+                    DaemonError::Internal(format!("the GPU CC probe task failed: {error}"))
+                })?;
+        }
+        let annotated_gpus: Vec<GpuDevice> = self
             .state
             .host
             .gpus
+            .iter()
+            .cloned()
+            .map(|mut gpu| {
+                gpu.cc_mode = cc_mode_of(&self.state, &gpu.pci_host);
+                gpu
+            })
+            .collect();
+        let inventory_json = gpu_json(&annotated_gpus)?;
+        let available: Vec<&GpuDevice> = annotated_gpus
             .iter()
             .filter(|gpu| !attached.contains(&gpu.pci_host))
             .collect();
@@ -373,6 +406,68 @@ fn gpu_json(gpus: &[GpuDevice]) -> Result<String, DaemonError> {
     })
 }
 
+/// The cached CC mode of one card, if it has been probed.
+pub fn cc_mode_of(state: &DaemonState, pci_host: &str) -> Option<crate::gpu_cc::CcMode> {
+    state
+        .gpu_cc_modes
+        .lock()
+        .expect("gpu_cc_modes poisoned")
+        .get(pci_host)
+        .copied()
+}
+
+/// Probe every NVIDIA card no VM owns and remember the answer. A card that
+/// becomes attached keeps its last value (the register is never read under
+/// a guest). A probe that errors, or that reads a register encoding with no
+/// mode, forgets the card: whatever it advertised before is no longer known
+/// to be true, and an unknown card advertises nothing. Runs on the blocking
+/// pool: mmap of a BAR is a syscall against device memory.
+fn refresh_cc_modes(state: &DaemonState) {
+    refresh_cc_modes_with(state, state.gpu_cc_probe);
+}
+
+/// `refresh_cc_modes` over an explicit probe, so unit tests can hand in a
+/// closure that records what was probed. The world read
+/// guard is held across the whole loop, not just while the attached set is
+/// collected: CreateVm registers a VM's cards in the world view under the
+/// write lock before it boots anything, so under this guard a card is
+/// either already attached (and skipped) or cannot become attached until
+/// the probe is done. That is what makes "never read under a guest" hold
+/// rather than merely likely. Each probe is a sysfs open and a one-page
+/// mmap, microseconds, so a writer waiting on the guard barely notices.
+fn refresh_cc_modes_with(
+    state: &DaemonState,
+    probe: impl Fn(&str, &str) -> Result<Option<crate::gpu_cc::CcMode>, DaemonError>,
+) {
+    let world = state.world.blocking_read();
+    let attached: HashSet<String> = world
+        .entries
+        .values()
+        .flat_map(|entry| entry.config.gpus.iter().map(|gpu| gpu.pci_host.clone()))
+        .collect();
+    for gpu in &state.host.gpus {
+        if attached.contains(&gpu.pci_host) || gpu.vendor != "NVIDIA" {
+            continue;
+        }
+        let mode = match probe(&gpu.pci_host, &gpu.device_id) {
+            Ok(mode) => mode,
+            Err(error) => {
+                tracing::warn!(pci_host = %gpu.pci_host, %error, "GPU CC mode probe failed");
+                None
+            }
+        };
+        let mut cache = state.gpu_cc_modes.lock().expect("gpu_cc_modes poisoned");
+        match mode {
+            Some(mode) => {
+                cache.insert(gpu.pci_host.clone(), mode);
+            }
+            None => {
+                cache.remove(&gpu.pci_host);
+            }
+        }
+    }
+}
+
 // ── World view to wire mapping ──────────────────────────────────────────
 
 /// `_status_of`, ported literally: the times short-circuit the live flag.
@@ -391,7 +486,12 @@ pub(crate) fn vm_status(times: &VmTimes, running: bool) -> pb::VmStatus {
 }
 
 /// `_to_vm_info` for an adopted execution.
-pub fn vm_info_message(entry: &VmEntry, running: bool, now_ns: u64) -> pb::VmInfo {
+pub fn vm_info_message(
+    state: &DaemonState,
+    entry: &VmEntry,
+    running: bool,
+    now_ns: u64,
+) -> pb::VmInfo {
     let times = &entry.times;
     // `_uptime_secs`: seconds since started_at while running, else 0.
     let uptime_secs = if running && times.started_at_ns != 0 {
@@ -465,6 +565,9 @@ pub fn vm_info_message(entry: &VmEntry, running: bool, now_ns: u64) -> pb::VmInf
                 device_id: gpu.device_id.clone(),
                 model: String::new(),
                 supports_x_vga: gpu.supports_x_vga,
+                cc_mode: cc_mode_of(state, &gpu.pci_host)
+                    .map(|mode| mode.to_string())
+                    .unwrap_or_default(),
             })
             .collect(),
         // `_guest_channel_path` / `_guest_ready_payload`: the MicroVM
@@ -781,7 +884,12 @@ impl Supervisor for SupervisorService {
         let spec = request.into_inner();
         let (entry, running) =
             run_lifecycle(move || crate::lifecycle::create_vm(&state, spec)).await?;
-        Ok(Response::new(vm_info_message(&entry, running, now_ns())))
+        Ok(Response::new(vm_info_message(
+            &self.state,
+            &entry,
+            running,
+            now_ns(),
+        )))
     }
 
     async fn get_vm(
@@ -806,7 +914,12 @@ impl Supervisor for SupervisorService {
         } else {
             self.unit_running(entry.unit_name()).await?
         };
-        Ok(Response::new(vm_info_message(&entry, running, now_ns())))
+        Ok(Response::new(vm_info_message(
+            &self.state,
+            &entry,
+            running,
+            now_ns(),
+        )))
     }
 
     async fn get_vm_spec(
@@ -849,7 +962,7 @@ impl Supervisor for SupervisorService {
                 } else {
                     states.get(&entry.unit_name()).copied().unwrap_or(false)
                 };
-                vm_info_message(entry, running, now)
+                vm_info_message(&self.state, entry, running, now)
             })
             .collect();
         Ok(Response::new(pb::ListVmsResponse { vms }))
@@ -876,7 +989,12 @@ impl Supervisor for SupervisorService {
         let vm_id = request.into_inner().vm_id;
         let entry = run_lifecycle(move || crate::lifecycle::stop_vm(&state, &vm_id)).await?;
         // Python stop_vm reports running=False unconditionally.
-        Ok(Response::new(vm_info_message(&entry, false, now_ns())))
+        Ok(Response::new(vm_info_message(
+            &self.state,
+            &entry,
+            false,
+            now_ns(),
+        )))
     }
 
     async fn start_vm(
@@ -887,7 +1005,12 @@ impl Supervisor for SupervisorService {
         let vm_id = request.into_inner().vm_id;
         let (entry, running) =
             run_lifecycle(move || crate::lifecycle::start_vm(&state, &vm_id)).await?;
-        Ok(Response::new(vm_info_message(&entry, running, now_ns())))
+        Ok(Response::new(vm_info_message(
+            &self.state,
+            &entry,
+            running,
+            now_ns(),
+        )))
     }
 
     async fn reboot_vm(
@@ -898,7 +1021,12 @@ impl Supervisor for SupervisorService {
         let vm_id = request.into_inner().vm_id;
         let (entry, running) =
             run_lifecycle(move || crate::lifecycle::reboot_vm(&state, &vm_id)).await?;
-        Ok(Response::new(vm_info_message(&entry, running, now_ns())))
+        Ok(Response::new(vm_info_message(
+            &self.state,
+            &entry,
+            running,
+            now_ns(),
+        )))
     }
 
     async fn run_program_code(
@@ -1307,11 +1435,137 @@ mod tests {
         }
     }
 
+    /// A DaemonState with no probed CC modes, for tests that only care
+    /// about `vm_info_message`'s non-GPU fields.
+    fn empty_state() -> DaemonState {
+        DaemonState::hermetic(
+            HostState {
+                settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
+                host_ipv4: String::new(),
+                network_interface: None,
+                gpus: Vec::new(),
+                dns_nameservers: None,
+            },
+            WorldView::default(),
+            Arc::new(crate::units::StaticUnitStates::default()),
+            Arc::new(crate::logs::StaticLogSource::new(Vec::new())),
+        )
+    }
+
+    #[test]
+    fn refresh_cc_modes_gates_the_probe_on_a_fresh_attached_set() {
+        // Two NVIDIA cards in the inventory; one is attached to a VM's
+        // config in the world view. The probe must never run against the
+        // attached card, and the attached set must come from the world
+        // view under the function's own read guard, not a caller-supplied
+        // snapshot (a concurrent CreateVm can attach a card between a
+        // snapshot taken before spawn_blocking and the probe running on it).
+        let host = HostState {
+            settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
+            host_ipv4: String::new(),
+            network_interface: None,
+            gpus: vec![
+                GpuDevice {
+                    vendor: "NVIDIA".to_string(),
+                    device_name: "GB202 [GeForce RTX 5090]".to_string(),
+                    device_class: "0300".to_string(),
+                    pci_host: "06:00.0".to_string(),
+                    device_id: "10de:2b85".to_string(),
+                    cc_mode: None,
+                },
+                GpuDevice {
+                    vendor: "NVIDIA".to_string(),
+                    device_name: "GB202 [GeForce RTX 5090]".to_string(),
+                    device_class: "0300".to_string(),
+                    pci_host: "07:00.0".to_string(),
+                    device_id: "10de:2b85".to_string(),
+                    cc_mode: None,
+                },
+            ],
+            dns_nameservers: None,
+        };
+        let mut entry = fixture_entry(test_fixtures::QEMU_HASH, true);
+        entry.config.gpus = vec![crate::controller_config::QemuGpu {
+            pci_host: "06:00.0".to_string(),
+            supports_x_vga: true,
+        }];
+        let mut world = WorldView::default();
+        world.insert_entry(entry);
+        let state = DaemonState::hermetic(
+            host,
+            world,
+            Arc::new(crate::units::StaticUnitStates::default()),
+            Arc::new(crate::logs::StaticLogSource::new(Vec::new())),
+        );
+
+        let probed: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        refresh_cc_modes_with(&state, |pci_host, _device_id| {
+            probed.lock().unwrap().push(pci_host.to_string());
+            Ok(Some(crate::gpu_cc::CcMode::On))
+        });
+
+        assert_eq!(
+            probed.into_inner().unwrap(),
+            vec!["07:00.0".to_string()],
+            "only the unattached card is probed"
+        );
+        let cache = state.gpu_cc_modes.lock().unwrap();
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.get("07:00.0"), Some(&crate::gpu_cc::CcMode::On));
+        assert_eq!(cache.get("06:00.0"), None);
+    }
+
+    #[test]
+    fn refresh_cc_modes_forgets_a_card_whose_probe_no_longer_answers() {
+        // Two free cards, both cached as CC-on from an earlier probe. One
+        // now fails to probe, the other reads a register encoding with no
+        // mode. Neither may keep advertising the stale value: a scheduler
+        // trusting it would place a confidential workload on a card the
+        // host can no longer vouch for.
+        let card = |pci_host: &str| GpuDevice {
+            vendor: "NVIDIA".to_string(),
+            device_name: "GB202 [GeForce RTX 5090]".to_string(),
+            device_class: "0300".to_string(),
+            pci_host: pci_host.to_string(),
+            device_id: "10de:2b85".to_string(),
+            cc_mode: None,
+        };
+        let host = HostState {
+            settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
+            host_ipv4: String::new(),
+            network_interface: None,
+            gpus: vec![card("06:00.0"), card("07:00.0")],
+            dns_nameservers: None,
+        };
+        let state = DaemonState::hermetic(
+            host,
+            WorldView::default(),
+            Arc::new(crate::units::StaticUnitStates::default()),
+            Arc::new(crate::logs::StaticLogSource::new(Vec::new())),
+        );
+        {
+            let mut cache = state.gpu_cc_modes.lock().unwrap();
+            cache.insert("06:00.0".to_string(), crate::gpu_cc::CcMode::On);
+            cache.insert("07:00.0".to_string(), crate::gpu_cc::CcMode::On);
+        }
+
+        refresh_cc_modes_with(&state, |pci_host, _device_id| match pci_host {
+            "06:00.0" => Err(DaemonError::GpuProbe("BAR0 went away".to_string())),
+            _ => Ok(None),
+        });
+
+        let cache = state.gpu_cc_modes.lock().unwrap();
+        assert!(
+            cache.is_empty(),
+            "a failed or modeless probe must evict the stale entry: {cache:?}"
+        );
+    }
+
     #[test]
     fn a_running_adopted_vm_maps_like_the_python_to_vm_info() {
         let entry = fixture_entry(test_fixtures::QEMU_HASH, true);
         let now = entry.times.started_at_ns + 7_500_000_000;
-        let info = vm_info_message(&entry, true, now);
+        let info = vm_info_message(&empty_state(), &entry, true, now);
         assert_eq!(info.status, pb::VmStatus::Running as i32);
         assert_eq!(info.uptime_secs, 7, "int(total_seconds()) truncates");
         assert_eq!(info.backend, pb::Backend::Qemu as i32);
@@ -1335,11 +1589,11 @@ mod tests {
         // wart of ledger entry 11).
         let entry = fixture_entry(test_fixtures::QEMU_HASH, false);
         for live in [false, true] {
-            let info = vm_info_message(&entry, live, now_ns());
+            let info = vm_info_message(&empty_state(), &entry, live, now_ns());
             assert_eq!(info.status, pb::VmStatus::Stopped as i32);
             assert_eq!(info.uptime_secs, 0);
         }
-        let info = vm_info_message(&entry, false, now_ns());
+        let info = vm_info_message(&empty_state(), &entry, false, now_ns());
         assert_eq!(info.ipv4, Some(pb::IpAssignment::default()));
         assert_eq!(info.ipv6, Some(pb::IpAssignment::default()));
     }
@@ -1355,10 +1609,10 @@ mod tests {
             defined_at_ns: entry.times.defined_at_ns,
             ..VmTimes::default()
         };
-        let info = vm_info_message(&entry, true, now_ns());
+        let info = vm_info_message(&empty_state(), &entry, true, now_ns());
         assert_eq!(info.status, pb::VmStatus::Running as i32);
         assert_eq!(info.uptime_secs, 0, "no started_at was ever stamped");
-        let info = vm_info_message(&entry, false, now_ns());
+        let info = vm_info_message(&empty_state(), &entry, false, now_ns());
         assert_eq!(info.status, pb::VmStatus::Defined as i32);
     }
 
@@ -1367,7 +1621,7 @@ mod tests {
         // The Python wart, ported: the restore path never sets starting_at
         // or stopped_at, so a dead unit falls through _status_of to DEFINED.
         let entry = fixture_entry(test_fixtures::QEMU_HASH, true);
-        let info = vm_info_message(&entry, false, now_ns());
+        let info = vm_info_message(&empty_state(), &entry, false, now_ns());
         assert_eq!(info.status, pb::VmStatus::Defined as i32);
         assert_eq!(info.uptime_secs, 0);
     }
@@ -1376,12 +1630,12 @@ mod tests {
     fn confidential_mode_follows_the_sev_policy_bit() {
         let entry = fixture_entry(test_fixtures::CONFIDENTIAL_HASH, true);
         // The fixture's policy is 0x5: the SEV_ES bit (0x4) is set.
-        let info = vm_info_message(&entry, true, now_ns());
+        let info = vm_info_message(&empty_state(), &entry, true, now_ns());
         assert_eq!(info.confidential_mode, pb::ConfidentialMode::SevEs as i32);
         assert!(!info.awaiting_confidential_init);
         // A confidential VM with a dead unit but started_at set is
         // "awaiting init" in Python's formula; port it literally.
-        let info = vm_info_message(&entry, false, now_ns());
+        let info = vm_info_message(&empty_state(), &entry, false, now_ns());
         assert!(info.awaiting_confidential_init);
     }
 

@@ -363,6 +363,9 @@ class GpuDevice:
     device_id: str
     model: str
     supports_x_vga: bool
+    # NVIDIA confidential-computing mode ("on", "devtools", "off"), or None
+    # when the card is not NVIDIA, not yet probed, or the probe failed.
+    cc_mode: str | None = None
 
 
 @dataclass(frozen=True)

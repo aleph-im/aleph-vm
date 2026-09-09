@@ -270,6 +270,7 @@ def gpu_device_to_pb(gpu: GpuDevice) -> pb.GpuDevice:
         device_id=gpu.device_id,
         model=gpu.model,
         supports_x_vga=gpu.supports_x_vga,
+        cc_mode=gpu.cc_mode or "",
     )
 
 
@@ -279,6 +280,7 @@ def gpu_device_from_pb(msg: pb.GpuDevice) -> GpuDevice:
         device_id=msg.device_id,
         model=msg.model,
         supports_x_vga=msg.supports_x_vga,
+        cc_mode=msg.cc_mode or None,
     )
 
 
