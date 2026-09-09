@@ -818,7 +818,11 @@ def admit_download(
     entries = cache_entries(root)
     usage = _root_usage(root, entries) + content_length
     may_evict = _may_evict_for_admission(registry)
-    evictable = _evictable_bytes(registry, entries) if may_evict else 0
+    # Only asked when the answer can change anything: a root already inside
+    # its budget cannot be refused whatever is evictable, and the estimate
+    # costs a walk of every pool's markers plus a sysfs stat per runtime
+    # entry, on the event loop, inside the download.
+    evictable = _evictable_bytes(registry, entries) if may_evict and usage > budget else 0
     if usage - evictable > budget:
         # Decided before anything is unlinked. The eviction below stops as
         # soon as the bytes really on disk fit, while this total also counts

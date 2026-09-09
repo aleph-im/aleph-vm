@@ -16,7 +16,7 @@ from reclaim_fixtures import OTHER_HASH, VM_HASH, pools, volume  # noqa: F401
 from aleph.vm.agent.vm.reclaimable import (
     MARKER_NAME,
     ReclaimableMarker,
-    UnsupportedMarkerVersion,
+    UnsupportedMarkerVersionError,
     adopt,
     clear_marker,
     depends_on_from_content,
@@ -100,7 +100,7 @@ def test_a_marker_from_a_newer_schema_does_not_parse():
         }
     )
 
-    with pytest.raises(UnsupportedMarkerVersion, match="version 2"):
+    with pytest.raises(UnsupportedMarkerVersionError, match="version 2"):
         ReclaimableMarker.from_json(text)
 
 

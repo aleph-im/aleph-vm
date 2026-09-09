@@ -353,6 +353,12 @@ turn retained disks into an owner-less orphan directory with no parent-image
 pins and a timestamp that resets on every attempt. A directory the failed
 create's own teardown purged is not re-marked, and a marker written while
 the create ran (a retire of the same hash) is the newer record and stays.
+Two creates of one hash can overlap (a scheduler push beside an operator
+reinstall), and only the first of them finds a marker to adopt, so what was
+adopted is held per namespace rather than per create: while any create is
+still running nothing goes back, a create that returns drops the markers for
+good (the directory is a live VM's now), and the last create to leave with
+none of them committed restores whatever any of them adopted.
 
 ### The reconciler
 

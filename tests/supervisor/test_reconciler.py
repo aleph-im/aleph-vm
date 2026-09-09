@@ -149,7 +149,7 @@ def test_a_create_that_lands_mid_walk_keeps_its_directory(pools, registry, monke
 
     def measure_then_create(namespace: str) -> int:
         size = measured(namespace)
-        reconciler_module._creating[namespace] = 1
+        reconciler_module._creating[namespace] = reconciler_module._CreateState(creates=1)
         return size
 
     monkeypatch.setattr(reconciler_module, "namespace_size_bytes", measure_then_create)
@@ -336,6 +336,55 @@ def test_a_failed_create_leaves_the_marker_to_the_create_still_running(pools, mo
             raise RuntimeError("the inner create failed")
         assert read_marker(pools["pool0"] / VM_HASH) is None
     assert read_marker(pools["pool0"] / VM_HASH) is None
+
+
+@pytest.mark.asyncio
+async def test_the_last_of_two_overlapping_creates_restores_what_either_adopted(pools, monkeypatch):  # noqa: F811
+    """The overlap that is not nested: two creates of one hash in two tasks,
+    as a scheduler push and an operator reinstall arrive together.
+
+    The first adopted the marker and fails while the second still runs, so it
+    leaves the restore to the second, and the second adopted nothing because
+    the first had already cleared it. Unless the two share what was adopted,
+    nobody puts the marker back: the next pass then re-marks the directory as
+    an orphan with no owner and no depends_on, which is exactly the loss the
+    restore exists to prevent."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    mark_reclaimable(VM_HASH, "gone", (OTHER_HASH,), now=NOW, owner=OWNER)
+    first_adopted = asyncio.Event()
+    second_started = asyncio.Event()
+    first_finished = asyncio.Event()
+
+    async def push():
+        with creating(VM_HASH):
+            first_adopted.set()
+            await second_started.wait()
+            raise RuntimeError("the first create failed")
+
+    async def reinstall():
+        await first_adopted.wait()
+        with creating(VM_HASH):
+            second_started.set()
+            await first_finished.wait()
+            raise RuntimeError("the second create failed too")
+
+    first = asyncio.create_task(push())
+    second = asyncio.create_task(reinstall())
+    with pytest.raises(RuntimeError, match="the first create failed"):
+        await first
+    # The second create is still writing the directory, so nothing is back yet.
+    assert read_marker(pools["pool0"] / VM_HASH) is None
+    first_finished.set()
+    with pytest.raises(RuntimeError, match="the second create failed too"):
+        await second
+
+    restored = read_marker(pools["pool0"] / VM_HASH)
+    assert restored is not None
+    assert restored.owner == OWNER
+    assert restored.depends_on == (OTHER_HASH,)
+    assert restored.reclaimable_since == NOW
+    assert not is_creating(VM_HASH)
 
 
 def test_old_orphan_is_purged_under_reap(pools, registry, monkeypatch):  # noqa: F811
@@ -542,7 +591,7 @@ def test_a_hash_entering_creating_mid_pass_is_not_purged(pools, registry, monkey
     def orphan_then_claim(directory, is_live, now, guard, *, dry_run):
         result = real_is_orphan(directory, is_live, now, guard, dry_run=dry_run)
         if result:
-            reconciler_module._creating[directory.name] = 1
+            reconciler_module._creating[directory.name] = reconciler_module._CreateState(creates=1)
         return result
 
     monkeypatch.setattr(reconciler_module, "_is_orphan", orphan_then_claim)
@@ -1344,7 +1393,7 @@ def test_make_room_never_evicts_a_directory_a_create_is_using(pools, monkeypatch
     monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
     retained = volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=8192)
     mark_reclaimable(VM_HASH, "gone", now=NOW - timedelta(days=2))
-    monkeypatch.setattr(reconciler_module, "_creating", {VM_HASH: 1})
+    monkeypatch.setattr(reconciler_module, "_creating", {VM_HASH: reconciler_module._CreateState(creates=1)})
     _fake_disk_usage(monkeypatch, 0)
 
     freed = make_room(get_pools()[0], needed_bytes=8192)

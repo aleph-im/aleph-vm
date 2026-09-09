@@ -93,11 +93,29 @@ logger = logging.getLogger(__name__)
 
 STAGING_KINDS = ("vprogram", "snp-instance")
 
-# Namespace to the number of creates in flight for it. A count rather than
-# a set: a scheduler push and an operator reinstall take no common per-hash
-# lock, so two creating() spans for one hash can overlap, and the first to
-# exit must not unguard the second.
-_creating: dict[str, int] = {}
+
+@dataclass
+class _CreateState:
+    """What the creates in flight for one namespace share.
+
+    A count rather than a set of creates: a scheduler push and an operator
+    reinstall take no common per-hash lock, so two ``creating()`` spans for
+    one hash can overlap, and the first to exit must not unguard the second.
+
+    The adopted markers are shared for the same reason. Only the first create
+    in finds a marker to adopt, so a per-create record of it would be lost the
+    moment that create failed while a later one was still running: the later
+    one adopted nothing and would have nothing to put back. Held here, the
+    markers belong to the namespace, and the last create to leave without
+    committing restores whatever any of them adopted.
+    """
+
+    creates: int = 0
+    adopted: dict[Path, ReclaimableMarker] = field(default_factory=dict)
+
+
+# Namespace to the creates in flight for it.
+_creating: dict[str, _CreateState] = {}
 
 
 @dataclass
@@ -138,10 +156,16 @@ def creating(namespace: str) -> Iterator[None]:
     so a retained directory keeps its owner (who may still ask for it to be
     erased), the parent images its volumes depend on, and its place in the
     eviction queue. That matters because a failing create is retried: the
-    allocation reconciler pushes it again on every cycle. The one exception
-    is a failure while another create for the same hash is still running:
-    that one owns the directory now, and it puts back what it adopted if it
-    fails in its turn.
+    allocation reconciler pushes it again on every cycle.
+
+    Overlapping creates of one hash share what was adopted, and the last one
+    out answers for it. While any create is still running nothing is put back,
+    because a marker on a directory a create is writing says its disks are
+    reclaimable capacity, which the node would then sell to somebody else. A
+    create that returns normally commits, and then the markers are dropped for
+    good: the directory belongs to a live VM. Only when the last create leaves
+    and none of them committed do the markers go back, whichever create had
+    adopted them.
     """
     # Register before adopting: between clear_marker and the add there would
     # otherwise be an instant where the directory is protected by neither
@@ -149,40 +173,37 @@ def creating(namespace: str) -> Iterator[None]:
     # unmarked, not-creating orphan. Registered first, a pass that read
     # is_creating as False must have read it before this line, and then
     # still sees the marker adopt() has yet to clear.
-    _creating[namespace] = _creating.get(namespace, 0) + 1
-    adopted: dict[Path, ReclaimableMarker] = {}
+    state = _creating.setdefault(namespace, _CreateState())
+    state.creates += 1
+    committed = False
     try:
         # Inside the try: an adopt that raises (a marker that cannot be
         # unlinked) must not leave the guard up for good, which would exempt
         # the namespace from every future pass.
-        adopted = adopt(namespace)
+        state.adopted.update(adopt(namespace))
         yield
-    except BaseException:
-        # Any way out other than a normal return means the create did not
-        # commit: an exception, and a cancellation of the task running it.
-        # The restore runs before the guard comes down below, so no pass can
-        # see the directory unmarked and unguarded in between.
-        if _creating[namespace] > 1:
-            # Except when another create for this hash is still running: the
-            # directory is that one's now, and a marker on a directory a
-            # create is writing says its disks are reclaimable capacity, which
-            # the node would then sell to somebody else. The create that
-            # holds it restores what it adopted if it fails in its turn.
-            logger.info("Not restoring the markers of %s: another create still holds it", namespace)
-            raise
-        try:
-            restore_markers(adopted)
-        except Exception:
-            # Deliberately swallowed: the create's own failure is what the
-            # caller has to see. A directory left unmarked is picked up as an
-            # orphan by the next pass, which is what used to happen anyway.
-            logger.exception("Could not restore the reclaimable markers of %s", namespace)
-        raise
+        # Reached on a normal return only, so not on an exception and not on a
+        # cancellation of the task running the create.
+        committed = True
     finally:
-        remaining = _creating[namespace] - 1
-        if remaining:
-            _creating[namespace] = remaining
+        state.creates -= 1
+        if committed:
+            state.adopted.clear()
+        if state.creates:
+            if not committed:
+                logger.info("Not restoring the markers of %s yet: another create still holds it", namespace)
         else:
+            if state.adopted:
+                try:
+                    restore_markers(state.adopted)
+                except Exception:
+                    # Deliberately swallowed: the create's own failure is what
+                    # the caller has to see. A directory left unmarked is
+                    # picked up as an orphan by the next pass, which is what
+                    # used to happen anyway.
+                    logger.exception("Could not restore the reclaimable markers of %s", namespace)
+            # The guard comes down last, after the restore, so no pass can see
+            # the directory unmarked and unguarded in between.
             del _creating[namespace]
 
 

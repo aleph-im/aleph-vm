@@ -38,7 +38,7 @@ ReclaimReason = Literal["gone", "orphan"]
 RECLAIM_REASONS: frozenset[str] = frozenset(get_args(ReclaimReason))
 
 
-class UnsupportedMarkerVersion(ValueError):
+class UnsupportedMarkerVersionError(ValueError):
     """A marker written to a schema this agent does not know.
 
     Distinct from a corrupt marker: the file is intact, a newer agent wrote
@@ -85,7 +85,7 @@ class ReclaimableMarker:
         version = int(data.get("version", MARKER_VERSION))
         if version != MARKER_VERSION:
             msg = f"marker version {version} is not the version {MARKER_VERSION} this agent writes"
-            raise UnsupportedMarkerVersion(msg)
+            raise UnsupportedMarkerVersionError(msg)
         reason = data["reason"]
         if reason not in RECLAIM_REASONS:
             msg = f"marker reason {reason!r} is not one of {', '.join(sorted(RECLAIM_REASONS))}"
@@ -182,7 +182,7 @@ def read_marker(namespace_dir: Path, *, repair: bool = True) -> ReclaimableMarke
     except OSError:
         logger.warning("Unreadable reclaimable marker at %s, ignoring it", path)
         return None
-    except UnsupportedMarkerVersion as error:
+    except UnsupportedMarkerVersionError as error:
         logger.error("Reclaimable marker at %s is in a schema this agent does not know (%s); keeping it", path, error)
         return None
     except (ValueError, KeyError, TypeError, AttributeError):
