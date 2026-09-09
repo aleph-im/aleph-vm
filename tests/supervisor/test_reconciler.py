@@ -927,7 +927,11 @@ async def test_a_young_directory_keeps_its_devices_without_the_in_process_guard(
     assert torn == []
     assert young.exists()
 
-    _age(young, 10_000)
+    # Aged against the clock, not NOW: orphan_device_namespaces reads the
+    # clock itself (reconcile_now threads no `now`), and the young case above
+    # already relies on the directory's real mtime being recent.
+    stamp = time.time() - 10_000
+    os.utime(young, (stamp, stamp))
     await reconcile_now(_app(registry, _supervisor()))
     assert torn == [VM_HASH]
 

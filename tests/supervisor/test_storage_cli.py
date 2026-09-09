@@ -402,3 +402,18 @@ def test_reconcile_leaves_orphan_devices_when_the_supervisor_is_unreachable(pool
 
     assert code == 0
     assert torn == []
+
+
+def test_a_degraded_reconcile_leaves_orphan_devices_too(pools, registry, monkeypatch, tmp_path):  # noqa: F811
+    """Without --trust-registry an unreachable supervisor downgrades the pass
+    to a dry run, and a dry run tears nothing down: the device skip holds on
+    both counts, not only through the --trust-registry branch."""
+    _fake_mapper(monkeypatch, tmp_path, f"{VM_HASH}_rootfs")
+    torn: list[str] = []
+    monkeypatch.setattr(reconciler_module, "teardown_namespace_devices", AsyncMock(side_effect=torn.append))
+    monkeypatch.setattr(cli, "_open_supervisor", lambda: _fake_supervisor(fails=True))
+
+    code, _out = _run(["reconcile"], registry)
+
+    assert code == cli.DEGRADED_EXIT_CODE
+    assert torn == []
