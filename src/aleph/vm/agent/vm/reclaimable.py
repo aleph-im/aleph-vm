@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import stat
 import time
 from collections.abc import Iterator, Mapping
 from dataclasses import asdict, dataclass, replace
@@ -119,12 +120,17 @@ def file_size_bytes(path: Path) -> int:
 
     The single definition of "how much disk does this file actually hold" for
     the agent: everything that measures a VM's storage goes through here or
-    through ``directory_size_bytes``."""
+    through ``directory_size_bytes``.
+
+    One lstat answers all of it, which matters because the callers run this
+    over every file of every cache and every pool: the mode says whether it
+    is a regular file (a symlink is not, so it is refused without following
+    it) and the same result carries the blocks."""
     try:
         st = path.lstat()
     except OSError:
         return 0
-    if path.is_symlink() or not path.is_file():
+    if not stat.S_ISREG(st.st_mode):
         return 0
     return st.st_blocks * 512
 

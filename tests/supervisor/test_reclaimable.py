@@ -21,6 +21,7 @@ from aleph.vm.agent.vm.reclaimable import (
     clear_marker,
     depends_on_from_content,
     directory_size_bytes,
+    file_size_bytes,
     iter_reclaimable,
     mark_reclaimable,
     read_marker,
@@ -173,6 +174,26 @@ def test_mark_reclaimable_writes_one_marker_per_pool_dir(pools):  # noqa: F811
 def test_mark_reclaimable_refuses_an_implausible_namespace(pools):  # noqa: F811, ARG001
     with pytest.raises(ValueError):
         mark_reclaimable("../etc", "gone")
+
+
+def test_file_size_counts_regular_files_and_nothing_else(pools, tmp_path):  # noqa: F811, ARG001
+    """A symlink counts 0 whatever it points at: what it points at is not
+    this directory's space, and counting it would let one link inflate every
+    figure derived from here."""
+    real = tmp_path / "rootfs.qcow2"
+    real.write_bytes(b"x" * 8192)
+    link = tmp_path / "link.qcow2"
+    link.symlink_to(real)
+    dangling = tmp_path / "dangling.qcow2"
+    dangling.symlink_to(tmp_path / "never-existed")
+    directory = tmp_path / "sub"
+    directory.mkdir()
+
+    assert file_size_bytes(real) >= 8192
+    assert file_size_bytes(link) == 0
+    assert file_size_bytes(dangling) == 0
+    assert file_size_bytes(directory) == 0
+    assert file_size_bytes(tmp_path / "not-there") == 0
 
 
 def test_directory_size_counts_only_regular_files_directly_inside(pools):  # noqa: F811
