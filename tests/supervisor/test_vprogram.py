@@ -212,7 +212,6 @@ async def test_create_vm_execution_vprogram_launches_snp(mocker):
         supervisor=supervisor,
         registry=registry,
         capacity=MagicMock(),
-        persistent=True,
     )
 
     mock_build.assert_awaited_once_with(vm_hash, message.content)
@@ -273,7 +272,6 @@ async def test_create_vm_execution_vprogram_wait_failure_tears_down(mocker):
             supervisor=supervisor,
             registry=registry,
             capacity=MagicMock(),
-            persistent=True,
         )
 
     retire.assert_awaited_once_with(vm_hash, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)
@@ -306,7 +304,6 @@ async def test_create_vm_execution_vprogram_build_failure_forgets_record(mocker)
             supervisor=supervisor,
             registry=registry,
             capacity=MagicMock(),
-            persistent=True,
         )
 
     supervisor.create_vm.assert_not_awaited()
@@ -337,7 +334,6 @@ async def test_create_vm_execution_vprogram_capacity_failure_refuses_before_stag
             supervisor=supervisor,
             registry=registry,
             capacity=capacity,
-            persistent=True,
         )
 
     build.assert_not_awaited()
