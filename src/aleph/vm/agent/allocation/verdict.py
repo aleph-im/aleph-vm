@@ -1,11 +1,19 @@
 """Turning a request body into a plan, and a plan into an immediate answer.
 
-Everything here is pure and await-free by design: the handler must not yield to
-the event loop between reading the supervisor's view and swapping the desired
-state, or a concurrent push could invalidate the verdict it just returned.
+The verdict half is pure and await-free by design: the handler must not yield
+to the event loop between reading the supervisor's view and swapping the
+desired state, or a concurrent push could invalidate the verdict it just
+returned.
+
+Building the plan is the one part that awaits, and it is over before that
+window opens: it judges each entry on its own, in a worker thread, so a push
+carrying thousands of signed messages does not stop the agent from answering
+anything else while they are parsed and their signatures recovered.
 """
 
+import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
 from typing import Protocol
@@ -21,7 +29,11 @@ from aleph.vm.agent.allocation.plan import (
     by_hash,
 )
 from aleph.vm.agent.allocation.teardown import is_removable_by_allocation
-from aleph.vm.agent.allocation.verify import VerificationOutcome, verify_entry
+from aleph.vm.agent.allocation.verify import (
+    VerificationOutcome,
+    VerifiedMessage,
+    verify_entry,
+)
 from aleph.vm.agent.capacity import (
     AdmissionVerdict,
     ResourceRequirements,
@@ -72,17 +84,32 @@ def compute_plan_id(planned: list[str], rejected: list[str]) -> str:
     return "sha256:" + sha256(f"{digest(planned)}:{digest(rejected)}".encode()).hexdigest()
 
 
-def build_plan(body: dict, *, now: datetime) -> tuple[AllocationPlan, dict[str, dict]]:
-    """Verify every entry and assemble the plan.
+# How many entries one hop into a worker thread judges. Small enough that a
+# batch is milliseconds of work rather than seconds, large enough that the hop
+# itself stays a rounding error next to the parse and the ecrecover it carries.
+VERIFICATION_BATCH_SIZE = 32
 
-    Rejected entries are returned separately: they are answered in the response
-    and never enter the plan, so nothing downstream can act on them.
 
-    Separately is not silently: an entry whose hash we could read is named in
-    the plan's ``refused`` set, because the convergence loop tears down every
-    VM the push did not name and a message we would not verify is no reason
-    to delete the VM it names. An entry whose hash we could not read is left
-    out of that set, since it names no VM here and so has nothing to protect.
+@dataclass(frozen=True)
+class JudgedEntry:
+    """One plan entry, judged on nothing but itself.
+
+    Every field is derived from the entry alone, with no shared state read or
+    written, which is what makes a batch of these safe to compute in a worker
+    thread. ``vm_hash`` is None when the entry's item_hash is not a hash, and
+    then ``raw_hash`` is whatever string the push sent in its place, since
+    that is the key the answer has to name it under.
+    """
+
+    raw_hash: str
+    vm_hash: ItemHash | None
+    outcome: VerificationOutcome
+    verified: VerifiedMessage | None
+    reason: str
+
+
+def _plan_entries(body: dict) -> list:
+    """The body's list of entries, or the ValueError that says it is not one.
 
     A bad entry is data to reject, but a body we cannot read raises. An empty
     plan is a real instruction, the one that stops everything this node runs,
@@ -95,37 +122,104 @@ def build_plan(body: dict, *, now: datetime) -> tuple[AllocationPlan, dict[str, 
     if not isinstance(vms, list):
         msg = "plan body has no 'vms' list"
         raise ValueError(msg)
+    return vms
+
+
+def judge_entry(entry: object) -> JudgedEntry:
+    """Parse one entry's hash and verify the message it carries.
+
+    This is the validation boundary for a body the scheduler controls, so a
+    bad entry is data to reject, never an exception: one unusable hash must
+    not take down the whole push.
+    """
+
+    def unusable(raw: object) -> JudgedEntry:
+        logger.warning("Refusing plan entry with an unusable item_hash: %r", raw)
+        return JudgedEntry(
+            raw_hash=str(raw),
+            vm_hash=None,
+            outcome=VerificationOutcome.REJECTED,
+            verified=None,
+            reason="unusable item_hash",
+        )
+
+    # An entry that is not an object has no item_hash to read, so it is
+    # refused under the same key a missing one is, and never reaches
+    # verify_entry, which reads the entry as a mapping.
+    if not isinstance(entry, dict):
+        return unusable(None)
+    raw_hash = entry.get("item_hash")
+    try:
+        vm_hash = ItemHash(str(raw_hash))
+    except Exception:
+        return unusable(raw_hash)
+    outcome, verified, reason = verify_entry(entry)
+    return JudgedEntry(raw_hash=str(raw_hash), vm_hash=vm_hash, outcome=outcome, verified=verified, reason=reason)
+
+
+def judge_entries(entries: list) -> list[JudgedEntry]:
+    """Judge a batch of entries. Runs in a worker thread; touches nothing shared."""
+    return [judge_entry(entry) for entry in entries]
+
+
+def assemble_plan(judged: list[JudgedEntry], *, now: datetime) -> tuple[AllocationPlan, dict[str, dict]]:
+    """Fold the per-entry judgements into one plan, in the order they arrived.
+
+    Rejected entries are returned separately: they are answered in the response
+    and never enter the plan, so nothing downstream can act on them.
+
+    Separately is not silently: an entry whose hash we could read is named in
+    the plan's ``refused`` set, because the convergence loop tears down every
+    VM the push did not name and a message we would not verify is no reason
+    to delete the VM it names. An entry whose hash we could not read is left
+    out of that set, since it names no VM here and so has nothing to protect.
+    """
     entries: dict[ItemHash, PlannedVm] = {}
     rejected: dict[str, dict] = {}
     refused: set[ItemHash] = set()
-    for entry in vms:
-        # This is the validation boundary for a body the scheduler controls, so
-        # a bad entry is data to reject, never an exception: one unusable hash
-        # must not take down the whole push.
-        raw_hash = entry.get("item_hash") if isinstance(entry, dict) else None
-        try:
-            vm_hash = ItemHash(str(raw_hash))
-        except Exception:
-            logger.warning("Refusing plan entry with an unusable item_hash: %r", raw_hash)
-            rejected[str(raw_hash)] = {"code": "invalid_message", "message": "unusable item_hash"}
+    for judgement in judged:
+        vm_hash = judgement.vm_hash
+        if vm_hash is None:
+            rejected[judgement.raw_hash] = {"code": "invalid_message", "message": judgement.reason}
             continue
         if vm_hash in rejected:
             # The same hash pushed twice, refused once. A later entry must not
             # talk the plan into carrying a hash the answer says was refused.
             logger.warning("Ignoring a repeat entry for %s: already refused by this push", vm_hash)
             continue
-        outcome, verified, reason = verify_entry(entry)
-        if outcome is VerificationOutcome.REJECTED:
-            rejected[vm_hash] = {"code": "invalid_message", "message": reason}
+        if judgement.outcome is VerificationOutcome.REJECTED:
+            rejected[vm_hash] = {"code": "invalid_message", "message": judgement.reason}
             refused.add(vm_hash)
             # The other order of the same duplicate: an earlier entry may
             # already have put this hash in the plan.
             entries.pop(vm_hash, None)
             continue
-        entries[vm_hash] = PlannedVm(vm_hash=vm_hash, verified=verified)
+        entries[vm_hash] = PlannedVm(vm_hash=vm_hash, verified=judgement.verified)
     plan_id = compute_plan_id([str(h) for h in entries], [str(h) for h in rejected])
     plan = AllocationPlan(plan_id=plan_id, received_at=now, entries=entries, refused=frozenset(refused))
     return plan, rejected
+
+
+async def build_plan(body: dict, *, now: datetime) -> tuple[AllocationPlan, dict[str, dict]]:
+    """Verify every entry and assemble the plan.
+
+    The per-entry work, a pydantic parse and a signature recovery each, runs
+    in a worker thread a batch at a time. A push is capped at 8 MiB, which is
+    thousands of entries and seconds of arithmetic, and doing it inline meant
+    the agent answered nothing at all for those seconds: not a status request,
+    not a supervisor callback, not its own convergence pass. Judging an entry
+    reads no shared state, so a thread is safe; folding the judgements into a
+    plan is ordering, and that stays here.
+
+    Awaiting is safe at this point and only at this point: the answer has not
+    been computed yet, so there is no verdict for a concurrent push to
+    invalidate. Nothing between the supervisor read and submit() may yield.
+    """
+    entries = _plan_entries(body)
+    judged: list[JudgedEntry] = []
+    for start in range(0, len(entries), VERIFICATION_BATCH_SIZE):
+        judged.extend(await asyncio.to_thread(judge_entries, entries[start : start + VERIFICATION_BATCH_SIZE]))
+    return assemble_plan(judged, now=now)
 
 
 def _retention_reason(record: AgentVmRecord, info: VmInfo) -> str:

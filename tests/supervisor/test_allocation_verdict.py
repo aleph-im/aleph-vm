@@ -1,5 +1,6 @@
 """The immediate answer to a plan push: what we take, drop, refuse or keep."""
 
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,8 +8,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aleph_message.models import ItemHash
+from conftest import instance_content_dict, sign_message
+from eth_account import Account
 from test_supervisor_translate import _make_qemu_instance_message
 
+from aleph.vm.agent.allocation import verdict as verdict_module
 from aleph.vm.agent.allocation.plan import AllocationPlan, PlannedVm, PlanVerdict
 from aleph.vm.agent.allocation.verdict import build_plan, compute_verdict, narrow_plan
 from aleph.vm.agent.capacity import AdmissionVerdict, CapacityManager
@@ -52,8 +56,7 @@ def _capacity(verdicts):
 
 
 def _verified(content=None):
-    message = SimpleNamespace(content=content or _make_qemu_instance_message())
-    return SimpleNamespace(message=message, original=message)
+    return SimpleNamespace(message=SimpleNamespace(content=content or _make_qemu_instance_message()))
 
 
 def _plan(*hashes, verified=True, content=None):
@@ -338,50 +341,56 @@ def test_a_vm_pinned_to_this_node_is_admitted():
     assert verdict.accepted == [HASH_C]
 
 
-def test_the_same_plan_produces_the_same_plan_id():
+@pytest.mark.asyncio
+async def test_the_same_plan_produces_the_same_plan_id():
     body = {"vms": [{"item_hash": str(HASH_A)}, {"item_hash": str(HASH_C)}]}
     reversed_body = {"vms": [{"item_hash": str(HASH_C)}, {"item_hash": str(HASH_A)}]}
 
-    first, _ = build_plan(body, now=NOW)
-    second, _ = build_plan(reversed_body, now=NOW)
+    first, _ = await build_plan(body, now=NOW)
+    second, _ = await build_plan(reversed_body, now=NOW)
 
     assert first.plan_id == second.plan_id
 
 
-def test_a_different_plan_produces_a_different_plan_id():
-    first, _ = build_plan({"vms": [{"item_hash": str(HASH_A)}]}, now=NOW)
-    second, _ = build_plan({"vms": [{"item_hash": str(HASH_B)}]}, now=NOW)
+@pytest.mark.asyncio
+async def test_a_different_plan_produces_a_different_plan_id():
+    first, _ = await build_plan({"vms": [{"item_hash": str(HASH_A)}]}, now=NOW)
+    second, _ = await build_plan({"vms": [{"item_hash": str(HASH_B)}]}, now=NOW)
 
     assert first.plan_id != second.plan_id
 
 
 @pytest.mark.parametrize("body", [{"vms": 5}, {"vms": None}, {"vms": "abc"}, {}, []])
-def test_a_body_we_cannot_read_is_refused_not_read_as_an_empty_plan(body):
+@pytest.mark.asyncio
+async def test_a_body_we_cannot_read_is_refused_not_read_as_an_empty_plan(body):
     """An empty plan stops everything this node runs, so a malformed body must
     not resolve to one. The string case is the dangerous one: it was walked
     character by character and answered as a plan of nothing at all."""
     with pytest.raises(ValueError, match="vms"):
-        build_plan(body, now=NOW)
+        await build_plan(body, now=NOW)
 
 
-def test_an_explicitly_empty_plan_is_still_accepted():
+@pytest.mark.asyncio
+async def test_an_explicitly_empty_plan_is_still_accepted():
     """The scheduler wanting nothing here is a real push, not a malformed one."""
-    plan, rejected = build_plan({"vms": []}, now=NOW)
+    plan, rejected = await build_plan({"vms": []}, now=NOW)
 
     assert plan.entries == {} and rejected == {}
 
 
-def test_a_rejected_key_holding_the_separator_does_not_pass_for_two():
+@pytest.mark.asyncio
+async def test_a_rejected_key_holding_the_separator_does_not_pass_for_two():
     """Rejected keys are whatever the push sent in place of a hash, so one
     refusing a single key with a newline in it must not share an identity with
     one refusing the two keys either side of that newline."""
-    one, _ = build_plan({"vms": [{"item_hash": "a\nb"}]}, now=NOW)
-    two, _ = build_plan({"vms": [{"item_hash": "a"}, {"item_hash": "b"}]}, now=NOW)
+    one, _ = await build_plan({"vms": [{"item_hash": "a\nb"}]}, now=NOW)
+    two, _ = await build_plan({"vms": [{"item_hash": "a"}, {"item_hash": "b"}]}, now=NOW)
 
     assert one.plan_id != two.plan_id
 
 
-def test_a_hash_refused_once_does_not_enter_the_plan_on_a_second_entry():
+@pytest.mark.asyncio
+async def test_a_hash_refused_once_does_not_enter_the_plan_on_a_second_entry():
     """A duplicate hash used to land in both halves of the answer, telling the
     scheduler the same VM was refused and pending at once, and the plan then
     carried an entry the answer had refused."""
@@ -389,32 +398,34 @@ def test_a_hash_refused_once_does_not_enter_the_plan_on_a_second_entry():
     refused_second = {"vms": [{"item_hash": str(HASH_A)}, {"item_hash": str(HASH_A), "message": "not-an-object"}]}
 
     for body in (refused_first, refused_second):
-        plan, rejected = build_plan(body, now=NOW)
+        plan, rejected = await build_plan(body, now=NOW)
 
         assert HASH_A in rejected
         assert list(plan.entries) == []
 
 
-def test_swapping_which_half_a_hash_lands_in_changes_the_plan_id():
+@pytest.mark.asyncio
+async def test_swapping_which_half_a_hash_lands_in_changes_the_plan_id():
     """One merged sorted list gave the same identity to a push that planned A
     and refused B as to one that planned B and refused A."""
     planned_a = {"vms": [{"item_hash": str(HASH_A)}, {"item_hash": str(HASH_B), "message": "not-an-object"}]}
     planned_b = {"vms": [{"item_hash": str(HASH_B)}, {"item_hash": str(HASH_A), "message": "not-an-object"}]}
 
-    first, first_rejected = build_plan(planned_a, now=NOW)
-    second, second_rejected = build_plan(planned_b, now=NOW)
+    first, first_rejected = await build_plan(planned_a, now=NOW)
+    second, second_rejected = await build_plan(planned_b, now=NOW)
 
     assert list(first.entries) == [HASH_A] and list(first_rejected) == [HASH_B]
     assert list(second.entries) == [HASH_B] and list(second_rejected) == [HASH_A]
     assert first.plan_id != second.plan_id
 
 
-def test_an_entry_with_an_unusable_item_hash_is_rejected_not_raised():
+@pytest.mark.asyncio
+async def test_an_entry_with_an_unusable_item_hash_is_rejected_not_raised():
     """build_plan is the validation boundary for a body the scheduler controls,
     so one bad entry must not take the whole push down with it."""
     body = {"vms": [{"item_hash": "not-a-hash"}, {}, {"item_hash": str(HASH_A)}]}
 
-    plan, rejected = build_plan(body, now=NOW)
+    plan, rejected = await build_plan(body, now=NOW)
 
     assert list(plan.entries) == [HASH_A]
     assert rejected["not-a-hash"]["code"] == "invalid_message"
@@ -424,25 +435,27 @@ def test_an_entry_with_an_unusable_item_hash_is_rejected_not_raised():
     assert plan.refused == frozenset()
 
 
-def test_a_hash_whose_message_will_not_verify_is_still_a_hash_the_push_named():
+@pytest.mark.asyncio
+async def test_a_hash_whose_message_will_not_verify_is_still_a_hash_the_push_named():
     """The push named this VM; all we refused is the message it carried. The
     convergence loop deletes what the push left out, so leaving the hash out
     of the plan entirely means a corrupt entry, from a scheduler bug or a bad
     CCN read, reaps the disks of a VM that is running here perfectly well."""
     body = {"vms": [{"item_hash": str(HASH_A), "message": "not-an-object"}, {"item_hash": str(HASH_B)}]}
 
-    plan, rejected = build_plan(body, now=NOW)
+    plan, rejected = await build_plan(body, now=NOW)
 
     assert rejected[HASH_A]["code"] == "invalid_message"
     assert list(plan.entries) == [HASH_B]
     assert plan.refused == frozenset({HASH_A})
 
 
-def test_narrowing_carries_the_refusals_the_plan_arrived_with():
+@pytest.mark.asyncio
+async def test_narrowing_carries_the_refusals_the_plan_arrived_with():
     """Two refusals reach the loop by different routes: build_plan's, over a
     message it would not verify, and the answer's, over a host with no room.
     Both name a VM the push listed, so both have to survive narrowing."""
-    plan, _ = build_plan(
+    plan, _ = await build_plan(
         {"vms": [{"item_hash": str(HASH_A), "message": "not-an-object"}, {"item_hash": str(HASH_B)}]}, now=NOW
     )
     verdict = PlanVerdict(rejected={HASH_B: {"code": "insufficient_capacity"}})
@@ -726,3 +739,65 @@ def test_a_vm_refused_for_an_undiscovered_node_hash_is_carried_as_refused():
 
     assert verdict.rejected[HASH_C]["code"] == "node_hash_unknown"
     assert narrowed.refused == frozenset({HASH_C})
+
+
+def _signed_entry(account, index: int) -> dict:
+    """One plan entry carrying a genuinely signed message, unique per index."""
+    content = instance_content_dict(account.address)
+    content["time"] = float(index)
+    message = sign_message(content, account)
+    return {"item_hash": message["item_hash"], "message": message}
+
+
+@pytest.mark.asyncio
+async def test_a_large_plan_is_verified_without_holding_the_event_loop():
+    """A push is capped at 8 MiB, which is thousands of entries, and every one
+    of them costs a pydantic parse and an ecrecover. Run inline, those seconds
+    are seconds in which the agent answers nothing else: not a status request,
+    not a supervisor callback, not the convergence loop.
+
+    The pin is a second task that has to get its turns while the plan is being
+    verified. With the work on the loop it never starts at all until the
+    answer is ready, because nothing in build_plan yields.
+    """
+    account = Account.create()
+    body = {"vms": [_signed_entry(account, index) for index in range(300)]}
+    served = asyncio.Event()
+
+    async def concurrent_work():
+        for _ in range(50):
+            await asyncio.sleep(0)
+        served.set()
+
+    ticking = asyncio.create_task(concurrent_work())
+    plan, rejected = await build_plan(body, now=NOW)
+    # Read before awaiting the task, or the reading is what let it run.
+    served_during_verification = served.is_set()
+    await ticking
+
+    assert served_during_verification, "the event loop was held for the whole of the verification"
+    assert rejected == {}
+    assert len(plan.entries) == 300
+    assert all(planned.verified is not None for planned in plan.entries.values())
+
+
+@pytest.mark.asyncio
+async def test_the_entries_reach_the_thread_in_bounded_batches(monkeypatch):
+    """One hop for the whole push would hold a worker thread for as long as the
+    plan is long, and give the loop a single checkpoint at the very start of
+    it. The batch bounds both."""
+    batches: list[int] = []
+    judge = verdict_module.judge_entries
+
+    def counting_judge(entries):
+        batches.append(len(entries))
+        return judge(entries)
+
+    monkeypatch.setattr(verdict_module, "judge_entries", counting_judge)
+    body = {"vms": [{"item_hash": f"{index:064x}"} for index in range(70)]}
+
+    plan, rejected = await build_plan(body, now=NOW)
+
+    assert len(plan.entries) == 70 and rejected == {}
+    assert batches == [32, 32, 6]
+    assert max(batches) <= verdict_module.VERIFICATION_BATCH_SIZE
