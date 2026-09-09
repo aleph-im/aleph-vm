@@ -694,9 +694,10 @@ pub fn build_snp_argv(config: &QemuConfig, sev: SevHostInfo) -> Vec<String> {
     args
 }
 
-/// Spawn qemu and supervise it: block on the child, and on SIGTERM run the
-/// graceful-stop escalation. The port of `execute_persistent_vm` +
-/// `handle_persistent_vm` for the non-confidential QEMU path.
+/// Build the argv for a non-confidential persistent VM, spawn qemu and
+/// supervise it: block on the child, and on SIGTERM run the graceful-stop
+/// escalation rather than letting systemd's SIGKILL reach a VM with dirty
+/// caches.
 pub async fn run(vm_hash: &str, config: &QemuConfig) -> Result<i32, QemuError> {
     let argv = build_argv(config);
     spawn_and_supervise(vm_hash, config, argv).await
