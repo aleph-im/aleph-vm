@@ -91,7 +91,6 @@ async def _create(capacity, supervisor=None, registry=None):
         supervisor=supervisor or _supervisor(),
         registry=registry if registry is not None else AgentVmRegistry(),
         capacity=capacity,
-        persistent=True,
     )
 
 

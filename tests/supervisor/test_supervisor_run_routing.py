@@ -125,7 +125,7 @@ async def test_eligible_instance_routed_through_supervisor(monkeypatch):
     registry = AgentVmRegistry()
 
     execution = await run_module.create_vm_execution(
-        _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
+        _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity()
     )
 
     supervisor.create_vm.assert_awaited_once_with(spec)
@@ -175,9 +175,7 @@ async def test_owner_record_recorded_before_resource_download(monkeypatch):
     monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
     monkeypatch.setattr(run_module, "persist_record", AsyncMock())
 
-    await run_module.create_vm_execution(
-        _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
-    )
+    await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity())
 
     assert (
         seen.get("record_present_at_build") is True
@@ -204,9 +202,7 @@ async def test_eligible_instance_timeout_retires_as_failed_create(monkeypatch):
     registry = AgentVmRegistry()
 
     with pytest.raises(run_module.VmStartupError):
-        await run_module.create_vm_execution(
-            _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
-        )
+        await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity())
 
     retire.assert_awaited_once_with(_HASH, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)
     supervisor.delete_vm.assert_not_awaited()
@@ -234,9 +230,7 @@ async def test_eligible_instance_port_forward_failure_retires_as_failed_create(m
     monkeypatch.setattr(run_module, "retire_vm", retire)
 
     with pytest.raises(RuntimeError, match="nftables boom"):
-        await run_module.create_vm_execution(
-            _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
-        )
+        await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity())
 
     retire.assert_awaited_once_with(_HASH, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)
     supervisor.delete_vm.assert_not_awaited()
@@ -279,9 +273,7 @@ async def test_eligible_instance_failure_with_existing_volumes_retires_as_recrea
     registry = AgentVmRegistry()
 
     with pytest.raises(RuntimeError, match="nftables boom"):
-        await run_module.create_vm_execution(
-            _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
-        )
+        await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity())
 
     # RECREATE: the record and the pre-existing volume both survive.
     assert registry.get(_HASH) is not None
@@ -330,9 +322,7 @@ async def test_eligible_instance_failure_without_existing_volumes_retires_as_fai
     assert not rootfs.exists()  # nothing allocated yet: had_volumes will be False
 
     with pytest.raises(RuntimeError, match="nftables boom"):
-        await run_module.create_vm_execution(
-            _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
-        )
+        await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity())
 
     # FAILED_CREATE: the record is dropped and the freshly-allocated volume
     # is purged.
@@ -368,9 +358,7 @@ async def test_firecracker_instance_rejected_via_spec_path(monkeypatch):
     registry = AgentVmRegistry()
 
     with pytest.raises(InvalidBackendError, match="QEMU-only"):
-        await run_module.create_vm_execution(
-            _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=False
-        )
+        await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity())
 
     run_module.build_create_vm_spec.assert_awaited_once()
     supervisor.create_vm.assert_not_awaited()
@@ -399,7 +387,7 @@ async def test_program_routed_through_spec_program_path(monkeypatch):
     registry = AgentVmRegistry()
 
     execution = await run_module.create_vm_execution(
-        _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
+        _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity()
     )
 
     build.assert_awaited_once()
@@ -439,7 +427,7 @@ async def test_confidential_instance_routed_through_spec_awaiting_init(monkeypat
     registry = AgentVmRegistry()
 
     execution = await run_module.create_vm_execution(
-        _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
+        _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity()
     )
 
     supervisor.create_vm.assert_awaited_once_with(spec)
@@ -503,9 +491,7 @@ async def test_gpu_instance_routed_through_supervisor(monkeypatch):
     resolved = _resolved_gpu()
     capacity = _fake_capacity([resolved])
 
-    execution = await run_module.create_vm_execution(
-        _HASH, supervisor=supervisor, registry=registry, capacity=capacity, persistent=True
-    )
+    execution = await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, capacity=capacity)
 
     # The requested device_ids stopped at the agent: resolution ran against
     # the ledger with the message owner, and the spec that crossed the
@@ -534,9 +520,7 @@ async def test_unsupported_content_raises_clear_error_no_pool(monkeypatch):
     registry = AgentVmRegistry()
 
     with pytest.raises(HTTPBadRequest):
-        await run_module.create_vm_execution(
-            _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=False
-        )
+        await run_module.create_vm_execution(_HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity())
 
     build.assert_not_awaited()
     supervisor.create_vm.assert_not_awaited()
@@ -867,7 +851,7 @@ async def test_startup_failure_maps_to_specific_http_reason(monkeypatch):
 
     with pytest.raises(HTTPInternalServerError) as excinfo:
         await run_module.create_vm_execution_or_raise_http_error(
-            _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
+            _HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity()
         )
     assert excinfo.value.reason == "VM failed to start"
 
@@ -917,6 +901,5 @@ async def test_create_execution_maps_file_too_large_to_bad_request(monkeypatch):
             supervisor=_fake_supervisor(),
             registry=AgentVmRegistry(),
             capacity=_fake_capacity(),
-            persistent=True,
         )
     assert excinfo.value.reason == "f is too big"

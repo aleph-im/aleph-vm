@@ -484,9 +484,12 @@ async def create_vm_execution(
     supervisor: Supervisor,
     registry: AgentVmRegistry,
     capacity: CapacityManager,
-    persistent: bool = False,
 ) -> None:
     """Create a VM for the given message.
+
+    Whether the VM is persistent is the message's business, not the caller's:
+    a program says so in ``on.persistent`` and everything else this path
+    creates is persistent by construction.
 
     Every supported content type is created through the Supervisor abstraction:
     programs through the spec program path, instances (QEMU-only, including
@@ -726,15 +729,12 @@ async def create_vm_execution_or_raise_http_error(
     supervisor: Supervisor,
     registry: AgentVmRegistry,
     capacity: CapacityManager,
-    persistent: bool = False,
 ) -> None:
     # The spec path retires a half-started VM as FAILED_CREATE inside
     # create_vm_execution, so this wrapper only translates failures to HTTP
     # responses. The agent holds no pool to clean up.
     try:
-        return await create_vm_execution(
-            vm_hash=vm_hash, supervisor=supervisor, registry=registry, capacity=capacity, persistent=persistent
-        )
+        return await create_vm_execution(vm_hash=vm_hash, supervisor=supervisor, registry=registry, capacity=capacity)
     except ResourceDownloadError as error:
         logger.exception(error)
         raise HTTPBadRequest(reason="Code, runtime or data not available") from error
@@ -1173,9 +1173,7 @@ async def start_persistent_vm(
 
         if info is None:
             logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
-            await create_vm_execution(
-                vm_hash=vm_hash, supervisor=supervisor, registry=registry, capacity=capacity, persistent=True
-            )
+            await create_vm_execution(vm_hash=vm_hash, supervisor=supervisor, registry=registry, capacity=capacity)
             # A confidential VM is created but left awaiting its owner's session
             # (only the owner can start it via /confidential/initialize). Waiting
             # for RUNNING would block forever, so re-read the status and skip the

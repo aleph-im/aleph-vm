@@ -142,7 +142,7 @@ async def test_snp_instance_create_uses_snp_builder(monkeypatch):
     registry = AgentVmRegistry()
 
     execution = await run_module.create_vm_execution(
-        VM_HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
+        VM_HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity()
     )
 
     build_snp.assert_awaited_once_with(VM_HASH, content, _SENDER)
@@ -184,9 +184,7 @@ async def test_snp_instance_never_awaits_confidential_init(monkeypatch):
     supervisor.create_vm = AsyncMock(return_value=info)
     registry = AgentVmRegistry()
 
-    await run_module.create_vm_execution(
-        VM_HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
-    )
+    await run_module.create_vm_execution(VM_HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity())
 
     # Reached the port-forward stage: add_port_forward was actually called.
     assert supervisor.add_port_forward.await_count >= 2
@@ -224,7 +222,7 @@ async def test_snp_instance_with_gpus_rejected(monkeypatch):
 
     with pytest.raises(VmSetupError, match="GPU passthrough is not supported on SEV-SNP"):
         await run_module.create_vm_execution(
-            VM_HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
+            VM_HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity()
         )
 
     build_snp.assert_not_awaited()
@@ -276,7 +274,7 @@ async def test_legacy_sev_instance_path_untouched(monkeypatch):
     registry = AgentVmRegistry()
 
     execution = await run_module.create_vm_execution(
-        VM_HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
+        VM_HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity()
     )
 
     build_sev.assert_awaited_once_with(VM_HASH, content)
@@ -312,7 +310,7 @@ async def test_snp_instance_failure_cleans_staging(monkeypatch):
 
     with pytest.raises(RuntimeError, match="qemu spawn failed"):
         await run_module.create_vm_execution(
-            VM_HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
+            VM_HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity()
         )
 
     retire.assert_awaited_once_with(VM_HASH, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)
@@ -351,7 +349,7 @@ async def test_snp_instance_port_forward_failure_cleans_staging(monkeypatch):
 
     with pytest.raises(RuntimeError, match="nftables rule failed"):
         await run_module.create_vm_execution(
-            VM_HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity(), persistent=True
+            VM_HASH, supervisor=supervisor, registry=registry, capacity=_fake_capacity()
         )
 
     retire.assert_awaited_once_with(VM_HASH, RetireReason.FAILED_CREATE, supervisor=supervisor, registry=registry)

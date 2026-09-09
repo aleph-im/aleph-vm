@@ -136,7 +136,6 @@ async def test_vprogram_create_maps_attestation_port(mocker):
         supervisor=supervisor,
         registry=registry,
         capacity=MagicMock(),
-        persistent=True,
     )
 
     assert len(supervisor.add_port_forward_calls) == 1
