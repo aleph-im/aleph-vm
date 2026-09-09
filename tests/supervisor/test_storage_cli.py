@@ -14,7 +14,11 @@ from reclaim_fixtures import OTHER_HASH, VM_HASH, pools, volume  # noqa: F401
 
 import aleph.vm.agent.storage_cli as cli
 import aleph.vm.agent.vm.reconciler as reconciler_module
-from aleph.vm.agent.vm.reclaimable import mark_reclaimable
+from aleph.vm.agent.vm.reclaimable import (
+    ReclaimableMarker,
+    mark_reclaimable,
+    write_marker,
+)
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
 
@@ -134,9 +138,25 @@ def test_reclaim_checks_the_marker_before_dialing_the_supervisor(pools, registry
     monkeypatch.setattr(cli, "_open_supervisor", open_supervisor)
 
     code, out = _run(["reclaim", "not-a-real-hash"], registry)
+    assert code == 1 and "not a VM hash" in out
 
+    code, out = _run(["reclaim", "f" * 64], registry)
     assert code == 1 and "not reclaimable" in out
+
     assert dialed == []
+
+
+def test_reclaim_refuses_a_marked_directory_not_named_after_a_vm(pools, registry):  # noqa: F811
+    """A hand-made marker under a directory nobody named after a VM: the
+    daemon's walk drops such names, and reclaim must refuse them cleanly
+    rather than trip over purge_vm_storage's own hash guard."""
+    kept = volume(pools["pool0"], "backup_old", "rootfs.qcow2")
+    write_marker(kept.parent, ReclaimableMarker(reclaimable_since=NOW, reason="gone", size_bytes=0))
+
+    code, out = _run(["reclaim", "backup_old"], registry)
+
+    assert code == 1 and "not a VM hash" in out
+    assert kept.exists()
 
 
 def test_reclaim_refuses_an_unmarked_live_directory(pools, registry):  # noqa: F811

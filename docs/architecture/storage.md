@@ -551,17 +551,20 @@ process*:
   orphan no pass has reached yet is not a live VM). Read-only, registry
   live set only.
 - `storage reclaim <hash> [--trust-registry]`: purge one reclaimable
-  directory now. Checks the `.reclaimable` marker first, purely locally, so
-  a typo or an unrelated hash fails instantly rather than waiting on a
-  supervisor dial that could only ever confirm what the marker check already
-  knows; a directory with no marker (it may belong to a live VM) is refused
-  the same way. Then refuses a hash the agent registry or the supervisor
-  considers live (see below), and refuses outright, without
-  `--trust-registry`, when the supervisor cannot be asked. Finally, if the
-  purge itself leaves the directory behind (a device-mapper target still
-  holds one of its volumes, the same guard `purge_vm_storage` always
+  directory now. Checks the name and the `.reclaimable` marker first, purely
+  locally, so a typo or an unrelated hash fails instantly rather than
+  waiting on a supervisor dial that could only ever confirm what those
+  checks already know; a name that is not a VM hash (a hand-made marker
+  under `backup_old`) and a directory with no marker (it may belong to a
+  live VM) are refused the same way. Then refuses a hash the agent registry
+  or the supervisor considers live (see below), and refuses outright,
+  without `--trust-registry`, when the supervisor cannot be asked. Finally,
+  if the purge itself leaves the directory behind (a device-mapper target
+  still holds one of its volumes, the same guard `purge_vm_storage` always
   applies), reclaim reports that and exits non-zero rather than claiming
-  success.
+  success. `reclaim` never tears devices down itself: `storage reconcile`
+  is the CLI path that does, for every VM nothing owns, so the refusal
+  points the operator there.
 - `storage reconcile [--dry-run] [--trust-registry]`: run one
   `reconcile_storage()` pass with the daemon's two device steps around it,
   or the CLI would keep refusing what the daemon reclaims. Before the pass,

@@ -53,6 +53,7 @@ from aleph.vm.agent.vm.reclaimable import (
     reclaimable_bytes,
 )
 from aleph.vm.agent.vm.reconciler import (
+    _plausible,
     _release_cache_devices,
     _still_on_disk,
     _teardown_orphan_devices,
@@ -238,35 +239,44 @@ def _list(registry: AgentVmRegistry, out: TextIO, *, reclaimable_only: bool) -> 
     return 0
 
 
-def _reclaim(registry: AgentVmRegistry, vm_hash: str, out: TextIO, *, trust_registry: bool) -> int:
-    # Cheapest, purely local check first: a typo or an unrelated hash fails
-    # instantly instead of waiting out a supervisor dial that can only ever
-    # confirm what this check already knows.
-    marked = [directory for directory, _marker in iter_reclaimable() if directory.name == vm_hash]
-    if not marked:
-        out.write(
-            f"{vm_hash} is not reclaimable (no .reclaimable marker); refusing to purge a directory a VM may own\n"
-        )
-        return 1
+def _reclaim_refusal(registry: AgentVmRegistry, vm_hash: str, *, trust_registry: bool) -> str | None:
+    """Why reclaim must not purge this hash, or None when it may.
+
+    Cheapest, purely local checks first: a typo or an unrelated hash fails
+    instantly instead of waiting out a supervisor dial that can only ever
+    confirm what these checks already know. The name check mirrors the
+    daemon's walk: a hand-made marker under a directory nobody named after a
+    VM must be refused here, not tripped over as a ValueError inside
+    purge_vm_storage after every other check passed.
+    """
+    if not _plausible(vm_hash):
+        return f"{vm_hash!r} is not a VM hash; refusing to purge a directory not named after a VM"
+    if not any(directory.name == vm_hash for directory, _marker in iter_reclaimable()):
+        return f"{vm_hash} is not reclaimable (no .reclaimable marker); refusing to purge a directory a VM may own"
     if vm_hash in live_hashes(registry):
-        out.write(f"{vm_hash} is a live VM in the agent registry; refusing to purge it\n")
-        return 1
+        return f"{vm_hash} is a live VM in the agent registry; refusing to purge it"
     running = asyncio.run(_supervisor_running_hashes())
     if running is not None:
         if vm_hash in running:
-            out.write(f"{vm_hash} is running (the supervisor lists it); refusing to purge it\n")
-            return 1
+            return f"{vm_hash} is running (the supervisor lists it); refusing to purge it"
     elif not trust_registry:
-        out.write(
+        return (
             f"Supervisor unreachable; cannot confirm {vm_hash} is not running. "
-            "Pass --trust-registry to purge using the registry alone\n"
+            "Pass --trust-registry to purge using the registry alone"
         )
+    return None
+
+
+def _reclaim(registry: AgentVmRegistry, vm_hash: str, out: TextIO, *, trust_registry: bool) -> int:
+    refusal = _reclaim_refusal(registry, vm_hash, trust_registry=trust_registry)
+    if refusal is not None:
+        out.write(refusal + "\n")
         return 1
     deleted = purge_vm_storage(vm_hash)
     if _still_on_disk(vm_hash):
         out.write(
-            f"Purge of {vm_hash} left directories behind: a device-mapper target still holds its volumes; "
-            "retry once it is torn down\n"
+            f"Purge of {vm_hash} left directories behind: a device-mapper target still holds its volumes. "
+            "Run 'storage reconcile' to tear down the devices of every VM nothing owns, then retry\n"
         )
         return 1
     out.write(f"Purged {vm_hash}: {deleted} volume file(s)\n")
