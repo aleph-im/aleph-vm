@@ -332,6 +332,13 @@ purge is immediate.
 A create for the same hash adopts the directory (the marker is unlinked and
 the volumes are reused through the existing sticky placement in
 `volume_path_for`), which is what `reconciler.creating()` does on entry.
+Adoption is undone when the create does not commit: leaving the guard by
+raising puts the adopted markers back as they were, so a re-create that
+keeps failing (the allocation reconciler retries it every cycle) does not
+turn retained disks into an owner-less orphan directory with no parent-image
+pins and a timestamp that resets on every attempt. A directory the failed
+create's own teardown purged is not re-marked, and a marker written while
+the create ran (a retire of the same hash) is the newer record and stays.
 
 ### The reconciler
 
@@ -754,7 +761,8 @@ pass against an empty registry would call every running VM an orphan.
 - `src/aleph/vm/agent/vm/retire.py`: `retire_vm` and `RetireReason`, the one
   way a VM's storage is released.
 - `src/aleph/vm/agent/vm/reclaimable.py`: the `.reclaimable` marker
-  (`mark_reclaimable`, `adopt`, `iter_reclaimable`, `reclaimable_bytes`) and
+  (`mark_reclaimable`, `adopt`, `restore_markers`, `iter_reclaimable`,
+  `reclaimable_bytes`) and
   the one enumeration of the cache entries a message names
   (`iter_content_refs`, `refs_from_content`, `depends_on_from_content`).
 - `src/aleph/vm/agent/vm/cache.py`: the cache budget, LRU eviction

@@ -31,6 +31,8 @@ from aleph.vm.storage_pools import get_pools
 from aleph.vm.supervisor_interface.errors import SupervisorError
 
 LIVE = "dead" * 16
+OWNER = "0x1234567890123456789012345678901234567890"
+OTHER_OWNER = "0x9999999999999999999999999999999999999999"
 NOW = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
 GIB = 1024**3
 
@@ -135,6 +137,125 @@ def test_creating_adopts_retained_dirs(pools, monkeypatch):  # noqa: F811
     mark_reclaimable(VM_HASH, "gone", now=NOW)
 
     with creating(VM_HASH):
+        assert read_marker(pools["pool0"] / VM_HASH) is None
+
+
+def test_a_failed_create_puts_the_retained_marker_back(pools, monkeypatch):  # noqa: F811
+    """A create that does not commit leaves the directory as it found it.
+
+    The allocation reconciler retries a failed create, so a persistently
+    failing one adopts and fails over and over. Left unmarked, the next pass
+    re-marks the directory as an orphan with no owner (the operator API can
+    no longer authorize its owner's erase) and no depends_on (the cache may
+    evict the parent image the retained volumes are built on)."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    mark_reclaimable(VM_HASH, "gone", (OTHER_HASH,), now=NOW, owner=OWNER)
+
+    with pytest.raises(RuntimeError), creating(VM_HASH):
+        raise RuntimeError("the create failed after adoption")
+
+    restored = read_marker(pools["pool0"] / VM_HASH)
+    assert restored is not None
+    assert restored.owner == OWNER
+    assert restored.depends_on == (OTHER_HASH,)
+    assert restored.reason == "gone"
+    assert restored.reclaimable_since == NOW
+
+
+def test_a_failed_create_keeps_the_eviction_order_of_what_it_adopted(pools, monkeypatch):  # noqa: F811
+    """The restored marker is the one that was there, not a fresh one: a VM
+    whose create keeps failing must not keep moving to the back of the
+    eviction queue."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    since = NOW - timedelta(days=3)
+    mark_reclaimable(VM_HASH, "orphan", now=since)
+
+    for _attempt in range(2):
+        with pytest.raises(RuntimeError), creating(VM_HASH):
+            raise RuntimeError("the create failed again")
+
+    restored = read_marker(pools["pool0"] / VM_HASH)
+    assert restored is not None and restored.reclaimable_since == since
+
+
+def test_a_create_that_commits_leaves_the_directory_adopted(pools, monkeypatch):  # noqa: F811
+    """The guard against over-restoring: a create that returns normally owns
+    the directory, and a marker put back under a live VM would offer its
+    disks to the evictor."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    mark_reclaimable(VM_HASH, "gone", now=NOW, owner=OWNER)
+
+    with creating(VM_HASH):
+        pass
+
+    assert read_marker(pools["pool0"] / VM_HASH) is None
+
+
+def test_a_failed_create_does_not_re_mark_a_directory_it_purged(pools, monkeypatch):  # noqa: F811
+    """A create that allocated fresh disks retires FAILED_CREATE, which purges
+    the whole directory before the failure leaves the guard. Nothing is put
+    back into a directory that is gone."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    disk = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    mark_reclaimable(VM_HASH, "gone", now=NOW, owner=OWNER)
+
+    with pytest.raises(RuntimeError), creating(VM_HASH):
+        disk.unlink()
+        disk.parent.rmdir()
+        raise RuntimeError("the create failed and its teardown purged the directory")
+
+    assert not (pools["pool0"] / VM_HASH).exists()
+
+
+def test_a_marker_written_during_a_failed_create_survives_the_restore(pools, monkeypatch):  # noqa: F811
+    """A retire of the same hash while the create ran wrote a newer marker.
+    That one is the current record and the restore must not replace it."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    mark_reclaimable(VM_HASH, "gone", now=NOW, owner=OWNER)
+    newer = NOW + timedelta(hours=1)
+
+    with pytest.raises(RuntimeError), creating(VM_HASH):
+        mark_reclaimable(VM_HASH, "gone", now=newer, owner=OTHER_OWNER)
+        raise RuntimeError("the create failed after the retire re-marked it")
+
+    restored = read_marker(pools["pool0"] / VM_HASH)
+    assert restored is not None
+    assert restored.reclaimable_since == newer and restored.owner == OTHER_OWNER
+
+
+def test_a_restore_that_fails_does_not_mask_the_create_failure(pools, monkeypatch):  # noqa: F811
+    """The caller has to see why its create failed, not why the marker could
+    not be put back."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    mark_reclaimable(VM_HASH, "gone", now=NOW, owner=OWNER)
+
+    def refuse(_adopted):
+        raise PermissionError("the pool is read-only")
+
+    monkeypatch.setattr(reconciler_module, "restore_markers", refuse)
+
+    with pytest.raises(RuntimeError, match="the create failed"), creating(VM_HASH):
+        raise RuntimeError("the create failed")
+
+    assert not is_creating(VM_HASH)
+
+
+def test_a_failed_inner_create_does_not_re_mark_a_directory_the_outer_holds(pools, monkeypatch):  # noqa: F811
+    """Two creates of one hash can overlap. The inner one adopted nothing (the
+    outer already cleared the marker), so its failure must leave the directory
+    the outer create is still writing unmarked."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    mark_reclaimable(VM_HASH, "gone", now=NOW, owner=OWNER)
+
+    with creating(VM_HASH):
+        with pytest.raises(RuntimeError), creating(VM_HASH):
+            raise RuntimeError("the second create failed")
         assert read_marker(pools["pool0"] / VM_HASH) is None
 
 
