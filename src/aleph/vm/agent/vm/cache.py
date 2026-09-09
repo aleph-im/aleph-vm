@@ -50,6 +50,7 @@ from aleph.vm.agent.vm.reclaimable import (
     ReclaimableMarker,
     file_size_bytes,
     iter_content_refs,
+    namespace_size_bytes,
     reclaimable_entries,
     refs_from_content,
 )
@@ -484,6 +485,10 @@ class _RootBudget:
     budget: int
     usage: int
     evicted: list[Path]
+    # Namespace to the bytes its retained volumes gave back, for the caller's
+    # report: reclaiming a VM to free its parent image deletes disks, and a
+    # pass that does not say so reports only the cache entries it unlinked.
+    reclaimed_bytes: dict[str, int]
     live_only: set[str]
     is_live: Callable[[str], bool]
     dry_run: bool
@@ -507,6 +512,7 @@ def evict_caches(
     dry_run: bool = False,
     is_live: Callable[[str], bool] | None = None,
     reclaim_retained: bool = True,
+    reclaimed_bytes: dict[str, int] | None = None,
 ) -> list[Path]:
     """Bring every cache root under ``CACHE_BUDGET``; return what was evicted.
 
@@ -521,9 +527,14 @@ def evict_caches(
     to free the parent images they pin. Admission turns it off: it runs on the
     event loop inside a download, where an rmtree of a retained VM's disks
     does not belong. What it cannot free there, the next pass frees.
+
+    ``reclaimed_bytes`` is filled with the retained VMs that second phase
+    purged and what each gave back. The return value covers cache entries
+    alone, and those are the smaller half of what this can delete.
     """
     needed = needed or {}
     evicted: list[Path] = []
+    reclaimed_bytes = reclaimed_bytes if reclaimed_bytes is not None else {}
     is_live = is_live or (lambda namespace: namespace in registry)
     live_only = live_refs(registry)
     for root in cache_roots():
@@ -543,6 +554,7 @@ def evict_caches(
             # eviction it does cause is the one its own body earned.
             usage=_root_usage(root, entries, count_ceilings=False) + needed.get(root, 0),
             evicted=evicted,
+            reclaimed_bytes=reclaimed_bytes,
             live_only=live_only,
             is_live=is_live,
             dry_run=dry_run,
@@ -645,6 +657,9 @@ def _reclaim_for_parents(
         # and the VM has no registry record yet for ``is_live`` to find.
         logger.warning("Not reclaiming %s for its parent images: a create is using it", namespace)
         return False
+    # Measured before the purge, and over every pool: this is what the pass
+    # gave back, and after the rmtree there is nothing left to measure.
+    size = namespace_size_bytes(namespace)
     if not state.dry_run:
         purge_vm_storage(namespace)
         if has_namespace_dirs(namespace):
@@ -654,7 +669,8 @@ def _reclaim_for_parents(
             logger.warning("Not evicting the parent images of %s: its purge left directories behind", namespace)
             return False
     reclaimed.add(namespace)
-    logger.info("Reclaimed the retained volumes of %s to free its parent images", namespace)
+    state.reclaimed_bytes[namespace] = size
+    logger.info("Reclaimed the retained volumes of %s (%d bytes) to free its parent images", namespace, size)
     return True
 
 

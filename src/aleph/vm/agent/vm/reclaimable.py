@@ -147,6 +147,11 @@ def directory_size_bytes(directory: Path) -> int:
     return sum(file_size_bytes(entry) for entry in entries if entry.name != MARKER_NAME)
 
 
+def namespace_size_bytes(namespace: str) -> int:
+    """Allocated bytes of a VM's volumes, on every pool it spans."""
+    return sum(directory_size_bytes(directory) for directory in iter_namespace_dirs(namespace))
+
+
 def read_marker(namespace_dir: Path, *, repair: bool = True) -> ReclaimableMarker | None:
     """The directory's marker, or None when it has none.
 

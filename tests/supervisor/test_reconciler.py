@@ -145,14 +145,14 @@ def test_a_create_that_lands_mid_walk_keeps_its_directory(pools, registry, monke
     monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
     old = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
     _age(old.parent, 10_000)
-    measured = reconciler_module._dir_bytes
+    measured = reconciler_module.namespace_size_bytes
 
     def measure_then_create(namespace: str) -> int:
         size = measured(namespace)
         reconciler_module._creating[namespace] = 1
         return size
 
-    monkeypatch.setattr(reconciler_module, "_dir_bytes", measure_then_create)
+    monkeypatch.setattr(reconciler_module, "namespace_size_bytes", measure_then_create)
 
     report = reconcile_storage(registry, now=NOW)
 
@@ -1062,6 +1062,27 @@ def test_reconcile_runs_the_cache_pass(pools, registry, monkeypatch):  # noqa: F
 
     assert report.cache_evicted == [stale]
     assert not stale.exists()
+
+
+def test_a_vm_the_cache_pass_reclaims_is_counted_in_the_report(pools, registry, monkeypatch):  # noqa: F811
+    """The cache pass gives back retained volumes to free the parent images
+    they pin, which is an eviction like any other: it has to reach the pass's
+    own figures, or the log says the pass freed a few kilobytes of cache
+    entries on a run that also deleted a VM's disks."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
+    _fake_disk_usage(monkeypatch, 8 * GIB)
+    parent = pools["runtime"] / "parent"
+    parent.write_bytes(b"x" * 4096)
+    retained = volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=8192)
+    mark_reclaimable(VM_HASH, "gone", ("parent",), now=NOW)
+
+    report = reconcile_storage(registry, now=NOW)
+
+    assert not retained.exists()
+    assert report.cache_evicted == [parent]
+    assert report.evicted == [VM_HASH]
+    assert report.bytes_freed >= 8192
 
 
 def test_the_cache_pass_is_skipped_when_a_live_vm_has_no_record(pools, registry, monkeypatch, caplog):  # noqa: F811

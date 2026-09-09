@@ -66,6 +66,7 @@ from aleph.vm.agent.vm.reclaimable import (
     clear_marker,
     directory_size_bytes,
     mark_reclaimable,
+    namespace_size_bytes,
     read_marker,
     reclaimable_entries,
     restore_markers,
@@ -179,11 +180,6 @@ def is_creating(namespace: str) -> bool:
 
 def _mtime(path: Path) -> datetime:
     return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
-
-
-def _dir_bytes(namespace: str) -> int:
-    """Allocated bytes of a VM's volumes, on every pool it spans."""
-    return sum(directory_size_bytes(directory) for directory in iter_namespace_dirs(namespace))
 
 
 def live_hashes(registry: AgentVmRegistry) -> set[str]:
@@ -432,7 +428,7 @@ def _reconcile_namespace(
     # Measured before the last liveness check rather than after it: this walks
     # every pool the VM is on, and the answer that decides whether the disks
     # go has to be the one taken after the longest pause, not before it.
-    freed = 0 if keep else _dir_bytes(namespace)
+    freed = 0 if keep else namespace_size_bytes(namespace)
     if is_live(namespace) or is_creating(namespace):
         # A create that committed, or entered creating(), between the live
         # snapshot and this walk. Asked here and not where _is_orphan has
@@ -658,7 +654,7 @@ def _evict(
     if not has_namespace_dirs(namespace):
         logger.debug("Not evicting %s: its directories are already gone", namespace)
         return 0
-    size = _dir_bytes(namespace)
+    size = namespace_size_bytes(namespace)
     if not dry_run:
         purge_vm_storage(namespace)
         if has_namespace_dirs(namespace):
@@ -757,7 +753,16 @@ def _enforce_cache_budget(
             ", ".join(unknown[:3]),
         )
         return
-    report.cache_evicted = evict_caches(registry, dry_run=dry_run, is_live=is_live)
+    reclaimed_bytes: dict[str, int] = {}
+    report.cache_evicted = evict_caches(registry, dry_run=dry_run, is_live=is_live, reclaimed_bytes=reclaimed_bytes)
+    for namespace, size in reclaimed_bytes.items():
+        # The retained VMs the cache pass gave back to free the parent images
+        # they pinned. They are evictions of the same kind the retention
+        # budget makes, and the pass's own figures have to include them.
+        if namespace in report.evicted:
+            continue
+        report.evicted.append(namespace)
+        report.bytes_freed += size
 
 
 def make_room(pool: StoragePool, needed_bytes: int, *, live: Collection[str] | None = None) -> int:
