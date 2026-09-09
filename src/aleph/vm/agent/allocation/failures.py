@@ -19,6 +19,13 @@ from aleph.vm.supervisor_interface.types import ErrorCode
 # The boundary vocabulary, folded into the refusal one. Anything absent is a
 # real answer rather than an oversight: the hypervisor side refused, which is
 # what the scheduler needs to know, and the code that says so is in the log.
+#
+# The four that mean "this node is confused" are mapped to internal instead.
+# A VM the create just asked for that the hypervisor cannot find, one it says
+# already exists, a host that is not there and the boundary's own catch-all
+# are all bugs on this side, not the hypervisor declining to run a workload.
+# Publishing them as supervisor_error would tell a scheduler the node refused
+# the VM, when what happened is that the node broke.
 _BY_SUPERVISOR_CODE: dict[ErrorCode, AllocationFailureCode] = {
     ErrorCode.INSUFFICIENT_RESOURCES: AllocationFailureCode.INSUFFICIENT_CAPACITY,
     ErrorCode.RESOURCE_DOWNLOAD_FAILED: AllocationFailureCode.DOWNLOAD_FAILED,
@@ -27,6 +34,10 @@ _BY_SUPERVISOR_CODE: dict[ErrorCode, AllocationFailureCode] = {
     ErrorCode.MICROVM_INIT_FAILED: AllocationFailureCode.STARTUP_FAILED,
     ErrorCode.INVALID_BACKEND: AllocationFailureCode.UNSUPPORTED,
     ErrorCode.TEE_UNAVAILABLE: AllocationFailureCode.UNSUPPORTED,
+    ErrorCode.VM_NOT_FOUND: AllocationFailureCode.INTERNAL,
+    ErrorCode.VM_ALREADY_EXISTS: AllocationFailureCode.INTERNAL,
+    ErrorCode.HOST_NOT_FOUND: AllocationFailureCode.INTERNAL,
+    ErrorCode.INTERNAL: AllocationFailureCode.INTERNAL,
 }
 
 
