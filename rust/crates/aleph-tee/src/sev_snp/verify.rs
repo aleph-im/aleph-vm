@@ -6,7 +6,7 @@ use openssl::x509::X509;
 use serde_json::json;
 use sev::certs::snp::builtin;
 
-use crate::pki::{asn1_now, check_cert_window, ecdsa_from_components};
+use crate::pki::{asn1_now, check_cert_window, check_pinned_root, ecdsa_from_components};
 use crate::types::{AttestationReport, SevSnpRegisters, TeeType, VerificationResult};
 
 use super::certs::{CertChain, TcbParams, fetch_ca_chain, fetch_vcek};
@@ -186,13 +186,13 @@ const AMD_ORG_NAME: &str = "Advanced Micro Devices";
 /// - ARK has AMD's expected subject metadata (CN = "ARK-{product}",
 ///   O = "Advanced Micro Devices"). This is SECONDARY, non-security metadata.
 /// - ARK is self-signed.
-/// - **ARK is pinned to AMD's genuine root**: the chain ARK's public key
-///   (SubjectPublicKeyInfo) must equal the pinned AMD ARK's public key. This is
-///   the real defense: without it, a fabricated self-signed cert carrying the
-///   right CN/O strings plus an attacker ASK/VCEK would pass. Combined with the
-///   self-signed check above, a forged ARK is rejected either way (a forger's
-///   key fails the pin; AMD's key cannot be self-signed without AMD's private
-///   key).
+/// - **ARK is pinned to AMD's genuine root**: the chain ARK must be the
+///   pinned AMD ARK, certificate for certificate. This is the real defense:
+///   without it, a fabricated self-signed cert carrying the right CN/O
+///   strings plus an attacker ASK/VCEK would pass. Combined with the
+///   self-signed check above, a forged ARK is rejected either way (a
+///   forger's key fails the pin; AMD's key cannot be self-signed without
+///   AMD's private key).
 /// - ASK is signed by ARK.
 /// - VCEK is signed by ASK.
 /// - ARK, ASK, and VCEK are all within their validity period
@@ -265,32 +265,16 @@ pub fn verify_cert_chain_at(
     Ok(())
 }
 
-/// Verify that the chain's ARK carries the same public key
-/// (SubjectPublicKeyInfo) as AMD's pinned genuine ARK.
+/// Verify that the chain's ARK is AMD's pinned genuine ARK.
 ///
-/// A mismatch means the ARK is not AMD's (forged or cache-poisoned) and the
-/// chain is rejected.
+/// The whole certificate is compared, the same way the Intel root is
+/// pinned on the TDX side: see `crate::pki::check_pinned_root` for why the
+/// envelope is part of the pin. A mismatch means the ARK is not the one
+/// this build trusts (forged, cache-poisoned, or re-issued), and the chain
+/// is rejected.
 fn verify_ark_matches_pinned_root(ark: &X509, pinned_ark_der: &[u8]) -> Result<()> {
     let pinned = X509::from_der(pinned_ark_der).context("failed to parse pinned AMD ARK")?;
-
-    let ark_spki = ark
-        .public_key()
-        .context("failed to extract chain ARK public key")?
-        .public_key_to_der()
-        .context("failed to encode chain ARK public key")?;
-    let pinned_spki = pinned
-        .public_key()
-        .context("failed to extract pinned ARK public key")?
-        .public_key_to_der()
-        .context("failed to encode pinned ARK public key")?;
-
-    if ark_spki != pinned_spki {
-        bail!(
-            "chain ARK public key does not match the pinned AMD root \
-             (possible forged or cache-poisoned ARK)"
-        );
-    }
-    Ok(())
+    check_pinned_root("the chain ARK", ark, "the pinned AMD root", &pinned)
 }
 
 /// Check an ARK certificate's subject metadata against AMD's expected values.
@@ -831,6 +815,32 @@ mod tests {
         );
     }
 
+    /// The pin is on the certificate, not only on the key. An ARK carrying
+    /// AMD's key in a different envelope (moved serial, new validity) is
+    /// refused until the pin itself is refreshed, and the error says so
+    /// rather than leaving an operator to guess at a forgery.
+    #[test]
+    fn test_verify_cert_chain_same_key_reissued_ark() {
+        let (chain, ark_key, _ask_key, _vcek_key, _ark) = valid_chain();
+        let reissued = build_cert(
+            &ark_key,
+            &ark_key,
+            AMD_CN,
+            AMD_ORG_NAME,
+            AMD_CN,
+            AMD_ORG_NAME,
+            -7200,
+            7200,
+        );
+        let pinned = reissued.to_der().unwrap();
+
+        let err = format!("{:#}", verify_cert_chain(&chain, &pinned).unwrap_err());
+        assert!(
+            err.contains("same public key"),
+            "expected the reissued-root message, got: {err}"
+        );
+    }
+
     #[test]
     fn test_verify_cert_chain_broken_ask_link() {
         // ASK signed by a rogue key, not the ARK.
@@ -997,8 +1007,16 @@ mod tests {
         for product in ["Milan", "Genoa", "Turin"] {
             let der = pinned_amd_ark_der(product).expect("pinned ARK should resolve");
             assert!(!der.is_empty());
-            // Must parse as an X.509 cert.
-            X509::from_der(&der).expect("pinned ARK must be a valid certificate");
+            // Must parse as an X.509 cert, and survive a parse and
+            // re-encode unchanged: the pin compares whole certificates, and
+            // the copy the chain carries reaches the comparison through
+            // openssl while this one comes from the sev crate.
+            let cert = X509::from_der(&der).expect("pinned ARK must be a valid certificate");
+            assert_eq!(
+                cert.to_der().unwrap(),
+                der,
+                "the pinned {product} ARK does not re-encode to the same bytes"
+            );
         }
         assert!(pinned_amd_ark_der("Bogus").is_err());
     }
@@ -1032,9 +1050,12 @@ mod tests {
                 .unwrap_or_else(|e| panic!("KDS fetch for {product} failed: {e}"));
             let kds_ark = X509::from_der(&ark_der).unwrap();
             let pinned = X509::from_der(&pinned_amd_ark_der(product).unwrap()).unwrap();
+            // The whole certificate, because that is what the pin compares:
+            // a same-key re-issue must show up here before it reaches a
+            // verifying client.
             assert_eq!(
-                kds_ark.public_key().unwrap().public_key_to_der().unwrap(),
-                pinned.public_key().unwrap().public_key_to_der().unwrap(),
+                kds_ark.to_der().unwrap(),
+                pinned.to_der().unwrap(),
                 "pinned ARK for {product} diverged from live KDS"
             );
         }
