@@ -72,6 +72,20 @@ pub struct GpuState {
 /// Default for [`GpuState::lock_wait`].
 pub const GPU_LOCK_WAIT: Duration = Duration::from_secs(10);
 
+/// The `Retry-After` a busy GPU route advertises, in whole seconds.
+///
+/// The caller has just spent `lock_wait` queueing without getting in, so the
+/// exchange ahead of it is wedged rather than merely slow, and one more
+/// `lock_wait` is the honest estimate of when the route may be worth trying
+/// again. Derived rather than a constant so a deployment that tunes the wait
+/// does not end up advertising a number the route no longer uses. Rounded up
+/// to a whole second because the header has no finer unit, and never zero: a
+/// sub-second wait would otherwise tell the client to come straight back.
+fn retry_after_secs(lock_wait: Duration) -> u64 {
+    let rounded_up = lock_wait.as_secs() + u64::from(lock_wait.subsec_nanos() > 0);
+    rounded_up.max(1)
+}
+
 /// Upper bound on the decoded nonce accepted by the attestation endpoint.
 ///
 /// The nonce is hashed into `report_data` (see `aleph_tee::report_data`), so
@@ -165,7 +179,7 @@ pub async fn gpu_attestation_endpoint(
         tokio::time::timeout(gpu.lock_wait, Arc::clone(&gpu.lock).lock_owned()).await
     else {
         return HttpResponse::ServiceUnavailable()
-            .insert_header(("Retry-After", "10"))
+            .insert_header(("Retry-After", retry_after_secs(gpu.lock_wait).to_string()))
             .json(serde_json::json!({"error": "gpu attestation busy"}));
     };
     // The collector is a blocking child process; keep it off the async
@@ -479,6 +493,40 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
     }
 
+    /// The retry the busy answer advertises follows the configured wait, so
+    /// a deployment that tunes the wait does not advertise a stale number.
+    #[actix_web::test]
+    async fn the_busy_answer_advertises_the_configured_wait() {
+        let gpu = Arc::new(GpuState {
+            source: Box::new(FakeGpu),
+            boot_claims: serde_json::Value::Null,
+            lock: Arc::new(tokio::sync::Mutex::new(())),
+            lock_wait: Duration::from_secs(3),
+        });
+        let held = gpu.lock.lock().await;
+        let resp = gpu_attestation_endpoint(
+            gpu_state(Some(Arc::clone(&gpu))),
+            web::Query(AttestationQuery {
+                nonce: "00".to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            resp.headers().get("Retry-After").unwrap(),
+            "3",
+            "the header must follow lock_wait, not a constant"
+        );
+        drop(held);
+
+        // A sub-second wait still asks for a whole second: the header has no
+        // finer unit, and zero would send the client straight back.
+        assert_eq!(retry_after_secs(Duration::from_millis(50)), 1);
+        assert_eq!(retry_after_secs(Duration::ZERO), 1);
+        assert_eq!(retry_after_secs(Duration::from_millis(2500)), 3);
+        assert_eq!(retry_after_secs(GPU_LOCK_WAIT), 10);
+    }
+
     /// How long [`GatedGpu`] parks before giving up on the gate. A failing
     /// assertion must never leave a blocking thread parked forever: the
     /// runtime waits for its blocking tasks when the test ends.
@@ -550,7 +598,13 @@ mod tests {
                 nonce: "00".to_string(),
             }),
         ));
+        let deadline = std::time::Instant::now() + GATE_CAP;
         while entries.load(Ordering::SeqCst) == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the first request never reached the collector, so there is \
+                 nothing for the second one to be locked out of"
+            );
             let _ = tokio::time::timeout(Duration::from_millis(5), &mut first).await;
         }
         drop(first);
@@ -577,7 +631,13 @@ mod tests {
             *open.lock().expect("gate") = true;
             condvar.notify_all();
         }
+        let deadline = std::time::Instant::now() + GATE_CAP;
         while inside.load(Ordering::SeqCst) > 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the abandoned collection never left the collector, so the \
+                 GPU was never handed back"
+            );
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         let (status, _) = gpu_attest(gpu_state(Some(gpu)), "00").await;
