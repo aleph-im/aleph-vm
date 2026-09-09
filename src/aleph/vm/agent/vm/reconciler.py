@@ -837,7 +837,18 @@ def orphan_device_namespaces(live: Collection[str]) -> list[str]:
     ``<namespace>_<volume name>``, read straight out of /dev/mapper. Anything
     that is not a plausible item hash is not a VM device and is not this
     pass's business.
+
+    A namespace whose directory is younger than VOLUME_CREATE_GUARD keeps its
+    devices, the same guard the directory purge applies. A create has its
+    devices before it has a record anything outside the creating process
+    can see: the registry record reaches the DB only once the VM runs, and
+    ``list_vms`` answers only once ``create_vm`` returned, so a pass run from
+    another process (the storage CLI) would otherwise take the devices of a
+    VM mid-build and boot it on nothing. The guard is not a substitute for
+    ``is_creating`` in-process, only the same floor for the other one.
     """
+    now = datetime.now(tz=timezone.utc)
+    guard = timedelta(seconds=settings.VOLUME_CREATE_GUARD)
     namespaces: set[str] = set()
     try:
         devices = list(Path(DEVICE_MAPPER_DIRECTORY).glob("*_*"))
@@ -848,8 +859,23 @@ def orphan_device_namespaces(live: Collection[str]) -> list[str]:
         namespace = device.name.split("_", 1)[0]
         if not _plausible(namespace) or namespace in live or is_creating(namespace):
             continue
+        if _within_create_guard(namespace, now, guard):
+            continue
         namespaces.add(namespace)
     return sorted(namespaces)
+
+
+def _within_create_guard(namespace: str, now: datetime, guard: timedelta) -> bool:
+    """Whether any directory of the namespace is young enough to be a create
+    in flight. A namespace with no directory at all is not: its devices are
+    what a create left behind, not what one is building on."""
+    for directory in iter_namespace_dirs(namespace):
+        try:
+            if now - _mtime(directory) < guard:
+                return True
+        except OSError:
+            continue
+    return False
 
 
 async def _teardown_orphan_devices(live: Collection[str]) -> list[str]:
