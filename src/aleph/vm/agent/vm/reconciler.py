@@ -138,7 +138,10 @@ def creating(namespace: str) -> Iterator[None]:
     so a retained directory keeps its owner (who may still ask for it to be
     erased), the parent images its volumes depend on, and its place in the
     eviction queue. That matters because a failing create is retried: the
-    allocation reconciler pushes it again on every cycle.
+    allocation reconciler pushes it again on every cycle. The one exception
+    is a failure while another create for the same hash is still running:
+    that one owns the directory now, and it puts back what it adopted if it
+    fails in its turn.
     """
     # Register before adopting: between clear_marker and the add there would
     # otherwise be an instant where the directory is protected by neither
@@ -159,6 +162,14 @@ def creating(namespace: str) -> Iterator[None]:
         # commit: an exception, and a cancellation of the task running it.
         # The restore runs before the guard comes down below, so no pass can
         # see the directory unmarked and unguarded in between.
+        if _creating[namespace] > 1:
+            # Except when another create for this hash is still running: the
+            # directory is that one's now, and a marker on a directory a
+            # create is writing says its disks are reclaimable capacity, which
+            # the node would then sell to somebody else. The create that
+            # holds it restores what it adopted if it fails in its turn.
+            logger.info("Not restoring the markers of %s: another create still holds it", namespace)
+            raise
         try:
             restore_markers(adopted)
         except Exception:

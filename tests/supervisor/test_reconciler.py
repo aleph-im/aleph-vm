@@ -320,6 +320,24 @@ def test_a_failed_inner_create_does_not_re_mark_a_directory_the_outer_holds(pool
         assert read_marker(pools["pool0"] / VM_HASH) is None
 
 
+def test_a_failed_create_leaves_the_marker_to_the_create_still_running(pools, monkeypatch):  # noqa: F811
+    """The same overlap, with something for the inner create to adopt: a GONE
+    retire of this hash lands while the outer create runs. The inner failure
+    must still not put the marker back, because the directory now belongs to
+    the create that is still writing it, and a marker on it counts its disks
+    as reclaimable capacity the node would sell twice. The create that holds
+    it restores what it adopted if it fails in its turn."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+
+    with creating(VM_HASH):
+        mark_reclaimable(VM_HASH, "gone", now=NOW, owner=OWNER)
+        with pytest.raises(RuntimeError), creating(VM_HASH):
+            raise RuntimeError("the inner create failed")
+        assert read_marker(pools["pool0"] / VM_HASH) is None
+    assert read_marker(pools["pool0"] / VM_HASH) is None
+
+
 def test_old_orphan_is_purged_under_reap(pools, registry, monkeypatch):  # noqa: F811
     monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
     old = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
