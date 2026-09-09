@@ -676,7 +676,10 @@ fn check_platform_gates(quote: &TdxQuote) -> Result<()> {
 ///
 /// Assumes the caller has already verified the quote's chain and signatures
 /// (`certs`/`verify`); this decides the acceptable-TCB question on top.
-pub fn evaluate_tcb(
+///
+/// Crate-private because it takes an openssl certificate: outside callers
+/// go through `verify_tdx_quote`, which owns the whole sequence.
+pub(crate) fn evaluate_tcb(
     quote: &TdxQuote,
     collateral: &TdxCollateral,
     pck_leaf: &X509,

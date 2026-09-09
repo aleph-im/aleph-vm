@@ -28,7 +28,7 @@ const INTEL_SGX_ROOT_CA_PEM: &[u8] = include_bytes!("intel_sgx_root_ca.pem");
 const PCK_CHAIN_LEN: usize = 3;
 
 /// Parse the pinned Intel SGX Root CA.
-pub fn pinned_intel_root() -> Result<X509> {
+pub(crate) fn pinned_intel_root() -> Result<X509> {
     X509::from_pem(INTEL_SGX_ROOT_CA_PEM).context("failed to parse the pinned Intel SGX Root CA")
 }
 
@@ -78,7 +78,7 @@ fn check_crl(
 /// verified chain itself (root CA CRL under the pinned root, PCK CRL under
 /// the chain's intermediate), so the collateral's own issuer-chain fields
 /// are never trusted here.
-pub fn verify_pck_chain(
+pub(crate) fn verify_pck_chain(
     pck_chain_pem: &[u8],
     collateral: &TdxCollateral,
     now: SystemTime,
@@ -154,7 +154,7 @@ pub fn verify_pck_chain(
 /// the root is not embedded, so the intermediate is checked directly
 /// against the pin. Intel publishes no CRL for these signers, matching the
 /// DCAP reference, so none is applied here.
-pub fn verify_signer_chain(chain_pem: &[u8], now: SystemTime) -> Result<X509> {
+pub(crate) fn verify_signer_chain(chain_pem: &[u8], now: SystemTime) -> Result<X509> {
     let now = asn1_now(now)?;
     let chain = X509::stack_from_pem(chain_pem).context("failed to parse the issuer chain PEM")?;
     if chain.len() != 2 {

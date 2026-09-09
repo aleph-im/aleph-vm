@@ -179,7 +179,7 @@ const AMD_ORG_NAME: &str = "Advanced Micro Devices";
 /// Verify the AMD certificate chain against a pinned AMD root.
 ///
 /// `pinned_ark_der` is AMD's genuine ARK certificate for the product (in
-/// production, sourced from [`pinned_amd_ark_der`]; in tests, injected so the
+/// production, sourced from `pinned_amd_ark_der`; in tests, injected so the
 /// happy path and each reject reason can be exercised).
 ///
 /// Checks, in order:

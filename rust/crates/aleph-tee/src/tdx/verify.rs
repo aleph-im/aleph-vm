@@ -97,7 +97,10 @@ fn verify_quote_signature(quote: &TdxQuote) -> Result<()> {
 /// On success the quote is genuinely Intel-attested, and the returned PCK
 /// leaf certificate carries the platform identity (FMSPC, SVNs) the TCB
 /// walk consumes. See the module docs for what this does NOT establish.
-pub fn verify_tdx_quote_chain(
+///
+/// Crate-private because it hands back an openssl certificate: outside
+/// callers go through [`verify_tdx_quote`], which returns owned data.
+pub(crate) fn verify_tdx_quote_chain(
     quote: &TdxQuote,
     collateral: &TdxCollateral,
     now: SystemTime,
