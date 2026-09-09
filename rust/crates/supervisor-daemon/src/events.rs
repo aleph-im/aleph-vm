@@ -1,11 +1,11 @@
 //! Lifecycle event fan-out, the engine behind WatchEvents.
 //!
 //! Python parity (`LocalSupervisor._emit_event` / `watch_events`): every
-//! lifecycle transition the daemon
-//! itself performs (create/stop/start/reboot/delete) is fanned
-//! out to every live subscriber; there is no replay (a subscriber joining
-//! mid-flight only sees later events; clients snapshot with ListVms first,
-//! as the proto documents), and the per-subscriber queue is unbounded,
+//! lifecycle transition the daemon itself performs (create, stop, start,
+//! reboot, delete) is fanned out to every live subscriber; there is no
+//! replay (a subscriber joining mid-flight only sees later events; clients
+//! snapshot with ListVms first, as the proto documents), and the
+//! per-subscriber queue is unbounded,
 //! exactly like the Python `asyncio.Queue()` the emitter `put_nowait`s
 //! into. The one transition no RPC path can announce is spontaneous guest
 //! death: nothing calls the daemon when a guest's QEMU exits on its own. The
