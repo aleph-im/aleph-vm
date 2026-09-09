@@ -338,26 +338,30 @@ def _select_from(candidates: list[StoragePool], size_mib: int) -> StoragePool:
     evicted.
     """
     required_bytes = size_mib * 1024 * 1024
+    eligible = [pool for pool in candidates if pool.vm_eligible]
+    # Measured once for the whole attempt: read again inside the sort key
+    # below, every pool would be interrogated twice per placement and a dead
+    # one would log its error twice as often.
+    free_by_pool = {pool: _pool_free_bytes(pool) for pool in eligible}
     best: StoragePool | None = None
     best_free = -1
-    for pool in candidates:
-        if not pool.vm_eligible:
-            continue
-        free = _pool_free_bytes(pool)
+    for pool in eligible:
+        free = free_by_pool[pool]
         if free is None:
             continue
         if free > best_free:
             best, best_free = pool, free
     if (best is None or best_free < required_bytes) and _room_maker is not None:
         # Free-descending order asks the pool that needs the least eviction
-        # first; a pool that reports no free space at all (dead disk,
-        # unmounted) still gets a turn last, since it is where this placement
-        # would land if the evictor brings it back.
+        # first. A pool whose free space could not be read sorts last and
+        # make_room refuses it outright, so the only pool the evictor can
+        # still turn into a home for this volume is one that answered and is
+        # merely full.
         def known_free(pool: StoragePool) -> int:
-            free = _pool_free_bytes(pool)
+            free = free_by_pool[pool]
             return -1 if free is None else free
 
-        for target in sorted((pool for pool in candidates if pool.vm_eligible), key=known_free, reverse=True):
+        for target in sorted(eligible, key=known_free, reverse=True):
             if _room_maker(target, required_bytes) <= 0:
                 continue
             free = _pool_free_bytes(target)

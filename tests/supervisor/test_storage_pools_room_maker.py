@@ -157,3 +157,21 @@ class TestRoomMaker:
             select_pool(size_mib=1)
 
         assert calls == [0, 1, 2]
+
+    def test_each_pool_is_measured_once_per_attempt(self, three_pools, monkeypatch, room_maker):
+        """Reading a pool that cannot answer logs an error, and this read
+        every pool twice: once to find the roomiest, once more to order the
+        eviction targets. One measurement per pool, reused by both."""
+        reads = []
+
+        def free(pool):
+            reads.append(pool.index)
+            return None
+
+        monkeypatch.setattr(storage_pools_module, "_pool_free_bytes", free)
+        room_maker(lambda pool, needed: 0)
+
+        with pytest.raises(InsufficientResourcesError):
+            select_pool(size_mib=1)
+
+        assert reads == [0, 1, 2]
