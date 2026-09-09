@@ -291,6 +291,24 @@ async def test_a_vm_that_leaves_the_plan_loses_its_failure_record(reconciler, mo
 
 
 @pytest.mark.asyncio
+async def test_a_vm_the_plan_still_lists_keeps_its_backoff(reconciler, monkeypatch):
+    """The complement of the test above: submit() prunes the state of the VMs
+    it drops and only those. Pruning every VM would hand a scheduler polling
+    with the same plan a fresh attempt on each push, which is exactly the
+    hammering the backoff exists to stop."""
+    starts = _record_starts(reconciler, monkeypatch, fail=True)
+    reconciler.submit(_plan(HASH_C))
+    await reconciler._converge_once()
+
+    reconciler.submit(_plan(HASH_C))
+    await reconciler._converge_once()
+
+    assert starts.attempts == 1
+    _, failure = reconciler.state_for(HASH_C)
+    assert failure.attempts == 1
+
+
+@pytest.mark.asyncio
 async def test_a_successful_start_clears_a_previous_failure(reconciler, monkeypatch, clock):
     _record_starts(reconciler, monkeypatch, fail=True)
     reconciler.submit(_plan(HASH_C))
