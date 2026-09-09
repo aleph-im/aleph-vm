@@ -1,16 +1,18 @@
 # SEV-SNP instances: on-node (first-boot) encryption from a generic base image
 
-**Date:** 2026-09-02 (revised 2026-09-03: key model, delegated unlock)
+**Date:** 2026-09-02 (revised 2026-09-03: key model, delegated unlock;
+2026-09-09: sequencing refreshed against dev-2.1)
 **Status:** Design, pending review
 **Author:** Olivier Desenfans
 **Related:**
 - `docs/plans/2026-08-18-snp-confidential-instances-design.md` (the
   pre-encrypted LUKS mode this extends; shipped in aleph-vm 2.0.1)
 - `docs/plans/2026-09-02-snp-instance-cli-design.md` (the aleph-rs client;
-  implemented in aleph-rs PR #394, gains flags from this design)
+  implemented and merged as aleph-rs PR #394, gains flags from this design)
 - `docs/plans/2026-07-08-confidential-vm-protocol-design.md` (protocol)
-- aleph-vm PR #1190 (unlock authority = message sender; already the shipped
-  contract this design builds on)
+- aleph-vm PRs #1189/#1190 (attest-port reconciliation; unlock authority =
+  message sender), merged and part of dev-2.1: the shipped contract this
+  design builds on
 
 ## 1. Goal and scope
 
@@ -465,8 +467,10 @@ blindly" to "whom do we remove on proof of equivocation."
 ## 8. Component changes and sequencing
 
 1. **aleph-message**: `rootfs_encryption` field + validators (incl. the
-   `authorized_keys` rejection). Should ride the same release window as
-   the in-flight TDX schema work to avoid two ecosystem bumps.
+   `authorized_keys` rejection). The TDX release window this was meant to
+   ride has closed: 1.4.0 shipped the TDX schema and dev-2.1 already pins
+   it (aleph-vm #1185), so the field goes into the next minor (1.5.0) as
+   its own ecosystem bump.
 2. **pyaleph**: aleph-message pin bump only (parse/price/store already
    generic); measurement cross-checking stays with the existing deferred
    CCN item.
