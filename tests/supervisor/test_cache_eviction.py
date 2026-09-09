@@ -637,6 +637,9 @@ def test_an_unknown_length_download_evicts_nothing(pools, monkeypatch):
     charging that for a chunked response wiped every unreferenced entry in the
     root before refusing the download anyway."""
     monkeypatch.setattr(settings, "CACHE_BUDGET", "8192")
+    # Named so the 8192 below is the budget capping a larger reserve, not a
+    # coincidence of whatever the default reserve happens to be.
+    monkeypatch.setattr(settings, "UNKNOWN_LENGTH_RESERVE", "16384")
     registry = AgentVmRegistry()
     cache_module.record_live_snapshot(set())
     old = _entry(pools["runtime"], "old", size=4096, age=1000)
@@ -667,6 +670,9 @@ def test_two_unknown_length_downloads_are_both_charged_the_capped_figure(pools, 
     """Bounded, so a stream of them still runs the root over its budget and
     the next one is refused, but never charged more than the budget itself."""
     monkeypatch.setattr(settings, "CACHE_BUDGET", "8192")
+    # A reserve above the budget, so what caps each charge below is named here:
+    # the download's own 4096 for the first, the budget for the second.
+    monkeypatch.setattr(settings, "UNKNOWN_LENGTH_RESERVE", "16384")
     registry = AgentVmRegistry()
     cache_module.record_live_snapshot(set())
     first = pools["runtime"] / "a.part"
@@ -681,6 +687,36 @@ def test_two_unknown_length_downloads_are_both_charged_the_capped_figure(pools, 
     }
     with pytest.raises(InsufficientResourcesError):
         admit_download(registry, pools["runtime"] / "c.part", None, 4096)
+
+
+def test_an_unreadable_cache_disk_still_charges_only_the_reserve(pools, monkeypatch, caplog):
+    """The fallback must not be the bug it replaces: a disk whose total cannot
+    be read leaves an absolute reserve holding, never the whole budget."""
+    monkeypatch.setattr(settings, "UNKNOWN_LENGTH_RESERVE", "4096")
+
+    def unreadable(path):
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(cache_module.shutil, "disk_usage", unreadable)
+
+    with caplog.at_level(logging.WARNING):
+        charge = cache_module._unknown_length_charge(pools["runtime"], 1024**3, None)
+
+    assert charge == 4096
+    assert "not accessible" in caplog.text
+
+
+def test_an_unreadable_cache_disk_holds_nothing_for_a_percentage_reserve(pools, monkeypatch):
+    """A percentage of a disk nobody could measure resolves to nothing, which
+    is still better than holding the root against every other download."""
+    monkeypatch.setattr(settings, "UNKNOWN_LENGTH_RESERVE", "10%")
+
+    def unreadable(path):
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(cache_module.shutil, "disk_usage", unreadable)
+
+    assert cache_module._unknown_length_charge(pools["runtime"], 1024**3, None) == 0
 
 
 def test_a_measured_download_still_evicts_to_make_room(pools, monkeypatch):

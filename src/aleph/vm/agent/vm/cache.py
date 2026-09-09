@@ -799,10 +799,15 @@ def _unknown_length_charge(root: Path, budget: int, max_bytes: int | None) -> in
     """The room to hold for a body nobody measured: the smallest of the
     reserve, this download's own cap and the budget."""
     try:
-        reserve = parse_budget(settings.UNKNOWN_LENGTH_RESERVE, shutil.disk_usage(str(root)).total)
+        total = shutil.disk_usage(str(root)).total
     except OSError:
-        logger.warning("Cache directory %s is not accessible; holding its whole budget", root, exc_info=True)
-        return budget
+        # A disk nobody can measure must not resurrect the whole-budget hold:
+        # resolve the reserve against a zero total instead, which yields the
+        # configured size when it is written as an absolute one and nothing
+        # when it is a percentage of the disk that just failed to answer.
+        logger.warning("Cache directory %s is not accessible; holding only the reserve", root, exc_info=True)
+        total = 0
+    reserve = parse_budget(settings.UNKNOWN_LENGTH_RESERVE, total)
     figures = [reserve, budget] if max_bytes is None else [reserve, budget, max_bytes]
     return min(figures)
 
