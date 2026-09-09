@@ -1,12 +1,12 @@
 # Process model
 
-> Verified against: b2b31381 (2026-08-14)
+> Verified against: 06c30936 (2026-09-09)
 
 ## What this covers
 
 How a compute-resource node (CRN) is split into processes: the agent (Python,
-aiohttp HTTP API) and the supervisor daemon (Rust, with a Python
-implementation still shipping), the systemd unit topology that carries
+aiohttp HTTP API) and the supervisor daemon (Rust; the Python implementation
+was removed in 2026-08), the systemd unit topology that carries
 per-VM controllers and how ephemeral programs differ from persistent VMs,
 the `alephctl` debug CLI, and how a supervisor daemon rebuilds its view of
 the world and reattaches to already-running VMs without downtime.
@@ -25,7 +25,7 @@ A node runs two long-lived processes plus one short-lived process per VM:
 flowchart TB
     subgraph node["one CRN node"]
         agent["aleph-vm-agent.service<br/>(Python, aiohttp HTTP API)"]
-        supervisor["aleph-vm-supervisor.service<br/>(supervisor daemon: Rust or Python)"]
+        supervisor["aleph-vm-supervisor.service<br/>(supervisor daemon, Rust)"]
         agent -- "gRPC over supervisor.sock" --> supervisor
         supervisor -- "systemd StartUnit/StopUnit" --> ctrl1["aleph-vm-controller@hash1.service<br/>(QEMU, persistent)"]
         supervisor -- "systemd StartUnit/StopUnit" --> ctrl2["aleph-vm-controller@hash2.service<br/>(QEMU, confidential)"]
@@ -44,8 +44,12 @@ its VM pool, models, host-network plumbing and hypervisor wrappers were
 removed in 2026-08 once the Rust daemon had become the only implementation
 CI and the testnets ran. The on-disk controller-config schema
 (`src/aleph/vm/supervisor_interface/configuration.py`) also lives in that
-contract layer, because both sides need it: the agent writes
-`{vm_hash}-controller.json`, the controller process reads it.
+contract layer, because both sides need it: the daemon writes
+`{vm_hash}-controller.json` (`save_controller_config` in
+`rust/crates/supervisor-daemon/src/controller_config.rs`, an atomic
+temp-file-then-rename port of the schema module's own
+`save_controller_configuration`, which is otherwise unused now), and the
+controller process reads it.
 
 The split is a division of ownership, not just of code:
 
@@ -71,7 +75,7 @@ The split is a division of ownership, not just of code:
   `HOST_MEMORY_RESERVED_MIB`, and a GPU cannot be attached twice.
 
 All calls cross the boundary through the `Supervisor` ABC
-(`src/aleph/vm/supervisor_interface/abc.py`, 8 capability groups, 29
+(`src/aleph/vm/supervisor_interface/abc.py`, 8 capability groups, 23
 methods); the concrete implementation the agent talks to is
 `GrpcSupervisor` (`src/aleph/vm/supervisor_interface/client.py`), a client
 over a Unix-domain-socket gRPC channel resolved from
@@ -135,7 +139,7 @@ boot).
 
 `alephctl` (`rust/crates/supervisor-cli`) is a standalone debug CLI that
 speaks the gRPC contract directly over the supervisor's Unix socket, so it
-works against either daemon implementation without the agent in the loop.
+works against the daemon without the agent in the loop.
 Socket resolution (`resolve_socket_path` in
 `rust/crates/supervisor-cli/src/client.rs`) mirrors the daemon's own
 settings resolution: `--socket` flag, then
@@ -158,11 +162,12 @@ re-bound the same path is never disturbed by an older instance's cleanup.
 
 ## Adoption and the zero-downtime model
 
-A supervisor daemon (either implementation) can be stopped and a different
-one started in its place while VMs keep running, with no VM restart. This is
-possible because the daemon keeps no execution database of its own: on
-startup it rebuilds its entire view of the world from the same sources of
-truth both implementations already read and write.
+The supervisor daemon can be stopped and a new instance started in its place
+while VMs keep running, with no VM restart. This is possible because the
+daemon keeps no execution database of its own: on startup it rebuilds its
+entire view of the world from the same sources of truth it always reads and
+writes: the on-disk controller configs, systemd unit state, and the
+port-mapping sqlite store.
 
 ### Rebuilding the world (adoption steps 1-4)
 

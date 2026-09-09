@@ -169,7 +169,7 @@ Following these best practices can help streamline code reviews and improve over
 
 Actually runs the programs in a secure environment on virtualization enabled systems. 
 
-See [vm_supervisor/README.md](src/aleph/vm/agent/README.md).
+See [src/aleph/vm/agent/README.md](src/aleph/vm/agent/README.md).
 
 ### VM Connector
 

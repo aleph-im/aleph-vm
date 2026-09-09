@@ -1,6 +1,6 @@
 # Confidential computing
 
-> Verified against: 4be87456 (2026-09-04)
+> Verified against: 973b8fd7 (2026-09-10)
 
 ## What this covers
 
@@ -88,7 +88,7 @@ alike.
 
 ### Host capability probing
 
-Two independent probes feed what a node advertises. `check_amd_sev_supported`
+Three independent probes feed what a node advertises. `check_amd_sev_supported`
 / `_es_` / `_snp_` (`src/aleph/vm/utils/__init__.py`) check the
 `kvm_amd` module parameters plus `/dev/sev` existing, and land in
 `MachineProperties.cpu.features`. Separately,
@@ -103,7 +103,13 @@ returns `[]`) rather than guessing. The result lands in
 in `MachineProperties` (`src/aleph/vm/agent/resources.py`,
 `_tee_properties`), not nested under it: host-CPU facts and TEE-launch
 facts are different axes, and keeping them siblings leaves room for a future
-`tdx` or GPU-CC platform key without a schema break.
+`tdx` platform key without a schema break. The third probe is daemon-side:
+`probe_cc_mode` (`rust/crates/supervisor-daemon/src/gpu_cc.rs`) reads a
+GPU's confidential-computing mode out of a BAR0 register and reports it per
+card in `HostInfo.available_gpus[*].cc_mode`; the agent turns cards probed
+`on` into the `nvidia_cc` capability block (`nvidia_cc_properties` in
+`resources.py`), advertised only alongside `sev_snp` since a confidential
+GPU on a host that cannot launch a confidential guest is not usable.
 
 ### Host requirements for SEV-SNP
 
@@ -144,6 +150,17 @@ the raw nonce never lands in `report_data` verbatim. `x509.rs` defines the
 private OID `1.3.6.1.4.1.60000.1.1` used to embed a DER-encoded
 `AttestationReport` as a custom X.509 extension.
 
+The crate is not SEV-SNP only, even though this doc otherwise is: `TeeType`
+already carries `Tdx` and `NvidiaCc` variants alongside `SevSnp`, and
+`aleph-tee`'s `tdx/` module implements Intel TDX quote parsing and the full
+software verification path (certificate chain, TCB appraisal, platform
+gates). What is still missing is the hardware-backed report-producing side:
+no `TdxBackend: TeeBackend` exists yet (only `SevSnpBackend` and the
+no-op `NoTeeBackend` do), and the QGS round trip to fetch a live quote is a
+later increment. The rest of this doc covers only the SEV/SEV-ES/SEV-SNP
+paths that are wired end to end into VM creation today; TDX and NVIDIA CC on
+SEV-SNP are not yet reachable from a create.
+
 **`rust/crates/aleph-attest-agent`** is the in-guest sidecar
 (`main.rs`). On boot it generates an ephemeral ECDSA P-384 key, requests a
 key-bound report over it, embeds the report as the custom extension in a
@@ -155,7 +172,14 @@ bound to both the served key and the caller's nonce (`proxy.rs`,
 secret store (`secrets.rs`) guarded by a single mutex around the whole
 check-and-write (no TOCTOU window), writing files `O_CREAT|O_EXCL|O_NOFOLLOW`
 mode 0600 into an owner-checked, mode-0700 directory, rejecting a second
-call with 409; everything else falls through to a reverse proxy
+call with 409. On confidential-instance images the route is additionally
+owner-authenticated: the body carries an EIP-191 personal-sign `signature`
+from the VM's owner over
+`owner_auth::inject_secret_payload(server_public_key_raw,
+canonical_secrets_json(secrets))`, verified against the configured owner
+address before any secret is written (`owner_auth::verify_owner`,
+`inject_secret_handler`), and a bad or missing signature returns 403; V-PROGRAM
+images carry no owner and skip this gate. Everything else falls through to a reverse proxy
 (`proxy_handler`) that strips hop-by-hop headers and `Content-Length` before
 forwarding to the upstream workload on `127.0.0.1:8080`.
 
@@ -261,9 +285,13 @@ allocation set alongside `persistent_vms` and `instances`, threaded through
 `update_allocations` (`src/aleph/vm/agent/views/__init__.py`) the same way:
 `start_persistent_vm` for each entry present, and, as the interesting
 asymmetry, an unconditional stop for any running, persistent VM record with
-`record.is_vprogram` that is *not* in the current allocation, checked ahead
-of the general exemption that otherwise protects owner-paid confidential
-VMs from being stopped. For a V-PROGRAM the scheduler is the sole source of
+`record.is_vprogram` that is *not* in the current allocation. The guard
+itself, `is_removable_by_allocation`
+(`src/aleph/vm/agent/allocation/teardown.py`), checks `record.is_vprogram`
+before the general exemption that otherwise protects owner-paid confidential
+VMs from being stopped, and the same function backs both the legacy
+`update_allocations` endpoint and the v2 reconciler, so the two paths cannot
+disagree about what may be torn down. For a V-PROGRAM the scheduler is the sole source of
 truth: since attestation is deployment-independent, the client re-verifies
 the same measurement wherever the scheduler places it next.
 
@@ -442,7 +470,8 @@ Two properties follow from this and matter to anyone building a client:
   it: `src/aleph/vm/agent/resources.py`.
 - A V-PROGRAM absent from the current allocation is stopped even though it
   is confidential; the stop-guard checks `record.is_vprogram` before the
-  general confidential exemption: `src/aleph/vm/agent/views/__init__.py`.
+  general confidential exemption: `src/aleph/vm/agent/allocation/teardown.py`
+  (`is_removable_by_allocation`).
 - Runtime bundle integrity is checked before any bytes are trusted: size
   and sha256 against the manifest before extraction, `filter="data"`
   during extraction, and every declared member path re-validated to stay
@@ -486,6 +515,11 @@ Two properties follow from this and matter to anyone building a client:
   `scripts/vprogram_bundle.py`.
 - Capability probing and advertising: `src/aleph/vm/utils/__init__.py`
   (`check_amd_sev_supported` and friends), `src/aleph/vm/agent/vcpu_probe.py`,
-  `src/aleph/vm/agent/resources.py`.
-- Scheduler threading and the V-PROGRAM stop-guard:
-  `src/aleph/vm/agent/views/__init__.py` (`update_allocations`).
+  `src/aleph/vm/agent/resources.py`,
+  `rust/crates/supervisor-daemon/src/gpu_cc.rs` (`probe_cc_mode`, the
+  BAR0 GPU confidential-computing-mode probe).
+- Scheduler threading: `src/aleph/vm/agent/views/__init__.py`
+  (`update_allocations`). The V-PROGRAM stop-guard itself:
+  `src/aleph/vm/agent/allocation/teardown.py`
+  (`is_removable_by_allocation`, `teardown_vm`), shared with the v2
+  reconciler.
