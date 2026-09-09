@@ -5,8 +5,6 @@ docs/plans/2026-07-11-vprogram-scheduler-support-design.md.
 """
 
 import json
-import time
-from hashlib import sha256
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -20,8 +18,6 @@ from aleph_message.models import (
     VerifiableProgramMessage,
     parse_message,
 )
-from eth_account import Account
-from eth_account.messages import encode_defunct
 
 from aleph.vm.agent.messages import update_message
 from aleph.vm.agent.resources import Allocation
@@ -29,7 +25,6 @@ from aleph.vm.agent.run import VmStartupError, create_vm_execution, run_code_on_
 from aleph.vm.agent.supervisor import setup_webapp
 from aleph.vm.agent.tasks import _group_executions_by_payment
 from aleph.vm.agent.vm_registry import AgentVmRecord, AgentVmRegistry
-from aleph.vm.conf import settings
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor_interface.errors import VmSetupError
 from aleph.vm.supervisor_interface.types import (
@@ -43,29 +38,6 @@ from aleph.vm.supervisor_interface.types import (
 from aleph.vm.vm_type import VmType
 
 FIXTURE = Path(__file__).parent / "fixtures" / "vprogram_message.json"
-
-
-def _signed_allocation(account, body_dict):
-    """Body bytes plus the Aleph-EIP191-V1 headers binding them, for /control/allocations."""
-    body = json.dumps(body_dict).encode()
-    payload = {
-        "method": "POST",
-        "path": "/control/allocations",
-        "body_sha256": sha256(body).hexdigest(),
-        "iat": int(time.time()),
-    }
-    payload_bytes = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    signed = account.sign_message(encode_defunct(payload_bytes))
-    header = f"Aleph-EIP191-V1 sig={signed.signature.hex()},payload={payload_bytes.hex()}"
-    return body, {"Authorization": header, "Content-Type": "application/json"}
-
-
-@pytest.fixture()
-def scheduler_auth(monkeypatch):
-    """Authorize a throwaway scheduler key and sign requests as it."""
-    account = Account.create()
-    monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [account.address])
-    return lambda body_dict: _signed_allocation(account, body_dict)
 
 
 def load_vprogram_message() -> VerifiableProgramMessage:
