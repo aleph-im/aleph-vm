@@ -29,10 +29,16 @@ pub struct GpuDevice {
     pub pci_host: String,
     /// vendor:device ids, e.g. "10de:2b85".
     pub device_id: String,
-    /// NVIDIA confidential-computing mode, probed from BAR0 for idle
-    /// NVIDIA cards (gpu_cc.rs); `None` when not NVIDIA, not probed yet, or
-    /// the probe failed. Skipped when absent so a fleet without CC cards
-    /// keeps today's inventory bytes.
+    /// NVIDIA confidential-computing mode, for reporting only: the parser
+    /// always leaves this `None`, because lspci says nothing about the mode
+    /// (it is read from the card's BAR0 register, see `gpu_cc.rs`). The
+    /// field lives on the inventory type rather than beside it because it
+    /// is a key of the inventory JSON the host info serves, and the mode is
+    /// filled in on a clone there, from the probe cache. It stays `None`
+    /// for a card that is not NVIDIA, has not been probed yet, or whose
+    /// probe failed, and an absent mode is skipped entirely so a fleet with
+    /// no CC-capable card keeps the inventory bytes it had before the field
+    /// existed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cc_mode: Option<crate::gpu_cc::CcMode>,
     /// NVIDIA architecture family derived from the device id (gpu_cc.rs);
@@ -306,6 +312,8 @@ mod tests {
         let device = parse_gpu_device_info(NVIDIA_VGA_LINE, &mut vfio_everywhere)
             .unwrap()
             .unwrap();
+        // The parser never fills the mode: lspci does not report it, and the
+        // only writer is the host info, on its own clone of the inventory.
         assert_eq!(device.cc_mode, None);
         assert_eq!(device.arch, None);
         let json = serde_json::to_string(&device).unwrap();
