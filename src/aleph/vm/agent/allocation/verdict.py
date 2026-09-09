@@ -97,11 +97,10 @@ class JudgedEntry:
     Every field is derived from the entry alone, with no shared state read or
     written, which is what makes a batch of these safe to compute in a worker
     thread. ``vm_hash`` is None when the entry's item_hash is not a hash, and
-    then ``raw_hash`` is whatever string the push sent in its place, since
-    that is the key the answer has to name it under.
+    the answer then names the entry by its position in the body, since there
+    is nothing else about it this node is willing to repeat back.
     """
 
-    raw_hash: str
     vm_hash: ItemHash | None
     outcome: VerificationOutcome
     verified: VerifiedMessage | None
@@ -136,7 +135,6 @@ def judge_entry(entry: object) -> JudgedEntry:
     def unusable(raw: object) -> JudgedEntry:
         logger.warning("Refusing plan entry with an unusable item_hash: %r", raw)
         return JudgedEntry(
-            raw_hash=str(raw),
             vm_hash=None,
             outcome=VerificationOutcome.REJECTED,
             verified=None,
@@ -144,8 +142,8 @@ def judge_entry(entry: object) -> JudgedEntry:
         )
 
     # An entry that is not an object has no item_hash to read, so it is
-    # refused under the same key a missing one is, and never reaches
-    # verify_entry, which reads the entry as a mapping.
+    # refused the way a missing one is, and never reaches verify_entry, which
+    # reads the entry as a mapping.
     if not isinstance(entry, dict):
         return unusable(None)
     raw_hash = entry.get("item_hash")
@@ -154,7 +152,7 @@ def judge_entry(entry: object) -> JudgedEntry:
     except Exception:
         return unusable(raw_hash)
     outcome, verified, reason = verify_entry(entry)
-    return JudgedEntry(raw_hash=str(raw_hash), vm_hash=vm_hash, outcome=outcome, verified=verified, reason=reason)
+    return JudgedEntry(vm_hash=vm_hash, outcome=outcome, verified=verified, reason=reason)
 
 
 def judge_entries(entries: list) -> list[JudgedEntry]:
@@ -173,14 +171,20 @@ def assemble_plan(judged: list[JudgedEntry], *, now: datetime) -> tuple[Allocati
     VM the push did not name and a message we would not verify is no reason
     to delete the VM it names. An entry whose hash we could not read is left
     out of that set, since it names no VM here and so has nothing to protect.
+
+    An entry with no usable hash is answered under its position in the body,
+    ``vms[3]``. Keying it by the string the push sent instead collapsed every
+    entry that carried no item_hash at all into one "None", so a push with
+    three unreadable entries was answered about one; and that string is
+    unbounded text off the request, which this node has no reason to echo.
     """
     entries: dict[ItemHash, PlannedVm] = {}
     rejected: Refusals = {}
     refused: set[ItemHash] = set()
-    for judgement in judged:
+    for index, judgement in enumerate(judged):
         vm_hash = judgement.vm_hash
         if vm_hash is None:
-            rejected[judgement.raw_hash] = Refusal(AllocationFailureCode.INVALID_MESSAGE, judgement.reason)
+            rejected[f"vms[{index}]"] = Refusal(AllocationFailureCode.INVALID_MESSAGE, judgement.reason)
             continue
         if vm_hash in rejected:
             # The same hash pushed twice, refused once. A later entry must not

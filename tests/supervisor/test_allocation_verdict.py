@@ -429,11 +429,24 @@ async def test_an_entry_with_an_unusable_item_hash_is_rejected_not_raised():
     plan, rejected = await build_plan(body, now=NOW)
 
     assert list(plan.entries) == [HASH_A]
-    assert rejected["not-a-hash"].code is AllocationFailureCode.INVALID_MESSAGE
-    assert rejected["None"].code is AllocationFailureCode.INVALID_MESSAGE
+    assert rejected["vms[0]"].code is AllocationFailureCode.INVALID_MESSAGE
+    assert rejected["vms[1]"].code is AllocationFailureCode.INVALID_MESSAGE
     # Neither key names a VM this node could be running, so neither is worth
     # protecting from the teardown pass.
     assert plan.refused == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_every_entry_with_no_usable_hash_is_answered_for_on_its_own():
+    """Answered by position, so a push whose entries carry no item_hash at all
+    is told about each of them. They all used to be keyed by the string that
+    was not there, "None", which collapsed them into a single refusal: a
+    scheduler pushing three broken entries was answered about one."""
+    body = {"vms": [{}, {"message": {"whatever": True}}, 5]}
+
+    _plan, rejected = await build_plan(body, now=NOW)
+
+    assert sorted(rejected) == ["vms[0]", "vms[1]", "vms[2]"]
 
 
 @pytest.mark.asyncio
