@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aleph_message.models import InstanceContent, ItemHash
-from reclaim_fixtures import VM_HASH, pools, volume  # noqa: F401
+from reclaim_fixtures import OTHER_HASH, VM_HASH, pools, volume  # noqa: F401
 
+import aleph.vm.agent.vm.cache as cache_module
 import aleph.vm.agent.vm.retire as retire_module
+import aleph.vm.storage as storage_module
+from aleph.vm.agent.vm.cache import admit_download
 from aleph.vm.agent.vm.reclaimable import MARKER_NAME, read_marker
 from aleph.vm.agent.vm.retire import RetireReason, retire_vm
 from aleph.vm.agent.vm_registry import AgentVmRegistry
@@ -18,6 +23,14 @@ from aleph.vm.supervisor_interface.errors import VmNotFoundError
 from aleph.vm.supervisor_interface.types import VmId
 
 OWNER = "0x1234567890123456789012345678901234567890"
+
+
+@pytest.fixture(autouse=True)
+def _clean_module_state(monkeypatch):
+    """The live-set snapshot and the reserved downloads are module state: no
+    test inherits another's."""
+    monkeypatch.setattr(cache_module, "_live_snapshot", None)
+    monkeypatch.setattr(storage_module, "_reserved_downloads", {})
 
 
 @pytest.fixture
@@ -353,3 +366,63 @@ async def test_a_retire_with_a_record_reads_the_volumes_from_the_message(env, mo
 
     fallback.assert_not_awaited()
     remove.assert_awaited_once_with(VM_HASH, "data")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", [RetireReason.GONE, RetireReason.ERASE, RetireReason.FAILED_CREATE])
+async def test_a_record_dropping_retire_drops_the_vm_from_the_live_snapshot(env, monkeypatch, reason):
+    """The snapshot is what admission checks the registry against: a hash left
+    in it after its record is forgotten reads as a live VM the agent knows
+    nothing about."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    cache_module.record_live_snapshot({VM_HASH, OTHER_HASH})
+
+    await retire_vm(VM_HASH, reason, supervisor=env["supervisor"], registry=env["registry"])
+
+    assert cache_module.live_snapshot() == frozenset({OTHER_HASH})
+
+
+@pytest.mark.asyncio
+async def test_recreate_leaves_the_live_snapshot_alone(env):
+    """RECREATE keeps the record and the VM comes straight back."""
+    cache_module.record_live_snapshot({VM_HASH})
+
+    await retire_vm(VM_HASH, RetireReason.RECREATE, supervisor=env["supervisor"], registry=env["registry"])
+
+    assert cache_module.live_snapshot() == frozenset({VM_HASH})
+
+
+@pytest.mark.asyncio
+async def test_a_retire_before_the_first_pass_leaves_the_snapshot_unset(env, monkeypatch):
+    """No pass has run, so nothing is known about the live set: that is not
+    the same answer as "nothing is live", and admission must keep refusing to
+    evict."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+
+    await retire_vm(VM_HASH, RetireReason.GONE, supervisor=env["supervisor"], registry=env["registry"])
+
+    assert cache_module.live_snapshot() is None
+
+
+@pytest.mark.asyncio
+async def test_a_download_after_a_reaping_retire_may_still_evict(env, monkeypatch, pools, caplog):  # noqa: F811
+    """The failure this pins: under reap nothing re-runs a pass after a
+    retire, so the retired hash sat in the snapshot without a record for up to
+    a whole reconcile interval, and every download in between was admitted
+    without evicting, or refused outright with the cache full of evictable
+    entries."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "8192")
+    cache_module.record_live_snapshot({VM_HASH})
+    old = pools["code"] / "old"
+    old.write_bytes(b"x" * 4096)
+    stamp = time.time() - 1000
+    os.utime(old, (stamp, stamp))
+
+    await retire_vm(VM_HASH, RetireReason.GONE, supervisor=env["supervisor"], registry=env["registry"])
+
+    with caplog.at_level("ERROR"):
+        admit_download(env["registry"], pools["code"] / "new.part", 8000)
+
+    assert not old.exists()
+    assert "no registry record" not in caplog.text
