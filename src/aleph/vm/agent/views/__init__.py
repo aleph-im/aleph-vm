@@ -290,7 +290,6 @@ async def list_executions(request: web.Request) -> web.Response:
     )
 
 
-@cors_allow_all
 def _allocation_block(state: AllocationState | None, failure: FailureRecord | None) -> dict | None:
     """What the agent is doing about a VM, for the executions list; None once
     the agent has nothing to add to the supervisor's word."""
@@ -304,6 +303,7 @@ def _allocation_block(state: AllocationState | None, failure: FailureRecord | No
     }
 
 
+@cors_allow_all
 async def list_executions_v2(request: web.Request) -> web.Response:
     """List all executions. Returning their status and ip.
 

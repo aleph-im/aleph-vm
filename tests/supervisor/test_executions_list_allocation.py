@@ -175,3 +175,20 @@ async def test_an_absent_vm_keeps_the_shape_consumers_read(aiohttp_client):
     assert set(body[str(HASH_C)]) == set(live)
     assert set(body[str(HASH_C)]["status"]) == set(live["status"])
     assert body[str(HASH_C)]["vm_type"] == "instance"
+
+
+@pytest.mark.asyncio
+async def test_the_listing_answers_cross_origin_readers(aiohttp_client):
+    """The console reads this from a browser, like the legacy list. CORS
+    comes from the route's registration in setup_webapp, not from the
+    decorator on the view, which only sets an attribute nothing reads."""
+    client = await aiohttp_client(_app())
+    origin = {"Origin": "https://console.example"}
+
+    preflight = await client.options(LIST, headers={**origin, "Access-Control-Request-Method": "GET"})
+    response = await client.get(LIST, headers=origin)
+
+    assert preflight.status == 200
+    assert preflight.headers["Access-Control-Allow-Origin"] == "https://console.example"
+    assert response.status == 200
+    assert response.headers["Access-Control-Allow-Origin"] == "https://console.example"
