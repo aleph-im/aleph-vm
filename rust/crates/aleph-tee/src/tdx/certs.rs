@@ -101,6 +101,10 @@ pub(crate) fn verify_pck_chain(
     let (leaf, intermediate, root) = (&chain[0], &chain[1], &chain[2]);
 
     // The embedded root must BE the pinned root, not merely resemble it.
+    // The whole certificate is compared, because Intel publishes one fixed
+    // SGX Root CA and every genuine chain carries it verbatim. The SEV-SNP
+    // side pins AMD's key rather than the bytes around it, because AMD
+    // re-issues the ARK certificate.
     let pinned = pinned_intel_root()?;
     check_pinned_root(
         "the quote's root certificate",

@@ -45,15 +45,14 @@ pub(crate) fn ecdsa_from_raw(raw: &[u8]) -> Result<EcdsaSig> {
 /// Reject a root certificate that is not, byte for byte, the pinned one.
 ///
 /// Both verifiers anchor a chain in a certificate compiled into this crate
-/// rather than in whatever root the evidence carries, and both compare the
-/// whole certificate rather than only its public key. Comparing the whole
-/// certificate is the stricter of the two options and the one that needs no
-/// judgement at verification time: there is nothing to decide about a
-/// re-issued root that happens to carry the same key, a serial that moved,
-/// or an envelope that was re-encoded. The cost is that a genuine re-issue
-/// is refused until the pin is refreshed, which is the fail-closed
-/// direction, and the error below says exactly that when the key still
-/// matches so the operator is not left guessing.
+/// rather than in whatever root the evidence carries, but they compare
+/// different things, because their vendors behave differently. Intel
+/// publishes one fixed SGX Root CA, valid to 2049, and every genuine chain
+/// carries that exact certificate, so the TDX side compares the whole
+/// certificate: strictest, and nothing has to be decided at verification
+/// time. AMD re-issues an ARK with the same key, so the SEV-SNP side
+/// compares the key instead, through [`check_pinned_root_key`]; pinning
+/// the bytes there would turn a routine re-issue into a fleet-wide outage.
 pub(crate) fn check_pinned_root(
     presented_label: &str,
     presented: &X509,
@@ -82,6 +81,38 @@ pub(crate) fn check_pinned_root(
         );
     }
     bail!("{presented_label} is not {pin_label} (possible forged or cache-poisoned root)");
+}
+
+/// Reject a root certificate that does not carry the pinned public key.
+///
+/// The counterpart of [`check_pinned_root`] for a vendor that re-issues its
+/// root: the key is the trust anchor, and the envelope around it (serial,
+/// validity, encoding) is allowed to change. A certificate that merely
+/// carries the right subject strings still fails, which is what makes a
+/// fabricated self-signed root unusable.
+pub(crate) fn check_pinned_root_key(
+    presented_label: &str,
+    presented: &X509,
+    pin_label: &str,
+    pinned: &X509,
+) -> Result<()> {
+    let presented_key = presented
+        .public_key()
+        .with_context(|| format!("failed to extract the public key of {presented_label}"))?
+        .public_key_to_der()
+        .with_context(|| format!("failed to encode the public key of {presented_label}"))?;
+    let pinned_key = pinned
+        .public_key()
+        .with_context(|| format!("failed to extract the public key of {pin_label}"))?
+        .public_key_to_der()
+        .with_context(|| format!("failed to encode the public key of {pin_label}"))?;
+    if presented_key != pinned_key {
+        bail!(
+            "the public key of {presented_label} does not match {pin_label} \
+             (possible forged or cache-poisoned root)"
+        );
+    }
+    Ok(())
 }
 
 /// Convert an injected clock into an ASN.1 time, at second granularity.
