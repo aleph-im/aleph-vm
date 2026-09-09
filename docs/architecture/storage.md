@@ -625,20 +625,39 @@ Both "is it running" questions are answered fail-closed, and neither claims
 more than it can back up. The **agent** is called stopped only when nothing
 accepts a connection on its bind address; that is a loopback connect with a
 2 s timeout, it needs no privileges and no unit name, and anything listening
-there counts as the agent. A probe that fails any other way (a name that
-does not resolve, a socket this user may not open, the timeout) leaves the
-agent possibly running, and the refusal stands: being wrong that way costs
-an operator one refused command, being wrong the other way deletes the disks
-of a VM mid-create. The **supervisor** is called *down* only when its socket
-is missing (`os.stat`, not `Path.exists()`, which turns a stat this user may
-not make into a plain False) or refuses a connection. Every other failed
-dial (a socket this user may not open, the 3 s deadline, a reply that does
-not parse) leaves the daemon's state unknown. The difference is what the
+there counts as the agent. A wildcard bind (`0.0.0.0`, `::`, empty) is
+probed on *both* loopbacks and called stopped only when both refuse, because
+asyncio's `create_server` sets `IPV6_V6ONLY` on an `AF_INET6` socket: an
+agent bound to `::` accepts on `::1` and refuses on `127.0.0.1`, so a probe
+that asked only the IPv4 loopback would call a running agent stopped and
+purge behind it. An address family the kernel cannot reach at all
+(`EAFNOSUPPORT`, `ENETUNREACH` and friends) counts with the refusals, since
+nothing can be serving on a loopback that is not there. A probe that fails
+any other way (a name that does not resolve, a socket this user may not
+open, the timeout) leaves the agent possibly running, and the refusal
+stands: being wrong that way costs an operator one refused command, being
+wrong the other way deletes the disks of a VM mid-create. The **supervisor**
+is called *down* only when *its own socket* is missing (`os.stat`, not
+`Path.exists()`, which turns a stat this user may not make into a plain
+False) or refuses a connection. A refused connection in the dial's exception
+chain counts too, but a missing *file* there does not: the client opens more
+than its socket, and only a stat of the socket path can tell a stopped
+daemon from a running one that tripped over something else. Every other
+failed dial (a socket this user may not open, the 3 s deadline, a reply that
+does not parse) leaves the daemon's state unknown. The difference is what the
 operator is told: the exception class and message always, and the advice to
 pass `--trust-registry` only when the daemon is verified down, since on
 anything else it would invite exactly the purge the supervisor union exists
 to prevent. An explicit `--dry-run` is told its preview is registry-only
 instead, having asked for nothing that could be downgraded.
+
+Every verb writes what it found or achieved (the status table, the listing,
+the reconcile report, the "Purged ..." line) to stdout, and every warning,
+refusal and diagnostic to stderr, `reclaim` included: a wrapper parses one
+stream without filtering the other, and a refusal leaves stdout empty rather
+than mixing a reason into a report that does not exist. The verbs take both
+streams as arguments, so the tests read them apart without capturing the
+process's own.
 
 `--trust-registry` remains the sharpest tool here even so, and the narrow
 advice does not blunt it: a supervisor that is verifiably down has not

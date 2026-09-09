@@ -45,13 +45,18 @@ So a purge is decided in three states:
 
 Both "is it running" questions are answered fail-closed, and neither claims
 more than it can back up. The agent is called stopped only when nothing
-accepts a connection on its bind address; a probe that fails any other way
-leaves it possibly running, and the refusal stands. The supervisor is
-called down only when its socket is missing or refuses a connection; a dial
-that failed for any other reason (a socket this user may not open, a
-deadline, a reply that does not parse) leaves its state unknown, and the
-advice to purge on the registry alone is then withheld, since it would
-invite the one purge the union exists to prevent.
+accepts a connection on its bind address, on every loopback a wildcard bind
+could be answering on; a probe that fails any other way leaves it possibly
+running, and the refusal stands. The supervisor is called down only when
+its own socket is missing or refuses a connection; a dial that failed for
+any other reason (a socket this user may not open, a deadline, a reply that
+does not parse) leaves its state unknown, and the advice to purge on the
+registry alone is then withheld, since it would invite the one purge the
+union exists to prevent.
+
+Every verb writes what it found or achieved to ``out`` and every warning,
+refusal and diagnostic to ``err``, so a wrapper can parse one without
+filtering the other.
 
 Running with no agent process also means setting up the process the way the
 systemd units set it up for the daemon: the node's environment file is read
@@ -67,6 +72,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import errno
 import logging
 import os
 import shutil
@@ -286,6 +292,28 @@ class AgentProbe:
         return self.reach is not AgentReach.STOPPED
 
 
+# Hosts that name no address to connect to. A wildcard bind is probed on
+# both loopbacks, never on one: asyncio's server sets IPV6_V6ONLY on an
+# AF_INET6 socket, so an agent bound to "::" accepts on ::1 and refuses on
+# 127.0.0.1, and a probe that asked only the IPv4 loopback would call a
+# running agent stopped and purge behind it.
+_WILDCARD_HOSTS = frozenset({"", "*", "0.0.0.0", "::", "::0"})  # noqa: S104
+_LOOPBACKS = ("127.0.0.1", "::1")
+
+# Errnos that say the address family itself is unusable on this host rather
+# than that the agent is up. Nothing can be serving on a loopback the kernel
+# cannot reach, so these count with the refusals: without that, the probe on
+# an IPv4-only node would answer "cannot tell" for ever and the command
+# would refuse every purge on a node that has none of the risk.
+_FAMILY_UNAVAILABLE = frozenset(
+    {errno.EAFNOSUPPORT, errno.EPFNOSUPPORT, errno.ENETUNREACH, errno.EHOSTUNREACH, errno.EADDRNOTAVAIL}
+)
+
+
+def _format_address(host: str, port: int) -> str:
+    return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+
+
 def _probe_agent() -> AgentProbe:
     """Ask the agent's own HTTP bind address whether it is there.
 
@@ -295,25 +323,34 @@ def _probe_agent() -> AgentProbe:
     once. Anything listening there is treated as the agent, which is the
     fail-closed reading; a socket configured but unreachable, a name that
     does not resolve or a deadline all leave the question open, and open
-    counts as running.
+    counts as running. A wildcard bind is stopped only when every loopback
+    it could be answering on refuses.
 
     The setting is spelled SUPERVISOR_HOST/PORT for historical reasons: it
     is this Python service's own bind, not the Rust supervisor's socket.
     """
     host = str(settings.SUPERVISOR_HOST)
     port = int(settings.SUPERVISOR_PORT)
-    address = f"{host}:{port}"
-    # A wildcard bind is not a connectable address: dial the loopback the
-    # agent necessarily also answers on.
-    target = "127.0.0.1" if host in {"", "0.0.0.0", "::", "*"} else host  # noqa: S104
-    try:
-        with socket.create_connection((target, port), timeout=AGENT_PROBE_TIMEOUT_SECS):
-            pass
-    except ConnectionRefusedError:
-        return AgentProbe(AgentReach.STOPPED, f"nothing accepts a connection on {address}")
-    except OSError as error:
-        return AgentProbe(AgentReach.UNKNOWN, f"{address} could not be probed ({type(error).__name__}: {error})")
-    return AgentProbe(AgentReach.RUNNING, f"something is listening on {address}")
+    targets = _LOOPBACKS if host in _WILDCARD_HOSTS else (host,)
+    silent: list[str] = []
+    problems: list[str] = []
+    for target in targets:
+        address = _format_address(target, port)
+        try:
+            with socket.create_connection((target, port), timeout=AGENT_PROBE_TIMEOUT_SECS):
+                pass
+        except ConnectionRefusedError:
+            silent.append(address)
+        except OSError as error:
+            if error.errno in _FAMILY_UNAVAILABLE:
+                silent.append(f"{address} ({type(error).__name__}: {error})")
+            else:
+                problems.append(f"{address} ({type(error).__name__}: {error})")
+        else:
+            return AgentProbe(AgentReach.RUNNING, f"something is listening on {address}")
+    if problems:
+        return AgentProbe(AgentReach.UNKNOWN, "could not be probed: " + "; ".join(problems))
+    return AgentProbe(AgentReach.STOPPED, "nothing accepts a connection on " + " or ".join(silent))
 
 
 class SupervisorReach(Enum):
@@ -397,13 +434,17 @@ def _reach_from_failure(error: BaseException) -> SupervisorReach:
 
     The gRPC client rebuilds transport failures into its own error classes,
     so the exception alone rarely says whether the daemon is stopped; when
-    it does not, the socket itself is asked. A refusal or a missing socket
-    anywhere in the chain is proof enough; a permission error never is, and
-    neither is a deadline (a daemon that is up but wedged is the textbook
-    way to time out).
+    it does not, the socket itself is asked. A refused connection anywhere
+    in the chain is proof enough. A missing *file* is not, whatever the
+    chain says: the client opens more than its socket (a TLS material path,
+    a config file), and only a stat of the socket path itself can tell a
+    stopped daemon from a running one that tripped over something else, so
+    that case falls through to _socket_reach. A permission error is never
+    proof, and neither is a deadline (a daemon that is up but wedged is the
+    textbook way to time out).
     """
     for cause in _exception_chain(error):
-        if isinstance(cause, FileNotFoundError | ConnectionRefusedError):
+        if isinstance(cause, ConnectionRefusedError):
             return SupervisorReach.DOWN
         if isinstance(cause, PermissionError):
             return SupervisorReach.UNKNOWN
@@ -595,10 +636,13 @@ def _reclaim_refusal(registry: AgentVmRegistry, vm_hash: str, *, trust_registry:
     return _supervisor_reclaim_refusal(registry, vm_hash, trust_registry=trust_registry)
 
 
-def _reclaim(registry: AgentVmRegistry, vm_hash: str, out: TextIO, *, trust_registry: bool) -> int:
+def _reclaim(registry: AgentVmRegistry, vm_hash: str, out: TextIO, err: TextIO, *, trust_registry: bool) -> int:
+    # Every refusal and every diagnostic goes to err, as in reconcile: stdout
+    # carries what the command achieved and nothing else, so a wrapper can
+    # read it without filtering.
     refusal = _reclaim_refusal(registry, vm_hash, trust_registry=trust_registry)
     if refusal is not None:
-        out.write(refusal.message + "\n")
+        err.write(refusal.message + "\n")
         return refusal.code
     # Asked again, after the probe and the dial: a re-create adopts its
     # retained directories by clearing their markers, and a create that
@@ -606,14 +650,14 @@ def _reclaim(registry: AgentVmRegistry, vm_hash: str, out: TextIO, *, trust_regi
     # process has. The marker is the one thing that says the disks are
     # nobody's.
     if not _is_marked_reclaimable(vm_hash):
-        out.write(
+        err.write(
             f"{vm_hash} is no longer marked reclaimable: a create adopted its directory while the "
             "supervisor was being asked. Refusing to purge it\n"
         )
         return 1
     deleted = purge_vm_storage(vm_hash)
     if _still_on_disk(vm_hash):
-        out.write(
+        err.write(
             f"Purge of {vm_hash} left directories behind: a device-mapper target still holds its volumes. "
             "Run 'storage reconcile' to tear down the devices of every VM nothing owns, then retry\n"
         )
@@ -641,23 +685,24 @@ def _agent_pass_note() -> str:
     )
 
 
-def _pass_refusal(probe: AgentProbe, live_set: LiveSet) -> str | None:
-    """Why a real reconcile must not run at all, or None when it may."""
-    if probe.may_be_running:
-        return (
-            f"Refusing to reconcile: {_agent_at_work_reason(probe)}. {_agent_pass_note()}; use "
-            "--dry-run to preview what one would find.\n"
-        )
-    # The agent is out of the way, but the daemon's own reason to distrust a
-    # live set still applies: an empty registry while the supervisor runs VMs
-    # means the agent DB was lost, and every directory on the node then reads
-    # as an orphan.
-    if live_set.refusal is not None:
-        return (
-            f"Refusing to reconcile: {live_set.refusal}. Restore the agent database, or use "
-            "--dry-run to see what a pass would find.\n"
-        )
-    return None
+def _agent_pass_refusal(probe: AgentProbe) -> str:
+    return (
+        f"Refusing to reconcile: {_agent_at_work_reason(probe)}. {_agent_pass_note()}; use "
+        "--dry-run to preview what one would find.\n"
+    )
+
+
+def _lost_database_refusal(live_set: LiveSet) -> str | None:
+    """The daemon's own reason to distrust a live set, once the agent is out
+    of the way: an empty registry while the supervisor runs VMs means the
+    agent DB was lost, and every directory on the node then reads as an
+    orphan."""
+    if live_set.refusal is None:
+        return None
+    return (
+        f"Refusing to reconcile: {live_set.refusal}. Restore the agent database, or use "
+        "--dry-run to see what a pass would find.\n"
+    )
 
 
 def _unanswered_warning(answer: SupervisorAnswer, *, dry_run: bool, trust_registry: bool) -> str:
@@ -681,22 +726,29 @@ def _unanswered_warning(answer: SupervisorAnswer, *, dry_run: bool, trust_regist
     )
 
 
-def _reconcile(registry: AgentVmRegistry, out: TextIO, *, dry_run: bool, trust_registry: bool) -> int:
-    live_set = _cli_live_set(registry)
-    answer = live_set.supervisor
+def _reconcile(registry: AgentVmRegistry, out: TextIO, err: TextIO, *, dry_run: bool, trust_registry: bool) -> int:
+    # The agent probe comes before the supervisor dial: it is a loopback
+    # connect that answers at once, and it can refuse the whole pass, so a
+    # refused pass should not first sit through a three second deadline for
+    # an answer it then throws away.
     probe = _probe_agent()
-    if not dry_run:
-        refusal = _pass_refusal(probe, live_set)
-        if refusal is not None:
-            sys.stderr.write(refusal)
+    if probe.may_be_running:
+        if not dry_run:
+            err.write(_agent_pass_refusal(probe))
             return DEGRADED_EXIT_CODE
-    elif probe.may_be_running:
-        sys.stderr.write(
+        err.write(
             f"Note: {_agent_at_work_reason(probe)}, so this preview can name a directory the "
             "agent is at that moment creating\n"
         )
+    live_set = _cli_live_set(registry)
+    answer = live_set.supervisor
+    if not dry_run:
+        lost_database = _lost_database_refusal(live_set)
+        if lost_database is not None:
+            err.write(lost_database)
+            return DEGRADED_EXIT_CODE
     if not answer.answered:
-        sys.stderr.write(_unanswered_warning(answer, dry_run=dry_run, trust_registry=trust_registry))
+        err.write(_unanswered_warning(answer, dry_run=dry_run, trust_registry=trust_registry))
     downgraded = not answer.answered and not trust_registry
     effective_dry_run = dry_run or downgraded
     live = set(live_set.hashes)
@@ -723,15 +775,18 @@ def _reconcile(registry: AgentVmRegistry, out: TextIO, *, dry_run: bool, trust_r
     return DEGRADED_EXIT_CODE if downgraded and not dry_run else 0
 
 
-def run(args: argparse.Namespace, registry: AgentVmRegistry, out: TextIO) -> int:
+def run(args: argparse.Namespace, registry: AgentVmRegistry, out: TextIO, err: TextIO) -> int:
+    """Run one verb. ``out`` carries what the command found or achieved,
+    ``err`` every warning, refusal and diagnostic, so a wrapper can parse one
+    without filtering the other."""
     if args.storage_command == "status":
         return _status(registry, out)
     if args.storage_command == "list":
         return _list(registry, out, reclaimable_only=args.reclaimable)
     if args.storage_command == "reclaim":
-        return _reclaim(registry, args.vm_hash, out, trust_registry=args.trust_registry)
+        return _reclaim(registry, args.vm_hash, out, err, trust_registry=args.trust_registry)
     if args.storage_command == "reconcile":
-        return _reconcile(registry, out, dry_run=args.dry_run, trust_registry=args.trust_registry)
+        return _reconcile(registry, out, err, dry_run=args.dry_run, trust_registry=args.trust_registry)
     return 2
 
 
@@ -850,7 +905,7 @@ def run_parsed(args: argparse.Namespace) -> int:
     initialise_database()
 
     registry = asyncio.run(_load_registry())
-    return run(args, registry, sys.stdout)
+    return run(args, registry, sys.stdout, sys.stderr)
 
 
 def main(argv: list[str]) -> int:
