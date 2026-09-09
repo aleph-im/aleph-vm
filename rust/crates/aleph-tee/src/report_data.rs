@@ -6,8 +6,9 @@
 //! attestation key of the quoting enclave on TDX. This module defines the ONE
 //! canonical way those 64 bytes are filled, so the constructing side
 //! (aleph-attest-agent) and the verifying side (the `attest` module of the
-//! aleph-rs SDK, which mirrors these constructors) cannot drift. Both MUST use this scheme: an
-//! ad-hoc variant on either side reopens the attack described below.
+//! aleph-rs SDK, which mirrors these constructors) cannot drift. Both MUST
+//! use this scheme: an ad-hoc variant on either side reopens the attack
+//! described below.
 //!
 //! # Why domain separation and channel binding
 //!
