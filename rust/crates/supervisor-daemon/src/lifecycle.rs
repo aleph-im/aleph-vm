@@ -2103,18 +2103,34 @@ fn snp_config_slice_with(
             "SEV-SNP measured boot requires kernel_path and initrd_path".to_string(),
         ));
     }
-    // Only the measured V-PROGRAM arm derives its own cmdline here, and only
-    // that image runs the guest-side GPU attestation stage. The opaque arm
-    // passes the agent's cmdline through verbatim and the daemon cannot tell
-    // whether the guest verifies the card at all, so a GPU there would be
-    // owner hardware nothing in the boot chain checks. Fail closed before the
-    // per-card rules run.
+    // A confidential GPU is admitted only on the arm whose cmdline this
+    // function derives (the dm-verity one), and only that image runs the
+    // guest-side GPU attestation stage. Two things go wrong on the other
+    // arm. It passes the agent's cmdline through verbatim, so the daemon
+    // cannot tell whether the guest verifies the card at all, and a card in
+    // confidential-computing mode does no plaintext DMA, so the guest has to
+    // bounce every transfer through a shared buffer whose size is a kernel
+    // parameter the measured runtime pins and the launch digest covers. On
+    // the opaque arm that parameter is neither required nor measured. Fail
+    // closed before the per-card rules run, and say which arm takes the card.
     if !spec.gpus.is_empty() && !tee.kernel_cmdline.is_empty() {
-        return Err(RpcError::InvalidBackend(
-            "confidential GPUs are only supported on measured V-PROGRAM specs, not on the \
-             opaque-cmdline SNP instance arm"
-                .into(),
-        ));
+        let hosts: Vec<&str> = spec.gpus.iter().map(|g| g.pci_host.as_str()).collect();
+        return Err(RpcError::InvalidBackend(format!(
+            "a GPU (pci_host {}) cannot be attached to an SEV-SNP VM that brings its own kernel \
+             cmdline; confidential GPUs are only supported on measured V-PROGRAM specs, not on \
+             the opaque-cmdline SNP instance arm",
+            hosts.join(", ")
+        )));
+    }
+    // One card per confidential VM: the reserved 64-bit MMIO window and the
+    // guest's PCI port and chassis numbering were both sized for a single
+    // card, so a second one is refused here rather than handed a window that
+    // may not hold it.
+    if spec.gpus.len() > 1 {
+        return Err(RpcError::InvalidBackend(format!(
+            "an SEV-SNP VM takes at most one GPU, the spec carries {}",
+            spec.gpus.len()
+        )));
     }
     // A GPU may enter a confidential guest only in NVIDIA CC mode: the card
     // then refuses plaintext DMA and answers attestation, and the guest
@@ -5097,9 +5113,11 @@ mod tests {
     #[test]
     fn snp_config_slice_rejects_a_gpu_on_the_opaque_cmdline_arm() {
         // A confidential instance renders its own measured cmdline, so the
-        // guest carries no verified GPU attestation stage. A CC-mode card must
-        // not be admitted there even though the card itself would pass: the
-        // injected probe says "on" and is never consulted.
+        // guest carries no verified GPU attestation stage, and the
+        // bounce-buffer parameter a confidential card needs is neither
+        // required nor measured there. A CC-mode card must not be admitted
+        // even though the card itself would pass: the injected probe says
+        // "on" and is never consulted.
         let harness = harness_with_gpus(vec![nvidia_card("06:00.0")]);
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -5113,7 +5131,11 @@ mod tests {
         let cc_on = |_: &str, _: &str| Ok(Some(crate::gpu_cc::CcMode::On));
         match snp_config_slice_with(state, &spec, cc_on, |_| Ok(1024)) {
             Err(RpcError::InvalidBackend(msg)) => {
-                assert!(msg.contains("measured V-PROGRAM specs"), "{msg}")
+                assert!(msg.contains("measured V-PROGRAM specs"), "{msg}");
+                assert!(
+                    msg.contains("06:00.0"),
+                    "the refusal must name the card the operator has to detach: {msg}"
+                );
             }
             other => panic!("a GPU on the opaque arm must be InvalidBackend, got {other:?}"),
         }
@@ -5222,6 +5244,58 @@ mod tests {
             crate::service::cc_mode_of(state, "06:00.0"),
             Some(crate::gpu_cc::CcMode::On)
         );
+    }
+
+    #[test]
+    fn snp_config_slice_takes_a_gpu_on_the_verity_arm() {
+        // The counterpart of the opaque-arm refusal: the same card on the
+        // measured arm still builds a slice, so the rules above narrow
+        // nothing else.
+        let harness = harness_with_gpus(vec![nvidia_card("06:00.0")]);
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let mut spec = snp_spec(&hash('j'), &root, &firmware.to_string_lossy());
+        spec.gpus = vec![pb::GpuConfig {
+            pci_host: "06:00.0".into(),
+            supports_x_vga: true,
+        }];
+        let cc_on = |_: &str, _: &str| Ok(Some(crate::gpu_cc::CcMode::On));
+        let slice = snp_config_slice_with(state, &spec, cc_on, |_| Ok(524288))
+            .expect("the verity arm still takes a confidential GPU")
+            .expect("an SEV-SNP spec yields a slice");
+        assert_eq!(slice.pci_mmio64_mb, Some(524288));
+    }
+
+    #[test]
+    fn snp_config_slice_refuses_more_than_one_gpu() {
+        // The reserved 64-bit MMIO window and the guest's PCI numbering were
+        // sized for a single card, so a second one is refused instead of
+        // being handed a window that may not hold it.
+        let harness = harness_with_gpus(vec![nvidia_card("06:00.0"), nvidia_card("07:00.0")]);
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let mut spec = snp_spec(&hash('j'), &root, &firmware.to_string_lossy());
+        spec.gpus = vec![
+            pb::GpuConfig {
+                pci_host: "06:00.0".into(),
+                supports_x_vga: true,
+            },
+            pb::GpuConfig {
+                pci_host: "07:00.0".into(),
+                supports_x_vga: true,
+            },
+        ];
+        let cc_on = |_: &str, _: &str| Ok(Some(crate::gpu_cc::CcMode::On));
+        match snp_config_slice_with(state, &spec, cc_on, |_| Ok(524288)) {
+            Err(RpcError::InvalidBackend(msg)) => {
+                assert!(msg.contains("at most one GPU"), "{msg}")
+            }
+            other => panic!("two GPUs must be InvalidBackend, got {other:?}"),
+        }
     }
 
     #[test]
