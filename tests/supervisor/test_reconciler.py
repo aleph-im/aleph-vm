@@ -180,6 +180,37 @@ def test_a_failed_create_keeps_the_eviction_order_of_what_it_adopted(pools, monk
     assert restored is not None and restored.reclaimable_since == since
 
 
+@pytest.mark.asyncio
+async def test_a_cancelled_create_puts_the_retained_marker_back(pools, monkeypatch):  # noqa: F811
+    """A cancellation is the other way out of the context, and it is not an
+    ``Exception``: an agent shutting down or a create hitting its timeout
+    cancels the task, and the directory has to be left as the create found it
+    just the same. Only ``BaseException`` catches this half."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    mark_reclaimable(VM_HASH, "gone", (OTHER_HASH,), now=NOW, owner=OWNER)
+    adopted = asyncio.Event()
+
+    async def create():
+        with creating(VM_HASH):
+            adopted.set()
+            await asyncio.sleep(3600)
+
+    task = asyncio.create_task(create())
+    await adopted.wait()
+    assert read_marker(pools["pool0"] / VM_HASH) is None
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    restored = read_marker(pools["pool0"] / VM_HASH)
+    assert restored is not None
+    assert restored.owner == OWNER
+    assert restored.depends_on == (OTHER_HASH,)
+    assert restored.reclaimable_since == NOW
+    assert not is_creating(VM_HASH)
+
+
 def test_a_create_that_commits_leaves_the_directory_adopted(pools, monkeypatch):  # noqa: F811
     """The guard against over-restoring: a create that returns normally owns
     the directory, and a marker put back under a live VM would offer its
