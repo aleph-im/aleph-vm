@@ -25,7 +25,7 @@ from typing import Literal, get_args
 
 from aleph_message.models import ExecutableContent
 
-from aleph.vm.agent.vm.purge import _checked_namespace
+from aleph.vm.agent.vm.purge import checked_namespace
 from aleph.vm.storage import is_vm_namespace
 from aleph.vm.storage_pools import get_pools, iter_namespace_dirs
 
@@ -349,7 +349,7 @@ def mark_reclaimable(
     owner: str | None = None,
 ) -> list[Path]:
     """Write one marker per namespace directory (one per pool the VM spans)."""
-    namespace = _checked_namespace(namespace)
+    namespace = checked_namespace(namespace)
     since = now or datetime.now(tz=timezone.utc)
     written: list[Path] = []
     for directory in iter_namespace_dirs(namespace):
@@ -381,7 +381,7 @@ def adopt(namespace: str) -> dict[Path, ReclaimableMarker]:
     whose marker was unreadable or corrupt is adopted like any other and
     simply has nothing to give back.
     """
-    namespace = _checked_namespace(namespace)
+    namespace = checked_namespace(namespace)
     adopted: dict[Path, ReclaimableMarker] = {}
     for directory in iter_namespace_dirs(namespace):
         marker = read_marker(directory)
@@ -432,7 +432,7 @@ def retained_marker(namespace: str) -> ReclaimableMarker | None:
     still holds anything for a hash it otherwise knows nothing about, and
     who it belongs to.
     """
-    namespace = _checked_namespace(namespace)
+    namespace = checked_namespace(namespace)
     for directory in iter_namespace_dirs(namespace):
         marker = read_marker(directory)
         if marker is not None:

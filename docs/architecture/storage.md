@@ -414,7 +414,7 @@ Everything a pass touches is under a directory the agent created and is
 keyed by a hash that `storage.vm_namespace` accepted: the name has to parse
 as an `ItemHash` (64 lowercase hex characters, or an IPFS CID), so a
 directory an operator dropped on a volume pool is never a VM. The delete
-paths go through `purge._checked_namespace`, which refuses on the same rule
+paths go through `purge.checked_namespace`, which refuses on the same rule
 before any filesystem access; the passes that walk the pools ask
 `is_vm_namespace` first and skip what the guard would refuse.
 

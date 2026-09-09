@@ -30,7 +30,7 @@ from typing import BinaryIO
 
 from aleph_message.models import ItemHash
 
-from aleph.vm.agent.vm.purge import ROOTFS_STEM, _checked_namespace, iter_volume_files
+from aleph.vm.agent.vm.purge import ROOTFS_STEM, checked_namespace, iter_volume_files
 from aleph.vm.backup.archive import (
     backup_metadata,
     check_disk_space_for_multiple,
@@ -85,7 +85,7 @@ def purge_vm_backups(vm_hash: ItemHash | str) -> int:
     primitive: it is interpolated into a glob pattern here, and a delete path
     never builds a pattern or a path out of an unchecked name.
     """
-    namespace = _checked_namespace(vm_hash)
+    namespace = checked_namespace(vm_hash)
     backup_dir = get_backup_directory()
     removed = 0
     for archive in backup_dir.glob(f"{namespace}-*.tar"):

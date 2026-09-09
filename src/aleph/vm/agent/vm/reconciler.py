@@ -14,9 +14,9 @@ A live set the supervisor could not confirm also stops the cache pass (see
 ``_enforce_cache_budget``) and the device teardown below.
 
 Two parts of a pass run on the event loop rather than in the walk's worker
-thread, because both shell out to dmsetup: ``_teardown_orphan_devices``
+thread, because both shell out to dmsetup: ``teardown_orphan_devices``
 before it (a volume a dm target still holds cannot be reclaimed, so the
-devices go first) and ``_release_cache_devices`` after it (the devices of
+devices go first) and ``release_cache_devices`` after it (the devices of
 the parent images the cache pass evicted).
 
 Loop-triggered passes are serialized, not coalesced: a sweep that retires N
@@ -177,15 +177,6 @@ def is_creating(namespace: str) -> bool:
     return namespace in _creating
 
 
-def _plausible(name: str) -> bool:
-    """Whether a directory or device name is a VM namespace at all.
-
-    The same question the purge guard asks, so the passes that walk the
-    pools skip what the guard would refuse instead of raising on it.
-    """
-    return is_vm_namespace(name)
-
-
 def _mtime(path: Path) -> datetime:
     return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
 
@@ -193,11 +184,6 @@ def _mtime(path: Path) -> datetime:
 def _dir_bytes(namespace: str) -> int:
     """Allocated bytes of a VM's volumes, on every pool it spans."""
     return sum(directory_size_bytes(directory) for directory in iter_namespace_dirs(namespace))
-
-
-# The storage CLI imports this name from here; the check itself lives with
-# the pools it reads.
-_still_on_disk = has_namespace_dirs
 
 
 def live_hashes(registry: AgentVmRegistry) -> set[str]:
@@ -404,7 +390,7 @@ def _reconcile_namespaces(
     seen: set[str] = set()
     for directory in list(iter_namespace_dirs()):
         namespace = directory.name
-        if not _plausible(namespace):
+        if not is_vm_namespace(namespace):
             # A pool is usually a mountpoint, so lost+found is expected here:
             # debug, not a warning repeated every VOLUME_RECONCILE_INTERVAL.
             logger.debug("Ignoring %s: not a VM directory", directory)
@@ -560,7 +546,7 @@ def _is_stale_side_dir(
     if not child.is_dir():
         return False
     namespace = naming.namespace_of(child)
-    if not _plausible(namespace) or namespace in live or is_creating(namespace):
+    if not is_vm_namespace(namespace) or namespace in live or is_creating(namespace):
         return False
     try:
         if now - _mtime(child) < guard:
@@ -874,9 +860,9 @@ async def reconcile_now(app: web.Application, *, dry_run: bool = False) -> Recon
     async with _pass_lock(app):
         live, running = await _live_set(app)
         if not dry_run and running is not None:
-            await _teardown_orphan_devices(live)
+            await teardown_orphan_devices(live)
         report = await _pass(registry, live, dry_run=dry_run, live_known=running is not None)
-    await _release_cache_devices(report, dry_run=dry_run)
+    await release_cache_devices(report, dry_run=dry_run)
     return report
 
 
@@ -907,7 +893,7 @@ def orphan_device_namespaces(live: Collection[str]) -> list[str]:
         return []
     for device in devices:
         namespace = device.name.split("_", 1)[0]
-        if not _plausible(namespace) or namespace in live or is_creating(namespace):
+        if not is_vm_namespace(namespace) or namespace in live or is_creating(namespace):
             continue
         if _within_create_guard(namespace, now, guard):
             continue
@@ -928,7 +914,7 @@ def _within_create_guard(namespace: str, now: datetime, guard: timedelta) -> boo
     return False
 
 
-async def _teardown_orphan_devices(live: Collection[str]) -> list[str]:
+async def teardown_orphan_devices(live: Collection[str]) -> list[str]:
     """Tear down the devices of the VMs the walk is about to find unowned.
 
     ``retire_vm`` is the normal inverse of ``create_devmapper``, and it reads
@@ -953,7 +939,7 @@ async def _teardown_orphan_devices(live: Collection[str]) -> list[str]:
     return namespaces
 
 
-async def _release_cache_devices(report: ReconcileReport, *, dry_run: bool) -> None:
+async def release_cache_devices(report: ReconcileReport, *, dry_run: bool) -> None:
     """Tear down the devices of the parent images the pass evicted, then sweep
     the ones an earlier teardown left behind.
 
@@ -1058,9 +1044,9 @@ async def reconcile_at_startup(app: web.Application) -> None:
             _log_startup_preview(await _pass(registry, live, dry_run=True, live_known=live_known), refusal=refusal)
             if refusal is not None:
                 return
-            await _teardown_orphan_devices(live)
+            await teardown_orphan_devices(live)
             report = await _pass(registry, live, dry_run=False, live_known=live_known)
-        await _release_cache_devices(report, dry_run=False)
+        await release_cache_devices(report, dry_run=False)
     except Exception:
         # Housekeeping never blocks the boot: an on_startup hook that raises
         # stops the agent, and a full or read-only pool is exactly what this
@@ -1096,3 +1082,13 @@ async def stop_storage_reconcile_task(app: web.Application) -> None:
         await task
     except asyncio.CancelledError:
         logger.debug("Task storage_reconcile is cancelled now")
+
+
+# The storage CLI runs the same pass out of process and imports four of the
+# names above. They carried an underscore while the reconciler was their only
+# caller, which they have not been for some time; these aliases keep that
+# module importing while it is pointed at the names themselves.
+_plausible = is_vm_namespace
+_still_on_disk = has_namespace_dirs
+_teardown_orphan_devices = teardown_orphan_devices
+_release_cache_devices = release_cache_devices
