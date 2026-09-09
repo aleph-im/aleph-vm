@@ -132,7 +132,8 @@ jobs:
           fi
           # Inputs that can move gpuMeasurement: the GPU-only files, plus the
           # shared ones the GPU chain also builds from (flake, lock, kernel
-          # recipe, initrd recipe, init-common.sh) and the golden file itself.
+          # recipe and base fragment, initrd recipe, init-common.sh) and the
+          # golden file itself.
           gpu_inputs="
           nix/nvidia.nix
           nix/nvat.nix
@@ -144,6 +145,7 @@ jobs:
           nix/flake.nix
           nix/flake.lock
           nix/kernel.nix
+          nix/kernel-config.fragment
           nix/initrd.nix
           nix/init-common.sh
           "
