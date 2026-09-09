@@ -2122,10 +2122,13 @@ fn snp_config_slice_with(
             hosts.join(", ")
         )));
     }
-    // One card per confidential VM: the reserved 64-bit MMIO window and the
-    // guest's PCI port and chassis numbering were both sized for a single
-    // card, so a second one is refused here rather than handed a window that
-    // may not hold it.
+    // One card per confidential VM. The window sizing sums every card's
+    // BARs and the argv builder emits a port and chassis per card, so the
+    // mechanics would carry several; what has been validated end to end,
+    // guest runtime included, is exactly one. Nothing here can check that a
+    // second card's attestation, bounce buffer and NVLink topology behave,
+    // so the cap is fail-closed policy rather than a limit of the code, and
+    // it stays until a multi-card guest has actually been exercised.
     if spec.gpus.len() > 1 {
         return Err(RpcError::InvalidBackend(format!(
             "an SEV-SNP VM takes at most one GPU, the spec carries {}",
@@ -5270,9 +5273,11 @@ mod tests {
 
     #[test]
     fn snp_config_slice_refuses_more_than_one_gpu() {
-        // The reserved 64-bit MMIO window and the guest's PCI numbering were
-        // sized for a single card, so a second one is refused instead of
-        // being handed a window that may not hold it.
+        // Fail-closed policy, not a limit of the code: the window sizing and
+        // the argv builder would both carry a second card, but only a
+        // single-card confidential guest has been exercised end to end. The
+        // window closure below returns a size that fits, so the count alone
+        // is what refuses the spec.
         let harness = harness_with_gpus(vec![nvidia_card("06:00.0"), nvidia_card("07:00.0")]);
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
