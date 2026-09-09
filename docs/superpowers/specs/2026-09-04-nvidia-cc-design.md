@@ -56,7 +56,11 @@ runtime flavor, full client-side RIM verification, and TDX hosts.
   Workstation and Max-Q editions are announced for later. The card in the
   fleet is the Server Edition.
 - On this SKU only single-GPU passthrough ("SPT CC") is validated by NVIDIA
-  and its partners; multi-GPU CC needs NVLink, which this SKU lacks.
+  and its partners (driver R595); multi-GPU passthrough ("MPT CC", 1, 2, 4
+  or 8 cards per confidential VM over encrypted NVLink) is validated on
+  Blackwell HGX B200/B300 only. Hopper offers SPT CC or "PPCIe", a whole
+  platform passed to one VM with GPU-to-GPU links in the clear, never a
+  partial multi-GPU allocation.
 - NVIDIA's June 2026 self-hosted CVM reference architecture validates our
   exact host shape: KVM/QEMU 9.2 with OVMF, SEV-SNP on EPYC Genoa, GPU set to
   CC mode with `gpu-admin-tools`, plain `-device vfio-pci` passthrough, and
@@ -128,9 +132,14 @@ unless it is in CC mode and the spec is a GPU V-PROGRAM".
    register `gpu-admin-tools` reads, through the card's sysfs resource
    file, for cards not attached to any VM. A node advertises only what it
    can launch.
-6. **Single GPU per V-PROGRAM in v1**, enforced at schema level
-   (`max_length=1`). It is the only mode NVIDIA validates on this SKU, and
-   it keeps the ready-state and evidence model per-VM rather than per-fabric.
+6. **The message asks for a family and a count; the CRN caps the count.**
+   The schema allows up to eight cards, NVIDIA's MPT CC ceiling, so that a
+   validated multi-GPU SKU joins the fleet without a schema release. Each
+   CRN attaches what its own cards and driver validate: one card on the RTX
+   PRO 6000 Blackwell Server Edition, the only mode NVIDIA validates there.
+   Security never depends on the message naming an exact card: the client
+   verifies the architecture from the GPU attestation and pins driver and
+   VBIOS through the runtime manifest.
 7. **The driver userland is a runtime contract.** The measured platform
    rootfs carries the driver's user-space libraries and bind-mounts them
    into the workload chroot at a fixed path, the way the NVIDIA container
@@ -313,36 +322,59 @@ and JSON output; it is derived from verified bytes, never from
 ### 5.1 aleph-message: the V-PROGRAM declares its GPU
 
 ```python
-class ConfidentialGpu(HashableModel):
-    """One GPU that must be attached in confidential-computing mode."""
+MAX_CONFIDENTIAL_GPUS = 8
+
+class ConfidentialGpuRequirement(HashableModel):
+    """GPUs to attach in confidential-computing mode: a family and a count."""
     vendor: Literal["nvidia"]
-    device_id: str = Field(pattern=r"^[0-9a-f]{4}:[0-9a-f]{4}$")
+    arch: Literal["hopper", "blackwell"]
+    count: int = Field(strict=True, ge=1, le=MAX_CONFIDENTIAL_GPUS)
+    models: Optional[List[str]] = None   # lowercase "10de:2b85" ids, unique
+    mode: Literal["cc"]                  # required, no default
     model_config = ConfigDict(extra="forbid")
 
 
 class VerifiableProgramContent(BaseExecutableContent):
     ...
-    gpus: Optional[List[ConfidentialGpu]] = Field(default=None, max_length=1)
+    gpu: Optional[ConfidentialGpuRequirement] = None
 ```
 
-The field is optional rather than defaulting to an empty list: a
-V-PROGRAM message's `check_content` compares the model dump to the signed
-`item_content`, so a defaulted list would make every message signed before
-this field exists unparseable. Absent and empty both mean "no GPU";
-consumers read `content.gpus or []`. `requires_gpu` is overridden on the
+The message names a family, never a concrete card. The architecture is
+what the client verifies from the GPU attestation itself (the device
+certificate chain encodes it) and the manifest pins the driver, so
+`models` only narrows placement and pricing: the scheduler avoids CRNs
+whose CC-mode cards the runtime's `accepted_models` would refuse at boot.
+All cards share one architecture because that is the only multi-GPU
+configuration NVIDIA supports inside a confidential VM. `mode` is written
+out even though `cc` is its only value: Hopper's PPCIe can join the enum
+later as an explicit opt-in.
+
+Two fields have no default on purpose. The field is optional rather than
+defaulting to an empty object because a V-PROGRAM message's
+`check_content` compares the model dump to the signed `item_content`, so a
+defaulted object would make every message signed before this field exists
+unparseable. `mode` is required rather than defaulted for the same reason
+in the other direction: a hand-built `item_content` that omitted a
+defaulted key would be rejected. `requires_gpu` is overridden on the
 V-PROGRAM content to read this field, since the inherited
 `requirements.gpu` channel is refused there.
 
-`device_id` is the same `vendor:device` string the instance
+`models` entries are the same `vendor:device` string the instance
 `GpuProperties.device_id` and the settings aggregate `compatible_gpus` use,
-so one identifier names a card kind everywhere. `max_length=1` is decision
-6. `TeeVerification.backend` stays `Literal["sev_snp"]`: the GPU is not a
-launch platform and pins no launch register, so it does not belong in
-`LaunchMeasurement`. This is a minor schema release with no change to the
-SNP wire shape; a message without `gpus` serializes exactly as today.
+so one identifier names a card kind everywhere. The count ceiling is
+decision 6. `TeeVerification.backend` stays `Literal["sev_snp"]`: the GPU
+is not a launch platform and pins no launch register, so it does not
+belong in `LaunchMeasurement`. This is a minor schema release with no
+change to the SNP wire shape; a message without `gpu` serializes exactly
+as today.
+
+Pricing follows the family: pyaleph's cost model reads only
+`requirements.gpu` today, so a confidential GPU needs a pricing-aggregate
+tier keyed by architecture and count (pyaleph follow-up, outside this
+design).
 
 The Rust `aleph-types` mirror gains the same struct with
-`deny_unknown_fields` and the same bound.
+`deny_unknown_fields` and the same bounds.
 
 ### 5.2 Runtime manifest: the GPU facts a client pins
 
@@ -367,9 +399,10 @@ workload chroot (decision 7), published so workload builders can link
 against it. The bundle builder (`bundle.py`) fills the block from the Nix
 derivation's outputs, the way it fills `boot.platform_roothash` today.
 
-A V-PROGRAM with `gpus` non-empty whose manifest has no `gpu` block fails
-spec build on the CRN (`VmSetupError`) and fails `vprogram call` on the
-client: the runtime cannot drive a GPU and must not pretend to.
+A V-PROGRAM with `gpu` set whose manifest has no `gpu` block, or whose
+manifest drives another architecture, fails spec build on the CRN
+(`VmSetupError`) and fails `vprogram call` on the client: the runtime
+cannot drive that GPU and must not pretend to.
 
 ### 5.3 CRN capability advertisement
 
@@ -394,9 +427,12 @@ present only when that list is non-empty **and** `sev_snp` is present: a
 CC-mode GPU on a host that cannot launch SNP is not a capability.
 `MachineUsage.gpu` devices gain a `cc_mode` field (`on`, `devtools`, `off`,
 or absent) so an operator sees every card's mode, including the ones the
-capability view omits. The scheduler (aleph-vm-scheduler, V-PROGRAM
-placement) matches `gpus[].device_id` against
-`properties.tee.nvidia_cc.devices` and picks CRNs with a free one.
+capability view omits. Every advertised CC-mode card carries its `arch`,
+derived by the daemon from the device id (the same table the BAR0 probe
+uses); the agent never keeps a second table. The scheduler
+(aleph-vm-scheduler, V-PROGRAM placement) matches `gpu.arch`, `gpu.count`
+and the optional `gpu.models` against `properties.tee.nvidia_cc.devices`
+and picks CRNs with enough free cards.
 
 ### 5.4 Settings aggregate floor
 
@@ -444,7 +480,7 @@ golden values do not move.
 ### 6.2 Measured cmdline
 
 The GPU runtime's cmdline template is
-`console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash} workload_roothash={workload_roothash} swiotlb=262144 {verified_volumes}`.
+`console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash} workload_roothash={workload_roothash} swiotlb=262144 verified_volumes={verified_volumes}`.
 `swiotlb=262144` (512 MiB of bounce buffer) is NVIDIA's recommendation for
 CC guests; it is a fixed part of the runtime, not a placeholder, so the
 manifest's closed placeholder set is unchanged. The daemon derives the
@@ -493,10 +529,14 @@ interpreters deterministically.
 
 ### 6.4 Init: boot-time GPU verification
 
-`nix/init-gpu.sh`, sourced by `init.sh` after the verity mounts and before
-`prepare_chroot`, runs only when a GPU is present on the PCI bus (the
-platform image without one is unaffected). Steps, each failing to
-`poweroff -f`:
+`nix/init-gpu.sh` is the GPU flavor's own init (a sibling of `init.sh`, the
+way the compose flavor has one). After the verity mounts and before
+`prepare_chroot` it looks for NVIDIA display-class devices on the PCI bus.
+Without one it boots on like the base image and starts the agent without
+the GPU flags: the launch measurement does not say whether a card was
+present, so the client, which requires GPU evidence whenever the manifest
+declares a `gpu` block, is where a GPU-less boot of this image fails
+closed. With a card, the steps below run, each failing to `poweroff -f`:
 
 1. `insmod nvidia.ko` with `NVreg_EnableGpuFirmware=1` (GSP is mandatory
    for CC), then `nvidia-uvm.ko`; create device nodes.
@@ -552,10 +592,12 @@ of reference values was init's (6.4).
 `flake.nix` gains `gpuKernel`, `gpuInitrd`, `gpuRootfs`, `gpuVerity`,
 `gpuImage`, `gpuMeasurement`, and `gpuMeasurementFor`. The bundle builder
 emits a runtime manifest with the `gpu` block (5.2). `golden-measurements.json`
-gains the `gpu` entry; the CI golden check covers it. `boot-smoke.sh` gets a
+gains the `gpu` entry; the CI golden check covers it in a separate, gated
+job so base changes do not pay for the GPU chain. `boot-smoke.sh` gets a
 `--gpu` mode that boots `gpuImage` under plain QEMU with no device and
-expects init to skip the GPU step, which is the only smoke a GPU-less CI
-runner can do.
+expects init to report `no NVIDIA GPU present; running without GPU
+attestation` and boot on like the base image, which is the only smoke a
+GPU-less CI runner can do; the GPU golden job runs it.
 
 ---
 
@@ -577,11 +619,19 @@ not NVIDIA or the probe could not run). The probe (`gpu_cc_mode.rs`):
    bits `[1:0]` are `0b01` on, `0b11` devtools, `0b00` off.
 4. Unmap.
 
-The probe runs only for cards that no VM in the world view owns, at
-inventory refresh, and its result is cached per card until the card's
-attachment state changes. Reading a register of a card a guest is driving
-is never done. A probe error is logged and yields `None`, which advertises
-nothing.
+The probe runs only for cards that no VM in the world view owns, under the
+world read guard for the whole sweep: CreateVm registers a VM's cards under
+the write lock before it boots anything, so a card is either already
+attached (skipped) or cannot become attached until the sweep is done.
+Results are cached per card; a probe that errors, or reads a register
+encoding with no mode, forgets the card rather than advertising a stale
+value. A sweep re-probes only when the attached set changed or the last
+sweep is older than 60 seconds, so the public `/about` endpoints cannot
+drive an unbounded rate of register reads. The create-time gate does not
+trust the cache: it reads the card's register itself, through the same
+probe seam, under the world write lock with creation serialized, so an
+operator switching a card off between two sweeps cannot get a stale "on"
+past it. Reading a register of a card a guest is driving is never done.
 
 The proto `GpuDevice` gains `string cc_mode = 5` (empty when unknown).
 `available_gpus_json` carries it through to the agent.
@@ -606,10 +656,12 @@ the CPU model is a measurement input. `fw_cfg` values are not measured, so
 the MMIO window does not move the launch digest, which is what lets the
 window follow the card.
 
-`snp_config_slice` accepts GPUs when every card in the spec reports
-`cc_mode == On` and the spec's runtime manifest declares a `gpu` block; any
-other GPU on an SNP spec stays `InvalidBackend`, with the message naming
-which condition failed. The controller keeps its conformance oracle test:
+`snp_config_slice` accepts GPUs only on the measured verity arm (a
+V-PROGRAM), never on the opaque-cmdline arm confidential instances use, and
+only when every card in the spec reports `cc_mode == On`; any other GPU on
+an SNP spec stays `InvalidBackend`, with the message naming which condition
+failed. The manifest `gpu` block requirement is enforced by the agent,
+which is the layer that reads the manifest (section 7.3). The controller keeps its conformance oracle test:
 with no GPU, the SNP argv is byte-identical to today.
 
 Hugepage and NUMA placement are unchanged; a GPU V-PROGRAM is placed like
@@ -618,13 +670,16 @@ VMs, so the balloon is already absent on the SNP path.
 
 ### 7.3 Agent
 
-`vprogram_launch.py`: when `content.gpus` is non-empty, resolve each
-`device_id` against `available_gpus` filtered to `cc_mode == "on"`, take a
-`GpuHold` scoped to the owner as the instance path does, require the
-manifest's `gpu` block, and put the resolved `GpuSpec` on the
-`CreateVmSpec`. Resolution failure is `InsufficientResourcesError` with
-`required={"confidential_gpu_device_id": ...}`, distinct from the plain
-GPU message so the scheduler and the log tell the two apart.
+`vprogram_launch.py`: when `content.gpu` is set, require the manifest's
+`gpu` block with a matching vendor and architecture, refuse a count above
+what this CRN validates (one), then resolve `count` cards of `gpu.arch`
+(narrowed to `gpu.models` when given) against `available_gpus` filtered
+to `cc_mode == "on"`, take a `GpuHold` scoped to the owner as the instance
+path does, and put the resolved `GpuSpec`s on the `CreateVmSpec`.
+Resolution failure is `InsufficientResourcesError` with
+`required={"confidential_gpu": {"arch", "count", "models"}}`, distinct
+from the plain GPU message so the scheduler and the log tell the two
+apart.
 
 `run.py`'s SNP-instance gate is unchanged (instances are out of scope). The
 V-PROGRAM stop-guard is unchanged: a V-PROGRAM absent from the allocation
@@ -693,8 +748,14 @@ implementation increment blocks on it.
 
 ## 9. Non-goals and later hardening
 
-- **Multi-GPU per VM.** Needs NVLink-encrypted MPT CC, which this SKU lacks;
-  the schema bound lifts when a validated multi-GPU SKU joins the fleet.
+- **Multi-GPU per VM on this CRN.** The schema already carries the count;
+  the CRN-side cap of one lifts when NVIDIA validates MPT CC on the RTX PRO
+  6000 Server Edition or a Blackwell HGX host joins the fleet. Before that
+  the fixed `swiotlb` reservation and the memory floor need to scale with
+  the count.
+- **GPU partitioning.** Neither MIG nor vGPU works with CC mode on today
+  (NVIDIA, February 2026); the only sharing is node-level, one whole card
+  per confidential VM.
 - **SNP confidential instances with a GPU.** The owner's rootfs would bring
   its own driver and verifier; passthrough and the capability model carry
   over, the boot-time verification contract does not. Second product.
@@ -718,8 +779,8 @@ implementation increment blocks on it.
 
 ## 10. Cross-repo sequencing
 
-1. **aleph-message**: `ConfidentialGpu`, `VerifiableProgramContent.gpus`
-   (minor release; nothing else changes).
+1. **aleph-message**: `ConfidentialGpuRequirement`,
+   `VerifiableProgramContent.gpu` (minor release; nothing else changes).
 2. **aleph-vm**, in stacked PRs: (a) `gpu_nonce` scheme and attest-agent
    GPU route behind `--gpu-claims`; (b) daemon CC-mode probe and proto
    field; (c) controller SNP argv fragment and `snp_config_slice` gate;

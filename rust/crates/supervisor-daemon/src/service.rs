@@ -184,7 +184,24 @@ pub struct DaemonState {
     /// How a card's CC mode is read: the BAR0 register in production,
     /// `gpu_cc::no_probe` on hermetic state so tests never open sysfs.
     pub gpu_cc_probe: crate::gpu_cc::CcProbe,
+    /// What the last CC-mode sweep ran against and when, so `GetHostInfo`
+    /// (reachable from the public `/about` endpoints) cannot drive an
+    /// unbounded rate of register reads: see `refresh_cc_modes`.
+    pub gpu_cc_sweep: std::sync::Mutex<CcSweep>,
 }
+
+/// The attached set the last CC-mode sweep saw, and when it ran.
+#[derive(Debug, Default)]
+pub struct CcSweep {
+    pub attached: HashSet<String>,
+    pub at: Option<std::time::Instant>,
+}
+
+/// How long a CC-mode sweep stays good for when no card changed hands. A
+/// card's mode only changes through an operator running gpu-admin-tools on
+/// an idle card, so a minute of staleness on the advertisement is fine; the
+/// create-time gate reads the register itself and never trusts the sweep.
+pub const CC_PROBE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// See [`DaemonState::log_follows`].
 pub const MAX_CONCURRENT_LOG_FOLLOWS: usize = 64;
@@ -224,6 +241,7 @@ impl DaemonState {
             )),
             gpu_cc_modes: std::sync::Mutex::new(HashMap::new()),
             gpu_cc_probe: crate::gpu_cc::no_probe,
+            gpu_cc_sweep: std::sync::Mutex::new(CcSweep::default()),
         }
     }
 
@@ -281,7 +299,10 @@ impl SupervisorService {
         // refresh_cc_modes takes its own world read guard and keeps it for
         // the whole probe: the `attached` snapshot above can go stale the
         // moment a concurrent CreateVm registers a card, and the probe gate
-        // must never trust a snapshot it no longer holds the lock for.
+        // must never trust a snapshot it no longer holds the lock for. It
+        // also skips the sweep when nothing changed hands within
+        // CC_PROBE_TTL, so a public poller cannot turn every request into a
+        // register read.
         {
             let state = self.state.clone();
             tokio::task::spawn_blocking(move || refresh_cc_modes(&state))
@@ -298,6 +319,7 @@ impl SupervisorService {
             .cloned()
             .map(|mut gpu| {
                 gpu.cc_mode = cc_mode_of(&self.state, &gpu.pci_host);
+                gpu.arch = crate::gpu_cc::arch_from_device_id(&gpu.device_id);
                 gpu
             })
             .collect();
@@ -424,11 +446,12 @@ pub fn cc_mode_of(state: &DaemonState, pci_host: &str) -> Option<crate::gpu_cc::
 /// to be true, and an unknown card advertises nothing. Runs on the blocking
 /// pool: mmap of a BAR is a syscall against device memory.
 fn refresh_cc_modes(state: &DaemonState) {
-    refresh_cc_modes_with(state, state.gpu_cc_probe);
+    refresh_cc_modes_with(state, state.gpu_cc_probe, CC_PROBE_TTL);
 }
 
-/// `refresh_cc_modes` over an explicit probe, so unit tests can hand in a
-/// closure that records what was probed. The world read
+/// `refresh_cc_modes` over an explicit probe and sweep lifetime, so unit
+/// tests can hand in a closure that records what was probed and decide
+/// whether the last sweep counts as fresh. The world read
 /// guard is held across the whole loop, not just while the attached set is
 /// collected: CreateVm registers a VM's cards in the world view under the
 /// write lock before it boots anything, so under this guard a card is
@@ -436,9 +459,14 @@ fn refresh_cc_modes(state: &DaemonState) {
 /// the probe is done. That is what makes "never read under a guest" hold
 /// rather than merely likely. Each probe is a sysfs open and a one-page
 /// mmap, microseconds, so a writer waiting on the guard barely notices.
+///
+/// A sweep younger than `ttl` that ran against the same attached set is
+/// not repeated: the answer cannot have changed by anything the daemon
+/// does, and the alternative is a register read per public request.
 fn refresh_cc_modes_with(
     state: &DaemonState,
     probe: impl Fn(&str, &str) -> Result<Option<crate::gpu_cc::CcMode>, DaemonError>,
+    ttl: std::time::Duration,
 ) {
     let world = state.world.blocking_read();
     let attached: HashSet<String> = world
@@ -446,6 +474,15 @@ fn refresh_cc_modes_with(
         .values()
         .flat_map(|entry| entry.config.gpus.iter().map(|gpu| gpu.pci_host.clone()))
         .collect();
+    {
+        let sweep = state.gpu_cc_sweep.lock().expect("gpu_cc_sweep poisoned");
+        if let Some(at) = sweep.at
+            && sweep.attached == attached
+            && at.elapsed() < ttl
+        {
+            return;
+        }
+    }
     for gpu in &state.host.gpus {
         if attached.contains(&gpu.pci_host) || gpu.vendor != "NVIDIA" {
             continue;
@@ -467,6 +504,9 @@ fn refresh_cc_modes_with(
             }
         }
     }
+    let mut sweep = state.gpu_cc_sweep.lock().expect("gpu_cc_sweep poisoned");
+    sweep.attached = attached;
+    sweep.at = Some(std::time::Instant::now());
 }
 
 // ── World view to wire mapping ──────────────────────────────────────────
@@ -568,6 +608,9 @@ pub fn vm_info_message(
                 supports_x_vga: gpu.supports_x_vga,
                 cc_mode: cc_mode_of(state, &gpu.pci_host)
                     .map(|mode| mode.to_string())
+                    .unwrap_or_default(),
+                arch: crate::gpu_cc::arch_from_device_id(&gpu.device_id)
+                    .map(|arch| arch.to_string())
                     .unwrap_or_default(),
             })
             .collect(),
@@ -1473,6 +1516,7 @@ mod tests {
                     pci_host: "06:00.0".to_string(),
                     device_id: "10de:2b85".to_string(),
                     cc_mode: None,
+                    arch: None,
                 },
                 GpuDevice {
                     vendor: "NVIDIA".to_string(),
@@ -1481,6 +1525,7 @@ mod tests {
                     pci_host: "07:00.0".to_string(),
                     device_id: "10de:2b85".to_string(),
                     cc_mode: None,
+                    arch: None,
                 },
             ],
             dns_nameservers: None,
@@ -1500,10 +1545,14 @@ mod tests {
         );
 
         let probed: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-        refresh_cc_modes_with(&state, |pci_host, _device_id| {
-            probed.lock().unwrap().push(pci_host.to_string());
-            Ok(Some(crate::gpu_cc::CcMode::On))
-        });
+        refresh_cc_modes_with(
+            &state,
+            |pci_host, _device_id| {
+                probed.lock().unwrap().push(pci_host.to_string());
+                Ok(Some(crate::gpu_cc::CcMode::On))
+            },
+            std::time::Duration::ZERO,
+        );
 
         assert_eq!(
             probed.into_inner().unwrap(),
@@ -1530,6 +1579,7 @@ mod tests {
             pci_host: pci_host.to_string(),
             device_id: "10de:2b85".to_string(),
             cc_mode: None,
+            arch: None,
         };
         let host = HostState {
             settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
@@ -1550,16 +1600,78 @@ mod tests {
             cache.insert("07:00.0".to_string(), crate::gpu_cc::CcMode::On);
         }
 
-        refresh_cc_modes_with(&state, |pci_host, _device_id| match pci_host {
-            "06:00.0" => Err(DaemonError::GpuProbe("BAR0 went away".to_string())),
-            _ => Ok(None),
-        });
+        refresh_cc_modes_with(
+            &state,
+            |pci_host, _device_id| match pci_host {
+                "06:00.0" => Err(DaemonError::GpuProbe("BAR0 went away".to_string())),
+                _ => Ok(None),
+            },
+            std::time::Duration::ZERO,
+        );
 
         let cache = state.gpu_cc_modes.lock().unwrap();
         assert!(
             cache.is_empty(),
             "a failed or modeless probe must evict the stale entry: {cache:?}"
         );
+    }
+
+    #[test]
+    fn refresh_cc_modes_repeats_a_sweep_only_when_a_card_changed_hands_or_the_ttl_passed() {
+        // A public poller hitting GetHostInfo must not turn every request
+        // into a register read: a sweep against the same attached set
+        // within the TTL is skipped. A card changing hands, or the TTL
+        // passing, brings the next sweep back.
+        let card = |pci_host: &str| GpuDevice {
+            vendor: "NVIDIA".to_string(),
+            device_name: "GB202 [GeForce RTX 5090]".to_string(),
+            device_class: "0300".to_string(),
+            pci_host: pci_host.to_string(),
+            device_id: "10de:2b85".to_string(),
+            cc_mode: None,
+            arch: None,
+        };
+        let host = HostState {
+            settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
+            host_ipv4: String::new(),
+            network_interface: None,
+            gpus: vec![card("06:00.0"), card("07:00.0")],
+            dns_nameservers: None,
+        };
+        let state = DaemonState::hermetic(
+            host,
+            WorldView::default(),
+            Arc::new(crate::units::StaticUnitStates::default()),
+            Arc::new(crate::logs::StaticLogSource::new(Vec::new())),
+        );
+        let probes = std::sync::atomic::AtomicUsize::new(0);
+        let counting = |_: &str, _: &str| {
+            probes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Some(crate::gpu_cc::CcMode::On))
+        };
+        let hour = std::time::Duration::from_secs(3600);
+
+        refresh_cc_modes_with(&state, counting, hour);
+        refresh_cc_modes_with(&state, counting, hour);
+        assert_eq!(
+            probes.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "the second sweep within the TTL against the same attached set is skipped"
+        );
+
+        // A card changes hands: the sweep runs again, over the free card only.
+        let mut entry = fixture_entry(test_fixtures::QEMU_HASH, true);
+        entry.config.gpus = vec![crate::controller_config::QemuGpu {
+            pci_host: "06:00.0".to_string(),
+            supports_x_vga: true,
+        }];
+        state.world.blocking_write().insert_entry(entry);
+        refresh_cc_modes_with(&state, counting, hour);
+        assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 3);
+
+        // A zero TTL means every sweep runs.
+        refresh_cc_modes_with(&state, counting, std::time::Duration::ZERO);
+        assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 4);
     }
 
     #[test]

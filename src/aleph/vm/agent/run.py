@@ -641,11 +641,22 @@ async def create_vm_execution(
             try:
                 capacity.check_message(content, exclude_vm_hash=vm_hash)
                 spec, attest_port = await build_vprogram_spec(vm_hash, content)
+                # A confidential GPU is resolved against the host's CC-mode
+                # cards here, after staging, mirroring the instance path's
+                # resolve_gpus call. The message names a family and a count;
+                # the CRN picks the cards.
+                gpu = content.gpu
+                if gpu is not None:
+                    resolved = await capacity.resolve_confidential_gpus(
+                        arch=gpu.arch, count=gpu.count, models=gpu.models, owner=content.address
+                    )
+                    spec = replace(spec, gpus=resolved)
                 info = await supervisor.create_vm(spec)
             except Exception:
-                # build or create failed: retire the early record, and drop any
-                # bundle build_vprogram_spec may have already extracted before
-                # the failure (e.g. capacity admission fails after staging).
+                # build, GPU resolution or create failed: retire the early
+                # record, and drop any bundle build_vprogram_spec may have
+                # already extracted before the failure (e.g. capacity
+                # admission fails after staging).
                 await _retire_after_create_failure(
                     vm_hash, supervisor=supervisor, registry=registry, had_volumes=had_volumes, what="V-PROGRAM"
                 )

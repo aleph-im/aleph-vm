@@ -217,14 +217,17 @@ mod tests {
 
     const ONE_GPU: &str = r#"{"evidences":[{"arch":"BLACKWELL","nonce":"NONCE","evidence":"EeAB","certificate":"LS0t"}],"result_code":0,"result_message":"Ok"}"#;
 
-    /// Write an executable shell script and return a collector running it.
+    /// Write a shell script and return a collector running it through
+    /// /bin/sh. The file is deliberately not exec'd itself: a fork from
+    /// another test thread can still hold the just-written script open, and
+    /// exec would then fail ETXTBSY. The nonce still lands last, so the
+    /// script reads it as $1.
     fn script_collector(name: &str, body: &str) -> (tempfile::TempDir, CollectorProcess) {
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join(name);
-        std::fs::write(&script, format!("#!/bin/sh\n{body}")).unwrap();
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let collector = CollectorProcess::from_command_line(script.to_str().unwrap()).unwrap();
+        std::fs::write(&script, body).unwrap();
+        let collector =
+            CollectorProcess::from_command_line(&format!("/bin/sh {}", script.display())).unwrap();
         (dir, collector)
     }
 

@@ -2072,6 +2072,19 @@ fn snp_config_slice_with(
             "SEV-SNP measured boot requires kernel_path and initrd_path".to_string(),
         ));
     }
+    // Only the measured V-PROGRAM arm derives its own cmdline here, and only
+    // that image runs the guest-side GPU attestation stage. The opaque arm
+    // passes the agent's cmdline through verbatim and the daemon cannot tell
+    // whether the guest verifies the card at all, so a GPU there would be
+    // owner hardware nothing in the boot chain checks. Fail closed before the
+    // per-card rules run.
+    if !spec.gpus.is_empty() && !tee.kernel_cmdline.is_empty() {
+        return Err(RpcError::InvalidBackend(
+            "confidential GPUs are only supported on measured V-PROGRAM specs, not on the \
+             opaque-cmdline SNP instance arm"
+                .into(),
+        ));
+    }
     // A GPU may enter a confidential guest only in NVIDIA CC mode: the card
     // then refuses plaintext DMA and answers attestation, and the guest
     // verifies it at boot. The mode is read from the card now rather than
@@ -2083,6 +2096,11 @@ fn snp_config_slice_with(
     // card before this VM does. Any other answer, including a card that
     // cannot be read, fails closed. The cache learns the answer either way.
     for gpu in &spec.gpus {
+        // The inventory-membership check runs FIRST and is what makes
+        // `gpu.pci_host` safe to interpolate into the vfio-pci argv and into
+        // the sysfs path `gpu_bar.rs` reads: only an address the host scan
+        // itself produced gets past here, so a spec-supplied string never
+        // reaches either. Keep this order.
         let Some(device) = state
             .host
             .gpus
@@ -3883,6 +3901,7 @@ mod tests {
             pci_host: pci_host.into(),
             device_id: "10de:2b85".into(),
             cc_mode: None,
+            arch: None,
         }
     }
 
@@ -4970,6 +4989,31 @@ mod tests {
                 mode,
                 "the stale cached mode must not survive the probe"
             );
+        }
+    }
+
+    #[test]
+    fn snp_config_slice_rejects_a_gpu_on_the_opaque_cmdline_arm() {
+        // A confidential instance renders its own measured cmdline, so the
+        // guest carries no verified GPU attestation stage. A CC-mode card must
+        // not be admitted there even though the card itself would pass: the
+        // injected probe says "on" and is never consulted.
+        let harness = harness_with_gpus(vec![nvidia_card("06:00.0")]);
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let mut spec = snp_opaque_spec(&hash('k'), &root, &firmware.to_string_lossy());
+        spec.gpus = vec![pb::GpuConfig {
+            pci_host: "06:00.0".into(),
+            supports_x_vga: true,
+        }];
+        let cc_on = |_: &str, _: &str| Ok(Some(crate::gpu_cc::CcMode::On));
+        match snp_config_slice_with(state, &spec, cc_on, |_| Ok(1024)) {
+            Err(RpcError::InvalidBackend(msg)) => {
+                assert!(msg.contains("measured V-PROGRAM specs"), "{msg}")
+            }
+            other => panic!("a GPU on the opaque arm must be InvalidBackend, got {other:?}"),
         }
     }
 

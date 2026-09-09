@@ -10,6 +10,15 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-04-nvidia-cc-design.md`
 
+> **Amendment (2026-09-07):** the message field became
+> `content.gpu: Optional[ConfidentialGpuRequirement]` (architecture family,
+> count up to 8, optional `models` narrowing, required `mode`) instead of
+> `content.gpus: Optional[List[ConfidentialGpu]]` capped at one. Tasks below
+> that read `content.gpus` or resolve by `device_id` were reworked after the
+> fact: the daemon exports each card's `arch`, the agent resolves by family
+> and count, and the launch path refuses a count above the CRN's cap. The
+> task text is kept as executed.
+
 ## Global Constraints
 
 - Every fail-closed gate stays fail-closed: a GPU on an SNP spec is accepted only when its card reports `cc_mode == on` (spec 7.2); a V-PROGRAM with `gpus` whose manifest has no `gpu` block is `VmSetupError` (spec 5.2); init powers off on any GPU verification failure (spec 6.4).
@@ -18,7 +27,7 @@
 - GPU route path, verbatim: `/.well-known/attestation/gpu?nonce=<hex>`; response `tee_type` is `"nvidia-cc"` (spec 4.4). The existing `/.well-known/attestation` response is untouched.
 - BAR0 CC-mode register: offset `0x590` on Blackwell, `0x1182CC` on Hopper; bits `[1:0]`: `0b00` off, `0b01` on, `0b11` devtools (spec 7.1). Only `on` counts as confidential-capable; `devtools` is refused.
 - SNP GPU argv, verbatim per card `i` (spec 7.2): `-device pcie-root-port,id=rp{i},bus=pcie.0,chassis={i+1}` then `-device vfio-pci,host={bdf},bus=rp{i},rombar=0`; once: `-fw_cfg name=opt/ovmf/X-PciMmio64Mb,string={mmio_mb}`. No `x-vga`, no `-cpu host`.
-- Measured cmdline for the GPU runtime (spec 6.2): `console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash} workload_roothash={workload_roothash} swiotlb=262144 {verified_volumes}`; `swiotlb=262144` is fixed text, not a placeholder.
+- Measured cmdline for the GPU runtime (spec 6.2): `console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash} workload_roothash={workload_roothash} swiotlb=262144 verified_volumes={verified_volumes}`; `swiotlb=262144` is fixed text, not a placeholder.
 - GPU V-PROGRAM minimum memory: 2048 MiB (`GPU_VPROGRAM_MIN_MEMORY_MIB`), enforced at spec build (spec 6.2).
 - Driver userland path inside the guest and the workload chroot: `/opt/nvidia/lib` (spec 6.3, decision 7). Raw (unpatched) driver `.so` files, so the workload's own libc loads them.
 - Single GPU per V-PROGRAM (`max_length=1` on the message; the agent also refuses more than one).
@@ -2186,7 +2195,7 @@ EOF
 
 - [ ] **Step 6: Build, smoke, seed**
 
-Run: `nix build ./nix#gpuImage --print-build-logs` then `nix/boot-smoke.sh` with the base image (must still boot) and add a `--gpu` mode to `boot-smoke.sh` that boots `gpuImage` under plain QEMU with no device and expects the console line `init: no NVIDIA GPU present; running without GPU attestation` followed by the usual readiness line. Then `nix/check-golden-measurements.sh --update` and inspect the diff: every entry moves (the `init-common.sh` edit) plus the new `gpuMeasurement`. Commit the new golden file.
+Run: `nix build ./nix#gpuImage --print-build-logs` then `nix/boot-smoke.sh` with the base image (must still boot) and add a `--gpu` mode to `boot-smoke.sh` that boots `gpuImage` under plain QEMU with no device and expects the console line `init: no NVIDIA GPU present; running without GPU attestation` followed by the usual readiness line (the launch measurement does not say whether a card was present; a client whose manifest declares a `gpu` block requires GPU evidence, and that is where a GPU-less boot of this image fails closed). Then `nix/check-golden-measurements.sh --update` and inspect the diff: every entry moves (the `init-common.sh` edit) plus the new `gpuMeasurement`. Commit the new golden file.
 
 - [ ] **Step 7: Commit**
 
@@ -2287,7 +2296,7 @@ class GpuRuntimeSpec(StrictModel):
 
 `RuntimeManifest.gpu: GpuRuntimeSpec | None = None` after `workload`.
 
-`bundle.py`: `CMDLINE_TEMPLATE_GPU_V1 = "console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash} workload_roothash={workload_roothash} swiotlb=262144 {verified_volumes}"` (compare with `CMDLINE_TEMPLATE_EXEC_V1` for the exact placeholder order used today and keep it), `GPU_JSON_FILE = "gpu.json"`, `BundleInfo.gpu: GpuRuntimeSpec | None = None`; in `build_bundle`, when `flavor == "gpu"` read `image_dir / GPU_JSON_FILE` and validate `GpuRuntimeSpec.model_validate_json`; the tar members are the vprogram ones. `make_manifest(..., gpu_runtime: bool = False)`: `if gpu_runtime and info.gpu is None: raise ValueError("gpu_runtime needs the gpu facts recorded by the gpu flavor build")`; select `CMDLINE_TEMPLATE_GPU_V1`, `EXEC_WORKLOAD`, and `gpu=info.gpu`. `scripts/vprogram_bundle.py`: add `gpu` to the `--flavor` choices, map it to `nix#gpuImage` in `_nix_target`, and pass `gpu_runtime=args.flavor == "gpu"`.
+`bundle.py`: `CMDLINE_TEMPLATE_GPU_V1 = "console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash} workload_roothash={workload_roothash} swiotlb=262144 verified_volumes={verified_volumes}"` (compare with `CMDLINE_TEMPLATE_EXEC_V1` for the exact placeholder order used today and keep it), `GPU_JSON_FILE = "gpu.json"`, `BundleInfo.gpu: GpuRuntimeSpec | None = None`; in `build_bundle`, when `flavor == "gpu"` read `image_dir / GPU_JSON_FILE` and validate `GpuRuntimeSpec.model_validate_json`; the tar members are the vprogram ones. `make_manifest(..., gpu_runtime: bool = False)`: `if gpu_runtime and info.gpu is None: raise ValueError("gpu_runtime needs the gpu facts recorded by the gpu flavor build")`; select `CMDLINE_TEMPLATE_GPU_V1`, `EXEC_WORKLOAD`, and `gpu=info.gpu`. `scripts/vprogram_bundle.py`: add `gpu` to the `--flavor` choices, map it to `nix#gpuImage` in `_nix_target`, and pass `gpu_runtime=args.flavor == "gpu"`.
 
 - [ ] **Step 4: Run tests, lint, commit**
 
@@ -2380,7 +2389,7 @@ GPU_BLOCK = {
 }
 VOLUME_SLOT_TEMPLATE = (
     MANIFEST_TEMPLATE["boot"]["cmdline_template"]
-    + " workload_roothash={workload_roothash} swiotlb=262144 {verified_volumes}"
+    + " workload_roothash={workload_roothash} swiotlb=262144 verified_volumes={verified_volumes}"
 )
 
 

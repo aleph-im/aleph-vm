@@ -418,6 +418,117 @@ async def test_resolve_gpus_empty_request_makes_no_supervisor_call():
     supervisor.get_host_info.assert_not_awaited()
 
 
+_BLACKWELL_ID = "10de:2b85"
+
+
+def _cc_gpu(
+    pci_host: str,
+    cc_mode: str | None,
+    *,
+    arch: str | None = "blackwell",
+    device_id: str = _BLACKWELL_ID,
+) -> GpuDevice:
+    gpu = GpuDevice(vendor="NVIDIA", device_name="GB202", device_class="0300", pci_host=pci_host, device_id=device_id)
+    return gpu.model_copy(update={"cc_mode": cc_mode, "arch": arch})
+
+
+@pytest.mark.asyncio
+async def test_resolve_confidential_gpus_takes_only_on_mode_cards():
+    manager = _manager([_cc_gpu("06:00.0", "off"), _cc_gpu("07:00.0", None), _cc_gpu("08:00.0", "on")])
+    resolved = await manager.resolve_confidential_gpus(arch="blackwell", count=1, models=None, owner="0xUSER")
+    assert [str(g.pci_host) for g in resolved] == ["08:00.0"]
+    assert resolved[0].supports_x_vga is False
+
+
+@pytest.mark.asyncio
+async def test_resolve_confidential_gpus_matches_any_card_of_the_family():
+    # The message names a family, never a device: a second Blackwell SKU is
+    # as good a match as the first.
+    manager = _manager([_cc_gpu("06:00.0", "on", device_id="10de:2c02")])
+    resolved = await manager.resolve_confidential_gpus(arch="blackwell", count=1, models=None, owner="0xUSER")
+    assert [str(g.pci_host) for g in resolved] == ["06:00.0"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_confidential_gpus_models_narrow_the_family():
+    manager = _manager([_cc_gpu("06:00.0", "on", device_id="10de:2c02"), _cc_gpu("07:00.0", "on")])
+    resolved = await manager.resolve_confidential_gpus(
+        arch="blackwell", count=1, models=[_BLACKWELL_ID], owner="0xUSER"
+    )
+    assert [str(g.pci_host) for g in resolved] == ["07:00.0"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_confidential_gpus_rejects_another_architecture():
+    manager = _manager([_cc_gpu("06:00.0", "on")])  # blackwell only
+    with pytest.raises(InsufficientResourcesError) as excinfo:
+        await manager.resolve_confidential_gpus(arch="hopper", count=1, models=None, owner="0xUSER")
+    assert "hopper" in str(excinfo.value)
+    # The blackwell card is not a candidate, so it is not offered either.
+    assert excinfo.value.available == {"confidential_gpus": []}
+
+
+@pytest.mark.asyncio
+async def test_resolve_confidential_gpus_names_the_confidential_requirement():
+    manager = _manager([_cc_gpu("06:00.0", "devtools")])
+    with pytest.raises(InsufficientResourcesError) as excinfo:
+        await manager.resolve_confidential_gpus(arch="blackwell", count=1, models=None, owner="0xUSER")
+    assert excinfo.value.required == {"confidential_gpu": {"arch": "blackwell", "count": 1, "models": None}}
+
+
+@pytest.mark.asyncio
+async def test_resolve_confidential_gpus_shortage_reports_the_candidates():
+    manager = _manager([_cc_gpu("06:00.0", "on")])
+    with pytest.raises(InsufficientResourcesError) as excinfo:
+        await manager.resolve_confidential_gpus(arch="blackwell", count=2, models=None, owner="0xUSER")
+    assert excinfo.value.required == {"confidential_gpu": {"arch": "blackwell", "count": 2, "models": None}}
+    assert excinfo.value.available == {"confidential_gpus": [{"device_id": _BLACKWELL_ID, "arch": "blackwell"}]}
+
+
+@pytest.mark.asyncio
+async def test_resolve_confidential_gpus_takes_count_distinct_cards():
+    manager = _manager([_cc_gpu("06:00.0", "on"), _cc_gpu("07:00.0", "on"), _cc_gpu("08:00.0", "on")])
+    resolved = await manager.resolve_confidential_gpus(arch="blackwell", count=2, models=None, owner="0xUSER")
+    assert {str(gpu.pci_host) for gpu in resolved} == {"06:00.0", "07:00.0"}
+
+
+@pytest.mark.asyncio
+async def test_resolve_confidential_gpus_skips_another_users_hold():
+    held = _cc_gpu("06:00.0", "on")
+    free = _cc_gpu("07:00.0", "on")
+    manager = _manager([held, free])
+    await manager.reserve_gpus([_BLACKWELL_ID], "0xOTHER")
+    held_pci = next(iter(manager.holds))
+
+    resolved = await manager.resolve_confidential_gpus(arch="blackwell", count=1, models=None, owner="0xOWNER")
+
+    assert str(resolved[0].pci_host) != held_pci
+    assert manager.holds[held_pci].user == "0xOTHER"
+
+
+@pytest.mark.asyncio
+async def test_resolve_confidential_gpus_consumes_the_owners_own_hold():
+    manager = _manager([_cc_gpu("06:00.0", "on")])
+    await manager.reserve_gpus([_BLACKWELL_ID], "0xOWNER")
+
+    resolved = await manager.resolve_confidential_gpus(arch="blackwell", count=1, models=None, owner="0xOWNER")
+
+    assert [str(gpu.pci_host) for gpu in resolved] == ["06:00.0"]
+    assert manager.holds == {}
+
+
+@pytest.mark.asyncio
+async def test_resolve_confidential_gpus_shortage_leaves_the_ledger_untouched():
+    manager = _manager([_cc_gpu("06:00.0", "on")])
+    await manager.reserve_gpus([_BLACKWELL_ID], "0xOWNER")
+
+    with pytest.raises(InsufficientResourcesError):
+        await manager.resolve_confidential_gpus(arch="blackwell", count=2, models=None, owner="0xOWNER")
+
+    # The partial match is not committed: the owner's hold survives the failure.
+    assert manager.holds["06:00.0"].user == "0xOWNER"
+
+
 def test_manager_never_calls_unrelated_supervisor_methods(mocker):
     # check_capacity is pure agent policy: registry sums plus host figures.
     _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)

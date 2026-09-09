@@ -5,7 +5,7 @@
 # Kernel side: the open kernel modules built against gpuKernel, nvidia.ko and
 # nvidia-uvm.ko only (no drm/modeset: headless compute guest; no peermem).
 # GSP firmware is mandatory for CC mode and comes from the driver archive's
-# firmware output.
+# firmware output, narrowed to the Ampere-and-newer blob.
 #
 # User side: the RAW driver libraries, extracted straight from the .run
 # archive with no ELF patching. nixpkgs' `out` patches interpreters and
@@ -38,7 +38,16 @@ let
       else echo "missing $m.ko in ${modDir}" >&2; exit 1; fi
     done
   '';
-  firmware = nvidiaPkgs.firmware;
+  # Only gsp_ga10x.bin, the GSP blob every Ampere-and-newer GPU loads. The
+  # other blob in the driver's firmware output, gsp_tu10x.bin, is Turing's,
+  # and Turing has no confidential-computing mode: no card this image can
+  # serve would ever load it. It is tens of megabytes of unusable firmware
+  # inside a measured rootfs, so it stays out.
+  firmware = pkgs.runCommand "nvidia-gsp-firmware-${version}" { } ''
+    mkdir -p $out/lib/firmware/nvidia/${version}
+    cp ${nvidiaPkgs.firmware}/lib/firmware/nvidia/${version}/gsp_ga10x.bin \
+       $out/lib/firmware/nvidia/${version}/
+  '';
   # The compute + attestation userland, raw. Wildcards keep the list honest
   # across driver bumps (a renamed library fails the ls, not the boot).
   #

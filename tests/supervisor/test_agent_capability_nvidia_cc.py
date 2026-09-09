@@ -7,7 +7,7 @@ import pytest
 from aleph.vm.agent.resources import NvidiaCcProperties, nvidia_cc_properties
 
 
-def _gpu(device_id: str, pci_host: str, cc_mode: str | None) -> dict:
+def _gpu(device_id: str, pci_host: str, cc_mode: str | None, arch: str | None = "blackwell") -> dict:
     raw = {
         "vendor": "NVIDIA",
         "device_name": "GB202",
@@ -17,6 +17,8 @@ def _gpu(device_id: str, pci_host: str, cc_mode: str | None) -> dict:
     }
     if cc_mode is not None:
         raw["cc_mode"] = cc_mode
+    if arch is not None:
+        raw["arch"] = arch
     return raw
 
 
@@ -29,7 +31,22 @@ def test_only_on_mode_cards_are_listed():
         ],
         {"10de:2b85": "RTX PRO 6000"},
     )
-    assert props == NvidiaCcProperties(devices=[{"device_id": "10de:2b85", "model": "RTX PRO 6000"}])
+    assert props == NvidiaCcProperties(
+        devices=[{"device_id": "10de:2b85", "arch": "blackwell", "model": "RTX PRO 6000"}]
+    )
+
+
+def test_the_architecture_is_advertised_alongside_the_device_id():
+    """What the scheduler matches a V-PROGRAM's `gpu.arch` against."""
+    props = nvidia_cc_properties([_gpu("10de:2331", "06:00.0", "on", arch="hopper")], {})
+    assert props.devices[0].arch == "hopper"
+
+
+def test_a_card_without_an_architecture_is_not_advertised():
+    # The CC probe reads a per-architecture register offset, so a card in CC
+    # mode always has one; an arch-less card is an inventory the agent cannot
+    # place, not a card to guess a family for.
+    assert nvidia_cc_properties([_gpu("10de:2b85", "06:00.0", "on", arch=None)], {}) is None
 
 
 def test_no_on_mode_card_means_no_block():
@@ -106,3 +123,72 @@ async def test_capability_survives_a_supervisor_outage(mocker):
     assert capability.tee.nvidia_cc is None
     assert capability.tee_unavailable_reason is None
     aggregate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_usage_endpoint_advertises_nvidia_cc(mocker):
+    """The scheduler reads /about/usage/system, not /about/capability: the
+    confidential-GPU block has to reach the properties both endpoints build."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from aleph.vm.agent import resources
+
+    mocker.patch.object(
+        resources,
+        "_get_static_machine_properties",
+        AsyncMock(return_value=SimpleNamespace(model_copy=lambda update: SimpleNamespace(**update))),
+    )
+    mocker.patch.object(resources, "update_aggregate_settings", AsyncMock())
+    mocker.patch.object(
+        resources,
+        "get_compatible_gpus",
+        return_value=[SimpleNamespace(device_id="10de:2b85", model="RTX PRO 6000")],
+    )
+    mocker.patch.object(resources, "get_supported_snp_vcpu_types", AsyncMock(return_value=["EPYC-v4"]))
+    host_info = SimpleNamespace(available_gpus=[_gpu("10de:2b85", "06:00.0", "on")])
+
+    properties = await resources.get_machine_properties(host_info)
+    assert properties.tee.sev_snp.supported_vcpu_types == ["EPYC-v4"]
+    assert properties.tee.nvidia_cc.devices[0].device_id == "10de:2b85"
+    assert properties.tee.nvidia_cc.devices[0].model == "RTX PRO 6000"
+
+
+@pytest.mark.asyncio
+async def test_both_endpoints_advertise_the_same_tee_block(mocker):
+    """One builder feeds both, so /about/usage/system and /about/capability
+    can never disagree about what this host offers."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from aleph.vm.agent import resources
+
+    mocker.patch.object(
+        resources,
+        "_get_static_machine_properties",
+        AsyncMock(return_value=SimpleNamespace(model_copy=lambda update: SimpleNamespace(**update))),
+    )
+    mocker.patch.object(
+        resources,
+        "_get_static_machine_capability",
+        AsyncMock(return_value=SimpleNamespace(model_copy=lambda update: SimpleNamespace(**update))),
+    )
+    mocker.patch.object(resources, "check_amd_sev_snp_supported", return_value=True)
+    mocker.patch.object(resources, "update_aggregate_settings", AsyncMock())
+    mocker.patch.object(
+        resources,
+        "get_compatible_gpus",
+        return_value=[SimpleNamespace(device_id="10de:2b85", model="RTX PRO 6000")],
+    )
+    mocker.patch.object(resources, "get_supported_snp_vcpu_types", AsyncMock(return_value=["EPYC-v4"]))
+    mocker.patch.object(
+        resources,
+        "get_snp_launch_capability",
+        AsyncMock(return_value=SimpleNamespace(supported_vcpu_types=["EPYC-v4"], unavailable_reason=None)),
+    )
+    host_info = SimpleNamespace(available_gpus=[_gpu("10de:2b85", "06:00.0", "on")])
+    supervisor = SimpleNamespace(get_host_info=AsyncMock(return_value=host_info))
+
+    usage = await resources.get_machine_properties(host_info)
+    capability = await resources.get_machine_capability(supervisor)
+    assert usage.tee == capability.tee
