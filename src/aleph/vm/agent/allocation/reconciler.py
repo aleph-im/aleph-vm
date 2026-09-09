@@ -147,6 +147,16 @@ class AllocationReconciler:
         if vm_hash in self._desired.entries:
             self._wakeup.set()
 
+    def has_plan(self) -> bool:
+        """Whether a plan governs this node, however few VMs it names.
+
+        Not the same question as "does the plan list anything": the empty plan
+        is the instruction to run nothing here, and a node under it is still
+        under it. Read by the legacy allocation route, which cannot be honoured
+        alongside a plan.
+        """
+        return self._desired is not None
+
     def planned_hashes(self) -> set[ItemHash]:
         return set(self._desired.entries) if self._desired else set()
 
