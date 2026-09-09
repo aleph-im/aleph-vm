@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use openssl::asn1::Asn1TimeRef;
 use openssl::x509::{CrlStatus, X509, X509Crl};
 
-use crate::pki::{asn1_now, check_cert_window, check_validity_window};
+use crate::pki::{asn1_now, check_cert_window, check_pinned_root, check_validity_window};
 
 use super::collateral::TdxCollateral;
 
@@ -26,6 +26,12 @@ const INTEL_SGX_ROOT_CA_PEM: &[u8] = include_bytes!("intel_sgx_root_ca.pem");
 
 /// Number of certificates in a PCK chain: leaf, intermediate CA, root CA.
 const PCK_CHAIN_LEN: usize = 3;
+
+/// Number of certificates in a collateral issuer chain: signer, root CA.
+const SIGNER_CHAIN_LEN: usize = 2;
+
+/// How the pinned Intel root is named in rejection messages.
+const PINNED_ROOT_LABEL: &str = "the pinned Intel SGX Root CA";
 
 /// Parse the pinned Intel SGX Root CA.
 pub(crate) fn pinned_intel_root() -> Result<X509> {
@@ -96,13 +102,12 @@ pub(crate) fn verify_pck_chain(
 
     // The embedded root must BE the pinned root, not merely resemble it.
     let pinned = pinned_intel_root()?;
-    if root.to_der().context("failed to encode the chain root")?
-        != pinned
-            .to_der()
-            .context("failed to encode the pinned root")?
-    {
-        bail!("the quote's root certificate is not the pinned Intel SGX Root CA");
-    }
+    check_pinned_root(
+        "the quote's root certificate",
+        root,
+        PINNED_ROOT_LABEL,
+        &pinned,
+    )?;
 
     // Signatures down the chain, and validity windows for all three.
     let root_key = root
@@ -147,52 +152,137 @@ pub(crate) fn verify_pck_chain(
     Ok(leaf.to_owned())
 }
 
-/// Verify an Intel collateral issuer chain (signer certificate, then its
-/// issuing intermediate) up to the pinned root, and return the signer.
+/// Common Name Intel gives the certificate that signs its TCB Info and QE
+/// Identity documents.
+const TCB_SIGNING_CN: &str = "Intel SGX TCB Signing";
+
+/// Verify an Intel collateral issuer chain (the signer certificate, then
+/// the root that issued it) and return the signer.
 ///
-/// Used for the TCB Info and QE Identity signatures. Unlike the PCK chain
-/// the root is not embedded, so the intermediate is checked directly
-/// against the pin. Intel publishes no CRL for these signers, matching the
-/// DCAP reference, so none is applied here.
+/// Used for the TCB Info and QE Identity signatures. Intel issues the TCB
+/// signing certificate directly off the root and ships the root itself as
+/// the second element, so this chain is two certificates long and the root
+/// is pinned in place exactly as it is in a PCK chain. Intel publishes no
+/// CRL for these signers, matching the DCAP reference, so none is applied
+/// here.
+///
+/// The signer's Common Name is checked as well. Without it any certificate
+/// the Intel root issued for another purpose (the PCK Platform CA, for one)
+/// would be accepted as a TCB Info signer, which is a certificate-purpose
+/// confusion the chain arithmetic alone does not catch.
 pub(crate) fn verify_signer_chain(chain_pem: &[u8], now: SystemTime) -> Result<X509> {
     let now = asn1_now(now)?;
     let chain = X509::stack_from_pem(chain_pem).context("failed to parse the issuer chain PEM")?;
-    if chain.len() != 2 {
+    if chain.len() != SIGNER_CHAIN_LEN {
         bail!(
-            "expected 2 certificates in the issuer chain (signer, intermediate), got {}",
+            "expected {SIGNER_CHAIN_LEN} certificates in the issuer chain (signer, root), got {}",
             chain.len()
         );
     }
-    let (signer, intermediate) = (&chain[0], &chain[1]);
+    let (signer, root) = (&chain[0], &chain[1]);
 
     let pinned = pinned_intel_root()?;
+    check_pinned_root(
+        "the collateral issuer chain's root",
+        root,
+        PINNED_ROOT_LABEL,
+        &pinned,
+    )?;
+
     let pinned_key = pinned
         .public_key()
         .context("failed to extract the pinned root public key")?;
-    if !intermediate
-        .verify(&pinned_key)
-        .context("failed to check the intermediate signature")?
-    {
-        bail!("the issuer chain intermediate is not signed by the pinned Intel root");
-    }
-    let intermediate_key = intermediate
-        .public_key()
-        .context("failed to extract the intermediate public key")?;
     if !signer
-        .verify(&intermediate_key)
+        .verify(&pinned_key)
         .context("failed to check the signer signature")?
     {
-        bail!("the collateral signer certificate is not signed by the intermediate CA");
+        bail!("the collateral signer certificate is not signed by the Intel root");
     }
+    check_signer_identity(signer)?;
+
     check_cert_window("the pinned root certificate", &pinned, &now)?;
-    check_cert_window("the intermediate certificate", intermediate, &now)?;
     check_cert_window("the signer certificate", signer, &now)?;
     Ok(signer.to_owned())
 }
 
+/// Reject a collateral signer that is not Intel's TCB signing certificate.
+fn check_signer_identity(signer: &X509) -> Result<()> {
+    let cn = signer
+        .subject_name()
+        .entries_by_nid(openssl::nid::Nid::COMMONNAME)
+        .next()
+        .context("the collateral signer certificate has no Common Name")?;
+    let cn = String::from_utf8(cn.data().as_slice().to_vec())
+        .context("the collateral signer Common Name is not valid UTF-8")?;
+    if !cn.contains(TCB_SIGNING_CN) {
+        bail!("the collateral signer Common Name {cn:?} is not a {TCB_SIGNING_CN} certificate");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, UNIX_EPOCH};
+
     use super::*;
+
+    const COLLATERAL_V4: &[u8] =
+        include_bytes!("../../tests/fixtures/tdx/tdx_quote_collateral.json");
+
+    /// Inside the v4 collateral's certificate windows: 2025-06-20T00:00:00Z.
+    fn now_v4() -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(1_750_377_600)
+    }
+
+    fn collateral() -> TdxCollateral {
+        TdxCollateral::from_json(COLLATERAL_V4).expect("collateral parses")
+    }
+
+    fn cert_at(chain_pem: &str, index: usize) -> X509 {
+        X509::stack_from_pem(chain_pem.as_bytes())
+            .expect("chain parses")
+            .swap_remove(index)
+    }
+
+    fn pem_chain(certs: &[&X509]) -> Vec<u8> {
+        certs
+            .iter()
+            .flat_map(|cert| cert.to_pem().expect("cert re-encodes"))
+            .collect()
+    }
+
+    #[test]
+    fn genuine_collateral_chain_verifies() {
+        let signer = verify_signer_chain(collateral().tcb_info_issuer_chain.as_bytes(), now_v4())
+            .expect("the fixture's TCB Info chain verifies");
+        let subject = format!("{:?}", signer.subject_name());
+        assert!(subject.contains("TCB Signing"), "got {subject}");
+    }
+
+    /// Intel's collateral chains carry the root itself in second position,
+    /// so the root must be pinned there exactly as it is in a PCK chain. A
+    /// chain ending in some other genuine Intel certificate is refused.
+    #[test]
+    fn collateral_chain_must_end_in_the_pinned_root() {
+        let collateral = collateral();
+        let signer = cert_at(&collateral.tcb_info_issuer_chain, 0);
+        let platform_ca = cert_at(&collateral.pck_crl_issuer_chain, 0);
+        let err = verify_signer_chain(&pem_chain(&[&signer, &platform_ca]), now_v4())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("pinned Intel SGX Root CA"), "got: {err}");
+    }
+
+    /// The PCK Platform CA is a genuine Intel certificate issued by the same
+    /// root, but it is not the TCB signing key: presented as a collateral
+    /// signer it must be refused on its subject.
+    #[test]
+    fn collateral_signer_must_be_the_tcb_signing_certificate() {
+        let err = verify_signer_chain(collateral().pck_crl_issuer_chain.as_bytes(), now_v4())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Intel SGX TCB Signing"), "got: {err}");
+    }
 
     #[test]
     fn pinned_root_parses_and_is_self_signed() {

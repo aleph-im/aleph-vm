@@ -42,6 +42,48 @@ pub(crate) fn ecdsa_from_raw(raw: &[u8]) -> Result<EcdsaSig> {
     ecdsa_from_components(r, s)
 }
 
+/// Reject a root certificate that is not, byte for byte, the pinned one.
+///
+/// Both verifiers anchor a chain in a certificate compiled into this crate
+/// rather than in whatever root the evidence carries, and both compare the
+/// whole certificate rather than only its public key. Comparing the whole
+/// certificate is the stricter of the two options and the one that needs no
+/// judgement at verification time: there is nothing to decide about a
+/// re-issued root that happens to carry the same key, a serial that moved,
+/// or an envelope that was re-encoded. The cost is that a genuine re-issue
+/// is refused until the pin is refreshed, which is the fail-closed
+/// direction, and the error below says exactly that when the key still
+/// matches so the operator is not left guessing.
+pub(crate) fn check_pinned_root(
+    presented_label: &str,
+    presented: &X509,
+    pin_label: &str,
+    pinned: &X509,
+) -> Result<()> {
+    let presented_der = presented
+        .to_der()
+        .with_context(|| format!("failed to encode {presented_label}"))?;
+    let pinned_der = pinned
+        .to_der()
+        .with_context(|| format!("failed to encode {pin_label}"))?;
+    if presented_der == pinned_der {
+        return Ok(());
+    }
+
+    let presented_key = presented
+        .public_key()
+        .and_then(|key| key.public_key_to_der());
+    let pinned_key = pinned.public_key().and_then(|key| key.public_key_to_der());
+    let same_key = matches!((presented_key, pinned_key), (Ok(a), Ok(b)) if a == b);
+    if same_key {
+        bail!(
+            "{presented_label} is not {pin_label}: it carries the same public key \
+             but a different certificate, so the pin needs refreshing"
+        );
+    }
+    bail!("{presented_label} is not {pin_label} (possible forged or cache-poisoned root)");
+}
+
 /// Convert an injected clock into an ASN.1 time, at second granularity.
 ///
 /// Verification time is a parameter everywhere in this crate rather than a

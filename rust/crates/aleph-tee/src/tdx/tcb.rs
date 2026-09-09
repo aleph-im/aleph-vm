@@ -946,7 +946,8 @@ mod tests {
         // Intel root: same subject names, fresh keys. verify_signer_chain
         // is what gives the document signatures their meaning, so it needs
         // its own adversarial case, mirroring the PCK chain's foreign-root
-        // test in verify.rs.
+        // test in verify.rs. The chain carries the root itself, so the pin
+        // on that certificate is what refuses it.
         use openssl::asn1::Asn1Time;
         use openssl::ec::{EcGroup, EcKey};
         use openssl::nid::Nid;
@@ -1008,7 +1009,7 @@ mod tests {
             .unwrap_err()
         );
         assert!(
-            err.contains("not signed by the pinned Intel root"),
+            err.contains("is not the pinned Intel SGX Root CA"),
             "got: {err}"
         );
     }
