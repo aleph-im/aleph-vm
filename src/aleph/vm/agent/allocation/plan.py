@@ -88,13 +88,18 @@ class PlannedVm:
 class AllocationPlan:
     """What the push asked for, once the answer has had its say.
 
-    ``refused`` are the hashes the push listed and the answer turned down.
-    They are out of ``entries`` because nothing is to start them, and they are
-    named here because the convergence loop reads a hash the plan does not
-    hold as one the scheduler took away, and deleting a VM means reaping its
-    disks. "Rejected" is not "deleted": the scheduler still believes the VM
-    exists, and every refusal the answer gives is temporary anyway (no room
-    right now, a node that has not read its own hash back yet).
+    ``refused`` are the hashes the push listed and this node turned down,
+    over a message it would not verify or for want of room. They are out of
+    ``entries`` because nothing is to start them, and they are named here
+    because the convergence loop reads a hash the plan does not hold as one
+    the scheduler took away, and deleting a VM means reaping its disks.
+    "Rejected" is not "deleted": the scheduler still believes the VM exists,
+    and the shapes that produce a refusal (a full host, a node that has not
+    read its own hash back since it restarted, a corrupt message from a buggy
+    scheduler or a bad CCN read) are all things that pass.
+
+    A hash the push sent in a form we could not parse is absent from both:
+    it names no VM on this node, so there is nothing for it to protect.
     """
 
     plan_id: str

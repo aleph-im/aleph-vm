@@ -319,6 +319,38 @@ def test_an_entry_with_an_unusable_item_hash_is_rejected_not_raised():
     assert list(plan.entries) == [HASH_A]
     assert rejected["not-a-hash"]["code"] == "invalid_message"
     assert rejected["None"]["code"] == "invalid_message"
+    # Neither key names a VM this node could be running, so neither is worth
+    # protecting from the teardown pass.
+    assert plan.refused == frozenset()
+
+
+def test_a_hash_whose_message_will_not_verify_is_still_a_hash_the_push_named():
+    """The push named this VM; all we refused is the message it carried. The
+    convergence loop deletes what the push left out, so leaving the hash out
+    of the plan entirely means a corrupt entry, from a scheduler bug or a bad
+    CCN read, reaps the disks of a VM that is running here perfectly well."""
+    body = {"vms": [{"item_hash": str(HASH_A), "message": "not-an-object"}, {"item_hash": str(HASH_B)}]}
+
+    plan, rejected = build_plan(body, now=NOW)
+
+    assert rejected[HASH_A]["code"] == "invalid_message"
+    assert list(plan.entries) == [HASH_B]
+    assert plan.refused == frozenset({HASH_A})
+
+
+def test_narrowing_carries_the_refusals_the_plan_arrived_with():
+    """Two refusals reach the loop by different routes: build_plan's, over a
+    message it would not verify, and the answer's, over a host with no room.
+    Both name a VM the push listed, so both have to survive narrowing."""
+    plan, _ = build_plan(
+        {"vms": [{"item_hash": str(HASH_A), "message": "not-an-object"}, {"item_hash": str(HASH_B)}]}, now=NOW
+    )
+    verdict = PlanVerdict(rejected={HASH_B: {"code": "insufficient_capacity"}})
+
+    narrowed = narrow_plan(plan, verdict)
+
+    assert narrowed.entries == {}
+    assert narrowed.refused == frozenset({HASH_A, HASH_B})
 
 
 def test_a_pinned_vm_is_not_refused_when_we_do_not_know_our_own_hash():

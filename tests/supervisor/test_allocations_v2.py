@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 import aiohttp
 import pytest
 from aleph_message.models import ItemHash
+from test_supervisor_translate import _make_qemu_instance_message
 
 from aleph.vm.agent.allocation import reconciler as reconciler_module
 from aleph.vm.agent.capacity import AdmissionVerdict, CapacityManager
@@ -22,7 +23,7 @@ from aleph.vm.agent.views.allocation_auth import (
     MAX_SIGNED_REQUEST_BODY_BYTES,
 )
 from aleph.vm.resources import GpuDevice, GpuDeviceClass
-from aleph.vm.supervisor_interface.types import HostInfo
+from aleph.vm.supervisor_interface.types import ConfidentialMode, HostInfo, VmStatus
 
 HASH_C = ItemHash("c" * 64)
 PLAN = "/v2/control/allocations"
@@ -69,6 +70,17 @@ def _card():
 
 def _entry(message):
     return {"item_hash": message["item_hash"], "message": message}
+
+
+def _running(vm_hash):
+    """What the supervisor reports for a VM of ours that is up."""
+    return SimpleNamespace(
+        vm_id=str(vm_hash),
+        status=VmStatus.RUNNING,
+        gpus=[],
+        confidential_mode=ConfidentialMode.NONE,
+        awaiting_confidential_init=False,
+    )
 
 
 @pytest.mark.asyncio
@@ -183,6 +195,39 @@ async def test_a_message_the_host_can_take_is_accepted_and_submitted(
     assert (await response.json())["accepted"] == [message["item_hash"]]
     submitted = app["allocation_reconciler"].submit.call_args.args[0]
     assert set(submitted.entries) == {ItemHash(message["item_hash"])}
+
+
+@pytest.mark.asyncio
+async def test_a_corrupt_message_for_a_running_vm_does_not_delete_it(
+    aiohttp_client, scheduler_auth, signed_message, monkeypatch
+):
+    """The rule the loop converges by: a hash the push named is never one the
+    push dropped. Here the push names a VM this node is running and carries a
+    message that will not verify, which is what a scheduler bug or a bad CCN
+    read looks like from here. The answer is invalid_message, so the hash is
+    not among the plan's entries, and the pass used to read that absence as a
+    deletion: it retired the VM GONE, dropping its record and its DB rows and
+    reaping its disks over one corrupt entry."""
+    message = signed_message()
+    content = json.loads(message["item_content"])
+    content["resources"]["vcpus"] = 64
+    message["item_content"] = json.dumps(content)
+    message["content"] = content
+    vm_hash = ItemHash(message["item_hash"])
+    teardown = AsyncMock()
+    monkeypatch.setattr(reconciler_module, "teardown_vm", teardown)
+    app = _app(real_reconciler=True)
+    app["supervisor"].list_vms.return_value = [_running(vm_hash)]
+    running = _make_qemu_instance_message()
+    app["vm_registry"].record(vm_hash, message=running, original=running, persistent=True)
+    client = await aiohttp_client(app)
+    body, headers = scheduler_auth({"vms": [_entry(message)]}, path=PLAN)
+
+    response = await client.post(PLAN, data=body, headers=headers)
+
+    assert (await response.json())["rejected"][str(vm_hash)]["code"] == "invalid_message"
+    await app["allocation_reconciler"]._converge_once()
+    teardown.assert_not_awaited()
 
 
 @pytest.mark.asyncio
