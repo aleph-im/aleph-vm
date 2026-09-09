@@ -2027,7 +2027,7 @@ if gpu_present; then
     # result_code 0 and every device's measres "success" (the SDK serializes
     # the enum lowercase), or power off.
     /bin/busybox grep -q '"result_code" *: *0' /run/aleph/gpu-attest.json || gpu_fatal "result_code != 0"
-    if /bin/busybox grep -q '"measres" *: *"Failure"' /run/aleph/gpu-attest.json; then
+    if /bin/busybox grep -q '"measres" *: *"fail"' /run/aleph/gpu-attest.json; then
         gpu_fatal "measurement comparison failed"
     fi
     /bin/busybox grep -q '"measres" *: *"success"' /run/aleph/gpu-attest.json || gpu_fatal "no success claim"
