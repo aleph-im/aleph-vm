@@ -246,6 +246,10 @@ if gpu_present; then
         /bin/busybox cat /run/aleph/gpu-attest.log
         gpu_fatal "nvattest exited non-zero"
     fi
+    # The full result carries the detached EAT and the log can echo it on
+    # failure; neither is served, so neither stays world-readable, same as
+    # the extracted claims below.
+    /bin/busybox chmod 0600 /run/aleph/gpu-attest.json /run/aleph/gpu-attest.log
     # result_code 0, or power off. The CLI pretty-prints its JSON (nlohmann
     # dump(4)) with the top-level keys in alphabetical order, so every key is
     # on its own line. result_message follows result_code today, hence the
