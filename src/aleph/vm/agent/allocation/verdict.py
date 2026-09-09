@@ -29,7 +29,7 @@ from aleph.vm.agent.allocation.plan import (
     by_hash,
 )
 from aleph.vm.agent.allocation.refusal import AllocationFailureCode, Refusal, Refusals
-from aleph.vm.agent.allocation.teardown import is_removable_by_allocation
+from aleph.vm.agent.allocation.teardown import retention_reason
 from aleph.vm.agent.allocation.verify import (
     VerificationOutcome,
     VerifiedMessage,
@@ -42,7 +42,7 @@ from aleph.vm.agent.capacity import (
 )
 from aleph.vm.agent.vm_registry import AgentVmRecord
 from aleph.vm.resources import GpuDevice
-from aleph.vm.supervisor_interface.types import ConfidentialMode, VmInfo, VmStatus
+from aleph.vm.supervisor_interface.types import VmInfo, VmStatus
 
 logger = logging.getLogger(__name__)
 
@@ -226,24 +226,6 @@ async def build_plan(body: dict, *, now: datetime) -> tuple[AllocationPlan, Refu
     return assemble_plan(judged, now=now)
 
 
-def _retention_reason(record: AgentVmRecord, info: VmInfo) -> str:
-    """Why an allocation push is not allowed to stop this VM."""
-    if not record.persistent:
-        return "non_persistent"
-    if record.uses_payment_stream:
-        return "payment_stream"
-    if record.uses_payment_credit:
-        return "payment_credit"
-    if info.gpus:
-        return "gpu"
-    if info.confidential_mode is not ConfidentialMode.NONE:
-        return "confidential"
-    # Unreachable while the branches above mirror is_removable_by_allocation,
-    # which is the point: a reason it grows that this does not answers here
-    # rather than passing a VM off as removable.
-    return "operator_policy"
-
-
 def _required_node_hash(content: ExecutableContent) -> str | None:
     """The CRN this message pins itself to, if it pins one."""
     requirements = getattr(content, "requirements", None)
@@ -321,18 +303,20 @@ def compute_verdict(
         # A hash the push named and this node refused is out of the entries but
         # is not a hash the push took away, and the loop keeps its VM for
         # exactly that reason. The answer has to say the same thing, or the two
-        # halves of this change contradict each other: a scheduler told the VM
-        # is going away stops naming it, and the next push, naming it nowhere,
-        # is the deletion that carrying the refusals forward exists to prevent.
-        # Nothing is freeing that memory either, so it must not go on to
-        # simulate as capacity the other candidates can be admitted against.
+        # halves of the refusal protection contradict each other: a scheduler
+        # told the VM is going away stops naming it, and the next push, naming
+        # it nowhere, is the deletion that carrying the refusals forward exists
+        # to prevent. Nothing is freeing that memory either, so it must not go
+        # on to simulate as capacity the other candidates can be admitted
+        # against.
         if plan.lists(vm_hash):
             verdict.retained[vm_hash] = "refused"
             continue
-        if is_removable_by_allocation(record, info):
+        reason = retention_reason(record, info)
+        if reason is None:
             verdict.removing.append(vm_hash)
         else:
-            verdict.retained[vm_hash] = _retention_reason(record, info)
+            verdict.retained[vm_hash] = reason
 
     candidates = []
     for vm_hash, planned in plan.entries.items():
