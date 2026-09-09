@@ -342,6 +342,7 @@ async def test_device_teardown_of_an_implausible_hash_is_skipped_not_raised(mock
     assert "skipped" in caplog.text
 
 
+@pytest.mark.asyncio
 async def test_a_retire_without_a_record_asks_device_mapper_instead(env, monkeypatch, mocker):
     """FAILED_CREATE fires before the registry commit and a GONE can name a VM
     the registry never knew: there is no message to read the volumes from, and
