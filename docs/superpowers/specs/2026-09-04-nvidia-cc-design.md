@@ -493,10 +493,14 @@ interpreters deterministically.
 
 ### 6.4 Init: boot-time GPU verification
 
-`nix/init-gpu.sh`, sourced by `init.sh` after the verity mounts and before
-`prepare_chroot`, runs only when a GPU is present on the PCI bus (the
-platform image without one is unaffected). Steps, each failing to
-`poweroff -f`:
+`nix/init-gpu.sh` is the GPU flavor's own init (a sibling of `init.sh`, the
+way the compose flavor has one). After the verity mounts and before
+`prepare_chroot` it looks for NVIDIA display-class devices on the PCI bus.
+Without one it boots on like the base image and starts the agent without
+the GPU flags: the launch measurement does not say whether a card was
+present, so the client, which requires GPU evidence whenever the manifest
+declares a `gpu` block, is where a GPU-less boot of this image fails
+closed. With a card, the steps below run, each failing to `poweroff -f`:
 
 1. `insmod nvidia.ko` with `NVreg_EnableGpuFirmware=1` (GSP is mandatory
    for CC), then `nvidia-uvm.ko`; create device nodes.
@@ -552,10 +556,12 @@ of reference values was init's (6.4).
 `flake.nix` gains `gpuKernel`, `gpuInitrd`, `gpuRootfs`, `gpuVerity`,
 `gpuImage`, `gpuMeasurement`, and `gpuMeasurementFor`. The bundle builder
 emits a runtime manifest with the `gpu` block (5.2). `golden-measurements.json`
-gains the `gpu` entry; the CI golden check covers it. `boot-smoke.sh` gets a
+gains the `gpu` entry; the CI golden check covers it in a separate, gated
+job so base changes do not pay for the GPU chain. `boot-smoke.sh` gets a
 `--gpu` mode that boots `gpuImage` under plain QEMU with no device and
-expects init to skip the GPU step, which is the only smoke a GPU-less CI
-runner can do.
+expects init to report `no NVIDIA GPU present; running without GPU
+attestation` and boot on like the base image, which is the only smoke a
+GPU-less CI runner can do; the GPU golden job runs it.
 
 ---
 
@@ -577,11 +583,19 @@ not NVIDIA or the probe could not run). The probe (`gpu_cc_mode.rs`):
    bits `[1:0]` are `0b01` on, `0b11` devtools, `0b00` off.
 4. Unmap.
 
-The probe runs only for cards that no VM in the world view owns, at
-inventory refresh, and its result is cached per card until the card's
-attachment state changes. Reading a register of a card a guest is driving
-is never done. A probe error is logged and yields `None`, which advertises
-nothing.
+The probe runs only for cards that no VM in the world view owns, under the
+world read guard for the whole sweep: CreateVm registers a VM's cards under
+the write lock before it boots anything, so a card is either already
+attached (skipped) or cannot become attached until the sweep is done.
+Results are cached per card; a probe that errors, or reads a register
+encoding with no mode, forgets the card rather than advertising a stale
+value. A sweep re-probes only when the attached set changed or the last
+sweep is older than 60 seconds, so the public `/about` endpoints cannot
+drive an unbounded rate of register reads. The create-time gate does not
+trust the cache: it reads the card's register itself, through the same
+probe seam, under the world write lock with creation serialized, so an
+operator switching a card off between two sweeps cannot get a stale "on"
+past it. Reading a register of a card a guest is driving is never done.
 
 The proto `GpuDevice` gains `string cc_mode = 5` (empty when unknown).
 `available_gpus_json` carries it through to the agent.
@@ -606,10 +620,12 @@ the CPU model is a measurement input. `fw_cfg` values are not measured, so
 the MMIO window does not move the launch digest, which is what lets the
 window follow the card.
 
-`snp_config_slice` accepts GPUs when every card in the spec reports
-`cc_mode == On` and the spec's runtime manifest declares a `gpu` block; any
-other GPU on an SNP spec stays `InvalidBackend`, with the message naming
-which condition failed. The controller keeps its conformance oracle test:
+`snp_config_slice` accepts GPUs only on the measured verity arm (a
+V-PROGRAM), never on the opaque-cmdline arm confidential instances use, and
+only when every card in the spec reports `cc_mode == On`; any other GPU on
+an SNP spec stays `InvalidBackend`, with the message naming which condition
+failed. The manifest `gpu` block requirement is enforced by the agent,
+which is the layer that reads the manifest (section 7.3). The controller keeps its conformance oracle test:
 with no GPU, the SNP argv is byte-identical to today.
 
 Hugepage and NUMA placement are unchanged; a GPU V-PROGRAM is placed like
