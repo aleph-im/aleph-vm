@@ -300,8 +300,18 @@ def referenced_hashes(registry: AgentVmRegistry) -> set[str]:
     return live_refs(registry) | _marker_refs(reclaimable_entries())
 
 
+def cache_disk_total(root: Path) -> int:
+    """The size of the filesystem a cache root sits on.
+
+    Raises OSError when it cannot be read, which each caller answers for
+    itself: the pass leaves that root's budget unapplied, admission lets the
+    download through.
+    """
+    return shutil.disk_usage(str(root)).total
+
+
 def cache_budget_bytes(root: Path) -> int:
-    return parse_budget(settings.CACHE_BUDGET, shutil.disk_usage(str(root)).total)
+    return parse_budget(settings.CACHE_BUDGET, cache_disk_total(root))
 
 
 def _safe_ref(ref: str) -> bool:
@@ -792,14 +802,18 @@ def admit_download(
         logger.debug("Not a download cache, so not subject to CACHE_BUDGET: %s", root)
         return
     try:
-        budget = cache_budget_bytes(root)
+        # Read once and carried down: everything below is a share of this
+        # figure, and a second read is a second chance to fail on a question
+        # already answered.
+        total = cache_disk_total(root)
     except OSError:
         logger.warning("Cache directory %s is not accessible; admitting the download", root, exc_info=True)
         if content_length is not None:
             reserve_download(tmp_path, content_length, measured=True)
         return
+    budget = parse_budget(settings.CACHE_BUDGET, total)
     if content_length is None:
-        _admit_unknown_length(tmp_path, root, budget, max_bytes)
+        _admit_unknown_length(tmp_path, root, total, budget, max_bytes)
         return
     entries = cache_entries(root)
     usage = _root_usage(root, entries) + content_length
@@ -825,7 +839,7 @@ def admit_download(
     reserve_download(tmp_path, content_length, measured=True)
 
 
-def _admit_unknown_length(tmp_path: Path, root: Path, budget: int, max_bytes: int | None) -> None:
+def _admit_unknown_length(tmp_path: Path, root: Path, total: int, budget: int, max_bytes: int | None) -> None:
     """Admit a download whose size the server did not state.
 
     All that is known is the cap the caller is downloading under, and a cap is
@@ -858,21 +872,18 @@ def _admit_unknown_length(tmp_path: Path, root: Path, budget: int, max_bytes: in
             required={"disk_mib": (usage - budget) // MIB},
             available={"disk_mib": 0},
         )
-    reserve_download(tmp_path, _unknown_length_charge(root, budget, max_bytes), measured=False)
+    reserve_download(tmp_path, _unknown_length_charge(total, budget, max_bytes), measured=False)
 
 
-def _unknown_length_charge(root: Path, budget: int, max_bytes: int | None) -> int:
+def _unknown_length_charge(total: int, budget: int, max_bytes: int | None) -> int:
     """The room to hold for a body nobody measured: the smallest of the
-    reserve, this download's own cap and the budget."""
-    try:
-        total = shutil.disk_usage(str(root)).total
-    except OSError:
-        # A disk nobody can measure must not resurrect the whole-budget hold:
-        # resolve the reserve against a zero total instead, which yields the
-        # configured size when it is written as an absolute one and nothing
-        # when it is a percentage of the disk that just failed to answer.
-        logger.warning("Cache directory %s is not accessible; holding only the reserve", root, exc_info=True)
-        total = 0
+    reserve, this download's own cap and the budget.
+
+    ``total`` is the size of the cache disk, which the caller has already
+    read: the reserve may be a percentage of it. It used to be read a second
+    time here, with a fallback for a failure that cannot happen, since the
+    caller's own read of the very same disk had just succeeded. One reading,
+    one answer, and no unreachable branch left to reason about."""
     reserve = parse_budget(settings.UNKNOWN_LENGTH_RESERVE, total)
     figures = [reserve, budget] if max_bytes is None else [reserve, budget, max_bytes]
     return min(figures)
