@@ -120,7 +120,10 @@ Admission counts retained (reclaimable) bytes as free:
 and `select_pool`, before refusing a placement, calls the room maker the
 agent registered at startup (`storage_pools.set_room_maker`, wired to
 `reconciler.make_room`) so the retained directories on the target pool are
-evicted oldest-first until the create fits. See "Reclamation" below: a
+evicted oldest-first until the create fits. A pool whose free space cannot
+be read is left alone there too: free space is the whole measure of "does
+this create fit", so without it there is no telling a pool that already fits
+the create from one that never will. See "Reclamation" below: a
 retained disk is a cache entry, not usage, so counting it as used would sell
 less capacity than the node actually has. The rule holds for all three disk
 figures the agent produces, and they have to agree: the aggregate

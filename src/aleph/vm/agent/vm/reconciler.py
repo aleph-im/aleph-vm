@@ -627,16 +627,6 @@ def _retention_budget(pool: StoragePool) -> int | None:
     return parse_budget(settings.VOLUME_RETENTION_BUDGET, usage.total)
 
 
-def _pool_free(pool: StoragePool) -> int:
-    usage = pool_usage_bytes(pool)
-    if usage is None:
-        # Unknown free space: report none, so make_room falls back to its
-        # "stop once needed_bytes have been freed" bound instead of looping.
-        logger.warning("Volume pool %s not accessible; freeing on the evicted bytes alone", pool.path)
-        return 0
-    return usage.free
-
-
 def _reclaimable_on(pool: StoragePool) -> list[tuple[Path, ReclaimableMarker]]:
     """The pool's reclaimable directories, oldest marker first.
 
@@ -796,7 +786,8 @@ def make_room(pool: StoragePool, needed_bytes: int, *, live: Collection[str] | N
     tries). The third bound (``freed >= needed_bytes``) only exists so a
     lying filesystem cannot turn this into a loop over every retained VM on
     the pool; a pool whose free space cannot be read at all is never evicted
-    from.
+    from, on the same rule the retention budget applies to a pool whose size
+    it cannot read: unknown is not zero, and the guess deletes data.
 
     A marker on a directory a live VM owns is a bug (``_is_orphan`` clears
     those on every pass), but this runs on its own, off the create path, so
@@ -809,7 +800,15 @@ def make_room(pool: StoragePool, needed_bytes: int, *, live: Collection[str] | N
     why every removal here tolerates a directory that vanished first.
     """
     protected = _snapshot_is_live(live or ())
-    free = _pool_free(pool)
+    usage = pool_usage_bytes(pool)
+    if usage is None:
+        # Free space is the whole measure here: what has to reach
+        # needed_bytes. Without it there is no way to tell a pool that
+        # already fits the create from one that never will, and evicting on
+        # that guess deletes retained data for nothing.
+        logger.warning("Not making room on %s: its free space cannot be read", pool.path)
+        return 0
+    free = usage.free
     if free >= needed_bytes:
         return 0
     entries = _reclaimable_on(pool)
@@ -826,7 +825,13 @@ def make_room(pool: StoragePool, needed_bytes: int, *, live: Collection[str] | N
     freed = 0
     report = ReconcileReport()
     for directory, _marker in entries:
-        if _pool_free(pool) >= needed_bytes or freed >= needed_bytes:
+        remaining = pool_usage_bytes(pool)
+        if remaining is None:
+            # The pool stopped answering between two evictions: the same
+            # measurement the entry check made, and the same answer to it.
+            logger.warning("Stopping the room making on %s: its free space can no longer be read", pool.path)
+            break
+        if remaining.free >= needed_bytes or freed >= needed_bytes:
             break
         if not directory.is_dir():
             # A concurrent pass took it between the listing and now.
