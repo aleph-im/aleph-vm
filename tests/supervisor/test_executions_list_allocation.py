@@ -6,6 +6,7 @@ all. They are never merged into one enum, which would have to be maintained in
 lockstep with VmStatus forever.
 """
 
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -14,8 +15,19 @@ import pytest
 from aleph_message.models import ItemHash
 from test_supervisor_translate import _make_qemu_instance_message
 
-from aleph.vm.agent.allocation.plan import AllocationState, FailureRecord
+from aleph.vm.agent.allocation import reconciler as reconciler_module
+from aleph.vm.agent.allocation.failures import (
+    AllocationFailureCode,
+    public_failure_message,
+)
+from aleph.vm.agent.allocation.plan import (
+    AllocationPlan,
+    AllocationState,
+    FailureRecord,
+    PlannedVm,
+)
 from aleph.vm.agent.supervisor import setup_webapp
+from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor_interface.types import (
     Backend,
     HostInfo,
@@ -58,14 +70,17 @@ def _reconciler(*, planned=(), pending=(), states=None):
     )
 
 
-def _app(*, infos=(), reconciler=None):
+def _app(*, infos=(), reconciler=None, real_reconciler=False):
+    """The agent app over a fake supervisor. The reconciler is a double unless
+    a test needs a record the loop itself wrote."""
     supervisor = MagicMock(
         list_vms=AsyncMock(return_value=list(infos)),
         get_host_info=AsyncMock(return_value=HostInfo(host_ipv4="10.0.0.1")),
         list_port_forwards=AsyncMock(return_value=[]),
     )
     app = setup_webapp(supervisor=supervisor)
-    app["allocation_reconciler"] = reconciler or _reconciler()
+    if not real_reconciler:
+        app["allocation_reconciler"] = reconciler or _reconciler()
     return app
 
 
@@ -107,9 +122,11 @@ async def test_the_loops_own_state_wins_over_the_derived_one(aiohttp_client):
 
 @pytest.mark.asyncio
 async def test_a_failed_allocation_reports_its_reason_and_retry_time(aiohttp_client):
+    """The reason is the code and the sentence that belongs to it. This
+    listing is unauthenticated, so it never carries a line written by an
+    exception, only one written for a reader."""
     failure = FailureRecord(
-        code="resource_download_error",
-        message="rootfs 404",
+        code=AllocationFailureCode.DOWNLOAD_FAILED,
         attempts=2,
         first_failed_at=NOW,
         last_failed_at=NOW,
@@ -121,10 +138,63 @@ async def test_a_failed_allocation_reports_its_reason_and_retry_time(aiohttp_cli
 
     allocation = body[str(HASH_C)]["allocation"]
     assert allocation["state"] == "failed"
-    assert allocation["error"] == {"code": "resource_download_error", "message": "rootfs 404"}
+    assert allocation["error"] == {
+        "code": "download_failed",
+        "message": public_failure_message(AllocationFailureCode.DOWNLOAD_FAILED),
+    }
     assert allocation["attempts"] == 2
     # Rendered the way the status times are, by the same serializer.
     assert allocation["next_retry_at"] == "2026-08-25 00:01:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_a_start_that_raised_never_publishes_the_exceptions_text(aiohttp_client, monkeypatch):
+    """End to end, from the exception the create raised to the JSON: a start
+    that failed for a reason nobody classified says so and no more. The text
+    of a create failure quotes host paths, download URLs and the node's own
+    capacity, and this endpoint answers anyone who asks."""
+    secret = "/var/lib/aleph/vm/deadbeef/private-volume.img"
+
+    async def fails(*_args, **_kwargs):
+        raise RuntimeError(f"could not open {secret}")
+
+    monkeypatch.setattr(reconciler_module, "start_persistent_vm", fails)
+    app = _app(real_reconciler=True)
+    reconciler = app["allocation_reconciler"]
+    reconciler.submit(AllocationPlan(plan_id="sha256:test", received_at=NOW, entries={HASH_C: PlannedVm(HASH_C)}))
+    await reconciler._converge_once()
+
+    body = await _listing(aiohttp_client, app)
+
+    assert body[str(HASH_C)]["allocation"]["error"] == {"code": "internal", "message": "Unhandled error"}
+    assert secret not in json.dumps(body)
+
+
+@pytest.mark.asyncio
+async def test_a_start_refused_for_want_of_room_says_which_kind_of_failure_it_was(aiohttp_client, monkeypatch):
+    """The other half: a typed refusal keeps its own code, so the scheduler
+    can tell a full node from a broken one, and still publishes none of the
+    figures the refusal was written with."""
+
+    async def fails(*_args, **_kwargs):
+        raise InsufficientResourcesError(
+            "Insufficient capacity to create VM. Node has 512 MiB free",
+            required={"memory_mib": 4096},
+            available={"memory_mib": 512},
+        )
+
+    monkeypatch.setattr(reconciler_module, "start_persistent_vm", fails)
+    app = _app(real_reconciler=True)
+    reconciler = app["allocation_reconciler"]
+    reconciler.submit(AllocationPlan(plan_id="sha256:test", received_at=NOW, entries={HASH_C: PlannedVm(HASH_C)}))
+    await reconciler._converge_once()
+
+    body = await _listing(aiohttp_client, app)
+
+    error = body[str(HASH_C)]["allocation"]["error"]
+    assert error["code"] == "insufficient_capacity"
+    assert error["message"] == public_failure_message(AllocationFailureCode.INSUFFICIENT_CAPACITY)
+    assert "512 MiB" not in json.dumps(body)
 
 
 @pytest.mark.asyncio
@@ -151,7 +221,11 @@ async def test_a_vm_the_supervisor_holds_dead_still_carries_the_agents_failure(a
     """Disjoint fields, both present: the supervisor's word on the VM it has,
     and the agent's on why the recreate is not happening."""
     failure = FailureRecord(
-        code="x", message="y", attempts=1, first_failed_at=NOW, last_failed_at=NOW, next_retry_at=NOW
+        code=AllocationFailureCode.INTERNAL,
+        attempts=1,
+        first_failed_at=NOW,
+        last_failed_at=NOW,
+        next_retry_at=NOW,
     )
     reconciler = _reconciler(planned=[HASH_A], states={HASH_A: (AllocationState.FAILED, failure)})
 

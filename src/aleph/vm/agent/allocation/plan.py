@@ -13,6 +13,7 @@ from enum import Enum
 from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash
 
+from aleph.vm.agent.allocation.failures import AllocationFailureCode
 from aleph.vm.agent.allocation.verify import VerifiedMessage
 from aleph.vm.supervisor_interface.types import VmInfo, VmStatus
 
@@ -79,10 +80,14 @@ class FailureRecord:
     Kept in the reconciler and NOT in AgentVmRegistry on purpose: the registry
     is what CapacityManager sums committed resources over, and a VM that failed
     to start must not count as committed.
+
+    There is no free-text field, and that is the point: the record is served
+    verbatim by an unauthenticated endpoint, so what it can hold is a code out
+    of a closed set (each with its own published sentence) and nothing an
+    exception wrote. The detail lives in the log.
     """
 
-    code: str
-    message: str
+    code: AllocationFailureCode
     attempts: int
     first_failed_at: datetime
     last_failed_at: datetime
