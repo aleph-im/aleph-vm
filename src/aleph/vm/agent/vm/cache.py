@@ -445,18 +445,21 @@ def release_parent_devices(evicted: list[Path]) -> None:
     create_task_log_exceptions(remove_parent_devices(refs), name="remove parent devices")
 
 
-def _may_evict(entry: CacheEntry) -> bool:
+def _may_evict(entry: CacheEntry, *, log: bool = True) -> bool:
     """Whether this entry's file can be unlinked right now.
 
     Only parent images have devices on top of them, and only they can be
-    refused here.
+    refused here. ``log`` is off for the callers that are only counting what
+    could go, so an estimate does not fill the journal with refusals nobody
+    acted on.
     """
     runtime = _runtime_cache()
     if runtime is None or entry.path.parent != runtime:
         return True
     if parent_device_is_free(entry.path.name):
         return True
-    logger.warning("Not evicting %s: its device-mapper device is still held", entry.path)
+    if log:
+        logger.warning("Not evicting %s: its device-mapper device is still held", entry.path)
     return False
 
 
@@ -592,10 +595,25 @@ def _evict_unreferenced(state: _RootBudget, entries: list[CacheEntry], reference
     for entry in entries:
         if not state.over_budget:
             return
-        if _entry_refs(entry.path) & referenced:
-            continue
-        if _may_evict(entry):
+        if _is_evictable(entry, referenced):
             state.take(entry)
+
+
+def _is_evictable(entry: CacheEntry, referenced: set[str], *, log: bool = True) -> bool:
+    """Whether this entry may go: nobody names it and no device holds it."""
+    return not (_entry_refs(entry.path) & referenced) and _may_evict(entry, log=log)
+
+
+def _evictable_bytes(registry: AgentVmRegistry, entries: list[CacheEntry]) -> int:
+    """The most an eviction could free among ``entries``, without reclaiming
+    a retained VM's disks (which admission does not do).
+
+    An estimate, and an optimistic one: an entry that turns out not to unlink
+    is counted here. That is the right way round for the caller, which uses
+    it to decide not to evict at all rather than to decide to.
+    """
+    referenced = live_refs(registry) | _marker_refs(reclaimable_entries())
+    return sum(entry.size_bytes for entry in entries if _is_evictable(entry, referenced, log=False))
 
 
 def _reclaim_pinning_dirs(
@@ -737,9 +755,16 @@ def admit_download(
 
     Registered on ``storage.set_cache_admission`` so it runs inside
     ``download_file_in_chunks`` as soon as the response headers are in.
-    Evicting first is the point: the budget is a cap on what is kept, not on
-    what may be fetched, and only a load that stays over the budget with
-    nothing safely evictable left is refused.
+    Evicting is the point: the budget is a cap on what is kept, not on what
+    may be fetched, and only a load that would stay over the budget with
+    everything safely evictable gone is refused.
+
+    The refusal is decided before any of it, against what a full eviction
+    would leave. Deciding it afterwards meant measuring two different things:
+    the eviction stops as soon as the bytes really on disk fit, while the
+    refusal also counts the room an unmeasured download is holding, so a
+    download could take entries with it on the way to being refused. Nothing
+    is evicted for a download that is not admitted.
 
     An admitted download is then charged to its ``.part`` path until
     ``download_file`` releases it, so the next admission sees the room this
@@ -776,21 +801,28 @@ def admit_download(
     if content_length is None:
         _admit_unknown_length(tmp_path, root, budget, max_bytes)
         return
-    if _may_evict_for_admission(registry):
+    entries = cache_entries(root)
+    usage = _root_usage(root, entries) + content_length
+    may_evict = _may_evict_for_admission(registry)
+    evictable = _evictable_bytes(registry, entries) if may_evict else 0
+    if usage - evictable > budget:
+        # Decided before anything is unlinked. The eviction below stops as
+        # soon as the bytes really on disk fit, while this total also counts
+        # the room an unmeasured download is holding, so a refusal taken
+        # after the eviction could leave entries gone and the download failed
+        # all the same. Nothing is evicted for a download that cannot fit.
+        free = max(budget - (usage - content_length), 0)
+        msg = f"Cache {root} cannot hold a {content_length} byte download within CACHE_BUDGET"
+        raise InsufficientResourcesError(
+            msg,
+            required={"disk_mib": content_length // MIB},
+            available={"disk_mib": free // MIB},
+        )
+    if may_evict:
         release_parent_devices(
             evict_caches(registry, needed={root: content_length}, reclaim_retained=False),
         )
-    usage = _root_usage(root, cache_entries(root)) + content_length
-    if usage <= budget:
-        reserve_download(tmp_path, content_length, measured=True)
-        return
-    free = max(budget - (usage - content_length), 0)
-    msg = f"Cache {root} cannot hold a {content_length} byte download within CACHE_BUDGET"
-    raise InsufficientResourcesError(
-        msg,
-        required={"disk_mib": content_length // MIB},
-        available={"disk_mib": free // MIB},
-    )
+    reserve_download(tmp_path, content_length, measured=True)
 
 
 def _admit_unknown_length(tmp_path: Path, root: Path, budget: int, max_bytes: int | None) -> None:

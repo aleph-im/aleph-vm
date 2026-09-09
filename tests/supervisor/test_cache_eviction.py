@@ -732,6 +732,24 @@ def test_a_measured_download_still_evicts_to_make_room(pools, monkeypatch):
     assert not old.exists()
 
 
+def test_a_refused_download_evicts_nothing(pools, monkeypatch):
+    """Admission evicted against one measure and refused against another: it
+    stopped evicting once the bytes really on disk fitted, then refused on a
+    total that counts the room an unmeasured download is holding. The entry
+    was gone and the download failed anyway, which is the worst of both."""
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "8192")
+    monkeypatch.setattr(settings, "UNKNOWN_LENGTH_RESERVE", "8192")
+    registry = AgentVmRegistry()
+    cache_module.record_live_snapshot(set())
+    old = _entry(pools["code"], "old", size=8192, age=1000)
+    admit_download(registry, pools["code"] / "chunked.part", None, 100 * 1024**3)
+
+    with pytest.raises(InsufficientResourcesError):
+        admit_download(registry, pools["code"] / "measured.part", 4096)
+
+    assert old.exists()
+
+
 def test_a_measured_download_fits_beside_an_unknown_length_one(pools, monkeypatch):
     """The whole budget used to go to the chunked response, so the next
     measured download found the root at its cap: it evicted every unreferenced
