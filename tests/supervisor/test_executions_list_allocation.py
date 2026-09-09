@@ -162,6 +162,23 @@ async def test_a_vm_the_supervisor_holds_dead_still_carries_the_agents_failure(a
 
 
 @pytest.mark.asyncio
+async def test_a_vm_the_supervisor_holds_dead_shows_the_recreate_in_flight(aiohttp_client):
+    """The other half of the same claim: the loop is downloading for a VM
+    the supervisor still lists as dead, so both words are out at once."""
+    reconciler = _reconciler(planned=[HASH_A], states={HASH_A: (AllocationState.DOWNLOADING, None)})
+
+    body = await _listing(aiohttp_client, _app(infos=[_info(HASH_A, VmStatus.FAILED)], reconciler=reconciler))
+
+    assert body[str(HASH_A)]["state"] == "failed"
+    assert body[str(HASH_A)]["allocation"] == {
+        "state": "downloading",
+        "attempts": 0,
+        "error": None,
+        "next_retry_at": None,
+    }
+
+
+@pytest.mark.asyncio
 async def test_an_absent_vm_keeps_the_shape_consumers_read(aiohttp_client):
     """Same keys as a live entry, so a reader iterating the list does not
     special-case the ones that are not up yet. The type comes from the
