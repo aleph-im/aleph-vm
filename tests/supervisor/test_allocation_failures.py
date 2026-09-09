@@ -54,7 +54,12 @@ def _no_room() -> InsufficientResourcesError:
         (HTTPNotFound(reason="Hash not found"), AllocationFailureCode.MESSAGE_UNAVAILABLE),
         (HTTPServiceUnavailable(reason="Aleph Connector unavailable"), AllocationFailureCode.MESSAGE_UNAVAILABLE),
         (supervisor_errors.PortUnavailableError("busy"), AllocationFailureCode.SUPERVISOR_ERROR),
-        (supervisor_errors.InternalSupervisorError("boom"), AllocationFailureCode.SUPERVISOR_ERROR),
+        # The boundary codes that mean this node is confused rather than the
+        # hypervisor declining to run the VM.
+        (supervisor_errors.InternalSupervisorError("boom"), AllocationFailureCode.INTERNAL),
+        (supervisor_errors.VmNotFoundError("gone"), AllocationFailureCode.INTERNAL),
+        (supervisor_errors.VmAlreadyExistsError("already here"), AllocationFailureCode.INTERNAL),
+        (SupervisorError("no such host", code=ErrorCode.HOST_NOT_FOUND), AllocationFailureCode.INTERNAL),
         (RuntimeError("could not open /var/lib/aleph/vm/private.img"), AllocationFailureCode.INTERNAL),
         (OSError("errno 28"), AllocationFailureCode.INTERNAL),
     ],

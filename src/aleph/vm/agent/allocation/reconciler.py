@@ -409,7 +409,15 @@ class AllocationReconciler:
         # endpoint answers anyone, and a create failure quotes the paths, the
         # URLs and the host figures it was working with.
         logger.warning(
-            "Starting %s failed (attempt %d, published as %s): %s", vm_hash, record.attempts, code.value, error
+            "Starting %s failed (attempt %d, published as %s): %s",
+            vm_hash,
+            record.attempts,
+            code.value,
+            error,
+            # The traceback is the whole value of this line for the code that
+            # says nothing (internal), and the published record carries no
+            # text at all, so the log is the only place it can be read.
+            exc_info=True,
         )
         self._states[vm_hash] = AllocationState.FAILED
 
