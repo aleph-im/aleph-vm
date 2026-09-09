@@ -6,8 +6,9 @@
 //! (src/aleph/vm/hypervisors/firecracker/config.py) and the
 //! `SpecFirecrackerProgram.setup()` config assembly
 //! (src/aleph/vm/supervisor/controllers/firecracker/spec_program.py).
-//! Ephemeral programs are direct children of the daemon (design doc
-//! decision 8): jailer chroot prep and setfacl, the Firecracker config
+//! Ephemeral programs are direct children of the daemon, which is what
+//! lets them skip systemd entirely: jailer chroot prep and setfacl, the
+//! Firecracker config
 //! JSON (byte-for-byte the pydantic `model_dump_json(by_alias=True,
 //! exclude_none=True, indent=4)` output, pinned by the committed
 //! `firecracker-config.json` fixture), stdout/stderr wired to journald
@@ -410,8 +411,9 @@ fn jailman_ids() -> Result<(u32, u32), FirecrackerError> {
 /// path. An existing target is tolerated in every case: Python's
 /// enable_kernel and enable_file_rootfs catch FileExistsError, and
 /// enable_drive's bare `except OSError` swallows EEXIST too, so a duplicate
-/// basename silently aliases the earlier staged file in both daemons
-/// (shared wart, ledger entry 42). `exdev_copies` selects the cross-device
+/// basename silently aliases the earlier staged file in both daemons (a
+/// shared wart: the collision should be refused on both sides together,
+/// not on one). `exdev_copies` selects the cross-device
 /// behavior: enable_file_rootfs and enable_drive fall back to a copy on
 /// EXDEV, enable_kernel catches only FileExistsError and propagates EXDEV.
 fn stage_into_jail(
@@ -1488,8 +1490,8 @@ mod tests {
 
     #[test]
     fn a_duplicate_staged_basename_aliases_the_earlier_file_like_python() {
-        // Shared wart (ledger entry 42): Python tolerates EEXIST in every
-        // staging helper (enable_drive's bare `except OSError` swallows it),
+        // Shared wart: Python tolerates EEXIST in every staging helper
+        // (enable_drive's bare `except OSError` swallows it),
         // so the colliding file silently aliases the earlier one.
         let already = || std::io::Error::from(std::io::ErrorKind::AlreadyExists);
         for exdev_copies in [false, true] {

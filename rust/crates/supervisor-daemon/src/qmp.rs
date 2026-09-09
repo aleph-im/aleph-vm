@@ -25,14 +25,14 @@ use serde_json::{Value, json};
 /// The read timeout Python's QGA client applies (`asyncio.wait_for(..., 30)`).
 const QGA_TIMEOUT: Duration = Duration::from_secs(30);
 /// A conservative bound on QMP reads so a wedged monitor cannot hang a
-/// lifecycle RPC forever (Rust-only robustness, ledger entry 44 family).
+/// lifecycle RPC forever. Python's blocking qmp library applies none, so a
+/// wedged monitor hangs the call there.
 const QMP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A ceiling on a single QMP/QGA response line so a monitor that streams
 /// bytes without ever emitting a newline cannot grow the read buffer without
 /// bound (a memory DoS on the blocking pool thread). QMP replies are small
-/// JSON objects; 8 MiB is far above any legitimate line (Rust-only bound,
-/// ledger entry 50 family).
+/// JSON objects; 8 MiB is far above any legitimate line.
 const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
 
 /// Failures from the blocking QMP/QGA clients. Display strings are copied
@@ -145,7 +145,7 @@ fn qga_command(socket_path: &Path, command: &str) -> Result<Value, QmpError> {
         .map_err(|source| QmpError::QgaReadTimeout { source })?;
     // A write timeout matching the read timeout: a guest agent that never
     // drains its socket must not block write_all forever, parking this
-    // blocking-pool thread (Rust-only robustness, ledger entry 50).
+    // blocking-pool thread. Python's blocking client sets no such bound.
     stream
         .set_write_timeout(Some(QGA_TIMEOUT))
         .map_err(|source| QmpError::QgaWriteTimeout { source })?;
@@ -212,7 +212,8 @@ impl QmpClient {
             .map_err(|source| QmpError::ReadTimeout { source })?;
         // A write timeout matching the read timeout: a monitor socket that
         // never drains must not block write_all forever, parking this
-        // blocking-pool thread (Rust-only robustness, ledger entry 50).
+        // blocking-pool thread. Python's blocking client sets no such
+        // bound.
         stream
             .set_write_timeout(Some(QMP_TIMEOUT))
             .map_err(|source| QmpError::WriteTimeout { source })?;

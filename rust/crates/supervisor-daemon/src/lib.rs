@@ -7,19 +7,20 @@
 //! agent's) and the confidential surface
 //! (InitializeConfidential, GetMeasurement, InjectSecret) plus confidential
 //! CreateVm. Persistent Firecracker programs are the only UNIMPLEMENTED
-//! surface (ledger entry 39; they belong with the controller port).
+//! surface: they are controller-unit machinery and belong with the
+//! controller port.
 //!
 //! The parity oracle was the Python daemon (`python3 -m aleph.vm.supervisor`,
 //! removed in 2026-08 once this daemon became the only implementation) after
 //! a restart: same `ALEPH_VM_*` configuration, same socket lifecycle, same
 //! field-level behavior, with the world rebuilt from disk/systemd/sqlite the
-//! way its `load_persistent_executions` rebuilt it (design doc
-//! docs/plans/2026-07-04-rust-supervisor-daemon-design.md, section 7). The
+//! way its `load_persistent_executions` rebuilt it: from the controller
+//! configs on disk, the units systemd reports and the port-forward store,
+//! so nothing a restart could lose is held in the process. The
 //! `LocalSupervisor` / `VmPool` references throughout this crate name that
 //! donor code; the committed fixtures and tests/conformance are what remain
-//! of it.
-//! Deliberate differences from the oracle live in
-//! docs/plans/rust-port-divergences.md.
+//! of it. Where this daemon deliberately behaves differently from the
+//! oracle, the module that does so says so, and why.
 
 pub mod checks;
 pub mod cloudinit;

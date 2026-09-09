@@ -6,7 +6,9 @@
 //! `#cloud-config` header plus a JSON body. JSON is a YAML subset, so
 //! cloud-init parses both into the same structure; the parity target is
 //! the parsed mapping, asserted by the conformance suite against the
-//! actual Python functions (ledgered divergence: representation only).
+//! actual Python functions. The difference is representation only: nobody
+//! compares the raw seed bytes, and byte-matching PyYAML's wrapping and
+//! quoting from Rust would be fragile for no gain.
 //! Increment 6 adds the confidential create path: the LUKS growpart
 //! bootcmds and the install_guest_agent=false branch
 //! (build_qemu_confidential_configuration).
