@@ -1259,6 +1259,30 @@ async def test_a_young_directory_keeps_its_devices_without_the_in_process_guard(
 
 
 @pytest.mark.asyncio
+async def test_a_marker_write_does_not_re_age_a_directory(pools, registry, monkeypatch, tmp_path):  # noqa: F811
+    """Writing a marker into a directory bumps that directory's mtime, so a
+    VM retired minutes ago read as a create in flight and kept its
+    device-mapper devices for a whole VOLUME_CREATE_GUARD, which is the one
+    thing that stops its volumes being reclaimed. A directory carrying a
+    marker is not one a create is building, whatever its mtime says: a
+    create adopts the namespace, which clears the marker, first."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    old = volume(pools["pool0"], VM_HASH, "rootfs.btrfs")
+    stamp = time.time() - 10_000
+    os.utime(old.parent, (stamp, stamp))
+    _fake_mapper(monkeypatch, tmp_path, f"{VM_HASH}_rootfs")
+    torn: list[str] = []
+    monkeypatch.setattr(reconciler_module, "teardown_namespace_devices", AsyncMock(side_effect=torn.append))
+
+    mark_reclaimable(VM_HASH, "gone", now=NOW)
+    assert old.parent.stat().st_mtime > stamp  # the marker moved the directory
+
+    await reconcile_now(_app(registry, _supervisor()))
+
+    assert torn == [VM_HASH]
+
+
+@pytest.mark.asyncio
 async def test_no_device_is_torn_down_when_the_supervisor_cannot_be_listed(pools, registry, monkeypatch, tmp_path):  # noqa: F811
     """A VM the supervisor would have listed is live; removing its dm device
     takes its disk with it."""

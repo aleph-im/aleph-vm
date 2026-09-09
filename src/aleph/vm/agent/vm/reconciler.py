@@ -61,6 +61,7 @@ from aleph.vm.agent.vm.cache import (
 )
 from aleph.vm.agent.vm.purge import purge_vm_storage
 from aleph.vm.agent.vm.reclaimable import (
+    MARKER_NAME,
     ReclaimableMarker,
     adopt,
     clear_marker,
@@ -911,6 +912,15 @@ def _within_create_guard(namespace: str, now: datetime, guard: timedelta) -> boo
     in flight. A namespace with no directory at all is not: its devices are
     what a create left behind, not what one is building on."""
     for directory in iter_namespace_dirs(namespace):
+        if (directory / MARKER_NAME).exists():
+            # A reclaimable directory is not one a create is building:
+            # creating() adopts a namespace, which clears its markers, before
+            # the create writes anything. Reading its mtime instead would put
+            # every retired VM inside the guard, because writing the marker
+            # is itself a write to the directory and moves that mtime. Its
+            # devices would then stand for a whole VOLUME_CREATE_GUARD, and
+            # they are what stops its volumes being reclaimed at all.
+            continue
         try:
             if now - _mtime(directory) < guard:
                 return True
