@@ -80,6 +80,7 @@ from aleph.vm.storage_budget import parse_budget
 from aleph.vm.storage_pools import (
     StoragePool,
     get_pools,
+    has_namespace_dirs,
     iter_namespace_dirs,
     pool_usage_bytes,
 )
@@ -194,16 +195,9 @@ def _dir_bytes(namespace: str) -> int:
     return sum(directory_size_bytes(directory) for directory in iter_namespace_dirs(namespace))
 
 
-def _still_on_disk(namespace: str) -> bool:
-    """False when the namespace's directories vanished between being listed
-    and being acted on.
-
-    Passes can overlap (a GONE fires one while the periodic pass runs, and
-    ``make_room`` evicts from the create path), so losing a race is normal.
-    It is not an error, and it is not space this pass may claim to have
-    freed.
-    """
-    return any(True for _ in iter_namespace_dirs(namespace))
+# The storage CLI imports this name from here; the check itself lives with
+# the pools it reads.
+_still_on_disk = has_namespace_dirs
 
 
 def live_hashes(registry: AgentVmRegistry) -> set[str]:
@@ -450,7 +444,7 @@ def _reconcile_namespace(
         # live snapshot and this walk.
         logger.info("Skipping %s: a VM claimed it while this pass was walking", namespace)
         return True
-    if not dry_run and not _still_on_disk(namespace):
+    if not dry_run and not has_namespace_dirs(namespace):
         logger.debug("Skipping %s: another pass got there first", namespace)
         return True
     if settings.VOLUME_RETENTION == "keep":
@@ -464,7 +458,7 @@ def _reconcile_namespace(
         report.bytes_freed += freed
         return True
     purge_vm_storage(namespace)
-    if _still_on_disk(namespace):
+    if has_namespace_dirs(namespace):
         # purge_vm_storage refuses a directory a device-mapper target
         # still holds. Nothing was freed, so nothing may be reported
         # as freed; the next pass tries again.
@@ -668,13 +662,13 @@ def _evict(
     # open; the window is a few instructions wide and needs the pool to be
     # over budget at that instant. The room maker's evictions run on the
     # event loop itself, where creating() cannot interleave at all.
-    if not _still_on_disk(namespace):
+    if not has_namespace_dirs(namespace):
         logger.debug("Not evicting %s: its directories are already gone", namespace)
         return 0
     size = _dir_bytes(namespace)
     if not dry_run:
         purge_vm_storage(namespace)
-        if _still_on_disk(namespace):
+        if has_namespace_dirs(namespace):
             # Same rule as the namespace pass: a directory the purge refuses
             # (a device-mapper target still holds its volumes) is not space
             # anyone got back, so make_room must not count it towards the
@@ -719,7 +713,7 @@ def _enforce_retention_budget(
                 total -= marker.size_bytes
                 continue
             evicted = _evict(directory.name, report, dry_run=dry_run, is_live=is_live)
-            if evicted or not _still_on_disk(directory.name):
+            if evicted or not has_namespace_dirs(directory.name):
                 # Only bytes that actually left the disk count against the
                 # excess. A declined eviction (a live or in-flight re-create,
                 # a dm-held purge refusal) keeps its bytes: spending them

@@ -63,7 +63,7 @@ from aleph.vm.storage import (
     reserved_downloads,
 )
 from aleph.vm.storage_budget import parse_budget
-from aleph.vm.storage_pools import iter_namespace_dirs
+from aleph.vm.storage_pools import has_namespace_dirs
 from aleph.vm.utils import create_task_log_exceptions, run_in_subprocess
 
 logger = logging.getLogger(__name__)
@@ -644,7 +644,7 @@ def _reclaim_for_parents(
         return False
     if not state.dry_run:
         purge_vm_storage(namespace)
-        if any(True for _ in iter_namespace_dirs(namespace)):
+        if has_namespace_dirs(namespace):
             # purge_vm_storage refuses a directory a device-mapper target
             # still holds: those volumes still need their parent image, so
             # the parent stays too.

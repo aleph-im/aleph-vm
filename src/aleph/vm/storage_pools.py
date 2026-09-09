@@ -494,6 +494,18 @@ def iter_namespace_dirs(namespace: str | None = None) -> Iterator[Path]:
                 yield entry
 
 
+def has_namespace_dirs(namespace: str) -> bool:
+    """Whether any pool still holds a directory for this VM.
+
+    False when the namespace's directories vanished between being listed and
+    being acted on. Passes can overlap (a GONE retire fires one while the
+    periodic pass runs, and the room maker evicts from the create path), so
+    losing that race is normal: it is not an error, and it is not space the
+    losing pass may claim to have freed.
+    """
+    return any(True for _ in iter_namespace_dirs(namespace))
+
+
 def pools_disk_usage() -> tuple[int, int]:
     """(total, free) bytes across pools, filesystems deduplicated by st_dev
     so two pool directories on one filesystem count once."""
