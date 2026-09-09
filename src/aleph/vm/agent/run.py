@@ -498,21 +498,27 @@ async def create_vm_execution(
         # create guard: it adopts any retained volumes for this hash and keeps
         # the storage reconciler off a VM that is still being built.
         with creating(str(vm_hash)):
-            capacity.check_message(content, exclude_vm_hash=vm_hash)
             # Snapshot before any allocation: a persistent program's volumes may
             # already exist (host persistence), and a failed create must not
             # wipe them (see _retire_after_create_failure).
             had_volumes = await asyncio.to_thread(vm_has_volumes, vm_hash)
-            spec, _resources = await build_program_create_vm_spec(vm_hash, content)
-            info = await supervisor.create_vm(spec)
+            # Recorded before admission, like the instance path. The record is
+            # what a concurrent create's admission counts, so recording after
+            # create_vm returned let two programs that only fit once both pass
+            # against a sum that saw neither; the record's own hash is left
+            # out of its own check.
             record = registry.record(
                 vm_hash, message=content, original=original_message.content, persistent=bool(content.on.persistent)
             )
             try:
+                capacity.check_message(content, exclude_vm_hash=vm_hash)
+                spec, _resources = await build_program_create_vm_spec(vm_hash, content)
+                info = await supervisor.create_vm(spec)
                 await _wait_until_running(supervisor, info.vm_id)
             except Exception:
-                # Readiness failed: retire the half-started VM, but never let a
-                # teardown error mask the original failure.
+                # Admission, build, create or readiness failed: retire the
+                # record and whatever was started, but never let a teardown
+                # error mask the original failure.
                 await _retire_after_create_failure(
                     vm_hash, supervisor=supervisor, registry=registry, had_volumes=had_volumes, what="program VM"
                 )

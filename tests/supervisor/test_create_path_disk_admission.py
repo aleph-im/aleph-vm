@@ -85,11 +85,11 @@ def _patch_message(monkeypatch, content):
     return content
 
 
-async def _create(capacity, supervisor=None):
+async def _create(capacity, supervisor=None, registry=None):
     await run_module.create_vm_execution(
         _HASH,
         supervisor=supervisor or _supervisor(),
-        registry=AgentVmRegistry(),
+        registry=registry if registry is not None else AgentVmRegistry(),
         capacity=capacity,
         persistent=True,
     )
@@ -301,3 +301,52 @@ class TestCreateGuard:
 
         assert held == [True]
         assert not is_creating(str(_HASH))
+
+
+class TestTheRecordIsTheCommitment:
+    """Admission sums the registry, so a create in flight is only visible to a
+    concurrent create's admission through its record. The record has to be in
+    place before this create's own admission runs (its own hash is excluded
+    from its own check), or two creates that only fit once both pass against
+    a sum that ignores them both. The instance and V-PROGRAM paths recorded
+    early already; the program path recorded after create_vm returned, which
+    is exactly the window the reconciler's concurrent starts open."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("content", "build"),
+        [
+            pytest.param(_program_content, "build_program_create_vm_spec", id="program"),
+            pytest.param(
+                lambda: _make_qemu_instance_message(hypervisor=HypervisorType.qemu),
+                "build_create_vm_spec",
+                id="instance",
+            ),
+            pytest.param(lambda: _vprogram_content(), "build_vprogram_spec", id="vprogram"),
+        ],
+    )
+    async def test_every_path_records_before_it_admits(self, monkeypatch, content, build):
+        _patch_message(monkeypatch, content())
+        monkeypatch.setattr(run_module, build, AsyncMock())
+        registry = AgentVmRegistry()
+        recorded_at_admission: list[bool] = []
+
+        def refuse(*_args, **_kwargs):
+            recorded_at_admission.append(registry.get(_HASH) is not None)
+            raise InsufficientResourcesError("no room", required={}, available={})
+
+        capacity = _capacity()
+        capacity.check_message.side_effect = refuse
+
+        with pytest.raises(InsufficientResourcesError):
+            await _create(capacity, registry=registry)
+
+        assert recorded_at_admission == [True]
+        # And a refused create leaves no record behind to hold capacity.
+        assert registry.get(_HASH) is None
+
+
+def _vprogram_content():
+    from test_vprogram import load_vprogram_message
+
+    return load_vprogram_message().content
