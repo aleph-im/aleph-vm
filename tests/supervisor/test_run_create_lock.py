@@ -205,6 +205,37 @@ async def test_the_second_start_waits_for_the_first_to_finish(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
+async def test_a_start_that_raises_still_releases_the_lock(monkeypatch, purge) -> None:
+    """The release is in a finally and has to stay there. A create that raises
+    while holding the lock would keep it for the life of the process, and every
+    later start of that hash, from the reconciler and from both v1 handlers,
+    would wait on a lock nobody is going to release: a VM the plan lists would
+    never be built again and nothing would say why."""
+    _patch_instance_path(monkeypatch)
+    supervisor = _RacingSupervisor()
+    registry = AgentVmRegistry()
+    real_create = supervisor.create_vm
+
+    async def create_then_recover(spec: Any):
+        supervisor.create_vm = real_create  # type: ignore[method-assign]
+        msg = "the hypervisor refused this one"
+        raise RuntimeError(msg)
+
+    supervisor.create_vm = create_then_recover  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError):
+        await _start(supervisor, registry)
+
+    assert create_lock._locks == {}
+
+    # The timeout is the assertion: a leaked lock makes this wait forever.
+    await asyncio.wait_for(_start(supervisor, registry), timeout=5)
+
+    assert supervisor.created is True
+    assert create_lock._locks == {}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("content", "build", "spec"),
     [
