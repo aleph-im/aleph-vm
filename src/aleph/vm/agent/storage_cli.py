@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import TextIO
 
 from dotenv import load_dotenv
+from pydantic import ValidationError
 
 from aleph.vm import storage_pools
 from aleph.vm.agent import metrics
@@ -111,6 +112,11 @@ READ_ONLY_COMMANDS = frozenset({"status", "list"})
 # line.
 _LOG_HANDLER_NAME = "aleph-vm-storage-cli"
 
+# Validated against --loglevel: an unknown name must be a clean argparse
+# usage error (exit 2), not a raw ValueError traceback out of
+# logging.Logger.setLevel.
+_LOG_LEVEL_NAMES = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
 logger = logging.getLogger(__name__)
 
 
@@ -130,6 +136,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "--loglevel",
         dest="loglevel",
         type=str.upper,
+        choices=_LOG_LEVEL_NAMES,
         # SUPPRESS, not a real default: this parser also runs as a subparser
         # of the agent CLI, whose own --loglevel and -v/-vv write the same
         # destination, and a subparser default overwrites what the parent
@@ -434,13 +441,19 @@ def _setup_logging(level: str | int) -> None:
     logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 
 
-def _env_file_path(explicit: str | None) -> Path:
+def _env_file_path(explicit: str | None) -> tuple[Path, bool]:
+    """The env file to load, and whether the operator named it (via
+    --env-file or $ALEPH_VM_ENV_FILE) rather than this falling back to the
+    node's default location. Both ways of naming a file are equally
+    explicit operator intent: a missing one must refuse rather than run on
+    defaults the operator did not choose.
+    """
     if explicit:
-        return Path(explicit)
+        return Path(explicit), True
     from_environment = os.environ.get(ENV_FILE_VARIABLE)
     if from_environment:
-        return Path(from_environment)
-    return DEFAULT_ENV_FILE
+        return Path(from_environment), True
+    return DEFAULT_ENV_FILE, False
 
 
 def _reload_settings() -> None:
@@ -457,15 +470,16 @@ def _reload_settings() -> None:
 
 def _load_env_file(explicit: str | None) -> bool:
     """Load the node's environment file, if there is one. False when the
-    operator named a file that does not exist: running on the defaults they
-    were trying to override is worse than refusing.
+    operator named a file, via --env-file or $ALEPH_VM_ENV_FILE, that does
+    not exist: running on the defaults they were trying to override is
+    worse than refusing.
 
     Values already in the environment win, so a one-off override on the
     command line still works.
     """
-    path = _env_file_path(explicit)
+    path, named = _env_file_path(explicit)
     if not path.is_file():
-        if explicit:
+        if named:
             logger.error("No environment file at %s", path)
             return False
         logger.info("No environment file at %s; using the process environment alone", path)
@@ -481,12 +495,18 @@ def run_parsed(args: argparse.Namespace) -> int:
     verb. Takes an already parsed namespace, so the agent CLI can hand over
     the one its own parser produced."""
     _setup_logging(getattr(args, "loglevel", None) or logging.INFO)
-    if not _load_env_file(getattr(args, "env_file", None)):
-        return 1
+    try:
+        if not _load_env_file(getattr(args, "env_file", None)):
+            return 1
+    except ValidationError as error:
+        for field_error in error.errors():
+            field = ".".join(str(part) for part in field_error["loc"])
+            print(f"Invalid node configuration for {field}: {field_error['msg']}", file=sys.stderr)
+        return 2
     settings.setup()
     storage_pools.setup_pools()
 
-    database = Path(str(settings.EXECUTION_DATABASE))
+    database = settings.EXECUTION_DATABASE
     if not database.exists():
         if args.storage_command in READ_ONLY_COMMANDS:
             logger.error(

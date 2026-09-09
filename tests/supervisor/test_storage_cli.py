@@ -473,6 +473,9 @@ def test_the_env_file_reaches_the_settings(tmp_path, monkeypatch, isolated_envir
     env_file = tmp_path / "supervisor.env"
     env_file.write_text(f"ALEPH_VM_VOLUME_RETENTION=keep\nALEPH_VM_EXECUTION_DATABASE={plumbing}\n")
     isolated_environ.pop("ALEPH_VM_VOLUME_RETENTION", None)
+    # This test's assertion is what the loaded file set, not what the
+    # process environment happened to already hold.
+    isolated_environ.pop("ALEPH_VM_EXECUTION_DATABASE", None)
     monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
     seen: list[str] = []
 
@@ -497,6 +500,38 @@ def test_a_named_env_file_that_is_missing_is_an_error(tmp_path, monkeypatch, plu
 
     assert code == 1
     assert "typo.env" in capsys.readouterr().err
+
+
+def test_an_env_file_named_by_the_environment_variable_that_is_missing_is_an_error(
+    tmp_path, monkeypatch, isolated_environ, plumbing, capsys
+):
+    """$ALEPH_VM_ENV_FILE is just as explicit as --env-file: a typo there
+    used to fall through to the built-in defaults with only an INFO line,
+    exactly the hazard the fail-closed --env-file behaviour exists for."""
+    monkeypatch.setattr(cli, "run", lambda *_: 0)
+    isolated_environ[cli.ENV_FILE_VARIABLE] = str(tmp_path / "typo.env")
+
+    code = cli.main(["status"])
+
+    assert code == 1
+    assert "typo.env" in capsys.readouterr().err
+
+
+def test_an_invalid_value_in_the_env_file_is_a_clean_usage_error(
+    tmp_path, monkeypatch, isolated_environ, plumbing, capsys
+):
+    """A typo'd value in the node's env file used to surface as a raw
+    pydantic ValidationError traceback; the operator should see which field
+    is wrong instead."""
+    env_file = tmp_path / "supervisor.env"
+    env_file.write_text("ALEPH_VM_VOLUME_RETENTION=sometimes\n")
+    isolated_environ.pop("ALEPH_VM_VOLUME_RETENTION", None)
+    monkeypatch.setattr(cli, "run", lambda *_: 0)
+
+    code = cli.main(["--env-file", str(env_file), "status"])
+
+    assert code == 2
+    assert "VOLUME_RETENTION" in capsys.readouterr().err
 
 
 def test_status_refuses_a_missing_database_without_creating_one(tmp_path, monkeypatch, plumbing, capsys):
@@ -577,3 +612,13 @@ def test_the_storage_subparser_keeps_its_own_loglevel_flag():
 
     assert args.storage_command == "status"
     assert args.loglevel == "WARNING"
+
+
+def test_an_unknown_loglevel_is_a_usage_error_not_a_traceback(capsys):
+    """`--loglevel verbos` used to reach logging.Logger.setLevel and die with
+    a raw ValueError traceback instead of a clean argparse usage error."""
+    with pytest.raises(SystemExit) as exit_info:
+        cli.parse_args(["--loglevel", "verbos", "status"])
+
+    assert exit_info.value.code == 2
+    assert "--loglevel" in capsys.readouterr().err
