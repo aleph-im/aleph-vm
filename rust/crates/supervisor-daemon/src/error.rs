@@ -35,11 +35,38 @@ pub enum DaemonError {
     #[error("No IPv4 address found for interface {0}")]
     NoIpv4Address(String),
 
-    #[error("{0}")]
-    Lspci(String),
+    #[error("failed to run lspci {arguments}: {source}")]
+    LspciSpawn {
+        arguments: String,
+        #[source]
+        source: std::io::Error,
+    },
 
-    #[error("GPU probe failed: {0}")]
-    GpuProbe(String),
+    #[error("lspci {arguments} exited with {status}")]
+    LspciStatus {
+        arguments: String,
+        status: std::process::ExitStatus,
+    },
+
+    #[error("unparseable lspci -mmnnn line: {line:?}")]
+    LspciLine { line: String },
+
+    #[error("cannot read the PCI resource file {path}: {source}")]
+    GpuResourceRead {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("PCI resource field {field:?} is not a hexadecimal number: {source}")]
+    GpuResourceField {
+        field: String,
+        #[source]
+        source: std::num::ParseIntError,
+    },
+
+    #[error("PCI resource line {line:?} does not carry a start, an end and a flag word")]
+    GpuResourceLine { line: String },
 
     #[error("cannot read the confidential-computing register of the GPU at {pci_host}: {source}")]
     GpuRegisterRead {
