@@ -62,7 +62,9 @@ logger = logging.getLogger(__name__)
 #
 # Wider than the removing list compute_verdict answers with, which is RUNNING
 # only: the answer names what this push stops that was up, while a pass sweeps
-# what the plan dropped whatever state it is in. Capacity stays conservative
+# in any of these states. What a pass sweeps is what the push never named at
+# all, not what the plan does not list: a hash the answer refused is named,
+# and refusing a VM is not deleting it. Capacity stays conservative
 # under the difference, because a commitment is held by the registry record
 # rather than by the status, so a stopped VM left out of releasing has its
 # memory counted against the push that is about to free it.
