@@ -507,7 +507,9 @@ platform image without one is unaffected). Steps, each failing to
    attestation report signature and chain verification with OCSP, driver
    RIM and VBIOS RIM fetch, signature and schema validation, measurement
    comparison, and produces the claims and detached EAT.
-3. Check `result_code == 0` and every per-GPU `measres == "Success"`.
+3. Check `result_code == 0` and every per-GPU `measres == "success"`. The
+   SDK serializes its measurement-result enum lowercase (`success`, `fail`,
+   `not-run`, `absent`).
 4. Set the GPU ready state explicitly with `nvidia-smi conf-compute -srs 1`
    from the raw driver userland, so the gate does not depend on
    `nvattest`'s own root-mode side effects, and read it back with
