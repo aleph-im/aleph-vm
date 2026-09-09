@@ -15,7 +15,6 @@ is part of the contract the raiser signed, while a message is prose that gets
 edited.
 """
 
-import logging
 from enum import Enum
 
 from aiohttp import ClientResponseError
@@ -25,8 +24,6 @@ from aleph.vm.agent.run import VmStartupError
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor_interface.errors import SupervisorError
 from aleph.vm.supervisor_interface.types import ErrorCode
-
-logger = logging.getLogger(__name__)
 
 
 class AllocationFailureCode(str, Enum):
