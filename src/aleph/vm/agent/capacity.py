@@ -539,7 +539,11 @@ class CapacityManager:
 
         ``gpus`` is None rather than empty when no inventory was given:
         unknown is not zero, and the caller that has the inventory is the one
-        that read it from the supervisor.
+        that read it from the supervisor. It lists the cards free of any live
+        hold, the node-wide view: there is no owner to ask for here, so a card
+        one user holds is absent even though simulate would let that user's
+        own candidate take it. The per-candidate answer is the one to trust
+        for a given VM; this figure is what anyone else could count on.
         """
         caps = self._caps()
         committed_instance, committed_program, committed_vcpus = self._committed_resources(())
