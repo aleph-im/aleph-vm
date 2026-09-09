@@ -17,12 +17,9 @@
 //! shared dnsmasq's `--dhcp-hostsdir`; the SNP NIC here has no fixed MAC
 //! (the launch carries no `mac=`, matching this repo's other QEMU paths
 //! rather than the donor), so a SINGLE-address `--dhcp-range` is how the
-//! guest
-//! deterministically gets the right address instead. Only the SNP path uses
-//! this; plain and SEV/SEV-ES VMs keep the cloud-init static config,
-//! untouched. The SNP measured image omits `ip=` from its cmdline so the
-//! launch measurement stays host-independent, which is exactly why its
-//! guest needs a DHCP server to learn its address at all.
+//! guest deterministically gets the right address instead. Only the SNP
+//! path uses this; plain and SEV/SEV-ES VMs keep the cloud-init static
+//! config, untouched.
 //!
 //! The kernel/systemd edge lives behind the [`DhcpBackend`] seam, mirroring
 //! [`crate::tap::TapBackend`], so cargo tests assert the derived dnsmasq

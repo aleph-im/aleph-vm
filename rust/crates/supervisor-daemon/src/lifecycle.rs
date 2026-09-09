@@ -284,8 +284,11 @@ fn with_entry_mut<R>(
 
 /// Choose a NUMA node for a new VM and reserve its vCPUs in the ledger.
 ///
-/// Honors a requested `numa_node` when the spec carries one (decision 4),
-/// otherwise packs onto the first node (node 0, then 1, ...) with room.
+/// A spec that names a `numa_node` is honoured on that node or refused;
+/// the daemon never quietly places such a VM elsewhere, because the caller
+/// asked for that node for a reason it does not share (a device on the
+/// node's PCI root, a measurement of the placement). A spec that names
+/// none is packed onto the first node (node 0, then 1, ...) with room.
 /// Returns `Ok(None)` when placement is inert (fewer than two nodes). The
 /// ledger mutation is serialized by the caller's creation lock.
 fn place_vm_numa(
@@ -1151,9 +1154,9 @@ fn start_vm_execution_marked(
         // Stop tore the SNP per-tap DHCP server down with the tap and nft
         // rules; recreate it with them, or the rebooting measured guest
         // (whose cmdline has no `ip=`, by measurement design) can never
-        // lease its
-        // IP and attestation is unreachable. `DhcpBackend::start` replaces a
-        // leftover unit, so a partial stop cannot fail this start.
+        // lease its IP and attestation is unreachable.
+        // `DhcpBackend::start` replaces a leftover unit, so a partial stop
+        // cannot fail this start.
         if entry.config.snp().is_some() {
             let config = dhcp::DhcpConfig::for_snp(
                 vm_id,
@@ -2827,9 +2830,9 @@ fn create_vm_inner(
         pb::Backend::Qemu => {}
         pb::Backend::Firecracker => {
             if request.persistent {
-                // Ephemeral programs landed with increment 4; persistent
-                // programs boot under systemd controller units and follow
-                // with the controller port.
+                // Ephemeral programs are launched in-process; persistent
+                // ones boot under systemd controller units and follow with
+                // the controller port.
                 return Err(RpcError::Unimplemented(
                     "CreateVm for persistent Firecracker programs is not implemented yet \
                      by the Rust supervisor daemon"
@@ -3141,9 +3144,9 @@ fn create_vm_inner(
                 // cloud-init static config: the measured image DHCPs and its
                 // cmdline omits `ip=` so the launch measurement stays
                 // host-independent. The tap already carries the gateway
-                // address (create_tap
-                // added host_ipv4_cidr), so dnsmasq can bind and route. Plain and
-                // SEV VMs skip this and keep their cloud-init static config.
+                // address (create_tap added host_ipv4_cidr), so dnsmasq can
+                // bind and route. Plain and SEV VMs skip this and keep their
+                // cloud-init static config.
                 if snp {
                     let config = dhcp::DhcpConfig::for_snp(
                         &vm_id,
@@ -3604,11 +3607,10 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
                 .collect()
         });
     // Rederive missing IP assignments before filtering: entries adopted
-    // during a bus outage carry no derived IPs
-    // (world.rs stamps nothing when unit states are unknown), and without
-    // this an operator could not heal their chains through RecreateNetwork.
-    // tap_assignment derives from vm_index/vm_hash (both known) and stores
-    // the result on the entry.
+    // during a bus outage carry no derived IPs (world.rs stamps nothing when
+    // unit states are unknown), and without this an operator could not heal
+    // their chains through RecreateNetwork. tap_assignment derives from
+    // vm_index/vm_hash (both known) and stores the result on the entry.
     let mut entries = entries;
     for entry in &mut entries {
         if entry.ipv4.is_some()

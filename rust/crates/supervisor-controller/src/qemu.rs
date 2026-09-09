@@ -702,10 +702,11 @@ pub async fn run(vm_hash: &str, config: &QemuConfig) -> Result<i32, QemuError> {
     spawn_and_supervise(vm_hash, config, argv).await
 }
 
-/// Launch an existing SEV / SEV-ES confidential VM, the port of
-/// `QemuConfidentialVM.start()` plus its two pre-launch guards. The VM starts
-/// paused (`-S`); this controller does NOT inject the launch secret or resume
-/// the CPU (that is the supervisor session flow).
+/// Launch an existing SEV / SEV-ES confidential VM, behind two pre-launch
+/// guards (the host is an SEV platform, and the config carries the four
+/// confidential fields). The VM starts paused (`-S`); this controller does
+/// NOT inject the launch secret or resume the CPU, which is the supervisor's
+/// session flow.
 pub async fn run_confidential(vm_hash: &str, config: &QemuConfig) -> Result<i32, QemuError> {
     // Read the host SEV info, then run the two pre-launch guards (factored into
     // `confidential_prelaunch_check` so they are unit-testable off-SEV). The
@@ -828,9 +829,9 @@ async fn spawn_and_supervise(
     Ok(code)
 }
 
-/// Graceful shutdown escalation, the port of `QemuVM.stop()`: ACPI powerdown,
-/// wait up to `GRACEFUL_SHUTDOWN_TIMEOUT`, then QMP `quit` and wait the
-/// remaining budget. QEMU flushing its caches on `quit` avoids the qcow2
+/// Graceful shutdown escalation: ACPI powerdown, wait up to
+/// `GRACEFUL_SHUTDOWN_TIMEOUT`, then QMP `quit` and wait the remaining
+/// budget. QEMU flushing its caches on `quit` avoids the qcow2
 /// corruption a SIGKILL would cause.
 async fn stop(vm_hash: &str, config: &QemuConfig, child: &mut Child) {
     let qmp_socket_path = config.qmp_socket_path.clone();
