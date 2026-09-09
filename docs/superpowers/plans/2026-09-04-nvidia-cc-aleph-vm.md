@@ -2024,12 +2024,13 @@ if gpu_present; then
         /bin/busybox cat /run/aleph/gpu-attest.log
         gpu_fatal "nvattest exited non-zero"
     fi
-    # result_code 0 and every device's measres Success, or power off.
+    # result_code 0 and every device's measres "success" (the SDK serializes
+    # the enum lowercase), or power off.
     /bin/busybox grep -q '"result_code" *: *0' /run/aleph/gpu-attest.json || gpu_fatal "result_code != 0"
-    if /bin/busybox grep -q '"measres" *: *"Failure"' /run/aleph/gpu-attest.json; then
+    if /bin/busybox grep -q '"measres" *: *"fail"' /run/aleph/gpu-attest.json; then
         gpu_fatal "measurement comparison failed"
     fi
-    /bin/busybox grep -q '"measres" *: *"Success"' /run/aleph/gpu-attest.json || gpu_fatal "no Success claim"
+    /bin/busybox grep -q '"measres" *: *"success"' /run/aleph/gpu-attest.json || gpu_fatal "no success claim"
     # Extract the claims array for the attest-agent (the EAT is not served).
     /bin/busybox sed -n 's/^.*"claims" *: *\(\[.*\]\) *, *"detached_eat".*$/\1/p' /run/aleph/gpu-attest.json > "$gpu_claims"
     [ -s "$gpu_claims" ] || gpu_fatal "could not extract claims"

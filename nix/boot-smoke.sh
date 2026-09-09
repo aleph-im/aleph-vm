@@ -11,14 +11,37 @@
 # agent path (see init-common.sh start_attest_agent) answers through a
 # SLIRP port forward.
 #
-# Usage: nix/boot-smoke.sh (curl and python3 are needed for phase 3)
+# `--gpu` instead boots the confidential-GPU image (gpuImage) on a host with
+# no NVIDIA device, which is the flavor's own no-GPU path: init-gpu.sh must
+# find no 0x10de PCI device, say so, and boot on exactly like the base image.
+# It does not exercise the driver, the verifier or the ready state; those
+# need real Blackwell hardware. CI runs it from the GPU golden job
+# (.github/workflows/golden-measurements.yml), which has the image built.
+#
+# Usage: nix/boot-smoke.sh [--gpu] (curl and python3 are needed for phase 3)
 # Runs in CI on a KVM runner (.github/workflows/boot-smoke.yml) and locally
 # (needs KVM, or a slow TCG boot).
 set -euo pipefail
 
+gpu_mode=0
+case "${1:-}" in
+  "") ;;
+  --gpu) gpu_mode=1 ;;
+  *) echo "usage: $0 [--gpu]" >&2; exit 2 ;;
+esac
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-image="$(nix build "$repo_root/nix#image" --no-link --print-out-paths)"
+if [ "$gpu_mode" -eq 1 ]; then
+  image="$(nix build "$repo_root/nix#gpuImage" --no-link --print-out-paths)"
+else
+  image="$(nix build "$repo_root/nix#image" --no-link --print-out-paths)"
+fi
 roothash="$(cat "$image/rootfs.ext4.roothash")"
+
+# Guest RAM. The GPU cmdline reserves a 512 MiB swiotlb (swiotlb=262144
+# slabs x 2 KiB), so that flavor needs more than the 1 GiB the base image
+# boots in.
+mem=1024
 
 log="$(mktemp)"
 # shellcheck disable=SC2329  # invoked via the EXIT trap
@@ -45,7 +68,7 @@ run_phase() {
   rm -f "$log"
   log="$(mktemp)"
   qemu-system-x86_64 \
-    -machine q35,accel=kvm:tcg -cpu max -m 1024 -smp 2 \
+    -machine q35,accel=kvm:tcg -cpu max -m "$mem" -smp 2 \
     -nographic -no-reboot \
     -kernel "$image/bzImage" \
     -initrd "$image/initrd" \
@@ -95,6 +118,23 @@ run_phase() {
 forbidden=()
 netdev_extra=""
 probe=true
+
+# GPU mode: the confidential-GPU image, platform-only cmdline, no NVIDIA
+# device attached. The GPU stage must take its no-GPU branch and the rest of
+# the boot must be indistinguishable from the base image's phase 1.
+if [ "$gpu_mode" -eq 1 ]; then
+  mem=2048
+  markers=(
+    "init: no NVIDIA GPU present; running without GPU attestation"
+    "init: mounting /dev/mapper/verity-root"
+    "init: firewall active"
+    "init: starting /sbin/init from "
+  )
+  forbidden=("init: INSECURE UNATTESTED MODE:")
+  run_phase "gpu" "console=ttyS0 root=/dev/mapper/verity-root ro roothash=$roothash swiotlb=262144"
+  echo "boot smoke --gpu OK: GPU image booted with no GPU, rootfs verified and mounted, firewall up, /sbin/init started" >&2
+  exit 0
+fi
 
 # Phase 1: platform-only boot (volume-less cmdline must stay bootable).
 markers=(
