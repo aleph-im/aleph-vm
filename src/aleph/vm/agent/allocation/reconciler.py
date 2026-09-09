@@ -428,7 +428,6 @@ class AllocationReconciler:
         record = FailureRecord(
             code=code,
             attempts=attempts,
-            first_failed_at=previous.first_failed_at if previous else now,
             last_failed_at=now,
             next_retry_at=now + timedelta(seconds=delay),
         )
