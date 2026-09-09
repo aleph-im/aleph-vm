@@ -174,12 +174,14 @@ def test_purge_storage_refuses_an_operator_directory_before_touching_it(pools, n
 @pytest.mark.parametrize("namespace", ["cafe" * 16, "QmXoypizjW3WknFiJnKLwHCnL72vedxjQkDDP1mXWo6uco"])
 def test_purge_storage_accepts_every_shape_of_item_hash(pools, namespace):
     """A storage hash and an IPFS CID are both VM namespaces."""
-    _volume(pools["pool0"], namespace, "rootfs.qcow2")
+    rootfs = _volume(pools["pool0"], namespace, "rootfs.qcow2")
 
-    result = purge_vm_storage(namespace)
+    purge_vm_storage(namespace)
 
-    assert result.deleted == 1
-    assert result.kept == ()
+    # What the purge left on disk, not what it reported: this test is about
+    # which names the guard accepts, and asserting on the return value ties it
+    # to that value's shape as well.
+    assert not rootfs.exists()
     assert not (pools["pool0"] / namespace).exists()
 
 
