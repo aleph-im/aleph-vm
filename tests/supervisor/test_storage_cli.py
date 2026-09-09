@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+import socket
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -19,6 +20,7 @@ import aleph.vm.agent.vm.reconciler as reconciler_module
 from aleph.vm import storage_pools
 from aleph.vm.agent.vm.reclaimable import (
     ReclaimableMarker,
+    clear_marker,
     mark_reclaimable,
     write_marker,
 )
@@ -60,9 +62,17 @@ def _fake_mapper(monkeypatch, tmp_path, *names: str) -> Path:
     return mapper
 
 
-def _fake_supervisor(*vm_ids: str, fails: bool = False):
+def _fake_supervisor(*vm_ids: str, fails: bool = False, error: Exception | None = None):
     """A supervisor handle that lists ``vm_ids``, or cannot be asked at all
-    (an unreachable daemon: a connection error, a timeout, any of it)."""
+    (an unreachable daemon: a connection error, a timeout, any of it).
+
+    ``fails`` raises a generic error, which the CLI then classifies by
+    probing the socket itself (absent under the tests, so: verified down).
+    ``error`` raises exactly what the caller passes, for the classes the CLI
+    reads off the exception alone.
+    """
+    if error is not None:
+        return SimpleNamespace(list_vms=AsyncMock(side_effect=error))
     if fails:
         return SimpleNamespace(list_vms=AsyncMock(side_effect=RuntimeError("no answer")))
     return SimpleNamespace(list_vms=AsyncMock(return_value=[SimpleNamespace(vm_id=vm_id) for vm_id in vm_ids]))
@@ -211,6 +221,56 @@ def test_reclaim_refuses_unless_trust_registry_when_supervisor_unreachable(pools
     assert not gone.exists()
 
 
+def test_reclaim_does_not_advise_the_registry_when_the_daemon_may_be_up(pools, registry, monkeypatch):  # noqa: F811
+    """A dial that failed for a reason other than a stopped daemon must not
+    end in an invitation to purge on the registry alone."""
+    gone = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    mark_reclaimable(VM_HASH, "gone", now=NOW)
+    denied = PermissionError(13, "Permission denied")
+    monkeypatch.setattr(cli, "_open_supervisor", lambda: _fake_supervisor(error=denied))
+
+    code, out = _run(["reclaim", VM_HASH], registry)
+
+    assert code == 1
+    assert "PermissionError" in out and "Permission denied" in out
+    assert "--trust-registry" not in out
+    assert gone.exists()
+
+
+def test_reclaim_refuses_an_empty_registry_the_supervisor_contradicts(pools, monkeypatch):  # noqa: F811
+    """A lost agent DB makes every marker on the node look purgeable, and
+    the supervisor's list is no second opinion on a VM it has not started
+    yet."""
+    gone = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    mark_reclaimable(VM_HASH, "gone", now=NOW)
+    monkeypatch.setattr(cli, "_open_supervisor", lambda: _fake_supervisor(LIVE))
+
+    code, out = _run(["reclaim", VM_HASH], AgentVmRegistry())
+
+    assert code == 1 and "registry is empty" in out
+    assert gone.exists()
+
+
+def test_reclaim_refuses_a_marker_that_vanished_during_the_dial(pools, registry, monkeypatch):  # noqa: F811
+    """A re-create adopts its retained directory by clearing the marker. If
+    that happens while the supervisor is being asked, the hash is not yet in
+    any answer, and a purge on the checks made before the dial would delete
+    the disks of a VM the daemon is at that moment building on them."""
+    adopted = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    mark_reclaimable(VM_HASH, "gone", now=NOW)
+
+    def open_supervisor():
+        clear_marker(adopted.parent)
+        return _fake_supervisor()
+
+    monkeypatch.setattr(cli, "_open_supervisor", open_supervisor)
+
+    code, out = _run(["reclaim", VM_HASH], registry)
+
+    assert code == 1 and "no longer marked reclaimable" in out
+    assert adopted.exists()
+
+
 def test_reclaim_refuses_when_the_purge_leaves_a_dm_held_directory(pools, registry, monkeypatch):  # noqa: F811
     held = volume(pools["pool0"], VM_HASH, "data.btrfs")
     mark_reclaimable(VM_HASH, "gone", now=NOW)
@@ -236,22 +296,59 @@ def test_reconcile_dry_run_reports_without_changing(pools, registry, monkeypatch
     assert code == 0 and "Dry run" in out and "purged=1" in out
     assert orphan.exists()
 
-    # The fake supervisor (installed by the autouse fixture) is reachable and
-    # lists nothing running, so a real pass is allowed to purge.
+
+def test_reconcile_refuses_a_real_pass_while_the_daemon_answers(pools, registry, monkeypatch, capsys):  # noqa: F811
+    """The daemon holds the one thing this process cannot see: the set of
+    creates it has in flight. A long import outlives VOLUME_CREATE_GUARD
+    before its DB record exists, and a CLI pass would purge it as an orphan,
+    so a real pass is refused for as long as the daemon answers."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    orphan = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    stamp = time.time() - 10_000
+    os.utime(orphan.parent, (stamp, stamp))
+
     code, out = _run(["reconcile"], registry)
-    assert code == 0 and not orphan.exists()
+
+    assert code == cli.DEGRADED_EXIT_CODE
+    assert orphan.exists()
+    assert out == ""  # nothing was reconciled, so there is no report to print
+    err = capsys.readouterr().err
+    assert "Refusing to reconcile" in err and "--dry-run" in err
+
+    # The preview is still available, and still sees the orphan.
+    code, out = _run(["reconcile", "--dry-run"], registry)
+    assert code == 0 and "purged=1" in out
+    assert orphan.exists()
+
+
+def test_reconcile_refuses_an_empty_registry_the_supervisor_contradicts(pools, monkeypatch, capsys):  # noqa: F811, ARG001
+    """The daemon's own startup refusal, applied here: an empty registry
+    while the supervisor runs VMs means the agent DB was lost, and every
+    directory on the node then reads as an orphan."""
+    monkeypatch.setattr(cli, "_open_supervisor", lambda: _fake_supervisor(LIVE))
+
+    code, out = _run(["reconcile"], AgentVmRegistry())
+
+    assert code == cli.DEGRADED_EXIT_CODE
+    assert out == ""
+    err = capsys.readouterr().err
+    assert "registry is empty" in err and "1 VM(s)" in err
 
 
 def test_reconcile_leaves_a_supervisor_known_vm_the_registry_does_not(pools, registry, monkeypatch):  # noqa: F811
+    """The union with the supervisor's list, visible in the one mode a
+    reachable daemon still allows: OTHER_HASH is not in the registry, so
+    only that union keeps it out of the report."""
     monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
     unknown = volume(pools["pool0"], OTHER_HASH, "rootfs.qcow2")
     stamp = time.time() - 10_000
     os.utime(unknown.parent, (stamp, stamp))
     monkeypatch.setattr(cli, "_open_supervisor", lambda: _fake_supervisor(OTHER_HASH))
 
-    code, out = _run(["reconcile"], registry)
+    code, out = _run(["reconcile", "--dry-run"], registry)
 
     assert code == 0
+    assert "purged=0" in out and OTHER_HASH not in out
     assert unknown.exists()
 
 
@@ -272,7 +369,7 @@ def test_reconcile_unreachable_exits_nonzero_and_warns_on_stderr(pools, registry
     assert orphan.exists()
 
 
-def test_reconcile_explicit_dry_run_stays_exit_zero_when_unreachable(pools, registry, monkeypatch):  # noqa: F811
+def test_reconcile_explicit_dry_run_stays_exit_zero_when_unreachable(pools, registry, monkeypatch, capsys):  # noqa: F811
     monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
     orphan = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
     stamp = time.time() - 10_000
@@ -284,6 +381,75 @@ def test_reconcile_explicit_dry_run_stays_exit_zero_when_unreachable(pools, regi
     assert code == 0
     assert "Dry run" in out
     assert orphan.exists()
+    # Nothing was downgraded: the operator asked for a preview and got one,
+    # so advising the flag that turns a pass into a purge is noise.
+    err = capsys.readouterr().err
+    assert "registry-only" in err and "--trust-registry" not in err
+
+
+def test_a_dial_that_is_no_proof_the_daemon_is_down_advises_no_purge(pools, registry, monkeypatch, capsys):  # noqa: F811
+    """A socket this user may not open, a deadline, a reply that does not
+    parse: none of them says the daemon is stopped, and purging on the
+    registry alone while it runs is the very thing the union prevents. The
+    error itself has to reach the operator, named."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    orphan = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    stamp = time.time() - 10_000
+    os.utime(orphan.parent, (stamp, stamp))
+    denied = PermissionError(13, "Permission denied")
+    monkeypatch.setattr(cli, "_open_supervisor", lambda: _fake_supervisor(error=denied))
+
+    code, out = _run(["reconcile"], registry)
+
+    assert code == cli.DEGRADED_EXIT_CODE
+    assert orphan.exists()
+    err = capsys.readouterr().err
+    assert "PermissionError" in err and "Permission denied" in err
+    assert "--trust-registry" not in err
+
+
+def test_a_timeout_is_never_reported_as_a_stopped_daemon(pools, registry, monkeypatch, capsys):  # noqa: F811
+    """asyncio.wait_for gives up on a daemon that is up but wedged."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    monkeypatch.setattr(cli, "_open_supervisor", lambda: _fake_supervisor(error=TimeoutError("timed out")))
+
+    code, _out = _run(["reconcile"], registry)
+
+    assert code == cli.DEGRADED_EXIT_CODE
+    err = capsys.readouterr().err
+    assert "TimeoutError" in err
+    assert "--trust-registry" not in err
+
+
+def test_a_socket_that_accepts_is_never_read_as_a_stopped_daemon(tmp_path):
+    """The fallback classification, on its own: a daemon that is listening
+    but would not answer must never end in the advice to purge without it."""
+    path = tmp_path / "sup.sock"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+        server.bind(str(path))
+        server.listen(1)
+
+        assert cli._socket_reach(path) is not cli.SupervisorReach.DOWN
+
+
+def test_a_missing_socket_is_read_as_a_stopped_daemon(tmp_path):
+    assert cli._socket_reach(tmp_path / "nothing.sock") is cli.SupervisorReach.DOWN
+
+
+def test_an_unset_socket_path_says_nothing_about_the_daemon():
+    assert cli._socket_reach(None) is cli.SupervisorReach.UNKNOWN
+
+
+def test_a_refused_socket_is_reported_as_a_stopped_daemon(pools, registry, monkeypatch, capsys):  # noqa: F811
+    refused = ConnectionRefusedError(111, "Connection refused")
+    monkeypatch.setattr(cli, "_open_supervisor", lambda: _fake_supervisor(error=refused))
+
+    code, _out = _run(["reconcile"], registry)
+
+    assert code == cli.DEGRADED_EXIT_CODE
+    err = capsys.readouterr().err
+    assert "unreachable" in err and "ConnectionRefusedError" in err
+    assert "--trust-registry" in err
 
 
 def test_reconcile_trust_registry_purges_when_supervisor_unreachable(pools, registry, monkeypatch):  # noqa: F811
@@ -318,18 +484,21 @@ def test_reconcile_passes_live_known_false_when_supervisor_unreachable(pools, re
 
 
 def test_reconcile_passes_live_known_true_when_supervisor_reachable(pools, registry, monkeypatch):  # noqa: F811
-    # The autouse fixture already installs a reachable fake supervisor.
+    # The autouse fixture already installs a reachable fake supervisor, and a
+    # reachable one leaves --dry-run as the only mode that reaches the pass.
     fake_report = reconciler_module.ReconcileReport()
     spy = MagicMock(return_value=fake_report)
     monkeypatch.setattr(cli, "reconcile_storage", spy)
 
-    code, out = _run(["reconcile"], registry)
+    code, out = _run(["reconcile", "--dry-run"], registry)
 
     assert code == 0
     assert spy.call_args.kwargs["live_known"] is True
 
 
-def test_reconcile_tears_down_devices_of_evicted_cache_parents(pools, registry, monkeypatch):  # noqa: F811
+def test_reconcile_evicts_no_cache_entry_while_the_daemon_answers(pools, registry, monkeypatch):  # noqa: F811
+    """The cache pass runs inside the reconcile the daemon's presence
+    refuses, devices included: what the daemon is up for, the daemon does."""
     monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
     stale = pools["runtime"] / "stale"
     stale.write_bytes(b"x" * 4096)
@@ -338,9 +507,9 @@ def test_reconcile_tears_down_devices_of_evicted_cache_parents(pools, registry, 
 
     code, out = _run(["reconcile"], registry)
 
-    assert code == 0
-    assert not stale.exists()
-    assert removed == ["stale"]
+    assert code == cli.DEGRADED_EXIT_CODE
+    assert stale.exists()
+    assert removed == []
 
 
 def test_reconcile_dry_run_never_touches_cache_parent_devices(pools, registry, monkeypatch):  # noqa: F811
@@ -370,17 +539,19 @@ def test_cli_main_dispatches_storage_subcommand(mocker):
     assert args.loglevel == logging.DEBUG
 
 
-def test_reconcile_tears_down_the_devices_of_an_orphan_namespace(pools, registry, monkeypatch, tmp_path):  # noqa: F811
-    """Same parity as the cache devices: without this the CLI keeps refusing
-    the dm-held directories the daemon's own pass now reclaims."""
+def test_a_cli_pass_never_tears_down_an_orphan_namespace_device(pools, registry, monkeypatch, tmp_path):  # noqa: F811
+    """Tearing a device down takes the VM's disk with it if the VM was only
+    unlisted rather than gone. The one answer that made that safe (the
+    supervisor's) is now the answer that refuses the pass outright, so the
+    devices of an orphan namespace are the daemon's own pass to reclaim."""
     _fake_mapper(monkeypatch, tmp_path, f"{VM_HASH}_rootfs", f"{LIVE}_rootfs")
     torn: list[str] = []
     monkeypatch.setattr(reconciler_module, "teardown_namespace_devices", AsyncMock(side_effect=torn.append))
 
     code, _out = _run(["reconcile"], registry)
 
-    assert code == 0
-    assert torn == [VM_HASH]
+    assert code == cli.DEGRADED_EXIT_CODE
+    assert torn == []
 
 
 def test_reconcile_dry_run_never_touches_orphan_devices(pools, registry, monkeypatch, tmp_path):  # noqa: F811
@@ -588,13 +759,15 @@ def test_an_unmigrated_database_is_brought_up_to_date(pools, tmp_path, monkeypat
 
 def test_reconcile_reports_its_purges_on_stderr(pools, monkeypatch, plumbing, capsys):  # noqa: F811
     """The purge logs what it removed; with no handler configured those INFO
-    lines went nowhere and an operator watching a purge saw nothing."""
+    lines went nowhere and an operator watching a purge saw nothing. A real
+    purge needs a daemon that is down, which is the case this command is for."""
     monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    monkeypatch.setattr(cli, "_open_supervisor", lambda: _fake_supervisor(fails=True))
     orphan = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
     stamp = time.time() - 10_000
     os.utime(orphan.parent, (stamp, stamp))
 
-    code = cli.main(["reconcile"])
+    code = cli.main(["reconcile", "--trust-registry"])
 
     assert code == 0
     assert not orphan.exists()
