@@ -26,6 +26,7 @@ from aleph.vm.agent.allocation.plan import (
 from aleph.vm.agent.allocation.teardown import is_removable_by_allocation, teardown_vm
 from aleph.vm.agent.capacity import CapacityManager
 from aleph.vm.agent.expiry import ExpiryManager
+from aleph.vm.agent.pubsub import PubSub
 from aleph.vm.agent.run import start_persistent_vm
 from aleph.vm.agent.update_watcher import UpdateWatcher
 from aleph.vm.agent.vm_registry import AgentVmRegistry
@@ -53,7 +54,7 @@ class AllocationReconciler:
         capacity: CapacityManager,
         expiry: ExpiryManager,
         update_watcher: UpdateWatcher,
-        pubsub_getter: Callable[[], object | None],
+        pubsub_getter: Callable[[], PubSub | None],
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self.supervisor = supervisor
