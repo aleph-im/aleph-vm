@@ -57,9 +57,17 @@ async def update_allocations_v2(request: web.Request) -> web.Response:
     plan, rejected = await _read_plan(request)
     app = request.app
     node_identity: NodeIdentity | None = app.get("node_identity")
-    # Both reads are async and come first. From the supervisor's list down
-    # to submit() nothing may yield, or a push landing in between could
-    # invalidate the answer about to be returned; see allocation.verdict.
+    # Both reads are async, so both are done up front. The window that must
+    # not yield is the one after the last of them: from there through the
+    # verdict to submit(), a push landing in between would invalidate the
+    # answer about to be returned; see allocation.verdict.
+    #
+    # The gpu read does yield, and the VM list is already in hand when it
+    # does, so what this handler believes is running can be a moment stale by
+    # the time the verdict is computed. That is what removing_now covers
+    # below: a teardown starting in that gap would otherwise be answered as a
+    # VM that never moved. Two pushes overlapping here are settled by
+    # whichever submits last, the same as two arriving in either order.
     infos = await app["supervisor"].list_vms()
     available_gpus = await app["capacity"].available_gpus()
     reconciler = app["allocation_reconciler"]

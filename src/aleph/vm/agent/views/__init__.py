@@ -610,6 +610,12 @@ async def update_allocations(request: web.Request):
     Receive a list of vm and instance that should be present and then match
     that state by stopping and launching VMs.
 
+    Stopping here means RUNNING only: a VM this body leaves out that the
+    supervisor holds STOPPED or FAILED is left alone, where a plan's
+    convergence pass tears down all three (see TEARDOWN_STATUSES). The two
+    sweeps are not interchangeable, which is one more reason a node runs
+    under one of them and not both.
+
     One mode per node: a node is driven by this route or by allocation plans,
     never by both. A plan is total, so the reconciler deletes every VM the plan
     does not list, and a push here names only the VMs one scheduler knows
