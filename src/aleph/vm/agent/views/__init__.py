@@ -212,8 +212,19 @@ def _datetime_from_ns(ns: int) -> datetime | None:
 _TIMES_KEYS = ("defined_at", "preparing_at", "prepared_at", "starting_at", "started_at", "stopping_at", "stopped_at")
 
 
-def _times_dict(info: VmInfo) -> dict[str, datetime | None]:
-    """The VmExecutionTimes-shaped dict the v2 endpoint has always served."""
+def _times_dict(info: VmInfo | None) -> dict[str, datetime | None]:
+    """The VmExecutionTimes-shaped dict the v2 endpoint has always served.
+
+    ``None`` for a VM the plan lists that the supervisor has never heard of:
+    the same keys, all empty, so a consumer reads one shape whether or not the
+    VM exists yet. The empty one used to be built at the call site, where a key
+    added here would not have reached it.
+    """
+    if info is None:
+        # Kept next to the mapping below, not next to its one caller: the two
+        # key lists have to say the same thing, and they can only be read
+        # against each other if they sit together.
+        return dict.fromkeys(_TIMES_KEYS)
     return {
         "defined_at": _datetime_from_ns(info.defined_at_ns),
         "preparing_at": _datetime_from_ns(info.preparing_at_ns),
@@ -373,7 +384,7 @@ async def list_executions_v2(request: web.Request) -> web.Response:
         record = registry.get(vm_hash)
         entries[str(vm_hash)] = {
             "networking": {},
-            "status": dict.fromkeys(_TIMES_KEYS),
+            "status": _times_dict(None),
             "state": None,
             "running": False,
             "awaiting_confidential_init": False,
