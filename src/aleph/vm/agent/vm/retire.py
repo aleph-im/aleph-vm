@@ -201,6 +201,12 @@ async def retire_vm(
     # racing a live VM the agent has no message for, so nothing is evicted and
     # a download that needs room is refused.
     forget_live(str(vm_hash))
+    # And the other half of the same set. Imported here rather than at the
+    # top: the reconciler imports this module for the device teardown, so it
+    # cannot be imported back at load time.
+    from aleph.vm.agent.vm.reconciler import forget_supervisor_hash
+
+    forget_supervisor_hash(str(vm_hash))
     await delete_records_for_vm(str(vm_hash))
     # Before the storage pass: a volume file held by a live dm target cannot
     # be unlinked usefully, and the marker written for a kept volume would

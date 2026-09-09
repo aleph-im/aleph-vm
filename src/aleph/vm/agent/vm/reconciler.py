@@ -254,6 +254,18 @@ async def _live_set(app: web.Application) -> tuple[set[str], int | None]:
 _last_supervisor_hashes: set[str] = set()
 
 
+def forget_supervisor_hash(namespace: str) -> None:
+    """Drop a VM the agent has just retired from the last listing it heard.
+
+    ``known_live_hashes`` protects everything in that listing, and the room
+    maker asks it on the placement path, where nothing can ask the supervisor
+    again. A retired hash left here protects the disks of a VM that is gone,
+    against the create that is trying to make room for itself, until the next
+    pass replaces the listing an hour later.
+    """
+    _last_supervisor_hashes.discard(namespace)
+
+
 def known_live_hashes(registry: AgentVmRegistry) -> set[str]:
     """``live_hashes`` plus the supervisor's VMs as of the last pass.
 

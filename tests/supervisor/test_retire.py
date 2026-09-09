@@ -12,6 +12,7 @@ from aleph_message.models import InstanceContent, ItemHash
 from reclaim_fixtures import OTHER_HASH, VM_HASH, pools, volume  # noqa: F401
 
 import aleph.vm.agent.vm.cache as cache_module
+import aleph.vm.agent.vm.reconciler as reconciler_module
 import aleph.vm.agent.vm.retire as retire_module
 import aleph.vm.storage as storage_module
 from aleph.vm.agent.vm.cache import admit_download
@@ -380,6 +381,32 @@ async def test_a_record_dropping_retire_drops_the_vm_from_the_live_snapshot(env,
     await retire_vm(VM_HASH, reason, supervisor=env["supervisor"], registry=env["registry"])
 
     assert cache_module.live_snapshot() == frozenset({OTHER_HASH})
+
+
+@pytest.mark.asyncio
+async def test_a_record_dropping_retire_drops_the_vm_from_the_last_listing(env, monkeypatch):
+    """The other half of the same staleness: the room maker runs on the
+    placement path and cannot ask the supervisor, so it protects whatever the
+    last pass heard it was running. A hash left there protects a VM that is
+    gone, and the create that made room could not have it."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    monkeypatch.setattr(reconciler_module, "_last_supervisor_hashes", {VM_HASH, OTHER_HASH})
+
+    await retire_vm(VM_HASH, RetireReason.GONE, supervisor=env["supervisor"], registry=env["registry"])
+
+    assert reconciler_module._last_supervisor_hashes == {OTHER_HASH}
+    assert VM_HASH not in reconciler_module.known_live_hashes(env["registry"])
+
+
+@pytest.mark.asyncio
+async def test_a_recreate_keeps_the_vm_in_the_last_listing(env, monkeypatch):
+    """RECREATE means the same VM comes straight back, so nothing about it is
+    stale."""
+    monkeypatch.setattr(reconciler_module, "_last_supervisor_hashes", {VM_HASH})
+
+    await retire_vm(VM_HASH, RetireReason.RECREATE, supervisor=env["supervisor"], registry=env["registry"])
+
+    assert reconciler_module._last_supervisor_hashes == {VM_HASH}
 
 
 @pytest.mark.asyncio
