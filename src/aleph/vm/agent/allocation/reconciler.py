@@ -168,9 +168,12 @@ class AllocationReconciler:
             # answer refused is named: the scheduler was told the VM was
             # rejected, not that it was deleted, so it still believes the VM
             # is here, while a teardown retires it GONE and reaps its disks.
-            # Every refusal is temporary too, so the loop would be destroying
-            # a VM over a full disk or over a node hash it has not read back
-            # since its last restart.
+            # The set holds every refusal, transient or not. Most of them pass
+            # on their own (a full disk, a node hash not read back since the
+            # last restart), and one does not: a VM allocated to another node
+            # stays allocated to it. Waiting for a push to stop naming the VM
+            # is the safe reading either way, since the scheduler that placed
+            # it elsewhere is the one that will stop naming it here.
             if plan.lists(vm_hash) or info.status not in TEARDOWN_STATUSES:
                 continue
             # The plan is re-read here rather than taken from the pass, which

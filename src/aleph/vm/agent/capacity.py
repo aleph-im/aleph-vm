@@ -650,6 +650,12 @@ class CapacityManager:
         allocate C onto B's card" is answered no even though doing it in that
         order would work.
 
+        Not free of blocking, though it is free of awaits: judging a candidate
+        walks the storage pools synchronously, once per candidate, so a large
+        plan holds the event loop for that many directory walks. check_message
+        does the same walk per create. Worth knowing here because the caller
+        must not yield while it holds this answer, which makes the window easy
+        to overlook.
         """
         candidate_hashes = {vm_hash for vm_hash, _ in candidates}
         committed_instance, committed_program, committed_vcpus = self._committed_resources(candidate_hashes)

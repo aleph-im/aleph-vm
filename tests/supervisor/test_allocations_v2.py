@@ -225,7 +225,14 @@ async def test_a_corrupt_message_for_a_running_vm_does_not_delete_it(
 
     response = await client.post(PLAN, data=body, headers=headers)
 
-    assert (await response.json())["rejected"][str(vm_hash)]["code"] == "invalid_message"
+    payload = await response.json()
+    assert payload["rejected"][str(vm_hash)]["code"] == "invalid_message"
+    # The answer and the loop say one thing. This payload used to carry the VM
+    # under "rejected" and under "removing" at once, so a scheduler that read
+    # the second half stopped naming the hash and the next push deleted the VM
+    # the first half had just protected.
+    assert payload["removing"] == []
+    assert payload["retained"][str(vm_hash)] == "refused"
     await app["allocation_reconciler"]._converge_once()
     teardown.assert_not_awaited()
 

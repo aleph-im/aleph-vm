@@ -194,6 +194,17 @@ def compute_verdict(
         # it is owed, and an allocation push is not the place to find out.
         if record is None or info.status is not VmStatus.RUNNING:
             continue
+        # A hash the push named and this node refused is out of the entries but
+        # is not a hash the push took away, and the loop keeps its VM for
+        # exactly that reason. The answer has to say the same thing, or the two
+        # halves of this change contradict each other: a scheduler told the VM
+        # is going away stops naming it, and the next push, naming it nowhere,
+        # is the deletion that carrying the refusals forward exists to prevent.
+        # Nothing is freeing that memory either, so it must not go on to
+        # simulate as capacity the other candidates can be admitted against.
+        if plan.lists(vm_hash):
+            verdict.retained[vm_hash] = "refused"
+            continue
         if is_removable_by_allocation(record, info):
             verdict.removing.append(vm_hash)
         else:

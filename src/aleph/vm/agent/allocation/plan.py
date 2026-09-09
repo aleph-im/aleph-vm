@@ -93,10 +93,13 @@ class AllocationPlan:
     ``entries`` because nothing is to start them, and they are named here
     because the convergence loop reads a hash the plan does not hold as one
     the scheduler took away, and deleting a VM means reaping its disks.
-    "Rejected" is not "deleted": the scheduler still believes the VM exists,
-    and the shapes that produce a refusal (a full host, a node that has not
-    read its own hash back since it restarted, a corrupt message from a buggy
-    scheduler or a bad CCN read) are all things that pass.
+    "Rejected" is not "deleted": the scheduler still believes the VM exists.
+    Most of the shapes that produce a refusal pass on their own (a full host,
+    a node that has not read its own hash back since it restarted, a corrupt
+    message from a buggy scheduler or a bad CCN read), and one does not: a VM
+    allocated to another node stays allocated to it. The set holds every
+    refusal all the same, transient or permanent, because waiting for the push
+    to stop naming the VM is the safe reading of both.
 
     A hash the push sent in a form we could not parse is absent from both:
     it names no VM on this node, so there is nothing for it to protect.

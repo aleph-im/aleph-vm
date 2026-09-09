@@ -119,6 +119,25 @@ def test_a_running_vm_absent_from_the_plan_is_removing():
     assert verdict.removing == [HASH_B]
 
 
+def test_a_running_vm_the_push_refused_is_retained_not_removing():
+    """A hash the push named and this node refused is not one the push took
+    away. The loop keeps that VM, so the answer has to say the same: told the
+    VM is going away, a scheduler that believes it and stops naming the hash
+    has the VM torn down on the very next push, which is the destruction
+    refusing it was supposed to avoid. Its memory is not being freed either,
+    so it must not reach simulate as released capacity and buy room for the
+    other candidates.
+    """
+    plan = AllocationPlan(plan_id="sha256:test", received_at=NOW, entries={}, refused=frozenset({HASH_B}))
+    capacity = _capacity([])
+
+    verdict = compute_verdict(plan, infos=[_info(HASH_B)], registry=_registry({HASH_B: _record()}), capacity=capacity)
+
+    assert verdict.removing == []
+    assert verdict.retained[HASH_B] == "refused"
+    assert capacity.simulate.call_args.kwargs["releasing"] == frozenset()
+
+
 def test_a_stream_paid_vm_absent_from_the_plan_is_retained_with_its_reason():
     verdict = compute_verdict(
         _plan(), infos=[_info(HASH_B)], registry=_registry({HASH_B: _record(stream=True)}), capacity=_capacity([])
