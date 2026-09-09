@@ -14,6 +14,9 @@ use crate::error::DaemonError;
 const IORESOURCE_MEM: u64 = 0x0000_0200;
 const IORESOURCE_PREFETCH: u64 = 0x0000_2000;
 const IORESOURCE_MEM_64: u64 = 0x0010_0000;
+/// The flag set a BAR must carry to count towards the window: 64-bit
+/// prefetchable memory.
+const WANTED_FLAGS: u64 = IORESOURCE_MEM | IORESOURCE_PREFETCH | IORESOURCE_MEM_64;
 const MIN_WINDOW_MB: u64 = 1024;
 /// The largest window the daemon will ever ask OVMF for, in MiB (4 TiB). The
 /// doubling above is unbounded on its own, so a card (or a kernel that
@@ -22,6 +25,19 @@ const MIN_WINDOW_MB: u64 = 1024;
 /// inside OVMF instead of here. Far above any real card: today's largest is
 /// 128 GiB of BAR1, which asks for 512 GiB.
 const MAX_WINDOW_MB: u64 = 4 * 1024 * 1024;
+
+/// Guest physical address space, in MiB. A confidential VM launches with
+/// `-cpu EPYC-v4` unless the spec names another model, and that model's
+/// default physical address width is 40 bits, so the firmware has 1 TiB to
+/// place everything in.
+const GUEST_PHYS_MB: u64 = 1 << 20;
+
+/// What sits below the guest's RAM and is not counted in the RAM figure:
+/// the 32-bit MMIO hole under 4 GiB that QEMU makes the RAM skip over, plus
+/// the firmware's own reservations and the ACPI tables. Added to the RAM
+/// before the window is aligned, so a VM whose RAM stops just short of an
+/// alignment boundary is not sized as if the window could start there.
+const GUEST_LOW_RESERVED_MB: u64 = 4 * 1024;
 
 /// Sum the sizes of the 64-bit prefetchable memory BARs listed in a sysfs
 /// `resource` file (`start end flags` per line, hex).
@@ -40,12 +56,59 @@ pub fn parse_resource_file(contents: &str) -> Result<u64, DaemonError> {
                 )));
             }
         };
-        let wanted = IORESOURCE_MEM | IORESOURCE_PREFETCH | IORESOURCE_MEM_64;
-        if flags & wanted == wanted && end >= start {
-            total = total.saturating_add(end - start + 1);
+        if flags & WANTED_FLAGS != WANTED_FLAGS {
+            continue;
         }
+        // Only the BARs that count are validated: an unused or 32-bit BAR
+        // contributes nothing, so whatever it holds cannot mis-size the
+        // window. A counted BAR that is reversed or spans the whole address
+        // space is a corrupt read, and silently dropping it would under-size
+        // the window and leave the card's BARs unassigned in the guest.
+        let size = end
+            .checked_sub(start)
+            .ok_or_else(|| DaemonError::GpuBarRange {
+                line: line.to_string(),
+                reason: "its end is below its start",
+            })?
+            .checked_add(1)
+            .ok_or_else(|| DaemonError::GpuBarRange {
+                line: line.to_string(),
+                reason: "its size overflows 64 bits",
+            })?;
+        total = total
+            .checked_add(size)
+            .ok_or_else(|| DaemonError::GpuBarRange {
+                line: line.to_string(),
+                reason: "it pushes the BAR total past 64 bits",
+            })?;
     }
     Ok(total)
+}
+
+/// Refuse a window the guest could not address.
+///
+/// The firmware places the 64-bit window above the guest's RAM, on a
+/// boundary of the window's own size (`mmio64_window_mb` always returns a
+/// power of two, and the alignment matches it), so the window ends at
+/// `align_up(top_of_ram, window) + window`. That has to stay inside the
+/// address space the guest's physical address width gives it, or the
+/// firmware assigns no window at all and the guest finds the card's BARs
+/// unassigned: a device that enumerates and then does nothing.
+pub fn check_mmio64_budget(window_mb: u64, guest_ram_mb: u64) -> Result<(), DaemonError> {
+    let top_of_ram_mb = guest_ram_mb.saturating_add(GUEST_LOW_RESERVED_MB);
+    let base_mb = top_of_ram_mb
+        .div_ceil(window_mb.max(1))
+        .saturating_mul(window_mb);
+    let top_mb = base_mb.saturating_add(window_mb);
+    if top_mb > GUEST_PHYS_MB {
+        return Err(DaemonError::GpuMmioBudget {
+            window_mb,
+            guest_ram_mb,
+            top_mb,
+            budget_mb: GUEST_PHYS_MB,
+        });
+    }
+    Ok(())
 }
 
 /// Window size in MiB: the BAR total rounded up to a power of two, doubled
@@ -161,5 +224,57 @@ mod tests {
     fn malformed_lines_are_errors() {
         assert!(parse_resource_file("0x1 0x2\n").is_err());
         assert!(parse_resource_file("zz 0x2 0x3\n").is_err());
+    }
+
+    #[test]
+    fn a_reversed_bar_range_is_an_error() {
+        // A region whose end is below its start is not a BAR any window can
+        // be sized from. Skipping it silently would under-size the window,
+        // and the guest would find the card's BARs unassigned.
+        let line = "0x0000004000000000 0x0000002000000000 0x000000000014220c\n";
+        let error = parse_resource_file(line).unwrap_err();
+        assert!(error.to_string().contains("below its start"), "{error}");
+    }
+
+    #[test]
+    fn a_bar_spanning_the_whole_address_space_is_an_error_not_a_panic() {
+        let line = "0x0000000000000000 0xffffffffffffffff 0x000000000014220c\n";
+        let error = parse_resource_file(line).unwrap_err();
+        assert!(error.to_string().contains("overflows"), "{error}");
+    }
+
+    #[test]
+    fn a_bar_total_that_overflows_is_an_error() {
+        let lines = "\
+0x0000000000000000 0x7fffffffffffffff 0x000000000014220c
+0x8000000000000000 0xffffffffffffffff 0x000000000014220c
+";
+        let error = parse_resource_file(lines).unwrap_err();
+        assert!(error.to_string().contains("BAR total"), "{error}");
+    }
+
+    #[test]
+    fn the_budget_takes_one_cards_window_next_to_ordinary_ram() {
+        // The 512 GiB window a 128 GiB BAR1 card asks for is aligned to its
+        // own size, so it starts at 512 GiB and ends exactly at the ceiling.
+        assert!(check_mmio64_budget(512 * 1024, 64 * 1024).is_ok());
+        assert!(check_mmio64_budget(1024, 256).is_ok());
+    }
+
+    #[test]
+    fn the_budget_refuses_a_window_the_guest_cannot_address() {
+        let error = check_mmio64_budget(1024 * 1024, 64 * 1024).unwrap_err();
+        let text = error.to_string();
+        assert!(
+            text.contains("1048576") && text.contains("65536"),
+            "the refusal must name the window and the RAM: {text}"
+        );
+    }
+
+    #[test]
+    fn the_budget_refuses_ram_that_pushes_the_window_over_the_ceiling() {
+        // The window fits on its own, but this much RAM forces the firmware
+        // to align it up to the next boundary, which is past the ceiling.
+        assert!(check_mmio64_budget(512 * 1024, 600 * 1024).is_err());
     }
 }
