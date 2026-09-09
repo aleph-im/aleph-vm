@@ -45,6 +45,11 @@ from aleph.vm.supervisor_interface.types import ConfidentialMode, VmInfo, VmStat
 
 logger = logging.getLogger(__name__)
 
+# How many entries one hop into a worker thread judges. Small enough that a
+# batch is milliseconds of work rather than seconds, large enough that the hop
+# itself stays a rounding error next to the parse and the ecrecover it carries.
+VERIFICATION_BATCH_SIZE = 32
+
 
 class _Registry(Protocol):
     """The slice of AgentVmRegistry this module needs."""
@@ -82,12 +87,6 @@ def compute_plan_id(planned: list[str], rejected: list[str]) -> str:
         return sha256("\n".join(sorted(sha256(key.encode()).hexdigest() for key in hashes)).encode()).hexdigest()
 
     return "sha256:" + sha256(f"{digest(planned)}:{digest(rejected)}".encode()).hexdigest()
-
-
-# How many entries one hop into a worker thread judges. Small enough that a
-# batch is milliseconds of work rather than seconds, large enough that the hop
-# itself stays a rounding error next to the parse and the ecrecover it carries.
-VERIFICATION_BATCH_SIZE = 32
 
 
 @dataclass(frozen=True)
