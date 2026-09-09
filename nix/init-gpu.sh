@@ -178,11 +178,18 @@ fi
 # PT_INTERP is the literal /lib64/ld-linux-x86-64.so.2, which gpu-rootfs.nix
 # symlinks at the same glibc /opt/nvidia/glibc points at; both paths go on
 # LD_LIBRARY_PATH so the driver libraries and that libc resolve.
-gpu_present() {
+# NVIDIA display-class devices on the bus (PCI class 0x03xxxx). Only those
+# count: a card's other functions, or any other NVIDIA device, must not
+# inflate the device-node count below.
+gpu_count() {
+    count=0
     for pcidev in /sys/bus/pci/devices/*; do
-        [ "$(/bin/busybox cat "$pcidev/vendor" 2>/dev/null)" = "0x10de" ] && return 0
+        [ "$(/bin/busybox cat "$pcidev/vendor" 2>/dev/null)" = "0x10de" ] || continue
+        case "$(/bin/busybox cat "$pcidev/class" 2>/dev/null)" in
+            0x03*) count=$((count + 1)) ;;
+        esac
     done
-    return 1
+    echo "$count"
 }
 
 gpu_fatal() {
@@ -210,8 +217,9 @@ gpu_smi() {
 
 gpu_claims=""
 gpu_chroot_prepared=""
-if gpu_present; then
-    echo "init: NVIDIA GPU present, loading the driver"
+gpu_total=$(gpu_count)
+if [ "$gpu_total" -gt 0 ]; then
+    echo "init: $gpu_total NVIDIA GPU(s) present, loading the driver"
     # The GSP firmware lives in the verity rootfs, not in this initrd, so the
     # measured initrd stays small and blob-free. The kernel resolves a
     # driver's firmware request against PID 1's root, this initramfs,
@@ -231,7 +239,14 @@ if gpu_present; then
     uvm_major=$(/bin/busybox awk '$2 == "nvidia-uvm" {print $1}' /proc/devices)
     [ -n "$nvidia_major" ] && [ -n "$uvm_major" ] || gpu_fatal "driver registered no char devices"
     /bin/busybox mknod -m 666 /dev/nvidiactl c "$nvidia_major" 255 || gpu_fatal "mknod nvidiactl"
-    /bin/busybox mknod -m 666 /dev/nvidia0 c "$nvidia_major" 0 || gpu_fatal "mknod nvidia0"
+    # One node per card, minors in probe order, which is how the driver
+    # numbers them. A V-PROGRAM can own several cards (the message carries a
+    # count), and a lone /dev/nvidia0 would hide the rest from the workload.
+    i=0
+    while [ "$i" -lt "$gpu_total" ]; do
+        /bin/busybox mknod -m 666 "/dev/nvidia$i" c "$nvidia_major" "$i" || gpu_fatal "mknod nvidia$i"
+        i=$((i + 1))
+    done
     /bin/busybox mknod -m 666 /dev/nvidia-uvm c "$uvm_major" 0 || gpu_fatal "mknod nvidia-uvm"
     /bin/busybox mknod -m 666 /dev/nvidia-uvm-tools c "$uvm_major" 1 || gpu_fatal "mknod nvidia-uvm-tools"
 
