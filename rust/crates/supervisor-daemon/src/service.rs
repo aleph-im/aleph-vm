@@ -191,6 +191,12 @@ pub struct DaemonState {
     /// (reachable from the public `/about` endpoints) cannot drive an
     /// unbounded rate of register reads: see `refresh_cc_modes`.
     pub gpu_cc_sweep: std::sync::Mutex<CcSweep>,
+    /// Held for the length of one CC mode refresh pass, so a burst of
+    /// GetHostInfo calls costs one pass and the callers behind it read
+    /// what it wrote. Two passes running at once would also corrupt the
+    /// host's runtime-PM setting: both can read `power/control` before
+    /// either writes it, and the second would then restore "on".
+    pub gpu_cc_refresh: std::sync::Mutex<()>,
 }
 
 /// The attached set the last CC-mode sweep saw, and when it ran. A sweep
@@ -241,6 +247,7 @@ impl DaemonState {
             gpu_cc_modes: std::sync::Mutex::new(HashMap::new()),
             gpu_cc_probe: crate::gpu_cc::no_probe,
             gpu_cc_sweep: std::sync::Mutex::new(CcSweep::default()),
+            gpu_cc_refresh: std::sync::Mutex::new(()),
         }
     }
 
@@ -458,15 +465,30 @@ pub fn refresh_cc_modes(state: &DaemonState) {
 
 /// `refresh_cc_modes` over an explicit probe and freshness window, so unit
 /// tests can hand in a closure that records what was probed and decide
-/// whether the last sweep and each card's last answer count as fresh. The
-/// world read
-/// guard is held across the whole loop, not just while the attached set is
-/// collected: CreateVm registers a VM's cards in the world view under the
-/// write lock before it boots anything, so under this guard a card is
-/// either already attached (and skipped) or cannot become attached until
-/// the probe is done. That is what makes "never read under a guest" hold
-/// rather than merely likely. Each probe is a sysfs open and a one-page
-/// mmap, microseconds, so a writer waiting on the guard barely notices.
+/// whether the last sweep and each card's last answer count as fresh.
+///
+/// One pass at a time. The pass lock is taken before the world guard (a
+/// waiter must not sit on a read guard), so a burst of GetHostInfo calls
+/// costs one pass and the callers behind it find the entries it wrote.
+/// Overlapping passes would be worse than wasteful: both can read
+/// `power/control` before either writes it, and the second would then
+/// remember "on" as the value to put back, pinning the card awake for
+/// good.
+///
+/// The world read guard is held across the whole loop, not just while the
+/// attached set is collected: CreateVm registers a VM's cards in the world
+/// view under the write lock before it boots anything, so under this guard
+/// a card is either already attached (and skipped) or cannot become
+/// attached until the probe is done. That is what makes "never read under
+/// a guest" hold rather than merely likely, and it is why the probes
+/// cannot be moved outside the guard.
+///
+/// The guard is not cheap to hold any more: resuming a runtime-suspended
+/// card costs up to the 200 ms resume budget, so a pass can hold it for
+/// (stale suspended cards) x 200 ms, and tokio's RwLock is
+/// write-preferring, so a CreateVm arriving mid-pass waits that long. What
+/// keeps that off the hot path is the freshness window below: a given card
+/// is read at most once a minute, whatever the request rate.
 ///
 /// Two gates share the one `ttl`. The outer one skips the sweep whole when
 /// it last ran against the same attached set less than `ttl` ago: nothing
@@ -484,6 +506,10 @@ fn refresh_cc_modes_with(
     probe: impl Fn(&str, &str) -> Result<Option<crate::gpu_cc::CcMode>, DaemonError>,
     ttl: std::time::Duration,
 ) {
+    let _pass = state
+        .gpu_cc_refresh
+        .lock()
+        .expect("gpu_cc_refresh poisoned");
     let world = state.world.blocking_read();
     let mut attached: HashSet<String> = HashSet::new();
     // The subset a confidential guest owns. Those cards have a known mode
@@ -1802,6 +1828,74 @@ mod tests {
     /// An adopted VM holding one card: SNP (measured-boot slice present)
     /// or plain QEMU passthrough, which is the distinction the seeding
     /// turns on.
+    #[test]
+    fn concurrent_refreshes_read_a_card_once_and_leave_its_power_setting_alone() {
+        // Two GetHostInfo calls landing together used to run two full
+        // passes over the same cards. Both could read power/control before
+        // either wrote it, so the second remembered "on" as the value to
+        // restore and the card stayed pinned awake after the probes, with
+        // the host's own runtime-PM setting lost.
+        let sysfs = tempfile::tempdir().unwrap();
+        let device_dir = sysfs.path().join("0000:06:00.0");
+        std::fs::create_dir_all(device_dir.join("power")).unwrap();
+        // The fixture card never actually resumes, so a probe holds the
+        // pass for its whole (short) resume budget: plenty of overlap for
+        // a second pass to start if anything let it.
+        std::fs::write(device_dir.join("power/runtime_status"), "suspended\n").unwrap();
+        std::fs::write(device_dir.join("power/control"), "auto\n").unwrap();
+        let mut bytes = vec![0u8; 0x1000];
+        bytes[0x590..0x594].copy_from_slice(&1u32.to_le_bytes());
+        std::fs::write(device_dir.join("resource0"), &bytes).unwrap();
+
+        let host = HostState {
+            settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
+            host_ipv4: String::new(),
+            network_interface: None,
+            gpus: vec![nvidia_card("06:00.0")],
+            dns_nameservers: None,
+        };
+        let state = DaemonState::hermetic(
+            host,
+            WorldView::default(),
+            Arc::new(crate::units::StaticUnitStates::default()),
+            Arc::new(crate::logs::StaticLogSource::new(Vec::new())),
+        );
+
+        let reads = std::sync::atomic::AtomicUsize::new(0);
+        let devices_dir = sysfs.path().to_path_buf();
+        let probe = |pci_host: &str, device_id: &str| {
+            reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            crate::gpu_cc::probe_cc_mode_in(
+                &crate::gpu_cc::sysfs_device_dir_under(&devices_dir, pci_host),
+                pci_host,
+                device_id,
+                std::time::Duration::from_millis(50),
+            )
+        };
+        std::thread::scope(|scope| {
+            for _ in 0..2 {
+                scope.spawn(|| refresh_cc_modes_with(&state, probe, crate::gpu_cc::CC_MODE_TTL));
+            }
+        });
+
+        assert_eq!(
+            reads.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the second pass must wait for the first and then find the answer fresh"
+        );
+        assert_eq!(
+            std::fs::read_to_string(device_dir.join("power/control"))
+                .unwrap()
+                .trim(),
+            "auto",
+            "the host's runtime-PM setting must survive concurrent passes"
+        );
+        assert_eq!(
+            cc_mode_of(&state, "06:00.0"),
+            Some(crate::gpu_cc::CcMode::On)
+        );
+    }
+
     fn adopted_entry_holding(vm_hash: &str, pci_host: &str, snp: bool) -> VmEntry {
         let mut entry = fixture_entry(vm_hash, true);
         if snp {

@@ -1318,6 +1318,17 @@ fn delete_tracked_vm(
     state.events.emit(vm_id, old_status, pb::VmStatus::Stopped);
 
     state.world.blocking_write().entries.remove(vm_id);
+    // The cards are free again, so nothing the CC cache holds about them
+    // still stands on its own: neither a probe from before they were
+    // attached nor the mode the create gate vouched for while the guest
+    // held them. Forget them so the next refresh reads the hardware
+    // instead of serving an answer about a card in a different state.
+    if !entry.config.gpus.is_empty() {
+        let mut cache = state.gpu_cc_modes.lock().expect("gpu_cc_modes poisoned");
+        for gpu in &entry.config.gpus {
+            cache.remove(&gpu.pci_host);
+        }
+    }
     // Release the NUMA reservation alongside the other teardown (increment
     // C1). No-op for an unpinned or program VM (numa_node is None).
     if let Some(node) = entry.numa_node {
@@ -4751,6 +4762,38 @@ mod tests {
             harness.dhcp.stopped().is_empty(),
             "a plain VM teardown touches no DHCP server, got {:?}",
             harness.dhcp.stopped()
+        );
+    }
+
+    #[test]
+    fn deleting_a_vm_forgets_what_the_cache_knew_about_its_cards() {
+        // While a VM holds a card the cache keeps whatever was last known
+        // about it, and for a confidential VM that is the mode the create
+        // gate vouched for. Once the VM is gone the card is free hardware
+        // again and an operator can switch its mode, so the entry has to
+        // go with the VM: leaving it would advertise the old answer for
+        // the rest of its freshness window.
+        let harness = harness_with_gpus(vec![nvidia_card("06:00.0")]);
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('c');
+        let mut request = spec(&vm_id, &root);
+        request.gpus = vec![pb::GpuConfig {
+            pci_host: "06:00.0".to_string(),
+            supports_x_vga: true,
+        }];
+        create_vm(state, request).unwrap();
+        state.gpu_cc_modes.lock().unwrap().insert(
+            "06:00.0".into(),
+            crate::gpu_cc::ProbedCcMode::now(Some(crate::gpu_cc::CcMode::On)),
+        );
+
+        delete_vm(state, &vm_id, false).unwrap();
+
+        assert_eq!(
+            crate::service::cc_mode_of(state, "06:00.0"),
+            None,
+            "a freed card advertises nothing until it is read again"
         );
     }
 

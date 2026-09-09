@@ -273,25 +273,45 @@ impl Drop for RuntimePowerHold {
 /// from a real answer. Returns `None`, having written nothing, when the
 /// device exposes no runtime PM or is already active. Waits up to
 /// `timeout` for the kernel to report it active.
-fn hold_runtime_power_on(
-    device_dir: &Path,
-    timeout: Duration,
-) -> Result<Option<RuntimePowerHold>, std::io::Error> {
+///
+/// Never fails the probe: a device whose runtime-PM files cannot be read
+/// or written is read as it is, exactly as it was before there was a
+/// resume step. The register still decides, and an all-ones answer from a
+/// card that stayed asleep fails closed.
+fn hold_runtime_power_on(device_dir: &Path, timeout: Duration) -> Option<RuntimePowerHold> {
     let status_path = device_dir.join("power/runtime_status");
     let status = match std::fs::read_to_string(&status_path) {
         Ok(status) => status,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(at_path(&status_path, error)),
+        Err(error) => {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(path = %status_path.display(), %error, "cannot read the GPU runtime-PM state");
+            }
+            return None;
+        }
     };
     if status.trim() == "active" {
-        return Ok(None);
+        return None;
     }
     let control_path = device_dir.join("power/control");
-    let previous = std::fs::read_to_string(&control_path)
-        .map_err(|error| at_path(&control_path, error))?
-        .trim()
-        .to_string();
-    std::fs::write(&control_path, "on\n").map_err(|error| at_path(&control_path, error))?;
+    let previous = match std::fs::read_to_string(&control_path) {
+        Ok(previous) => previous.trim().to_string(),
+        Err(error) => {
+            tracing::warn!(
+                path = %control_path.display(),
+                %error,
+                "cannot read the GPU runtime-PM setting; reading its register without resuming it"
+            );
+            return None;
+        }
+    };
+    if let Err(error) = std::fs::write(&control_path, "on\n") {
+        tracing::warn!(
+            path = %control_path.display(),
+            %error,
+            "cannot pin the GPU awake; reading its register anyway"
+        );
+        return None;
+    }
     // From here on the hold owns the restore, whatever the wait does.
     let hold = RuntimePowerHold {
         control: control_path,
@@ -311,7 +331,7 @@ fn hold_runtime_power_on(
         }
         std::thread::sleep(RESUME_POLL_INTERVAL);
     }
-    Ok(Some(hold))
+    Some(hold)
 }
 
 /// The CC mode of one vfio-bound NVIDIA card, `None` for cards without a
@@ -327,7 +347,7 @@ pub fn probe_cc_mode(pci_host: &str, device_id: &str) -> Result<Option<CcMode>, 
 
 /// `probe_cc_mode` against an explicit device directory and resume budget,
 /// so a fixture tree can stand in for sysfs.
-fn probe_cc_mode_in(
+pub(crate) fn probe_cc_mode_in(
     device_dir: &Path,
     pci_host: &str,
     device_id: &str,
@@ -336,13 +356,13 @@ fn probe_cc_mode_in(
     let Some(arch) = arch_from_device_id(device_id) else {
         return Ok(None);
     };
-    let read_error = |source: std::io::Error| DaemonError::GpuRegisterRead {
-        pci_host: pci_host.to_string(),
-        source,
-    };
-    let _resumed = hold_runtime_power_on(device_dir, resume_timeout).map_err(read_error)?;
-    let value = read_bar0_u32(&device_dir.join("resource0"), bar0_register_offset(arch))
-        .map_err(read_error)?;
+    let _resumed = hold_runtime_power_on(device_dir, resume_timeout);
+    let value = read_bar0_u32(&device_dir.join("resource0"), bar0_register_offset(arch)).map_err(
+        |source| DaemonError::GpuRegisterRead {
+            pci_host: pci_host.to_string(),
+            source,
+        },
+    )?;
     // A function that cannot answer (still in D3hot, a reset in flight, the
     // card gone off the bus) reads back as all ones, and the low two bits
     // of that are the devtools encoding. Reporting devtools for a card
@@ -489,7 +509,6 @@ mod tests {
         let control = device_dir.join("power/control");
         {
             let hold = hold_runtime_power_on(&device_dir, Duration::ZERO)
-                .unwrap()
                 .expect("a suspended card must be held awake");
             assert_eq!(std::fs::read_to_string(&control).unwrap().trim(), "on");
             drop(hold);
@@ -506,9 +525,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let device_dir = fake_card(dir.path(), Some("active"), 0x0000_0001);
         assert!(
-            hold_runtime_power_on(&device_dir, Duration::ZERO)
-                .unwrap()
-                .is_none(),
+            hold_runtime_power_on(&device_dir, Duration::ZERO).is_none(),
             "an active card needs no hold"
         );
         assert_eq!(
@@ -560,6 +577,22 @@ mod tests {
                 .unwrap()
                 .trim(),
             "auto"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_power_control_still_reads_the_register() {
+        // The resume step is an improvement on the read, not a condition
+        // of it: a device whose runtime-PM files cannot be read must probe
+        // exactly as it did before the step existed. Here the card claims
+        // to be suspended but has no power/control at all.
+        let dir = tempfile::tempdir().unwrap();
+        let device_dir = fake_card(dir.path(), Some("suspended"), 0x0000_0001);
+        std::fs::remove_file(device_dir.join("power/control")).unwrap();
+        assert!(hold_runtime_power_on(&device_dir, Duration::ZERO).is_none());
+        assert_eq!(
+            probe_cc_mode_in(&device_dir, "06:00.0", "10de:2b85", Duration::ZERO).unwrap(),
+            Some(CcMode::On)
         );
     }
 
