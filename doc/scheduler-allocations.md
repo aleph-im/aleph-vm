@@ -90,12 +90,17 @@ scheduler's next push re-establishes the desired state.
 The same body, judged the same way, with no side effects: nothing is
 recorded and nothing is held, so a scheduler can ask several CRNs before
 committing to one. Every entry is treated as a candidate, and nothing
-running on the node is read as dropped. Each hash comes back
-`{"accepted": true}` or `{"accepted": false, "code": ..., "message": ...}`,
-under the same keys the allocation answer uses: the VM hash, or `vms[<i>]`
-for an entry whose hash the node could not read. An entry with no embedded
-message answers `message_required`: there is nothing to size, and a check
-does not go and fetch it.
+running on the node is read as dropped. The answer is
+`{"results": {...}, "capacity": {...}}`. Each hash under `results` comes
+back `{"accepted": true}` or
+`{"accepted": false, "code": ..., "message": ...}`, under the same keys the
+allocation answer uses: the VM hash, or `vms[<i>]` for an entry whose hash
+the node could not read. An entry with no embedded message answers
+`message_required`: there is nothing to size, and a check does not go and
+fetch it. `capacity` is the node's headroom as things stand, independent of
+this check's own candidates: `instance_memory_mib`, `program_memory_mib`,
+`vcpus`, `disk_mib`, and `gpus` (a list of free card device IDs, or `null`
+when the node could not read its GPU inventory).
 
 A pass on this endpoint is advisory. The real allocation judges again and
 can still refuse.
