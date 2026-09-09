@@ -61,7 +61,12 @@ class AllocationState(str, Enum):
 
 @dataclass
 class FailureRecord:
-    """Why a planned VM is not running, and when we will try again.
+    """What it is taking to keep a planned VM running, and when we try again.
+
+    Two things are counted as one attempt: a start that raised, and a rebuild
+    of a VM the supervisor held dead, which is what puts a crash-looping guest
+    on the same backoff. So a record can outlive a successful start, and one
+    on a running VM means it has died recently, not that it is down now.
 
     Kept in the reconciler and NOT in AgentVmRegistry on purpose: the registry
     is what CapacityManager sums committed resources over, and a VM that failed
