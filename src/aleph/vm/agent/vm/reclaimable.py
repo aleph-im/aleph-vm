@@ -63,8 +63,17 @@ class ReclaimableMarker:
             msg = f"marker is not a JSON object: {type(data).__name__}"
             raise ValueError(msg)
         owner = data.get("owner")
+        since = datetime.fromisoformat(data["reclaimable_since"])
+        if since.tzinfo is None:
+            # Everything this node writes carries an offset, but a marker an
+            # operator restored or edited by hand may not. Parsed naive it
+            # cannot be compared with the aware clock the rest of the agent
+            # uses: every subtraction raises TypeError, and one such marker
+            # would abort a whole listing or eviction pass. The writers all
+            # use UTC, so that is what a bare timestamp means.
+            since = since.replace(tzinfo=timezone.utc)
         return cls(
-            reclaimable_since=datetime.fromisoformat(data["reclaimable_since"]),
+            reclaimable_since=since,
             reason=data["reason"],
             size_bytes=int(data["size_bytes"]),
             depends_on=tuple(data.get("depends_on", ())),
@@ -105,7 +114,7 @@ def directory_size_bytes(directory: Path) -> int:
     return sum(file_size_bytes(entry) for entry in entries if entry.name != MARKER_NAME)
 
 
-def read_marker(namespace_dir: Path) -> ReclaimableMarker | None:
+def read_marker(namespace_dir: Path, *, repair: bool = True) -> ReclaimableMarker | None:
     """The directory's marker, or None when it has none.
 
     A marker that does not parse is removed, not just ignored: writes are
@@ -113,6 +122,13 @@ def read_marker(namespace_dir: Path) -> ReclaimableMarker | None:
     place it would wedge the directory (the exclusive orphan write backs off
     from any existing file, so nothing could ever re-mark or evict it). Gone,
     the directory re-enters the orphan flow on the next pass.
+
+    That removal is a write, and not every reader is allowed to make one:
+    ``repair=False`` reads the same marker without touching the file, for
+    the commands that only report on a node (they may be run by a user who
+    cannot unlink it at all, and an operator inspecting a node has not asked
+    for anything on disk to change). The reconciler keeps the repair, since
+    it is the pass that has to be able to move the directory on.
     """
     path = namespace_dir / MARKER_NAME
     if not path.is_file():
@@ -123,9 +139,17 @@ def read_marker(namespace_dir: Path) -> ReclaimableMarker | None:
         logger.warning("Unreadable reclaimable marker at %s, ignoring it", path)
         return None
     except (ValueError, KeyError, TypeError, AttributeError):
+        if not repair:
+            logger.warning("Corrupt reclaimable marker at %s, ignoring it", path)
+            return None
         logger.warning("Corrupt reclaimable marker at %s, removing it", path)
         invalidate_reclaimable_cache()
-        path.unlink(missing_ok=True)
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            # Best effort: a read-only filesystem or a marker this user does
+            # not own must not raise out of a caller that was only reading.
+            logger.warning("Could not remove the corrupt marker at %s", path, exc_info=True)
         return None
 
 
@@ -335,9 +359,11 @@ def retained_marker(namespace: str) -> ReclaimableMarker | None:
     return None
 
 
-def iter_reclaimable() -> Iterator[tuple[Path, ReclaimableMarker]]:
+def iter_reclaimable(*, repair: bool = True) -> Iterator[tuple[Path, ReclaimableMarker]]:
+    """Every marked directory and its marker. ``repair=False`` leaves a
+    corrupt marker where it is, for a read-only caller."""
     for directory in iter_namespace_dirs():
-        marker = read_marker(directory)
+        marker = read_marker(directory, repair=repair)
         if marker is not None:
             yield directory, marker
 
@@ -369,8 +395,11 @@ def _pools_fingerprint() -> tuple:
     return tuple(stamps)
 
 
-def reclaimable_bytes(pool_path: Path | None = None) -> int:
-    """Sum of marker size_bytes, across every pool or for one pool."""
+def reclaimable_bytes(pool_path: Path | None = None, *, repair: bool = True) -> int:
+    """Sum of marker size_bytes, across every pool or for one pool.
+
+    ``repair=False`` is for a caller that may not write: the walk then reads
+    a corrupt marker without removing it."""
     now = time.monotonic()
     fingerprint = _pools_fingerprint()
     cached = _reclaimable_cache.get(pool_path)
@@ -378,7 +407,7 @@ def reclaimable_bytes(pool_path: Path | None = None) -> int:
         return cached[2]
     total = sum(
         marker.size_bytes
-        for directory, marker in iter_reclaimable()
+        for directory, marker in iter_reclaimable(repair=repair)
         if pool_path is None or directory.parent == pool_path
     )
     _reclaimable_cache[pool_path] = (now, fingerprint, total)

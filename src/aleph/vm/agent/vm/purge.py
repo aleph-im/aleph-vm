@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import shutil
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 from aleph_message.models import ItemHash
@@ -168,7 +169,31 @@ def purge_vm_staging(vm_hash: ItemHash | str) -> None:
     remove_snp_instance_staging(item_hash)
 
 
-def purge_vm_storage(vm_hash: ItemHash | str) -> int:
+@dataclass(frozen=True)
+class KeptDirectory:
+    """A namespace directory the purge did not remove, and why.
+
+    ``device_mapper`` is the distinction that matters to whoever reads this:
+    a directory held by a live dm target is freed by tearing that target
+    down, and nothing else is. Every other reason is the removal itself
+    failing (a read-only filesystem, an immutable file, a directory this
+    process may not write), which no teardown fixes.
+    """
+
+    path: Path
+    reason: str
+    device_mapper: bool
+
+
+@dataclass(frozen=True)
+class PurgeResult:
+    """What a purge deleted, and what it left behind."""
+
+    deleted: int
+    kept: tuple[KeptDirectory, ...] = ()
+
+
+def purge_vm_storage(vm_hash: ItemHash | str) -> PurgeResult:
     """Delete everything this VM owns on disk, for a VM that is gone for good.
 
     Covers the per-VM volume directories on every pool, the confidential
@@ -178,7 +203,9 @@ def purge_vm_storage(vm_hash: ItemHash | str) -> int:
     (device-mapper targets, jailer chroot, sockets) during DeleteVm, and this
     runs after that returns.
 
-    Returns the number of volume files deleted. Idempotent: purging a VM with
+    Returns the volume files deleted and the directories that survived, each
+    with its reason, so a caller can report what really happened rather than
+    guess from a directory that is still there. Idempotent: purging a VM with
     nothing on disk is a no-op.
     """
     namespace = _checked_namespace(vm_hash)
@@ -186,10 +213,12 @@ def purge_vm_storage(vm_hash: ItemHash | str) -> int:
     # the per-file pass logs each volume and yields the count, which is the
     # audit trail an erase should leave.
     deleted = len(purge_vm_volumes(namespace))
+    kept: list[KeptDirectory] = []
 
     for volumes_dir in list(iter_namespace_dirs(namespace)):
         held = [volume for volume in iter_volume_files(namespace) if _held_by_device_mapper(namespace, volume)]
-        if any(volume.parent == volumes_dir for volume in held):
+        held_here = [volume.name for volume in held if volume.parent == volumes_dir]
+        if held_here:
             # Same rule as purge_vm_volumes: an rmtree here would unlink the
             # dm-held file behind the guard's back, pinning its blocks behind
             # a target nothing removes. Leave the directory for the operator
@@ -197,18 +226,26 @@ def purge_vm_storage(vm_hash: ItemHash | str) -> int:
             logger.error(
                 "Not removing %s: it still holds device-mapper-backed volumes %s",
                 volumes_dir,
-                ", ".join(volume.name for volume in held if volume.parent == volumes_dir),
+                ", ".join(held_here),
+            )
+            kept.append(
+                KeptDirectory(
+                    volumes_dir,
+                    f"a device-mapper target still holds {', '.join(held_here)}",
+                    device_mapper=True,
+                )
             )
             continue
         try:
             shutil.rmtree(volumes_dir)
             logger.info("Removed volume directory %s", volumes_dir)
-        except OSError:
+        except OSError as error:
             logger.warning("Failed to remove volume directory %s", volumes_dir, exc_info=True)
+            kept.append(KeptDirectory(volumes_dir, f"{type(error).__name__}: {error}", device_mapper=False))
 
     purge_vm_side_dirs(namespace)
 
-    return deleted
+    return PurgeResult(deleted, tuple(kept))
 
 
 def purge_vm_side_dirs(vm_hash: ItemHash | str) -> None:

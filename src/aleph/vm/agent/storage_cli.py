@@ -66,9 +66,19 @@ systemd units set it up for the daemon: the node's environment file is read
 here (nothing else injects it into an operator's shell, and running a pass
 on the built-in defaults would reconcile a node against a configuration it
 does not have), the log records go to stderr, and the agent database is
-created and migrated before anything reads it. The read-only verbs are the
-exception to the last one: they refuse a database that is not there rather
-than create it.
+created and migrated before anything reads it.
+
+``status`` and ``list`` are the exception, and they are read-only in the
+literal sense: they refuse a database that is not there rather than create
+one, and they refuse it before any of that setup runs, since
+``settings.setup()`` makes every configured directory and the pool setup
+adopts a pool on first sight (an operator who mistyped the execution root
+got the refusal and a tree of empty directories at the typo, and a node
+whose second disk was not mounted got that path adopted as a pool). They
+also read a marker that does not parse without removing it, which is the
+reconciler's repair and not a listing's. The one write they do make is the
+schema migration of the database that is already there: the registry cannot
+be read out of a database older than the code.
 """
 
 from __future__ import annotations
@@ -95,7 +105,7 @@ from aleph.vm import storage_pools
 from aleph.vm.agent import metrics
 from aleph.vm.agent.cli import LOG_LEVEL_NAMES, initialise_database
 from aleph.vm.agent.vm.cache import cache_budget_bytes, cache_entries, cache_roots
-from aleph.vm.agent.vm.purge import purge_vm_storage
+from aleph.vm.agent.vm.purge import PurgeResult, purge_vm_storage
 from aleph.vm.agent.vm.reclaimable import (
     directory_size_bytes,
     iter_reclaimable,
@@ -106,7 +116,6 @@ from aleph.vm.agent.vm.reconciler import (
     _plausible,
     _release_cache_devices,
     _startup_refusal,
-    _still_on_disk,
     _teardown_orphan_devices,
     live_hashes,
     reconcile_storage,
@@ -252,7 +261,11 @@ def _human(size: int) -> str:
 
 def _age(since: datetime) -> str:
     delta = datetime.now(tz=timezone.utc) - since
-    days, rem = divmod(int(delta.total_seconds()), 86400)
+    # Clamped at zero: a marker dated in the future (a node whose clock went
+    # backwards, a marker copied from another host) would otherwise print an
+    # age like "-1d 23h", which reads as a parsing bug to whoever sees it.
+    seconds = max(int(delta.total_seconds()), 0)
+    days, rem = divmod(seconds, 86400)
     hours = rem // 3600
     return f"{days}d {hours}h"
 
@@ -530,7 +543,7 @@ def _status(registry: AgentVmRegistry, out: TextIO) -> int:
             total = free = 0
         budget = 0 if settings.VOLUME_RETENTION == "reap" else parse_budget(settings.VOLUME_RETENTION_BUDGET, total)
         out.write(
-            f"{pool.path}\t{_human(live_bytes)}\t{_human(reclaimable_bytes(pool.path))}\t"
+            f"{pool.path}\t{_human(live_bytes)}\t{_human(reclaimable_bytes(pool.path, repair=False))}\t"
             f"{_human(budget)}\t{_human(free)}\n"
         )
     out.write("CACHE\tUSED\tBUDGET\n")
@@ -553,7 +566,12 @@ def _list(registry: AgentVmRegistry, out: TextIO, *, reclaimable_only: bool) -> 
     live = live_hashes(registry)
     out.write("HASH\tPOOL\tSIZE\tREASON\tAGE\n")
     for directory in iter_namespace_dirs():
-        marker = read_marker(directory)
+        # repair=False: removing a marker that does not parse is the
+        # reconciler's job, and a listing that unlinks a file is not the
+        # read-only command this is documented to be (it may also be run by
+        # a user who cannot unlink it, and the error would abort the whole
+        # listing over one row).
+        marker = read_marker(directory, repair=False)
         if reclaimable_only and marker is None:
             continue
         if marker:
@@ -661,15 +679,34 @@ def _reclaim(registry: AgentVmRegistry, vm_hash: str, out: TextIO, err: TextIO, 
             "supervisor was being asked. Refusing to purge it\n"
         )
         return 1
-    deleted = purge_vm_storage(vm_hash)
-    if _still_on_disk(vm_hash):
-        err.write(
-            f"Purge of {vm_hash} left directories behind: a device-mapper target still holds its volumes. "
-            "Run 'storage reconcile' to tear down the devices of every VM nothing owns, then retry\n"
-        )
+    result = purge_vm_storage(vm_hash)
+    if result.kept:
+        err.write(_incomplete_purge_report(vm_hash, result))
         return 1
-    out.write(f"Purged {vm_hash}: {deleted} volume file(s)\n")
+    out.write(f"Purged {vm_hash}: {result.deleted} volume file(s)\n")
     return 0
+
+
+def _incomplete_purge_report(vm_hash: str, result: PurgeResult) -> str:
+    """What the purge could not remove, named, with advice that fits it.
+
+    A device-mapper hold and a failed removal (a read-only filesystem, an
+    immutable file, a directory this user may not write) leave the same
+    thing on disk, so the directory alone cannot tell them apart. Only the
+    first is fixed by tearing devices down, and sending an operator to
+    'storage reconcile' for the others is advice that cannot work.
+    """
+    lines = [f"Purge of {vm_hash} left {len(result.kept)} directory(ies) behind:\n"]
+    lines.extend(f"  {kept.path}: {kept.reason}\n" for kept in result.kept)
+    lines.append(f"Deleted {result.deleted} volume file(s)\n")
+    if any(kept.device_mapper for kept in result.kept):
+        lines.append("Run 'storage reconcile' to tear down the devices of every VM nothing owns, then retry\n")
+    else:
+        lines.append(
+            "No device-mapper target is holding these: the errors above are what stopped the removal, "
+            "so fix those and retry\n"
+        )
+    return "".join(lines)
 
 
 def _agent_at_work_reason(probe: AgentProbe) -> str:
@@ -876,7 +913,11 @@ def _load_env_file(explicit: str | None) -> bool:
             return False
         logger.info("No environment file at %s; using the process environment alone", path)
         return True
-    load_dotenv(path, override=False)
+    # interpolate=False: systemd's EnvironmentFile= does no ${} expansion,
+    # so the node's file is written with literal values. Expanding them here
+    # would read a value the daemon never sees, and would silently truncate
+    # any secret containing a dollar sign to whatever ${...} resolves to.
+    load_dotenv(path, override=False, interpolate=False)
     _reload_settings()
     logger.info("Loaded the node configuration from %s", path)
     return True
@@ -895,19 +936,36 @@ def run_parsed(args: argparse.Namespace) -> int:
             field = ".".join(str(part) for part in field_error["loc"])
             print(f"Invalid node configuration for {field}: {field_error['msg']}", file=sys.stderr)
         return 2
-    settings.setup()
-    storage_pools.setup_pools()
 
+    read_only = args.storage_command in READ_ONLY_COMMANDS
     database = settings.EXECUTION_DATABASE
-    if not database.exists():
-        if args.storage_command in READ_ONLY_COMMANDS:
-            logger.error(
-                "No agent database at %s: nothing has run on this node yet, or the execution root is not the one "
-                "the agent uses",
-                database,
-            )
-            return 1
-        logger.info("Creating the agent database at %s", database)
+    if read_only and not database.exists():
+        # Before anything else: settings.setup() makes every configured
+        # directory, so an operator who mistyped the execution root used to
+        # get this refusal and a tree of empty directories at the typo.
+        logger.error(
+            "No agent database at %s: nothing has run on this node yet, or the execution root is not the one "
+            "the agent uses",
+            database,
+        )
+        return 1
+    if read_only:
+        # settings.setup() creates the caches, the execution root, the pool
+        # directory and the session directory, and resolves the node's DNS;
+        # setup_pools() adopts a pool on first sight, marker file and
+        # adoption registry both. None of that belongs in a command that
+        # reports on a node. The settings themselves are complete without
+        # setup(): every path these verbs read is derived when the settings
+        # object is built.
+        storage_pools.setup_pools(read_only=True)
+    else:
+        settings.setup()
+        storage_pools.setup_pools()
+        if not database.exists():
+            logger.info("Creating the agent database at %s", database)
+    # Read-only included: the registry cannot be read out of a database
+    # whose schema predates the code, and the migration writes only to the
+    # database file that is already there.
     initialise_database()
 
     registry = asyncio.run(_load_registry())
