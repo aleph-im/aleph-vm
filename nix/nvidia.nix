@@ -48,7 +48,7 @@ let
   # verified with `sh $src --list`, which fails with "zstd: cannot execute:
   # required file not found" if zstd is missing.
   userland = pkgs.runCommand "nvidia-userland-raw-${version}" {
-    nativeBuildInputs = [ pkgs.bash pkgs.gnutar pkgs.xz pkgs.zstd ];
+    nativeBuildInputs = [ pkgs.bash pkgs.gnutar pkgs.xz pkgs.zstd pkgs.patchelf ];
   } ''
     mkdir -p $out
     sh ${nvidiaPkgs.src} --extract-only --target src
@@ -62,6 +62,25 @@ let
     done
     cp nvidia-smi $out/
     chmod 755 $out/nvidia-smi
+
+    # What the guest runs at boot (nvidia-smi and NVML through nvattest) and
+    # what the workload links (libcuda) resolves against the pinned glibc
+    # alone: gpu-rootfs.nix exposes it as /opt/nvidia/glibc and init-gpu.sh
+    # puts nothing else on the loader path. 595.71.05 needs exactly these
+    # five sonames. A driver bump that starts needing the gcc runtime would
+    # power the guest off at its first nvidia-smi call; fail the build here
+    # instead, where the fix (ship the runtime too) is obvious.
+    for f in $out/nvidia-smi $out/libnvidia-ml.so.${version} $out/libcuda.so.${version}; do
+      for needed in $(patchelf --print-needed "$f"); do
+        case "$needed" in
+          libc.so.6|libm.so.6|libdl.so.2|libpthread.so.0|librt.so.1) ;;
+          *)
+            echo "error: $(basename "$f") needs $needed, which the guest's loader path does not provide" >&2
+            exit 1
+            ;;
+        esac
+      done
+    done
   '';
 in
 { inherit modules firmware userland version; }
