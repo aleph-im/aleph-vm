@@ -175,7 +175,14 @@ pub fn gpu_mmio64_mb_under(devices_dir: &Path, pci_hosts: &[String]) -> Result<u
                 path: path.clone(),
                 source,
             })?;
-        total = total.saturating_add(parse_resource_file(&contents)?);
+        // Saturating here would quietly under-size the window, which is the
+        // failure this module exists to prevent: the guest would enumerate
+        // the card and find its BARs unassigned.
+        total = total
+            .checked_add(parse_resource_file(&contents)?)
+            .ok_or_else(|| DaemonError::GpuBarTotal {
+                pci_host: pci_host.to_string(),
+            })?;
     }
     Ok(mmio64_window_mb(total))
 }
@@ -240,6 +247,26 @@ mod tests {
         // domain-less pci_host resolves to the same directory.
         assert_eq!(gpu_mmio64_mb_under(dir.path(), &one).unwrap(), 512 * 1024);
         assert_eq!(gpu_mmio64_mb_under(dir.path(), &two).unwrap(), 1024 * 1024);
+    }
+
+    #[test]
+    fn a_bar_total_across_cards_that_overflows_is_an_error() {
+        // Two cards whose BARs each fill half the address space: the per-card
+        // parse succeeds and only the sum overflows, so the guard has to sit
+        // in the loop over the cards, not just inside one resource file.
+        let dir = tempfile::tempdir().unwrap();
+        let half = "0x0000000000000000 0x7fffffffffffffff 0x000000000014220c\n";
+        for name in ["0000:06:00.0", "0000:07:00.0"] {
+            let card = dir.path().join(name);
+            std::fs::create_dir(&card).unwrap();
+            std::fs::write(card.join("resource"), half).unwrap();
+        }
+        let both = ["06:00.0".to_string(), "07:00.0".to_string()];
+        let error = gpu_mmio64_mb_under(dir.path(), &both).unwrap_err();
+        assert!(
+            matches!(&error, DaemonError::GpuBarTotal { pci_host } if pci_host == "07:00.0"),
+            "{error:?}"
+        );
     }
 
     #[test]

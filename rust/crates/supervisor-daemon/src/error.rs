@@ -84,6 +84,9 @@ pub enum DaemonError {
     #[error("PCI resource line {line:?} does not describe an addressable region: {reason}")]
     GpuBarRange { line: String, reason: &'static str },
 
+    #[error("the BARs of the GPU at {pci_host} push the total for this VM past 64 bits")]
+    GpuBarTotal { pci_host: String },
+
     #[error(
         "a {window_mb} MiB 64-bit PCI MMIO window next to {guest_ram_mb} MiB of guest RAM reaches \
          {top_mb} MiB, past the {budget_mb} MiB the guest can address"
