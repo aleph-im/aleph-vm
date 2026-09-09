@@ -512,17 +512,24 @@ fn refresh_cc_modes_with(
         .expect("gpu_cc_refresh poisoned");
     let world = state.world.blocking_read();
     let mut attached: HashSet<String> = HashSet::new();
-    // The subset a confidential guest owns. Those cards have a known mode
-    // without any read: a card enters an SEV-SNP VM only after the create
-    // gate has read CC-on from it, and the mode cannot change while the
-    // guest holds the card (switching it takes a reset of a free card). A
-    // daemon that adopts such a VM at boot has an empty cache and will
+    // The subset a live confidential guest owns. Those cards have a known
+    // mode without any read: a card enters an SEV-SNP VM only after the
+    // create gate has read CC-on from it, and the mode cannot change while
+    // the guest holds the card (switching it takes a reset of a free card).
+    // A daemon that adopts such a VM at boot has an empty cache and will
     // never probe the card, so without this its mode would stay empty for
     // the VM's whole life. Plain passthrough VMs went through no gate and
     // get nothing.
+    //
+    // A stopped VM gets nothing either, even an SEV-SNP one: its QEMU is
+    // gone, so the card is idle hardware an operator can re-mode, and the
+    // gate's word about it has expired. The card stays out of the sweep
+    // (it is still in `attached`, the config still claims it), so a
+    // stopped VM's card simply advertises nothing until the VM is deleted
+    // and the card is read as free.
     let mut known_cc_on: HashSet<String> = HashSet::new();
     for entry in world.entries.values() {
-        let confidential = entry.config.snp().is_some();
+        let confidential = entry.config.snp().is_some() && entry.times.stopped_at_ns == 0;
         for gpu in &entry.config.gpus {
             attached.insert(gpu.pci_host.clone());
             if confidential {
@@ -1992,6 +1999,49 @@ mod tests {
         assert_eq!(
             info.gpus[0].arch, "blackwell",
             "the architecture comes from the device id, not from a probe"
+        );
+    }
+
+    #[test]
+    fn a_stopped_snp_vms_card_is_not_seeded_cc_on() {
+        // The seed rests on the card being under a live guest: nothing can
+        // switch its mode there, so the create gate's reading still holds.
+        // A stopped VM's QEMU is gone and the card is idle hardware an
+        // operator can re-mode, so the gate's word has expired and the
+        // card must advertise nothing rather than a mode the host cannot
+        // vouch for. It is still claimed by the entry's config, so it is
+        // not read either.
+        let mut snp_entry = adopted_entry_holding(test_fixtures::QEMU_HASH, "06:00.0", true);
+        snp_entry.times.started_at_ns = 0;
+        snp_entry.times.stopped_at_ns = snp_entry.times.defined_at_ns;
+        let host = HostState {
+            settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
+            host_ipv4: String::new(),
+            network_interface: None,
+            gpus: vec![nvidia_card("06:00.0")],
+            dns_nameservers: None,
+        };
+        let mut world = WorldView::default();
+        world.insert_entry(snp_entry);
+        let state = DaemonState::hermetic(
+            host,
+            world,
+            Arc::new(crate::units::StaticUnitStates::default()),
+            Arc::new(crate::logs::StaticLogSource::new(Vec::new())),
+        );
+
+        refresh_cc_modes_with(
+            &state,
+            |pci_host: &str, _device_id: &str| {
+                panic!("a card an entry still claims must never be probed: {pci_host}")
+            },
+            crate::gpu_cc::CC_MODE_TTL,
+        );
+
+        assert_eq!(
+            cc_mode_of(&state, "06:00.0"),
+            None,
+            "a stopped confidential VM's card advertises nothing"
         );
     }
 
