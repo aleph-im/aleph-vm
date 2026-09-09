@@ -30,6 +30,15 @@ directory that vanished under them, markers are written exclusively), but
 it is one more reason the daemon's own pass (startup, periodic, at-GONE) is
 always preferred when the daemon is up; this command exists mainly for when
 it is not.
+
+Running with no agent process also means setting up the process the way the
+systemd units set it up for the daemon: the node's environment file is read
+here (nothing else injects it into an operator's shell, and running a pass
+on the built-in defaults would reconcile a node against a configuration it
+does not have), the log records go to stderr, and the agent database is
+created and migrated before anything reads it. The read-only verbs are the
+exception to the last one: they refuse a database that is not there rather
+than create it.
 """
 
 from __future__ import annotations
@@ -37,13 +46,18 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import shutil
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TextIO
+
+from dotenv import load_dotenv
 
 from aleph.vm import storage_pools
 from aleph.vm.agent import metrics
+from aleph.vm.agent.cli import initialise_database
 from aleph.vm.agent.vm.cache import cache_budget_bytes, cache_entries, cache_roots
 from aleph.vm.agent.vm.purge import purge_vm_storage
 from aleph.vm.agent.vm.reclaimable import (
@@ -62,7 +76,7 @@ from aleph.vm.agent.vm.reconciler import (
     supervisor_hashes,
 )
 from aleph.vm.agent.vm_registry import AgentVmRegistry, rehydrate_registry
-from aleph.vm.conf import settings
+from aleph.vm.conf import Settings, settings
 from aleph.vm.storage_budget import parse_budget
 from aleph.vm.storage_pools import iter_namespace_dirs
 from aleph.vm.supervisor_interface.abc import Supervisor
@@ -80,15 +94,50 @@ SUPERVISOR_CONNECT_TIMEOUT_SECS = 3.0
 # degraded pass from a bad argument without parsing stderr.
 DEGRADED_EXIT_CODE = 3
 
+# The systemd units hand the daemon its configuration with
+# EnvironmentFile=; nothing hands it to an operator's shell, so a hand-run
+# command reads the same file itself or runs on the built-in defaults.
+DEFAULT_ENV_FILE = Path("/etc/aleph-vm/supervisor.env")
+ENV_FILE_VARIABLE = "ALEPH_VM_ENV_FILE"
+
+# Verbs that only read. They must not bring an agent database into
+# existence: an operator who ran the command with the wrong execution root
+# has to see a refusal, not an empty listing backed by a file this very
+# process just created.
+READ_ONLY_COMMANDS = frozenset({"status", "list"})
+
+# Name given to the handler this CLI installs on the root logger, so a
+# second call in the same process replaces it instead of doubling every
+# line.
+_LOG_HANDLER_NAME = "aleph-vm-storage-cli"
+
 logger = logging.getLogger(__name__)
 
 
-def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        prog="aleph-vm storage",
-        description="VM storage reclamation: status, list, reclaim, reconcile.",
+def add_arguments(parser: argparse.ArgumentParser) -> None:
+    """Fill in the storage flags and verbs, on a standalone parser or on the
+    subparser the agent CLI registers."""
+    parser.add_argument(
+        "--env-file",
+        dest="env_file",
+        default=None,
+        help=(
+            f"Environment file to load before reading the settings "
+            f"(default: ${ENV_FILE_VARIABLE}, else {DEFAULT_ENV_FILE})"
+        ),
     )
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser.add_argument(
+        "--loglevel",
+        dest="loglevel",
+        type=str.upper,
+        # SUPPRESS, not a real default: this parser also runs as a subparser
+        # of the agent CLI, whose own --loglevel and -v/-vv write the same
+        # destination, and a subparser default overwrites what the parent
+        # already parsed.
+        default=argparse.SUPPRESS,
+        help="Log level by name (DEBUG, INFO, WARNING, ERROR); INFO by default",
+    )
+    sub = parser.add_subparsers(dest="storage_command", required=True)
     sub.add_parser("status", help="per-pool and per-cache usage against the budgets")
     list_parser = sub.add_parser("list", help="VM directories on every pool")
     list_parser.add_argument("--reclaimable", action="store_true", help="only directories no VM owns")
@@ -119,6 +168,27 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="purge using the registry alone when the supervisor cannot be asked which VMs it runs",
     )
+
+
+def add_subparser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
+    """Register ``storage`` on the agent CLI's own parser, so the agent's
+    global flags placed before the verb parse instead of being handed to a
+    second, unrelated parser."""
+    parser = subparsers.add_parser(
+        "storage",
+        help="VM storage reclamation: status, list, reclaim, reconcile",
+        description="VM storage reclamation: status, list, reclaim, reconcile.",
+    )
+    add_arguments(parser)
+    return parser
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="aleph-vm storage",
+        description="VM storage reclamation: status, list, reclaim, reconcile.",
+    )
+    add_arguments(parser)
     return parser.parse_args(argv)
 
 
@@ -316,13 +386,13 @@ def _reconcile(registry: AgentVmRegistry, out: TextIO, *, dry_run: bool, trust_r
 
 
 def run(args: argparse.Namespace, registry: AgentVmRegistry, out: TextIO) -> int:
-    if args.command == "status":
+    if args.storage_command == "status":
         return _status(registry, out)
-    if args.command == "list":
+    if args.storage_command == "list":
         return _list(registry, out, reclaimable_only=args.reclaimable)
-    if args.command == "reclaim":
+    if args.storage_command == "reclaim":
         return _reclaim(registry, args.vm_hash, out, trust_registry=args.trust_registry)
-    if args.command == "reconcile":
+    if args.storage_command == "reconcile":
         return _reconcile(registry, out, dry_run=args.dry_run, trust_registry=args.trust_registry)
     return 2
 
@@ -334,9 +404,103 @@ async def _load_registry() -> AgentVmRegistry:
     return registry
 
 
-def main(argv: list[str]) -> int:
-    args = parse_args(argv)
+def _setup_logging(level: str | int) -> None:
+    """Send the log records of this process to stderr.
+
+    Most of what these commands have to report they report through the
+    logger the reconciler, the purge and the marker already write to
+    ("Deleted volume ...", "Removed volume directory ...", "Marked ...
+    reclaimable"). With no handler configured those INFO lines are dropped
+    and anything at WARNING or above reaches the terminal as a bare
+    last-resort line with no level and no logger name, so an operator
+    watching a purge sees almost nothing of what it did.
+
+    Adds a named handler rather than calling basicConfig, so that repeated
+    calls in one process replace it instead of stacking, and so that
+    handlers something else installed are left alone.
+    """
+    root = logging.getLogger()
+    root.setLevel(level)
+    for existing in list(root.handlers):
+        if getattr(existing, "name", None) == _LOG_HANDLER_NAME:
+            root.removeHandler(existing)
+    handler = logging.StreamHandler(sys.stderr)
+    handler.name = _LOG_HANDLER_NAME
+    handler.setFormatter(logging.Formatter("%(levelname)s | %(name)s | %(message)s"))
+    root.addHandler(handler)
+    # These two are chatty below WARNING and say nothing about storage, so
+    # --loglevel DEBUG stays readable.
+    logging.getLogger("aiosqlite").setLevel(logging.WARNING)
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+
+
+def _env_file_path(explicit: str | None) -> Path:
+    if explicit:
+        return Path(explicit)
+    from_environment = os.environ.get(ENV_FILE_VARIABLE)
+    if from_environment:
+        return Path(from_environment)
+    return DEFAULT_ENV_FILE
+
+
+def _reload_settings() -> None:
+    """Rebuild the settings singleton from the current environment.
+
+    ``aleph.vm.conf`` builds its singleton when it is first imported, so
+    anything this process adds to the environment afterwards is invisible
+    to it. A second instance re-reads the environment, and copying its
+    values onto the singleton keeps every module that already imported
+    ``settings`` looking at the one object.
+    """
+    settings.__dict__.update(Settings().__dict__)
+
+
+def _load_env_file(explicit: str | None) -> bool:
+    """Load the node's environment file, if there is one. False when the
+    operator named a file that does not exist: running on the defaults they
+    were trying to override is worse than refusing.
+
+    Values already in the environment win, so a one-off override on the
+    command line still works.
+    """
+    path = _env_file_path(explicit)
+    if not path.is_file():
+        if explicit:
+            logger.error("No environment file at %s", path)
+            return False
+        logger.info("No environment file at %s; using the process environment alone", path)
+        return True
+    load_dotenv(path, override=False)
+    _reload_settings()
+    logger.info("Loaded the node configuration from %s", path)
+    return True
+
+
+def run_parsed(args: argparse.Namespace) -> int:
+    """Set up the process (configuration, logging, database) and run the
+    verb. Takes an already parsed namespace, so the agent CLI can hand over
+    the one its own parser produced."""
+    _setup_logging(getattr(args, "loglevel", None) or logging.INFO)
+    if not _load_env_file(getattr(args, "env_file", None)):
+        return 1
     settings.setup()
     storage_pools.setup_pools()
+
+    database = Path(str(settings.EXECUTION_DATABASE))
+    if not database.exists():
+        if args.storage_command in READ_ONLY_COMMANDS:
+            logger.error(
+                "No agent database at %s: nothing has run on this node yet, or the execution root is not the one "
+                "the agent uses",
+                database,
+            )
+            return 1
+        logger.info("Creating the agent database at %s", database)
+    initialise_database()
+
     registry = asyncio.run(_load_registry())
     return run(args, registry, sys.stdout)
+
+
+def main(argv: list[str]) -> int:
+    return run_parsed(parse_args(argv))
