@@ -385,7 +385,12 @@ an mtime younger than `VOLUME_CREATE_GUARD`. Both matter, since a create
 that outlives the guard is only protected by the first, and a create that
 somehow escaped the context manager is still protected by the second.
 Everything a pass touches is under a directory the agent created and is
-keyed by a hash validated by `purge._checked_namespace`.
+keyed by a hash that `storage.vm_namespace` accepted: the name has to parse
+as an `ItemHash` (64 lowercase hex characters, or an IPFS CID), so a
+directory an operator dropped on a volume pool is never a VM. The delete
+paths go through `purge._checked_namespace`, which refuses on the same rule
+before any filesystem access; the passes that walk the pools ask
+`is_vm_namespace` first and skip what the guard would refuse.
 
 The startup pass is stricter than the rest: it refuses to purge anything
 (it runs dry and logs why) when the supervisor did not answer `list_vms`,

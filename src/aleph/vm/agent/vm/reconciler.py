@@ -58,7 +58,7 @@ from aleph.vm.agent.vm.cache import (
     remove_parent_device,
     sweep_leaked_cache_loops,
 )
-from aleph.vm.agent.vm.purge import _ITEM_HASH_PATTERN, purge_vm_storage
+from aleph.vm.agent.vm.purge import purge_vm_storage
 from aleph.vm.agent.vm.reclaimable import (
     ReclaimableMarker,
     adopt,
@@ -73,7 +73,7 @@ from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
 
 # MOUNT_ROOT is /mnt, where a volume's mount point is {namespace}_{volume name}.
-from aleph.vm.storage import DEVICE_MAPPER_DIRECTORY, MOUNT_ROOT
+from aleph.vm.storage import DEVICE_MAPPER_DIRECTORY, MOUNT_ROOT, is_vm_namespace
 from aleph.vm.storage_budget import parse_budget
 from aleph.vm.storage_pools import StoragePool, get_pools, iter_namespace_dirs
 from aleph.vm.supervisor_interface.abc import Supervisor
@@ -154,7 +154,12 @@ def is_creating(namespace: str) -> bool:
 
 
 def _plausible(name: str) -> bool:
-    return bool(_ITEM_HASH_PATTERN.match(name))
+    """Whether a directory or device name is a VM namespace at all.
+
+    The same question the purge guard asks, so the passes that walk the
+    pools skip what the guard would refuse instead of raising on it.
+    """
+    return is_vm_namespace(name)
 
 
 def _mtime(path: Path) -> datetime:
