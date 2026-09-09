@@ -20,6 +20,7 @@ from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Protocol
 
 import psutil
 from aleph_message.models import ExecutableContent, ItemHash, VerifiableProgramContent
@@ -378,7 +379,25 @@ class GpuHold:
         return datetime.now(tz=timezone.utc) > self.expiration
 
 
-class CapacityManager:
+class PlanAdmission(Protocol):
+    """The one call a plan verdict makes on admission.
+
+    Published here, next to the only implementation, and inherited by it, so
+    the signature is checked against the real one rather than restated in the
+    caller: the candidate tuple has already lost a member once with the
+    verdict's copy of this signature none the wiser.
+    """
+
+    def simulate(
+        self,
+        candidates: list[tuple[ItemHash, ResourceRequirements]],
+        *,
+        releasing: frozenset[ItemHash] = frozenset(),
+        available_gpus: list[GpuDevice] | None = None,
+    ) -> list[AdmissionVerdict]: ...
+
+
+class CapacityManager(PlanAdmission):
     """Admission policy and GPU reservation ledger for one agent process.
 
     Holds are keyed by the concrete host card (pci_host); expired entries are

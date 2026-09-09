@@ -16,7 +16,6 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
-from typing import Protocol
 
 from aleph_message.models import ExecutableContent, ItemHash
 
@@ -35,12 +34,8 @@ from aleph.vm.agent.allocation.verify import (
     VerifiedMessage,
     verify_entry,
 )
-from aleph.vm.agent.capacity import (
-    AdmissionVerdict,
-    ResourceRequirements,
-    requirements_from_message,
-)
-from aleph.vm.agent.vm_registry import AgentVmRecord
+from aleph.vm.agent.capacity import PlanAdmission, requirements_from_message
+from aleph.vm.agent.vm_registry import RecordLookup
 from aleph.vm.resources import GpuDevice
 from aleph.vm.supervisor_interface.types import VmInfo, VmStatus
 
@@ -50,24 +45,6 @@ logger = logging.getLogger(__name__)
 # batch is milliseconds of work rather than seconds, large enough that the hop
 # itself stays a rounding error next to the parse and the ecrecover it carries.
 VERIFICATION_BATCH_SIZE = 32
-
-
-class _Registry(Protocol):
-    """The slice of AgentVmRegistry this module needs."""
-
-    def get(self, vm_hash: ItemHash) -> AgentVmRecord | None: ...
-
-
-class _Capacity(Protocol):
-    """The slice of CapacityManager this module needs."""
-
-    def simulate(
-        self,
-        candidates: list[tuple[ItemHash, ResourceRequirements]],
-        *,
-        releasing: frozenset[ItemHash] = ...,
-        available_gpus: list[GpuDevice] | None = ...,
-    ) -> list[AdmissionVerdict]: ...
 
 
 def compute_plan_id(planned: list[str], rejected: list[str]) -> str:
@@ -238,8 +215,8 @@ def compute_verdict(
     plan: AllocationPlan,
     *,
     infos: list[VmInfo],
-    registry: _Registry,
-    capacity: _Capacity,
+    registry: RecordLookup,
+    capacity: PlanAdmission,
     node_hash: str | None = None,
     available_gpus: list[GpuDevice] | None = None,
     removing_now: frozenset[ItemHash] = frozenset(),
