@@ -224,6 +224,21 @@ async def test_a_legacy_route_answers_too_large_to_a_plan_sized_body(aiohttp_cli
 
 
 @pytest.mark.asyncio
+async def test_a_body_that_is_not_text_is_a_bad_request(aiohttp_client, scheduler_auth):
+    """request.json() decodes before it parses, and a body that is not UTF-8
+    raises a ValueError that is not a JSONDecodeError. It was a 500, with the
+    decoder's message in the response."""
+    app = _app()
+    client = await aiohttp_client(app)
+    body, headers = scheduler_auth(b'{"vms": "\xff\xfe"}', path=PLAN)
+
+    response = await client.post(PLAN, data=body, headers=headers)
+
+    assert response.status == 400
+    app["allocation_reconciler"].submit.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_the_capacity_check_judges_without_touching_anything(
     aiohttp_client, scheduler_auth, signed_message, mocker
 ):

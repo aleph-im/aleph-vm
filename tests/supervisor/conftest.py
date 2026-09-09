@@ -142,8 +142,10 @@ def scheduler_auth(monkeypatch):
     account = Account.create()
     monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [account.address])
 
-    def sign(body_dict: dict, *, path: str = "/control/allocations", method: str = "POST"):
-        body = json.dumps(body_dict).encode()
+    def sign(body_dict: dict | bytes, *, path: str = "/control/allocations", method: str = "POST"):
+        # Bytes are signed as given, for a test that sends something that is
+        # not JSON at all.
+        body = body_dict if isinstance(body_dict, bytes) else json.dumps(body_dict).encode()
         payload = {
             "method": method,
             "path": path,

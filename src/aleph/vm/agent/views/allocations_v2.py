@@ -12,7 +12,6 @@ message per VM.
 import logging
 from datetime import datetime, timezone
 from http import HTTPStatus
-from json import JSONDecodeError
 
 from aiohttp import web
 
@@ -38,12 +37,14 @@ async def _read_plan(request: web.Request) -> tuple[AllocationPlan, dict[str, di
     """
     try:
         body = await request.json()
-    except JSONDecodeError as error:
+    except ValueError as error:
+        # JSONDecodeError and the UnicodeDecodeError of a body that is not
+        # text: request.json() decodes before it parses.
         raise web.HTTPBadRequest(text="Body is not valid JSON") from error
     try:
         return build_plan(body, now=datetime.now(tz=timezone.utc))
     except ValueError as error:
-        raise web.HTTPBadRequest(text=str(error)) from error
+        raise web.HTTPBadRequest(text="Body is not a plan: 'vms' must be a list") from error
 
 
 @requires_allocation_auth(max_body_bytes=MAX_SIGNED_PLAN_BODY_BYTES)
