@@ -7,6 +7,8 @@
 //! not measurement inputs, which is what lets the window vary per card
 //! without moving the launch digest.
 
+use std::path::Path;
+
 use crate::error::DaemonError;
 
 const IORESOURCE_MEM: u64 = 0x0000_0200;
@@ -46,11 +48,17 @@ pub fn mmio64_window_mb(bar_bytes: u64) -> u64 {
     (mb.next_power_of_two() * 2).max(MIN_WINDOW_MB)
 }
 
-/// The window for a set of cards attached to one VM.
+/// The window for a set of cards attached to one VM, from their sysfs BARs.
 pub fn gpu_mmio64_mb(pci_hosts: &[String]) -> Result<u64, DaemonError> {
+    gpu_mmio64_mb_under(Path::new(crate::gpu_cc::SYSFS_PCI_DEVICES), pci_hosts)
+}
+
+/// `gpu_mmio64_mb` over an explicit devices directory, so a fixture tree
+/// can stand in for sysfs.
+pub fn gpu_mmio64_mb_under(devices_dir: &Path, pci_hosts: &[String]) -> Result<u64, DaemonError> {
     let mut total = 0u64;
     for pci_host in pci_hosts {
-        let path = crate::gpu_cc::sysfs_device_dir(pci_host).join("resource");
+        let path = crate::gpu_cc::sysfs_device_dir_under(devices_dir, pci_host).join("resource");
         let contents = std::fs::read_to_string(&path)
             .map_err(|e| DaemonError::GpuProbe(format!("cannot read {}: {e}", path.display())))?;
         total = total.saturating_add(parse_resource_file(&contents)?);
@@ -91,6 +99,30 @@ mod tests {
         assert_eq!(mmio64_window_mb(0), 1024);
         assert_eq!(mmio64_window_mb(256 * (1 << 20)), 1024);
         assert_eq!(mmio64_window_mb(3 * (1 << 30)), 8 * 1024);
+    }
+
+    #[test]
+    fn window_sums_every_card_under_the_devices_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["0000:06:00.0", "0000:07:00.0"] {
+            let card = dir.path().join(name);
+            std::fs::create_dir(&card).unwrap();
+            std::fs::write(card.join("resource"), RESOURCE).unwrap();
+        }
+        let one = ["06:00.0".to_string()];
+        let two = ["06:00.0".to_string(), "0000:07:00.0".to_string()];
+        // One card: 128 GiB + 32 MiB rounds to 256 GiB, doubled. Two cards
+        // add up before the rounding, so the window doubles again; a
+        // domain-less pci_host resolves to the same directory.
+        assert_eq!(gpu_mmio64_mb_under(dir.path(), &one).unwrap(), 512 * 1024);
+        assert_eq!(gpu_mmio64_mb_under(dir.path(), &two).unwrap(), 1024 * 1024);
+    }
+
+    #[test]
+    fn a_card_without_a_resource_file_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = gpu_mmio64_mb_under(dir.path(), &["06:00.0".to_string()]).unwrap_err();
+        assert!(error.to_string().contains("0000:06:00.0"), "{error}");
     }
 
     #[test]
