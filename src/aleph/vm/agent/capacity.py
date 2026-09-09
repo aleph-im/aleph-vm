@@ -58,6 +58,9 @@ class ResourceRequirements:
     # though it is not an InstanceContent.
     is_instance: bool = False
     gpu_device_ids: list[str] = field(default_factory=list)
+    # Whose VM this is, for the GPU ledger: a hold this address took is
+    # available to it, the way resolve_gpus consumes an owner's own hold.
+    owner: str | None = None
 
 
 # The filename suffixes a volume's file carries in ``{pool}/{vm_hash}/``. A
@@ -198,6 +201,7 @@ def requirements_from_message(
         max_volume_mib=max(volume_sizes_mib, default=0),
         is_instance=is_instance_bucket(content),
         gpu_device_ids=requested_gpu_ids(content),
+        owner=str(address) if (address := getattr(content, "address", None)) else None,
     )
 
 
@@ -275,6 +279,41 @@ def requested_gpu_ids(content: ExecutableContent) -> list[str]:
     """The vendor:device ids of the GPUs a message requests."""
     requested = content.requirements.gpu if content.requirements and content.requirements.gpu else []
     return [gpu.device_id for gpu in requested]
+
+
+@dataclass(frozen=True)
+class HostCaps:
+    """The ceilings admission judges against, read from the host once per call.
+
+    Instances share physical memory less the host and program reservations,
+    programs share the program reservation. vCPU time is safe to oversubscribe
+    because the kernel time-slices it, so that cap is the core count times
+    VCPU_OVERCOMMIT_FACTOR (4 vCPUs per core at 4.0).
+    """
+
+    physical_memory_mib: int
+    physical_cores: int
+    host_reserved_mib: int
+    program_reserved_mib: int
+    instance_memory_mib: int
+    program_memory_mib: int
+    vcpus: int
+
+    @classmethod
+    def read(cls) -> HostCaps:
+        physical_memory_mib = psutil.virtual_memory().total // (1024 * 1024)
+        physical_cores = psutil.cpu_count() or 1
+        host_reserved_mib = settings.HOST_MEMORY_RESERVED_MIB
+        program_reserved_mib = settings.PROGRAM_MEMORY_RESERVED_MIB
+        return cls(
+            physical_memory_mib=physical_memory_mib,
+            physical_cores=physical_cores,
+            host_reserved_mib=host_reserved_mib,
+            program_reserved_mib=program_reserved_mib,
+            instance_memory_mib=max(physical_memory_mib - host_reserved_mib - program_reserved_mib, 0),
+            program_memory_mib=program_reserved_mib,
+            vcpus=int(physical_cores * settings.VCPU_OVERCOMMIT_FACTOR),
+        )
 
 
 @dataclass
@@ -421,19 +460,14 @@ class CapacityManager:
         required_vcpus = vcpus
         required_disk_mib = disk_mib
 
-        physical_memory_mib = psutil.virtual_memory().total // (1024 * 1024)
-        physical_cores = psutil.cpu_count() or 1
-        host_reserved_mib = settings.HOST_MEMORY_RESERVED_MIB
-        program_reserved_mib = settings.PROGRAM_MEMORY_RESERVED_MIB
-
-        instance_memory_cap_mib = max(physical_memory_mib - host_reserved_mib - program_reserved_mib, 0)
-        program_memory_cap_mib = program_reserved_mib
-
-        # vCPU overcommit: CPU time is safe to oversubscribe because the
-        # kernel scheduler time-slices it, so the cap is the physical core
-        # count multiplied by the configured factor (e.g. 4 vCPUs per core
-        # with VCPU_OVERCOMMIT_FACTOR=4.0).
-        vcpu_cap = int(physical_cores * settings.VCPU_OVERCOMMIT_FACTOR)
+        caps = self._caps()
+        physical_memory_mib = caps.physical_memory_mib
+        physical_cores = caps.physical_cores
+        host_reserved_mib = caps.host_reserved_mib
+        program_reserved_mib = caps.program_reserved_mib
+        instance_memory_cap_mib = caps.instance_memory_mib
+        program_memory_cap_mib = caps.program_memory_mib
+        vcpu_cap = caps.vcpus
 
         if is_instance:
             bucket_name = "instance"
@@ -494,6 +528,37 @@ class CapacityManager:
                 },
             )
 
+    def _caps(self) -> HostCaps:
+        return HostCaps.read()
+
+    def headroom(self, available_gpus: list[GpuDevice] | None = None) -> dict:
+        """What a plan could still be admitted against, for the scheduler.
+
+        The caps less what the registry commits, the live free disk, and the
+        cards not under a live hold: the same figures ``check_capacity``
+        judges a request by, so advertising them cannot promise what a
+        create would then refuse. Floored at zero, since a registry holding
+        more than the caps (a phantom record, a shrunk host) means nothing is
+        left, not that the node owes memory.
+
+        ``gpus`` is None rather than empty when no inventory was given:
+        unknown is not zero, and the caller that has the inventory is the one
+        that read it from the supervisor. It lists the cards free of any live
+        hold, the node-wide view: there is no owner to ask for here, so a card
+        one user holds is absent even though simulate would let that user's
+        own candidate take it. The per-candidate answer is the one to trust
+        for a given VM; this figure is what anyone else could count on.
+        """
+        caps = self._caps()
+        committed_instance, committed_program, committed_vcpus = self._committed_resources(())
+        return {
+            "instance_memory_mib": max(caps.instance_memory_mib - committed_instance, 0),
+            "program_memory_mib": max(caps.program_memory_mib - committed_program, 0),
+            "vcpus": max(caps.vcpus - committed_vcpus, 0),
+            "disk_mib": self._available_disk_bytes() // (1024 * 1024),
+            "gpus": None if available_gpus is None else [gpu.device_id for gpu in self._unheld_gpus(available_gpus)],
+        }
+
     def simulate(
         self,
         candidates: list[tuple[ItemHash, ResourceRequirements]],
@@ -531,7 +596,9 @@ class CapacityManager:
         and this call is not. Matching is cumulative like the rest: two
         candidates wanting the only card of a kind get one yes. A card under a
         live hold counts as taken, since the hold is some user's pending
-        create.
+        create, unless the hold is the candidate's own user's: that is the
+        reserve-then-allocate flow, and the create will consume the hold the
+        way resolve_gpus does.
 
         Without ``available_gpus`` there is no inventory to judge against, so a
         candidate that asks for a card is refused rather than admitted on
@@ -564,7 +631,7 @@ class CapacityManager:
         committed_program = max(committed_program, 0)
         committed_vcpus = max(committed_vcpus, 0)
 
-        gpu_pool = None if available_gpus is None else self._unheld_gpus(available_gpus)
+        gpu_pool = None if available_gpus is None else list(available_gpus)
 
         verdicts: list[AdmissionVerdict] = []
         committed_disk = 0
@@ -589,7 +656,7 @@ class CapacityManager:
                 # Last, and only once the candidate has cleared everything
                 # else: taking cards is what makes the pool cumulative, so a
                 # candidate refused on memory must not walk off with them.
-                gpu_refusal = self._take_gpus(requirements.gpu_device_ids, gpu_pool)
+                gpu_refusal = self._take_gpus(requirements.gpu_device_ids, gpu_pool, owner=requirements.owner)
                 if gpu_refusal is not None:
                     logger.info("Plan candidate %s refused: %s", vm_hash, gpu_refusal)
                     refusal = ("gpu_unavailable", "no available GPU matches this request")
@@ -637,13 +704,17 @@ class CapacityManager:
         """
         return [gpu for gpu in available_gpus if (hold := self.holds.get(gpu.pci_host)) is None or hold.is_expired()]
 
-    @staticmethod
-    def _take_gpus(device_ids: list[str], pool: list[GpuDevice] | None) -> str | None:
+    def _take_gpus(self, device_ids: list[str], pool: list[GpuDevice] | None, *, owner: str | None) -> str | None:
         """Consume one card per requested id from ``pool``. None if it fits.
 
         All or nothing, like reserve_gpus: a candidate that cannot get every
         card it asked for takes none, so it does not strand cards a later
         candidate could have used.
+
+        A card under another user's live hold is skipped, one under
+        ``owner``'s own hold is not, mirroring ``_match_requests``. Read-only
+        on the ledger: expired holds are read as free and left in place,
+        because simulate mutates nothing.
         """
         if not device_ids:
             return None
@@ -652,9 +723,13 @@ class CapacityManager:
         taken: list[GpuDevice] = []
         for device_id in device_ids:
             for gpu in pool:
-                if gpu.device_id == device_id and gpu not in taken:
-                    taken.append(gpu)
-                    break
+                if gpu.device_id != device_id or gpu in taken:
+                    continue
+                hold = self.holds.get(gpu.pci_host)
+                if hold is not None and not hold.is_expired() and hold.user != owner:
+                    continue
+                taken.append(gpu)
+                break
             else:
                 return f"No available GPU matching device_id {device_id!r}"
         for gpu in taken:
@@ -742,8 +817,13 @@ class CapacityManager:
         """
         return max(storage_pools.pools_disk_usage()[1], 0) + reclaimable_bytes()
 
-    async def _available_gpus(self) -> list[GpuDevice]:
-        """Host cards not attached to any VM, per the supervisor's HostInfo."""
+    async def available_gpus(self) -> list[GpuDevice]:
+        """Host cards not attached to any VM, per the supervisor's HostInfo.
+
+        Public because simulate and headroom take the inventory as an
+        argument: both are synchronous, and this read is not, so the handler
+        that calls them reads it first.
+        """
         host_info = await self.supervisor.get_host_info()
         return [GpuDevice.model_validate(gpu) for gpu in host_info.available_gpus]
 
@@ -766,7 +846,7 @@ class CapacityManager:
         if not requested_device_ids:
             return expiration_date
         async with self._lock:
-            available_gpus = await self._available_gpus()
+            available_gpus = await self.available_gpus()
             resolved = self._match_requests(available_gpus, requested_device_ids, user, consume_own_hold=False)
             for gpu in resolved:
                 self.holds[gpu.pci_host] = GpuHold(user=user, expiration=expiration_date)
@@ -787,7 +867,7 @@ class CapacityManager:
         if not requested_device_ids:
             return []
         async with self._lock:
-            available_gpus = await self._available_gpus()
+            available_gpus = await self.available_gpus()
             resolved = self._match_requests(available_gpus, requested_device_ids, owner, consume_own_hold=True)
         return [
             GpuSpec(

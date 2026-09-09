@@ -27,6 +27,7 @@ from aleph.vm.agent.capacity import (
     requirements_from_message,
 )
 from aleph.vm.agent.vm_registry import AgentVmRecord
+from aleph.vm.resources import GpuDevice
 from aleph.vm.supervisor_interface.types import ConfidentialMode, VmInfo, VmStatus
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ class _Capacity(Protocol):
         candidates: list[tuple[ItemHash, ResourceRequirements]],
         *,
         releasing: frozenset[ItemHash] = ...,
+        available_gpus: list[GpuDevice] | None = ...,
     ) -> list[AdmissionVerdict]: ...
 
 
@@ -149,15 +151,15 @@ def compute_verdict(
     registry: _Registry,
     capacity: _Capacity,
     node_hash: str | None = None,
+    available_gpus: list[GpuDevice] | None = None,
 ) -> PlanVerdict:
     """The immediate answer: what we take, what we drop, what we refuse.
 
-    No GPU inventory reaches simulate from here, so a candidate asking for a
-    card is refused rather than admitted on memory alone. Reading the host's
-    cards is an async call on the supervisor and this stays await-free, for
-    the reason at the top of the module, so that read belongs to the handler
-    that will make this answer authoritative and has yet to be written. Until
-    it is, no plan can place a GPU VM.
+    ``available_gpus`` is the host's unattached cards. Reading them is an
+    async call on the supervisor and this stays await-free, for the reason at
+    the top of the module, so the handler reads them first and hands them in.
+    Without them simulate refuses every candidate that asks for a card, which
+    is the right answer to give when the cards were not looked at.
     """
     verdict = PlanVerdict()
     known = by_hash(infos)
@@ -216,10 +218,26 @@ def compute_verdict(
             continue
         candidates.append((vm_hash, requirements_from_message(content)))
 
-    for admission in capacity.simulate(candidates, releasing=frozenset(verdict.removing)):
+    admissions = capacity.simulate(candidates, releasing=frozenset(verdict.removing), available_gpus=available_gpus)
+    for admission in admissions:
         if admission.accepted:
             verdict.accepted.append(admission.vm_hash)
         else:
             verdict.rejected[admission.vm_hash] = {"code": admission.code, "message": admission.detail}
 
     return verdict
+
+
+def narrow_plan(plan: AllocationPlan, verdict: PlanVerdict) -> AllocationPlan:
+    """The plan the reconciler is handed: the push, less what the answer refused.
+
+    A refused entry must never reach the loop. Left in, it would be retried
+    forever at backoff rate, and started the moment room appeared, on a node
+    the scheduler was told had refused it and has since placed it elsewhere
+    from. Pending entries stay: nothing judged them, and the fetch that will
+    is the loop's own. The identity stays too, since it names the push, and a
+    re-push of the same set is the same plan whatever the host had room for
+    the first time.
+    """
+    entries = {vm_hash: planned for vm_hash, planned in plan.entries.items() if vm_hash not in verdict.rejected}
+    return AllocationPlan(plan_id=plan.plan_id, received_at=plan.received_at, entries=entries)

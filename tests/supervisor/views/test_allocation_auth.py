@@ -7,6 +7,7 @@ import types
 from hashlib import sha256
 
 import pytest
+from aiohttp import web
 from eth_account import Account
 from eth_account.messages import encode_defunct
 from pydantic import ValidationError
@@ -15,11 +16,14 @@ from aleph.vm.agent import utils as orchestrator_utils
 from aleph.vm.agent.utils import get_authorized_allocation_signers
 from aleph.vm.agent.views import allocation_auth
 from aleph.vm.agent.views.allocation_auth import (
+    MAX_SIGNED_PLAN_BODY_BYTES,
     MAX_SIGNED_REQUEST_BODY_BYTES,
+    RequestTooLarge,
     _accepted_payloads,
     _parse_auth_params,
     _verify_aleph_signature,
     log_allocation_auth_config,
+    requires_allocation_auth,
 )
 from aleph.vm.conf import Settings, settings
 
@@ -144,6 +148,10 @@ def mock_request(mocker):
         # No query string by default; tests covering H2 override this.
         request.query_string = ""
         request.remote = "127.0.0.1"
+        # The decorator re-bounds a request to its route's cap by cloning it;
+        # this double is its own clone.
+        request.client_max_size = MAX_SIGNED_REQUEST_BODY_BYTES
+        request.clone = lambda **_kwargs: request
         return request
 
     return factory
@@ -457,8 +465,10 @@ async def test_verify_concurrent_same_iat_rejects_one(authorize_signer, mocker):
 
 
 @pytest.mark.asyncio
-async def test_verify_rejects_oversized_body(mock_request, authorize_signer):
-    """Content-Length over the cap → reject without reading the body."""
+async def test_verify_reports_an_oversized_body_as_too_large(mock_request, authorize_signer):
+    """Content-Length over the cap is refused without reading the body, and
+    refused as too large rather than as a bad signature: a scheduler whose
+    plan outgrew the cap needs to split it, not rotate its key."""
     payload_bytes = make_signed_payload(body=b"{}")
     auth = make_auth_header(authorize_signer, payload_bytes)
     request = mock_request(
@@ -467,9 +477,74 @@ async def test_verify_rejects_oversized_body(mock_request, authorize_signer):
         content_length=MAX_SIGNED_REQUEST_BODY_BYTES + 1,
     )
 
-    assert await _verify_aleph_signature(request, auth) is False
+    with pytest.raises(RequestTooLarge):
+        await _verify_aleph_signature(request, auth)
     # Body must not be read once the cap rejects.
     request.read.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_body_is_still_refused_for_an_unauthorized_signer(mock_request, monkeypatch):
+    """The size answer comes after the signer check, so an anonymous client
+    gets the same 401 for any body and learns nothing about the cap."""
+    monkeypatch.setattr(settings, "AUTHORIZED_ALLOCATION_SIGNERS", [Account.create().address])
+    payload_bytes = make_signed_payload(body=b"{}")
+    auth = make_auth_header(Account.create(), payload_bytes)
+    request = mock_request(
+        headers={"Authorization": auth},
+        body=b"{}",
+        content_length=MAX_SIGNED_REQUEST_BODY_BYTES + 1,
+    )
+
+    assert await _verify_aleph_signature(request, auth) is False
+
+
+@pytest.mark.asyncio
+async def test_a_route_may_raise_the_cap_for_its_own_bodies(mock_request, authorize_signer):
+    """A plan body carries one signed message per VM, so the v2 routes take
+    bodies the legacy cap refuses. The cap belongs to the route, not to the
+    verifier; the default keeps every existing route where it was."""
+    body = b"x" * (MAX_SIGNED_REQUEST_BODY_BYTES + 1)
+    payload_bytes = make_signed_payload(body=body)
+    auth = make_auth_header(authorize_signer, payload_bytes)
+    request = mock_request(headers={"Authorization": auth}, body=body)
+
+    with pytest.raises(RequestTooLarge):
+        await _verify_aleph_signature(request, auth)
+    assert await _verify_aleph_signature(request, auth, max_body_bytes=MAX_SIGNED_PLAN_BODY_BYTES) is True
+
+
+@pytest.mark.asyncio
+async def test_the_decorator_answers_too_large_rather_than_unauthorized(mock_request, authorize_signer):
+    @requires_allocation_auth(max_body_bytes=MAX_SIGNED_PLAN_BODY_BYTES)
+    async def handler(_request):
+        return web.Response(text="ok")
+
+    payload_bytes = make_signed_payload(body=b"{}")
+    auth = make_auth_header(authorize_signer, payload_bytes)
+    request = mock_request(
+        headers={"Authorization": auth},
+        body=b"{}",
+        content_length=MAX_SIGNED_PLAN_BODY_BYTES + 1,
+    )
+
+    response = await handler(request)
+
+    assert response.status == 413
+
+
+@pytest.mark.asyncio
+async def test_the_bare_decorator_still_wraps(mock_request):
+    """The migration routes use it without parentheses; that form must keep
+    working now that the decorator takes a cap."""
+
+    @requires_allocation_auth
+    async def handler(_request):
+        return web.Response(text="ok")
+
+    response = await handler(mock_request())
+
+    assert response.status == 401
 
 
 @pytest.mark.asyncio
