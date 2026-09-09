@@ -44,6 +44,7 @@ from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from pathlib import Path
 
 from aiohttp import web
@@ -524,16 +525,30 @@ def _sweep_parts(now: datetime, guard: timedelta, report: ReconcileReport, *, dr
                 logger.warning("Failed to remove %s", part, exc_info=True)
 
 
-def _side_dir_roots() -> Iterator[tuple[Path, str]]:
+class SideDirNaming(Enum):
+    """How a side directory's name yields the VM hash that owns it."""
+
+    # The directory is the hash: {root}/{namespace}
+    EXACT = "exact"
+    # The hash is the first field of the name: /mnt/{namespace}_{volume name}
+    PREFIX = "prefix"
+
+    def namespace_of(self, child: Path) -> str:
+        return child.name if self is SideDirNaming.EXACT else child.name.split("_", 1)[0]
+
+
+def _side_dir_roots() -> Iterator[tuple[Path, SideDirNaming]]:
     """(root, how the hash is derived from the child name)."""
     if settings.CONFIDENTIAL_SESSION_DIRECTORY:
-        yield Path(settings.CONFIDENTIAL_SESSION_DIRECTORY), "exact"
+        yield Path(settings.CONFIDENTIAL_SESSION_DIRECTORY), SideDirNaming.EXACT
     for kind in STAGING_KINDS:
-        yield Path(settings.EXECUTION_ROOT) / kind, "exact"
-    yield MOUNT_ROOT, "prefix"  # /mnt/{namespace}_{volume name}
+        yield Path(settings.EXECUTION_ROOT) / kind, SideDirNaming.EXACT
+    yield MOUNT_ROOT, SideDirNaming.PREFIX
 
 
-def _is_stale_side_dir(child: Path, mode: str, live: Collection[str], now: datetime, guard: timedelta) -> bool:
+def _is_stale_side_dir(
+    child: Path, naming: SideDirNaming, live: Collection[str], now: datetime, guard: timedelta
+) -> bool:
     """True when this side directory belongs to a VM that is not here any more.
 
     Same three questions as the namespace pass, in the same order: is the
@@ -543,7 +558,7 @@ def _is_stale_side_dir(child: Path, mode: str, live: Collection[str], now: datet
     """
     if not child.is_dir():
         return False
-    namespace = child.name if mode == "exact" else child.name.split("_", 1)[0]
+    namespace = naming.namespace_of(child)
     if not _plausible(namespace) or namespace in live or is_creating(namespace):
         return False
     try:
@@ -551,15 +566,15 @@ def _is_stale_side_dir(child: Path, mode: str, live: Collection[str], now: datet
             return False
     except OSError:
         return False
-    return _side_dir_is_removable(child, mode)
+    return _side_dir_is_removable(child, naming)
 
 
-def _side_dir_is_removable(child: Path, mode: str) -> bool:
+def _side_dir_is_removable(child: Path, naming: SideDirNaming) -> bool:
     """The last two questions, about the directory rather than its owner."""
     if os.path.ismount(child):
         logger.warning("Not removing %s: it is a mount point", child)
         return False
-    if mode == "prefix" and not _is_empty(child):
+    if naming is SideDirNaming.PREFIX and not _is_empty(child):
         # /mnt belongs to the operator, not to the agent: the only thing the
         # agent puts there is a mount point (storage.create_devmapper mkdirs
         # it and unmounts after the resize), which is empty by construction
@@ -587,20 +602,20 @@ def _sweep_side_dirs(
     dry_run: bool,
     is_live: Callable[[str], bool],
 ) -> None:
-    for root, mode in _side_dir_roots():
+    for root, naming in _side_dir_roots():
         if not root.is_dir():
             continue
         for child in list(root.iterdir()):
-            if not _is_stale_side_dir(child, mode, live, now, guard):
+            if not _is_stale_side_dir(child, naming, live, now, guard):
                 continue
-            namespace = child.name if mode == "exact" else child.name.split("_", 1)[0]
+            namespace = naming.namespace_of(child)
             if is_live(namespace) or is_creating(namespace):
                 # Claimed since the listing: the same re-check the namespace
                 # pass and the evictor make immediately before removing.
                 continue
             if not dry_run:
                 try:
-                    if mode == "exact":
+                    if naming is SideDirNaming.EXACT:
                         shutil.rmtree(child)
                     else:
                         # Never an rmtree here: see _is_stale_side_dir.
