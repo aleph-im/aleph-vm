@@ -48,8 +48,9 @@ contract layer, because both sides need it: the daemon writes
 `{vm_hash}-controller.json` (`save_controller_config` in
 `rust/crates/supervisor-daemon/src/controller_config.rs`, an atomic
 temp-file-then-rename port of the schema module's own
-`save_controller_configuration`, which is otherwise unused now), and the
-controller process reads it.
+`save_controller_configuration`, which is unused by production code now
+(its atomicity test, `tests/supervisor/test_save_controller_configuration.py`,
+still exercises it)), and the controller process reads it.
 
 The split is a division of ownership, not just of code:
 

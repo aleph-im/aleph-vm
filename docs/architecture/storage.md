@@ -222,7 +222,7 @@ document (network addresses derived from the VM's tap assignment, see
 shells out to `cloud-localds` to assemble the seed ISO. The Rust port emits
 JSON instead of YAML for the user-data body (JSON is a YAML subset, so
 `cloud-init` parses both into the same structure); the parity claim is now
-pinned by committed fixtures under `tests/fixtures/cloudinit/`, byte-compared
+pinned by committed fixtures under `rust/crates/supervisor-daemon/tests/fixtures/cloudinit/`, byte-compared
 against what the builder produces (`cloudinit.rs` tests,
 `UPDATE_CLOUDINIT_FIXTURES=1` to regenerate them), since the Python side they
 were generated against is gone.
@@ -733,7 +733,7 @@ pass against an empty registry would call every running VM an orphan.
 - `rust/crates/supervisor-daemon/src/host.rs`: `available_disk_bytes_pooled`
   for `GetHostInfo`.
 - `rust/crates/supervisor-daemon/src/cloudinit.rs`: the cloud-init seed image
-  builder, and the byte-compared fixtures under `tests/fixtures/cloudinit/`
+  builder, and the byte-compared fixtures under `rust/crates/supervisor-daemon/tests/fixtures/cloudinit/`
   that pin its parity with the deleted Python builder.
 - `src/aleph/vm/agent/migration/runner.py`,
   `src/aleph/vm/agent/migration/helpers.py`,
