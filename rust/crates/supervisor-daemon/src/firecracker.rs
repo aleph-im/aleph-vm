@@ -3,11 +3,11 @@
 //! A literal port of the Python spawn/teardown mechanics for non-persistent
 //! programs: the `MicroVM` runner, the `FirecrackerConfig` pydantic models
 //! and the `SpecFirecrackerProgram.setup()` config assembly.
-//! Ephemeral programs are direct children of the daemon, which is what
-//! lets them skip systemd entirely: jailer chroot prep and setfacl, the
-//! Firecracker config
-//! JSON (byte-for-byte the pydantic `model_dump_json(by_alias=True,
-//! exclude_none=True, indent=4)` output, pinned by the committed
+//! Ephemeral programs are direct children of the daemon, which is what lets
+//! them skip systemd entirely: jailer chroot prep and setfacl, the
+//! Firecracker config JSON (byte-for-byte the pydantic
+//! `model_dump_json(by_alias=True, exclude_none=True, indent=4)` output,
+//! pinned by the committed
 //! `firecracker-config.json` fixture), stdout/stderr wired to journald
 //! under the `vm-{hash}-stdout`/`-stderr` identifiers, the vsock ready
 //! handshake on `{vsock}_{ready_port}`, and kill-based teardown. No

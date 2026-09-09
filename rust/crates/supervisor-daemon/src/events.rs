@@ -5,9 +5,9 @@
 //! reboot, delete) is fanned out to every live subscriber; there is no
 //! replay (a subscriber joining mid-flight only sees later events; clients
 //! snapshot with ListVms first, as the proto documents), and the
-//! per-subscriber queue is unbounded,
-//! exactly like the Python `asyncio.Queue()` the emitter `put_nowait`s
-//! into. The one transition no RPC path can announce is spontaneous guest
+//! per-subscriber queue is unbounded, exactly like the Python
+//! `asyncio.Queue()` the emitter `put_nowait`s into. The one transition no
+//! RPC path can announce is spontaneous guest
 //! death: nothing calls the daemon when a guest's QEMU exits on its own. The
 //! daemon notices it when a status read finds the controller unit dead under
 //! a VM it has seen alive, and [`EventHub::observe`] turns that observation
