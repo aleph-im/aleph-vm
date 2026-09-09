@@ -13,7 +13,7 @@ from enum import Enum
 from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash
 
-from aleph.vm.agent.allocation.failures import AllocationFailureCode
+from aleph.vm.agent.allocation.refusal import AllocationFailureCode, Refusals
 from aleph.vm.agent.allocation.verify import VerifiedMessage
 from aleph.vm.supervisor_interface.types import VmInfo, VmStatus
 
@@ -141,5 +141,5 @@ class PlanVerdict:
     pending: list[ItemHash] = field(default_factory=list)
     unchanged: list[ItemHash] = field(default_factory=list)
     removing: list[ItemHash] = field(default_factory=list)
-    rejected: dict[str, dict] = field(default_factory=dict)
+    rejected: Refusals = field(default_factory=dict)
     retained: dict[ItemHash, str] = field(default_factory=dict)

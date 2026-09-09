@@ -17,6 +17,7 @@ from aleph_message.models import ItemHash
 from aleph_message.models.execution.instance import InstanceContent
 from test_supervisor_translate import _make_qemu_instance_message
 
+from aleph.vm.agent.allocation.refusal import AllocationFailureCode
 from aleph.vm.agent.capacity import (
     RESERVATION_TTL_SECONDS,
     CapacityManager,
@@ -631,7 +632,7 @@ def test_simulate_is_cumulative(mocker):
     verdicts = _manager().simulate(candidates)
 
     assert [v.accepted for v in verdicts] == [True, True, False]
-    assert verdicts[2].code == "insufficient_capacity"
+    assert verdicts[2].refusal.code is AllocationFailureCode.INSUFFICIENT_CAPACITY
     assert verdicts[2].vm_hash == _HASH_C
 
 
@@ -663,7 +664,7 @@ def test_simulate_judges_disk(mocker):
     verdicts = _manager().simulate([(_HASH_A, _requirements(memory_mib=1024, disk_mib=100_000))])
 
     assert verdicts[0].accepted is False
-    assert verdicts[0].code == "insufficient_capacity"
+    assert verdicts[0].refusal.code is AllocationFailureCode.INSUFFICIENT_CAPACITY
 
 
 def test_simulate_reserves_nothing(mocker):
@@ -710,7 +711,7 @@ def test_simulate_is_cumulative_on_disk_too(mocker):
     verdicts = _manager().simulate(candidates)
 
     assert [v.accepted for v in verdicts] == [True, False]
-    assert verdicts[1].code == "insufficient_capacity"
+    assert verdicts[1].refusal.code is AllocationFailureCode.INSUFFICIENT_CAPACITY
 
 
 def test_simulate_ignores_a_release_of_a_vm_it_does_not_know(mocker):
@@ -771,7 +772,7 @@ def test_simulate_refuses_a_gpu_candidate_when_no_inventory_was_given(mocker):
     verdicts = _manager().simulate([(_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID]))])
 
     assert verdicts[0].accepted is False
-    assert verdicts[0].code == "gpu_unavailable"
+    assert verdicts[0].refusal.code is AllocationFailureCode.GPU_UNAVAILABLE
 
 
 def test_simulate_admits_a_gpu_candidate_the_host_can_serve(mocker):
@@ -791,7 +792,7 @@ def test_simulate_refuses_a_card_the_host_does_not_have(mocker):
     )
 
     assert verdicts[0].accepted is False
-    assert verdicts[0].code == "gpu_unavailable"
+    assert verdicts[0].refusal.code is AllocationFailureCode.GPU_UNAVAILABLE
 
 
 def test_simulate_is_cumulative_on_gpus(mocker):
@@ -806,7 +807,7 @@ def test_simulate_is_cumulative_on_gpus(mocker):
     verdicts = _manager().simulate(candidates, available_gpus=[_gpu_device()])
 
     assert [v.accepted for v in verdicts] == [True, False]
-    assert verdicts[1].code == "gpu_unavailable"
+    assert verdicts[1].refusal.code is AllocationFailureCode.GPU_UNAVAILABLE
 
 
 def test_simulate_treats_a_held_card_as_taken(mocker):
@@ -884,7 +885,7 @@ def test_simulate_does_not_take_cards_for_a_candidate_refused_on_memory(mocker):
     verdicts = _manager().simulate(candidates, available_gpus=[_gpu_device()])
 
     assert [v.accepted for v in verdicts] == [False, True]
-    assert verdicts[0].code == "insufficient_capacity"
+    assert verdicts[0].refusal.code is AllocationFailureCode.INSUFFICIENT_CAPACITY
 
 
 def test_simulate_does_not_let_a_recorded_candidate_refuse_itself(mocker):
@@ -998,8 +999,8 @@ def test_simulate_puts_a_refused_candidates_record_back(mocker):
     verdicts = manager.simulate(candidates)
 
     assert [v.accepted for v in verdicts] == [False, False]
-    assert verdicts[0].code == "gpu_unavailable"
-    assert verdicts[1].code == "insufficient_capacity"
+    assert verdicts[0].refusal.code is AllocationFailureCode.GPU_UNAVAILABLE
+    assert verdicts[1].refusal.code is AllocationFailureCode.INSUFFICIENT_CAPACITY
 
 
 def test_simulate_puts_the_record_back_when_the_refusal_was_capacity(mocker):
@@ -1049,7 +1050,7 @@ def test_simulate_does_not_echo_the_requested_device_id_back(mocker):
     verdicts = _manager().simulate([(_HASH_A, _gpu_requirements(device_ids=["10de:evil"]))])
 
     assert verdicts[0].accepted is False
-    assert "evil" not in verdicts[0].detail
+    assert "evil" not in verdicts[0].refusal.message
 
 
 def test_simulate_is_cumulative_on_vcpus(mocker):
@@ -1442,7 +1443,7 @@ def test_simulate_still_charges_a_candidate_that_holds_nothing(mocker):
     verdicts = _manager().simulate([candidate])
 
     assert verdicts[0].accepted is False
-    assert verdicts[0].code == "insufficient_capacity"
+    assert verdicts[0].refusal.code is AllocationFailureCode.INSUFFICIENT_CAPACITY
 
 
 def test_a_held_volume_is_not_charged_to_the_rest_of_the_plan(mocker, tmp_path):

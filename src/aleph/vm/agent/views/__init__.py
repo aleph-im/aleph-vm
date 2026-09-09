@@ -22,9 +22,9 @@ from pydantic import ValidationError
 from aleph.vm import haproxy
 from aleph.vm.agent import payment, status
 from aleph.vm.agent.aggregate import update_aggregate_settings
-from aleph.vm.agent.allocation.failures import public_failure_message
 from aleph.vm.agent.allocation.plan import AllocationState, FailureRecord
 from aleph.vm.agent.allocation.reconciler import AllocationReconciler
+from aleph.vm.agent.allocation.refusal import Refusal
 from aleph.vm.agent.allocation.teardown import is_removable_by_allocation, teardown_vm
 from aleph.vm.agent.capacity import CapacityManager, requested_gpu_ids
 from aleph.vm.agent.custom_logs import set_vm_for_logging
@@ -305,7 +305,7 @@ def _allocation_block(state: AllocationState | None, failure: FailureRecord | No
     return {
         "state": state.value,
         "attempts": failure.attempts if failure else 0,
-        "error": ({"code": failure.code.value, "message": public_failure_message(failure.code)} if failure else None),
+        "error": Refusal.for_code(failure.code).as_dict() if failure else None,
         "next_retry_at": failure.next_retry_at if failure else None,
     }
 

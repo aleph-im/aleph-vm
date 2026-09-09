@@ -15,9 +15,9 @@ import pytest
 from aleph_message.models import ItemHash
 
 from aleph.vm.agent.allocation import reconciler as reconciler_module
-from aleph.vm.agent.allocation.failures import AllocationFailureCode
 from aleph.vm.agent.allocation.plan import AllocationPlan, AllocationState, PlannedVm
 from aleph.vm.agent.allocation.reconciler import AllocationReconciler
+from aleph.vm.agent.allocation.refusal import AllocationFailureCode
 from aleph.vm.conf import settings
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor_interface.types import ConfidentialMode, VmStatus
