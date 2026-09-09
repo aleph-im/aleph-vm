@@ -210,16 +210,24 @@ pub(crate) fn verify_signer_chain(chain_pem: &[u8], now: SystemTime) -> Result<X
 }
 
 /// Reject a collateral signer that is not Intel's TCB signing certificate.
+///
+/// The subject must carry exactly one Common Name and it must be the TCB
+/// signing name in full. A substring test would accept a subject that only
+/// embeds the name, and taking the first of several Common Names would let
+/// the rest of the subject say something else entirely.
 fn check_signer_identity(signer: &X509) -> Result<()> {
-    let cn = signer
-        .subject_name()
-        .entries_by_nid(openssl::nid::Nid::COMMONNAME)
+    let subject = signer.subject_name();
+    let mut entries = subject.entries_by_nid(openssl::nid::Nid::COMMONNAME);
+    let cn = entries
         .next()
         .context("the collateral signer certificate has no Common Name")?;
-    let cn = String::from_utf8(cn.data().as_slice().to_vec())
+    if entries.next().is_some() {
+        bail!("the collateral signer certificate carries more than one Common Name");
+    }
+    let cn = std::str::from_utf8(cn.data().as_slice())
         .context("the collateral signer Common Name is not valid UTF-8")?;
-    if !cn.contains(TCB_SIGNING_CN) {
-        bail!("the collateral signer Common Name {cn:?} is not a {TCB_SIGNING_CN} certificate");
+    if cn != TCB_SIGNING_CN {
+        bail!("the collateral signer Common Name {cn:?} is not {TCB_SIGNING_CN:?}");
     }
     Ok(())
 }
@@ -286,6 +294,52 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("Intel SGX TCB Signing"), "got: {err}");
+    }
+
+    /// The subject gate is an equality on a single Common Name. A subject
+    /// that merely embeds the TCB signing name, or that hides a second name
+    /// behind it, is not Intel's TCB signing certificate.
+    #[test]
+    fn signer_common_name_must_match_exactly_and_stand_alone() {
+        use openssl::asn1::Asn1Time;
+        use openssl::ec::{EcGroup, EcKey};
+        use openssl::hash::MessageDigest;
+        use openssl::pkey::PKey;
+        use openssl::x509::{X509Builder, X509NameBuilder};
+
+        fn cert_with_common_names(names: &[&str]) -> X509 {
+            let group =
+                EcGroup::from_curve_name(openssl::nid::Nid::X9_62_PRIME256V1).expect("group");
+            let key = PKey::from_ec_key(EcKey::generate(&group).expect("key")).expect("pkey");
+            let mut subject = X509NameBuilder::new().expect("name builder");
+            for name in names {
+                subject.append_entry_by_text("CN", name).expect("append CN");
+            }
+            let subject = subject.build();
+            let mut builder = X509Builder::new().expect("cert builder");
+            builder.set_subject_name(&subject).expect("subject");
+            builder.set_issuer_name(&subject).expect("issuer");
+            builder.set_pubkey(&key).expect("pubkey");
+            builder
+                .set_not_before(&Asn1Time::from_unix(1_700_000_000).expect("not before"))
+                .expect("set not before");
+            builder
+                .set_not_after(&Asn1Time::from_unix(1_900_000_000).expect("not after"))
+                .expect("set not after");
+            builder.sign(&key, MessageDigest::sha256()).expect("sign");
+            builder.build()
+        }
+
+        let exact = cert_with_common_names(&[TCB_SIGNING_CN]);
+        check_signer_identity(&exact).expect("the exact Common Name is accepted");
+
+        let superstring = cert_with_common_names(&["Not the Intel SGX TCB Signing CA"]);
+        let err = check_signer_identity(&superstring).unwrap_err().to_string();
+        assert!(err.contains("is not"), "got: {err}");
+
+        let two = cert_with_common_names(&[TCB_SIGNING_CN, "Something Else"]);
+        let err = check_signer_identity(&two).unwrap_err().to_string();
+        assert!(err.contains("more than one Common Name"), "got: {err}");
     }
 
     #[test]

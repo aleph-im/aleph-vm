@@ -197,8 +197,9 @@ const AMD_ORG_NAME: &str = "Advanced Micro Devices";
 /// - VCEK is signed by ASK.
 /// - ARK, ASK, and VCEK are all within their validity period
 ///   (notBefore/notAfter) at the current wall-clock time. Freshness is a
-///   production requirement, so this entry point reads the clock;
-///   [`verify_cert_chain_at`] takes the instant as a parameter instead.
+///   production requirement, so this entry point reads the clock; the
+///   crate-private `verify_cert_chain_at` takes the instant as a parameter
+///   instead.
 pub fn verify_cert_chain(chain: &CertChain, pinned_ark_der: &[u8]) -> Result<()> {
     verify_cert_chain_at(chain, pinned_ark_der, SystemTime::now())
 }
@@ -209,7 +210,10 @@ pub fn verify_cert_chain(chain: &CertChain, pinned_ark_der: &[u8]) -> Result<()>
 /// the time as a parameter is what lets a test drive a chain that is
 /// expired or not yet valid at a chosen instant without waiting for the
 /// wall clock to get there.
-pub fn verify_cert_chain_at(
+///
+/// Crate-private: injecting the verification time is a testing affordance,
+/// not something a caller outside the crate has any reason to reach for.
+pub(crate) fn verify_cert_chain_at(
     chain: &CertChain,
     pinned_ark_der: &[u8],
     now: SystemTime,
