@@ -61,15 +61,19 @@ pub fn parse_resource_file(contents: &str) -> Result<u64, DaemonError> {
     let mut total = 0u64;
     for line in contents.lines().filter(|l| !l.trim().is_empty()) {
         let mut fields = line.split_whitespace().map(|f| {
-            u64::from_str_radix(f.trim_start_matches("0x"), 16)
-                .map_err(|e| DaemonError::GpuProbe(format!("bad resource field {f:?}: {e}")))
+            u64::from_str_radix(f.trim_start_matches("0x"), 16).map_err(|source| {
+                DaemonError::GpuResourceField {
+                    field: f.to_string(),
+                    source,
+                }
+            })
         });
         let (start, end, flags) = match (fields.next(), fields.next(), fields.next()) {
             (Some(s), Some(e), Some(f)) => (s?, e?, f?),
             _ => {
-                return Err(DaemonError::GpuProbe(format!(
-                    "malformed resource line {line:?}"
-                )));
+                return Err(DaemonError::GpuResourceLine {
+                    line: line.to_string(),
+                });
             }
         };
         if flags & WANTED_FLAGS != WANTED_FLAGS {
@@ -166,8 +170,11 @@ pub fn gpu_mmio64_mb_under(devices_dir: &Path, pci_hosts: &[String]) -> Result<u
     let mut total = 0u64;
     for pci_host in pci_hosts {
         let path = crate::gpu_cc::sysfs_device_dir_under(devices_dir, pci_host).join("resource");
-        let contents = std::fs::read_to_string(&path)
-            .map_err(|e| DaemonError::GpuProbe(format!("cannot read {}: {e}", path.display())))?;
+        let contents =
+            std::fs::read_to_string(&path).map_err(|source| DaemonError::GpuResourceRead {
+                path: path.clone(),
+                source,
+            })?;
         total = total.saturating_add(parse_resource_file(&contents)?);
     }
     Ok(mmio64_window_mb(total))
@@ -239,13 +246,30 @@ mod tests {
     fn a_card_without_a_resource_file_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
         let error = gpu_mmio64_mb_under(dir.path(), &["06:00.0".to_string()]).unwrap_err();
+        assert!(
+            matches!(&error, DaemonError::GpuResourceRead { path, .. }
+                if path.ends_with("0000:06:00.0/resource")),
+            "{error:?}"
+        );
         assert!(error.to_string().contains("0000:06:00.0"), "{error}");
     }
 
     #[test]
     fn malformed_lines_are_errors() {
-        assert!(parse_resource_file("0x1 0x2\n").is_err());
-        assert!(parse_resource_file("zz 0x2 0x3\n").is_err());
+        // Each failure names what it saw, and carries the offending text in a
+        // field rather than in a pre-formatted string, so a caller can log the
+        // line or the field without re-parsing the message.
+        let short = parse_resource_file("0x1 0x2\n").unwrap_err();
+        assert!(
+            matches!(&short, DaemonError::GpuResourceLine { line } if line == "0x1 0x2"),
+            "{short:?}"
+        );
+        let not_hex = parse_resource_file("zz 0x2 0x3\n").unwrap_err();
+        assert!(
+            matches!(&not_hex, DaemonError::GpuResourceField { field, .. } if field == "zz"),
+            "{not_hex:?}"
+        );
+        assert!(not_hex.to_string().contains("hexadecimal"), "{not_hex}");
     }
 
     #[test]

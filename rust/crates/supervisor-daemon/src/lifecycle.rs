@@ -5289,10 +5289,11 @@ mod tests {
             pci_host: "06:00.0".into(),
             supports_x_vga: true,
         }];
-        let unreadable = |_: &str, _: &str| {
-            Err(crate::error::DaemonError::GpuProbe(
-                "BAR0 went away".to_string(),
-            ))
+        let unreadable = |pci_host: &str, _: &str| {
+            Err(crate::error::DaemonError::GpuRegisterRead {
+                pci_host: pci_host.to_string(),
+                source: std::io::Error::other("BAR0 went away"),
+            })
         };
         match snp_config_slice_with(state, &spec, unreadable, |_| Ok(1024)) {
             Err(RpcError::InvalidBackend(msg)) => {
