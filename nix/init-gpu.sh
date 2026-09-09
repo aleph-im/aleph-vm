@@ -280,7 +280,10 @@ if [ "$gpu_total" -gt 0 ]; then
     # on its own line. result_message follows result_code today, hence the
     # trailing comma, but the match does not depend on it: a future build that
     # drops or reorders result_message must not silently stop verifying this.
-    /bin/busybox grep -qE '"result_code" *: *0 *,?$' /run/aleph/gpu-attest.json \
+    # The pattern is anchored to the TOP-LEVEL indent (four spaces at dump(4)):
+    # a per-device "result_code": 0 nested deeper in the document must never
+    # satisfy the check for an overall result that failed.
+    /bin/busybox grep -qE '^    "result_code" *: *0 *,?$' /run/aleph/gpu-attest.json \
         || gpu_fatal "result_code != 0"
     # Extract the claims array for the attest-agent (the EAT is not served).
     # "claims" sorts first, so its value spans from the `    "claims": [` line
