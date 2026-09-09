@@ -710,36 +710,32 @@ async def remove_devmapper(namespace: str, volume_name: str) -> None:
 
     # The base device is per VM but shared by all of its parent-backed
     # volumes (create_devmapper builds it once, from the first one), so it
-    # only goes once the last snapshot of this VM is gone.
-    base_name = f"{namespace}_base"
-    siblings = [path for path in mapper.glob(f"{namespace}_*") if path.name != base_name and path.is_block_device()]
-    if not siblings and (mapper / base_name).is_block_device():
-        await run_in_subprocess(["dmsetup", "remove", "--retry", base_name])
-        logger.info("Removed device-mapper base %s", base_name)
+    # only goes once the last snapshot of this VM is gone, which is the
+    # question remove_base_device answers.
+    await remove_base_device(namespace)
 
 
 async def remove_base_device(namespace: str) -> None:
     """Remove ``<namespace>_base`` when no snapshot of this VM is left.
 
-    ``create_devmapper`` builds the base device before the snapshot stacked on
-    it, so a create that died between the two leaves a base device with
-    nothing above it. ``remove_devmapper`` removes the base as the last step
-    of removing a snapshot, which is exactly the step that never runs in that
-    case, and the base holds the parent image's device, and through it the
-    runtime cache entry, for good (``cache.parent_device_is_free`` sees a
-    holder and keeps the image).
+    The last step of removing a snapshot, and the whole of the recovery for a
+    base with nothing above it: ``create_devmapper`` builds the base device
+    before the snapshot stacked on it, so a create that died between the two
+    leaves one behind, and that step never runs. Until it does the base holds
+    the parent image's device, and through it the runtime cache entry, for
+    good (``cache.parent_device_is_free`` sees a holder and keeps the image).
     """
     if not is_vm_namespace(namespace):
         logger.error("Refusing to remove an implausible device-mapper base: %r", namespace)
         return
     mapper = Path(DEVICE_MAPPER_DIRECTORY)
     base_name = f"{namespace}_base"
-    siblings = [path for path in mapper.glob(f"{namespace}_*") if path.name != base_name and path.is_block_device()]
-    if siblings:
+    snapshots = [path for path in mapper.glob(f"{namespace}_*") if path.name != base_name and path.is_block_device()]
+    if snapshots:
         return
     if (mapper / base_name).is_block_device():
         await run_in_subprocess(["dmsetup", "remove", "--retry", base_name])
-        logger.info("Removed the orphan device-mapper base %s", base_name)
+        logger.info("Removed the device-mapper base %s: no snapshot of this VM is left", base_name)
 
 
 async def get_existing_file(ref: str) -> Path:
