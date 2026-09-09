@@ -26,7 +26,7 @@ use crate::controller_config::{
 use crate::firecracker::{ProgramBootError, ProgramBootRequest};
 use crate::service::DaemonState;
 use crate::tap::TapAssignment;
-use crate::units::{self, UnitsError, controller_unit_name};
+use crate::units::{self, UnitLiveness, UnitsError, controller_unit_name};
 use crate::world::{self, AttachedGpu, ProgramEntry, VmEntry, VmTimes, VmType, now_ns};
 use crate::{checks, cloudinit, dhcp, nft, ports};
 
@@ -542,11 +542,39 @@ pub(crate) fn entry_running(state: &DaemonState, entry: &VmEntry) -> bool {
     }
 }
 
+/// The live state of one entry's controller unit, one batched lookup. A bus
+/// failure degrades to `Unknown` rather than `Dead`: "the guest died" is a
+/// claim only an answering bus can support (ledger entry 13). An ephemeral
+/// program runs under no unit and has nothing to ask about.
+fn entry_liveness(state: &DaemonState, entry: &VmEntry) -> UnitLiveness {
+    if entry.is_program {
+        return UnitLiveness::Unknown;
+    }
+    let unit = entry.unit_name();
+    match state.units.unit_states(std::slice::from_ref(&unit)) {
+        Ok(states) => states.get(&unit).copied().unwrap_or(UnitLiveness::Unknown),
+        Err(error) => {
+            tracing::error!(%error, "Failed to get services active states");
+            UnitLiveness::Unknown
+        }
+    }
+}
+
 /// Python `_status_snapshot`: the wire status of an entry right now, with a
 /// live unit query for the running flag. Every mutation snapshots it before
 /// acting so the emitted event carries the pre-mutation status.
 fn status_snapshot(state: &DaemonState, entry: &VmEntry) -> pb::VmStatus {
-    crate::service::vm_status(&entry.times, entry_running(state, entry))
+    let unit = entry_liveness(state, entry);
+    let running = if entry.is_program {
+        entry.times.starting_at_ns != 0 && entry.times.stopping_at_ns == 0
+    } else {
+        unit.is_active()
+    };
+    crate::service::vm_status(
+        &entry.times,
+        running,
+        crate::service::guest_liveness(entry, unit),
+    )
 }
 
 fn chain_prefix(state: &DaemonState) -> &str {
@@ -1152,11 +1180,16 @@ pub fn start_vm(state: &DaemonState, vm_id: &str) -> Result<(VmEntry, bool), Rpc
     let old_status = status_snapshot(state, &entry);
     start_vm_execution(state, vm_id)?;
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
-    let running = unit_active(state, &entry.unit_name());
+    let unit = entry_liveness(state, &entry);
+    let running = unit.is_active();
     state.events.emit(
         vm_id,
         old_status,
-        crate::service::vm_status(&entry.times, running),
+        crate::service::vm_status(
+            &entry.times,
+            running,
+            crate::service::guest_liveness(&entry, unit),
+        ),
     );
     Ok((entry, running))
 }
@@ -1187,7 +1220,9 @@ pub fn reboot_vm(state: &DaemonState, vm_id: &str) -> Result<(VmEntry, bool), Rp
         state.events.emit(
             vm_id,
             pb::VmStatus::Stopped,
-            crate::service::vm_status(&entry.times, running),
+            // The recreate settled the program itself; it runs under no
+            // controller unit to observe in any case.
+            crate::service::vm_status(&entry.times, running, UnitLiveness::Unknown),
         );
         return Ok((entry, running));
     }
@@ -1224,14 +1259,19 @@ pub fn reboot_vm(state: &DaemonState, vm_id: &str) -> Result<(VmEntry, bool), Rp
     wait_for_controller_ready(state, &unit)?;
     with_entry_mut(state, vm_id, |entry| entry.times.started_at_ns = now_ns());
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
-    let running = unit_active(state, &unit);
+    let liveness = entry_liveness(state, &entry);
+    let running = liveness.is_active();
     // A reboot is a down-then-up pair; watchers that drop per-VM state on
     // "down" must see the down (the Python reboot_vm comment).
     state.events.emit(vm_id, old_status, pb::VmStatus::Stopped);
     state.events.emit(
         vm_id,
         pb::VmStatus::Stopped,
-        crate::service::vm_status(&entry.times, running),
+        crate::service::vm_status(
+            &entry.times,
+            running,
+            crate::service::guest_liveness(&entry, liveness),
+        ),
     );
     Ok((entry, running))
 }
@@ -1346,6 +1386,9 @@ fn delete_tracked_vm(
     state.events.emit(vm_id, old_status, pb::VmStatus::Stopped);
 
     state.world.blocking_write().entries.remove(vm_id);
+    // The hash may be created again; drop the status the hub remembers so
+    // the next life is not diffed against this one.
+    state.events.forget(vm_id);
     // The cards are free again, so the next refresh reads the hardware
     // instead of serving an answer about a card in a different state.
     forget_cc_modes(state, &entry.config.gpus);
@@ -2694,7 +2737,10 @@ pub fn create_vm(state: &DaemonState, request: pb::VmSpec) -> Result<(VmEntry, b
     state.events.emit(
         &entry.vm_hash,
         pb::VmStatus::Defined,
-        crate::service::vm_status(&entry.times, running),
+        // The create settled the unit itself: it either waited for the
+        // controller to be ready or deliberately left it down until the
+        // owner uploads the session certificates.
+        crate::service::vm_status(&entry.times, running, UnitLiveness::Unknown),
     );
     Ok((entry, running))
 }
@@ -4125,8 +4171,13 @@ mod tests {
         // branch); the reported status is awaiting_confidential_init.
         assert_ne!(entry.times.starting_at_ns, 0);
         assert_ne!(entry.times.started_at_ns, 0);
-        let info = crate::service::vm_info_message(state, &entry, false, now_ns());
+        let liveness = entry_liveness(state, &entry);
+        let info = crate::service::vm_info_message(state, &entry, false, liveness, now_ns());
         assert!(info.awaiting_confidential_init);
+        // Its controller is deliberately down until the owner uploads the
+        // session certificates, so the dead-unit arm must not claim it died.
+        assert_eq!(liveness, UnitLiveness::Dead, "no unit was ever started");
+        assert_eq!(info.status, pb::VmStatus::Booting as i32);
         assert_eq!(info.confidential_mode, pb::ConfidentialMode::SevEs as i32);
 
         // The written controller config carries the four SEV fields.
@@ -4496,7 +4547,13 @@ mod tests {
         );
 
         // Reported as SEV-SNP and NOT awaiting init.
-        let info = crate::service::vm_info_message(state, &entry, running, now_ns());
+        let info = crate::service::vm_info_message(
+            state,
+            &entry,
+            running,
+            entry_liveness(state, &entry),
+            now_ns(),
+        );
         assert_eq!(info.confidential_mode, pb::ConfidentialMode::SevSnp as i32);
         assert!(!info.awaiting_confidential_init);
 
@@ -4947,11 +5004,12 @@ mod tests {
         // the cleanup path is observable.
         struct FailingSystemd(Arc<FakeSystemd>);
         impl crate::units::UnitStateSource for FailingSystemd {
-            fn active_states(
+            fn unit_states(
                 &self,
                 units: &[String],
-            ) -> Result<std::collections::HashMap<String, bool>, UnitsError> {
-                self.0.active_states(units)
+            ) -> Result<std::collections::HashMap<String, crate::units::UnitLiveness>, UnitsError>
+            {
+                self.0.unit_states(units)
             }
             fn controller_units(
                 &self,
@@ -5782,11 +5840,12 @@ mod tests {
         // to active normally, so pre-seed a unit that starts "failed".
         struct FailingSystemd(Arc<FakeSystemd>);
         impl crate::units::UnitStateSource for FailingSystemd {
-            fn active_states(
+            fn unit_states(
                 &self,
                 units: &[String],
-            ) -> Result<std::collections::HashMap<String, bool>, UnitsError> {
-                self.0.active_states(units)
+            ) -> Result<std::collections::HashMap<String, crate::units::UnitLiveness>, UnitsError>
+            {
+                self.0.unit_states(units)
             }
             fn controller_units(
                 &self,
@@ -6353,7 +6412,13 @@ mod tests {
             "mapped_ports are not reloaded on this path"
         );
         // _status_of checks stopped_at first: still STOPPED on the wire.
-        let info = crate::service::vm_info_message(state, &entry, running, now_ns());
+        let info = crate::service::vm_info_message(
+            state,
+            &entry,
+            running,
+            entry_liveness(state, &entry),
+            now_ns(),
+        );
         assert_eq!(info.status, pb::VmStatus::Stopped as i32);
         // The tap was NOT recreated (restart-without-network, both daemons).
         assert!(!harness.taps.interface_exists("vmtap4"));
@@ -7725,7 +7790,13 @@ mod tests {
         assert_eq!(entry.numa_node, Some(0));
 
         // VmInfo carries the effective placement.
-        let info = crate::service::vm_info_message(state, &entry, running, now_ns());
+        let info = crate::service::vm_info_message(
+            state,
+            &entry,
+            running,
+            entry_liveness(state, &entry),
+            now_ns(),
+        );
         assert_eq!(info.numa_node, Some(0));
 
         // The AllowedCPUs drop-in was written with node 0's cpuset.
@@ -8011,11 +8082,12 @@ mod tests {
         host.settings.numa_hugepages = true;
         struct FailingSystemd(Arc<FakeSystemd>);
         impl crate::units::UnitStateSource for FailingSystemd {
-            fn active_states(
+            fn unit_states(
                 &self,
                 units: &[String],
-            ) -> Result<std::collections::HashMap<String, bool>, UnitsError> {
-                self.0.active_states(units)
+            ) -> Result<std::collections::HashMap<String, crate::units::UnitLiveness>, UnitsError>
+            {
+                self.0.unit_states(units)
             }
             fn controller_units(
                 &self,
@@ -8294,7 +8366,13 @@ mod tests {
         assert!(running);
         assert_eq!(entry.numa_node, None, "no placement on a single-node host");
 
-        let info = crate::service::vm_info_message(state, &entry, running, now_ns());
+        let info = crate::service::vm_info_message(
+            state,
+            &entry,
+            running,
+            entry_liveness(state, &entry),
+            now_ns(),
+        );
         assert_eq!(info.numa_node, None);
 
         // No AllowedCPUs drop-in, no reservation.
@@ -8407,11 +8485,12 @@ mod tests {
         // action but the state reads back "failed", failing the boot.
         struct FailingSystemd(Arc<FakeSystemd>);
         impl crate::units::UnitStateSource for FailingSystemd {
-            fn active_states(
+            fn unit_states(
                 &self,
                 units: &[String],
-            ) -> Result<std::collections::HashMap<String, bool>, UnitsError> {
-                self.0.active_states(units)
+            ) -> Result<std::collections::HashMap<String, crate::units::UnitLiveness>, UnitsError>
+            {
+                self.0.unit_states(units)
             }
             fn controller_units(
                 &self,
