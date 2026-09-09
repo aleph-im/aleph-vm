@@ -64,6 +64,18 @@ impl TcbStatus {
             _ => component.max(self),
         }
     }
+
+    /// The worse of two peer statuses, on the severity order this enum is
+    /// declared in.
+    ///
+    /// Deliberately not `converge`: that rule is asymmetric (it upgrades an
+    /// out-of-date component on a configuration-needed platform), which is
+    /// right for a component appraised against a platform but wrong for two
+    /// results of the same appraisal, where it would make the outcome depend
+    /// on which one happened to be evaluated first.
+    fn worse(self, other: TcbStatus) -> TcbStatus {
+        self.max(other)
+    }
 }
 
 /// Which TCB outcomes a caller accepts.
@@ -438,27 +450,53 @@ fn walk_platform_tcb(
     bail!("the platform TCB is below every level in Intel's TCB Info");
 }
 
-/// Walk the TCB levels for every TDX SVN vector the report body carries.
+/// Appraise one TDX SVN vector: the platform level walk plus the TDX
+/// module's own identity and SVN ladder for the module that vector names.
+fn appraise_tdx_svn_vector(
+    tcb_info: &TcbInfo,
+    platform: &PckPlatform,
+    body: &TdReportBody,
+    tee_tcb_svn: &[u8; 16],
+) -> Result<(TcbStatus, Vec<String>)> {
+    let (mut status, mut advisories) = walk_platform_tcb(tcb_info, platform, tee_tcb_svn)?;
+    if let Some((module_status, module_advisories)) =
+        tdx_module_status(tcb_info, body, tee_tcb_svn)?
+    {
+        status = status.converge(module_status);
+        merge_advisories(&mut advisories, module_advisories);
+    }
+    Ok((status, advisories))
+}
+
+/// Appraise every TDX SVN vector the report body carries.
 ///
 /// A TD report 1.0 body has one vector. A 1.5 body adds `tee_tcb_svn2`,
 /// which exists because a TD-preserving update swaps the TDX module under a
 /// running TD: one vector describes the module TCB the TD launched on, the
 /// other the one it runs on now, and either can be the lower of the two.
-/// Walking only the first would let a TD whose other vector matches no
-/// published level appraise on the vector that happens to be current, so
-/// both are walked, the worse status wins and either walk failing fails the
-/// appraisal. Intel's own verifier does the same for a 1.5 body.
+/// Appraising only the first would let a TD whose other vector matches no
+/// published level, or names a TDX module Intel does not list, pass on the
+/// strength of the vector that happened to be walked. So both are appraised
+/// in full (level walk and module identity alike), either one failing fails
+/// the appraisal, and the worse of the two statuses is the answer.
+///
+/// Taking the worse status is stricter than Intel's own handling, which
+/// propagates a failure of the second appraisal but otherwise keeps the
+/// first vector's status and only flags that a relaunch is advised. There is
+/// no such advisory outcome here: a status this policy would refuse for one
+/// vector is refused for the TD.
 fn appraise_platform_tcb(
     tcb_info: &TcbInfo,
     platform: &PckPlatform,
     body: &TdReportBody,
 ) -> Result<(TcbStatus, Vec<String>)> {
-    let (mut status, mut advisories) = walk_platform_tcb(tcb_info, platform, &body.tee_tcb_svn)?;
+    let (mut status, mut advisories) =
+        appraise_tdx_svn_vector(tcb_info, platform, body, &body.tee_tcb_svn)?;
     if let Some(v15) = &body.v15 {
         let (second_status, second_advisories) =
-            walk_platform_tcb(tcb_info, platform, &v15.tee_tcb_svn2)
+            appraise_tdx_svn_vector(tcb_info, platform, body, &v15.tee_tcb_svn2)
                 .context("appraising the TD report 1.5 second TCB vector (tee_tcb_svn2)")?;
-        status = status.converge(second_status);
+        status = status.worse(second_status);
         merge_advisories(&mut advisories, second_advisories);
     }
     Ok((status, advisories))
@@ -473,21 +511,24 @@ fn merge_advisories(into: &mut Vec<String>, from: Vec<String>) {
     }
 }
 
-/// Converge the TDX module's own status into the platform status.
+/// The TDX module's own status, for the module the given SVN vector names.
 ///
 /// `tee_tcb_svn[0]` is the module SVN and `[1]` its major version, which
 /// selects a `tdxModuleIdentities` entry (`TDX_<version>`); the entry's
 /// MRSIGNER must match the quote's MRSIGNERSEAM and its SVN ladder gives the
-/// module status.
+/// module status. The vector is a parameter rather than read off the body
+/// because a TD report 1.5 carries two of them, each naming its own module
+/// version, and both have to clear this gate.
 fn tdx_module_status(
     tcb_info: &TcbInfo,
-    quote: &TdxQuote,
+    body: &TdReportBody,
+    tee_tcb_svn: &[u8; 16],
 ) -> Result<Option<(TcbStatus, Vec<String>)>> {
     if tcb_info.id != "TDX" || tcb_info.version < 3 {
         return Ok(None);
     }
-    let module_svn = quote.body.tee_tcb_svn[0];
-    let module_version = quote.body.tee_tcb_svn[1];
+    let module_svn = tee_tcb_svn[0];
+    let module_version = tee_tcb_svn[1];
 
     // Expected identity: the base tdxModule, overridden by a per-version
     // entry when the report names one. Falling straight through without
@@ -519,13 +560,13 @@ fn tdx_module_status(
         identity_levels = Some(&identity.tcb_levels);
     }
 
-    if quote.body.mrsignerseam != expected_mrsigner {
+    if body.mrsignerseam != expected_mrsigner {
         bail!("MRSIGNERSEAM does not match the Intel-signed TDX module identity");
     }
     // SEAMATTRIBUTES must match the identity under its mask: the masked bits
     // pin the module's own attributes (notably its DEBUG bit).
     for i in 0..8 {
-        if quote.body.seam_attributes[i] & attributes_mask[i]
+        if body.seam_attributes[i] & attributes_mask[i]
             != expected_attributes[i] & attributes_mask[i]
         {
             bail!("SEAMATTRIBUTES do not match the TDX module identity under its mask");
@@ -652,12 +693,8 @@ pub fn evaluate_tcb(
         );
     }
 
+    // Platform levels and TDX module, for every SVN vector the body carries.
     let (mut status, mut advisories) = appraise_platform_tcb(&tcb_info, &platform, &quote.body)?;
-
-    if let Some((module_status, module_advisories)) = tdx_module_status(&tcb_info, quote)? {
-        status = status.converge(module_status);
-        merge_advisories(&mut advisories, module_advisories);
-    }
 
     let (qe_status, qe_advisories) = qe_identity_status(&qe_identity, &quote.signature.qe_report)?;
     status = status.converge(qe_status);
@@ -1032,6 +1069,17 @@ mod tests {
     /// zeros so any real PCK platform satisfies it and the TDX components
     /// decide the walk.
     fn tcb_info_with_tdx_levels(levels: &[([u8; 16], &str, &[&str])]) -> TcbInfo {
+        tcb_info_with_module_identities(levels, &[])
+    }
+
+    /// The same, plus `tdxModuleIdentities` entries given as
+    /// (id, ISVSVN ladder of (isvsvn, status)). Every identity carries the
+    /// fixture's own MRSIGNERSEAM and a zero attributes mask, so the module
+    /// gate turns on the SVN ladder alone.
+    fn tcb_info_with_module_identities(
+        levels: &[([u8; 16], &str, &[&str])],
+        module_identities: &[(&str, &[(u8, &str)])],
+    ) -> TcbInfo {
         let zeros = vec![serde_json::json!({"svn": 0}); 16];
         let levels: Vec<serde_json::Value> = levels
             .iter()
@@ -1048,13 +1096,36 @@ mod tests {
                 })
             })
             .collect();
+        let mrsigner = hex::encode(parse_tdx_quote(QUOTE_V4).unwrap().body.mrsignerseam);
+        let module = serde_json::json!({
+            "mrsigner": mrsigner,
+            "attributes": "0000000000000000",
+            "attributesMask": "0000000000000000"
+        });
+        let identities: Vec<serde_json::Value> = module_identities
+            .iter()
+            .map(|(id, ladder)| {
+                serde_json::json!({
+                    "id": id,
+                    "mrsigner": mrsigner,
+                    "attributes": "0000000000000000",
+                    "attributesMask": "0000000000000000",
+                    "tcbLevels": ladder.iter().map(|(isvsvn, status)| serde_json::json!({
+                        "tcb": {"isvsvn": isvsvn},
+                        "tcbStatus": status
+                    })).collect::<Vec<_>>()
+                })
+            })
+            .collect();
         serde_json::from_value(serde_json::json!({
             "id": "TDX",
             "version": 3,
             "issueDate": "2025-06-19T10:16:03Z",
             "nextUpdate": "2025-07-19T10:16:03Z",
             "fmspc": "b0c06f000000",
-            "tcbLevels": levels
+            "tcbLevels": levels,
+            "tdxModule": module,
+            "tdxModuleIdentities": identities
         }))
         .expect("synthetic TCB Info parses")
     }
@@ -1117,6 +1188,89 @@ mod tests {
         assert_eq!(status, TcbStatus::OutOfDate);
     }
 
+    /// An SVN vector carrying a TDX module SVN and module major version in
+    /// the two bytes the module identity is selected by, zero elsewhere.
+    fn module_svn_vector(module_svn: u8, module_version: u8) -> [u8; 16] {
+        let mut svn = [0u8; 16];
+        svn[0] = module_svn;
+        svn[1] = module_version;
+        svn
+    }
+
+    #[test]
+    fn report_15_second_vector_module_version_must_be_listed() {
+        // The second vector names its own TDX module major version. A
+        // version Intel does not list is an unknown module, so it fails the
+        // appraisal instead of riding on the version the first vector names.
+        let platform = parse_pck_platform(&pck_leaf(QUOTE_V4)).unwrap();
+        let tcb_info = tcb_info_with_module_identities(
+            &[([0u8; 16], "UpToDate", &[])],
+            &[("TDX_01", &[(0, "UpToDate")])],
+        );
+
+        let body = body_with_tee_tcb_svn2(module_svn_vector(5, 1), module_svn_vector(5, 2));
+        let err = format!(
+            "{:#}",
+            appraise_platform_tcb(&tcb_info, &platform, &body).unwrap_err()
+        );
+        assert!(err.contains("tee_tcb_svn2"), "got: {err}");
+        assert!(err.contains("no TDX module identity TDX_02"), "got: {err}");
+
+        // The listed version on both vectors appraises normally.
+        let body = body_with_tee_tcb_svn2(module_svn_vector(5, 1), module_svn_vector(5, 1));
+        let (status, _) = appraise_platform_tcb(&tcb_info, &platform, &body).unwrap();
+        assert_eq!(status, TcbStatus::UpToDate);
+    }
+
+    #[test]
+    fn report_15_second_vector_walks_the_module_svn_ladder() {
+        // The module ISVSVN ladder runs for the second vector too: below
+        // every level it fails, and a lower level's status is taken up.
+        let platform = parse_pck_platform(&pck_leaf(QUOTE_V4)).unwrap();
+        let tcb_info = tcb_info_with_module_identities(
+            &[([0u8; 16], "UpToDate", &[])],
+            &[("TDX_01", &[(4, "UpToDate")])],
+        );
+        let body = body_with_tee_tcb_svn2(module_svn_vector(5, 1), module_svn_vector(1, 1));
+        let err = format!(
+            "{:#}",
+            appraise_platform_tcb(&tcb_info, &platform, &body).unwrap_err()
+        );
+        assert!(err.contains("tee_tcb_svn2"), "got: {err}");
+        assert!(
+            err.contains("TDX module SVN is below every level"),
+            "got: {err}"
+        );
+
+        // The same second vector against a ladder that does list its SVN:
+        // the module status it lands on is taken up, not the first vector's.
+        let tcb_info = tcb_info_with_module_identities(
+            &[([0u8; 16], "UpToDate", &[])],
+            &[("TDX_01", &[(4, "UpToDate"), (0, "OutOfDate")])],
+        );
+        let (status, _) = appraise_platform_tcb(&tcb_info, &platform, &body).unwrap();
+        assert_eq!(status, TcbStatus::OutOfDate);
+    }
+
+    #[test]
+    fn report_15_status_does_not_depend_on_the_vector_order() {
+        // The two vectors are peers, so combining them has to be symmetric.
+        // This pair is the case that separates a symmetric worse-of-two from
+        // the asymmetric platform-versus-component rule: the latter would
+        // answer OutOfDateConfigurationNeeded one way round and OutOfDate
+        // the other.
+        let platform = parse_pck_platform(&pck_leaf(QUOTE_V4)).unwrap();
+        let tcb_info = tcb_info_with_tdx_levels(&[
+            ([5u8; 16], "ConfigurationNeeded", &[]),
+            ([1u8; 16], "OutOfDate", &[]),
+        ]);
+        for (first, second) in [([5u8; 16], [1u8; 16]), ([1u8; 16], [5u8; 16])] {
+            let body = body_with_tee_tcb_svn2(first, second);
+            let (status, _) = appraise_platform_tcb(&tcb_info, &platform, &body).unwrap();
+            assert_eq!(status, TcbStatus::OutOfDate, "first vector {first:?}");
+        }
+    }
+
     #[test]
     fn report_10_body_walks_once() {
         // A 1.0 body has no second vector, so nothing changes for it: the
@@ -1164,5 +1318,11 @@ mod tests {
             OutOfDate
         );
         assert_eq!(SwHardeningNeeded.converge(Revoked), Revoked);
+        // worse() is the peer rule, and unlike converge it is symmetric:
+        // this is the pair the two rules disagree on.
+        assert_eq!(ConfigurationNeeded.worse(OutOfDate), OutOfDate);
+        assert_eq!(OutOfDate.worse(ConfigurationNeeded), OutOfDate);
+        assert_eq!(UpToDate.worse(Revoked), Revoked);
+        assert_eq!(Revoked.worse(UpToDate), Revoked);
     }
 }
