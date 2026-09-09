@@ -112,6 +112,17 @@ class AllocationReconciler:
     def planned_hashes(self) -> set[ItemHash]:
         return set(self._desired.entries) if self._desired else set()
 
+    def pending_hashes(self) -> set[ItemHash]:
+        """The planned VMs whose message the push did not carry.
+
+        They are started like any other; the fetch happens inside the create.
+        Exposed so the executions list can say "waiting on its message" for
+        one the loop has not reached yet, where a verified entry is "planned".
+        """
+        if self._desired is None:
+            return set()
+        return {vm_hash for vm_hash, planned in self._desired.entries.items() if planned.verified is None}
+
     def state_for(self, vm_hash: ItemHash) -> tuple[AllocationState | None, FailureRecord | None]:
         """What the agent is doing about this VM, for the executions list."""
         return self._states.get(vm_hash), self._failures.get(vm_hash)

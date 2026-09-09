@@ -322,6 +322,22 @@ async def test_a_successful_start_clears_a_previous_failure(reconciler, monkeypa
     assert reconciler.state_for(HASH_C) == (None, None)
 
 
+def test_pending_hashes_are_the_entries_the_push_carried_no_message_for(reconciler):
+    reconciler.submit(
+        AllocationPlan(
+            plan_id="sha256:test",
+            received_at=NOW,
+            entries={
+                HASH_B: PlannedVm(vm_hash=HASH_B, verified=SimpleNamespace(message=MagicMock())),
+                HASH_C: PlannedVm(vm_hash=HASH_C),
+            },
+        )
+    )
+
+    assert reconciler.pending_hashes() == {HASH_C}
+    assert reconciler.planned_hashes() == {HASH_B, HASH_C}
+
+
 @pytest.mark.asyncio
 async def test_a_newer_plan_supersedes_the_previous_one(reconciler, monkeypatch):
     """Level-triggered: the desired state is re-read every pass."""
