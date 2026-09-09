@@ -1,0 +1,127 @@
+---
+name: "Release Diagnostic VM Code Volume"
+
+on:
+  push:
+    tags:
+      - "diagnostic-vm/v*.*.*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and sign but do not submit the STORE message"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: "Amend the diagnostic VM code volume"
+    runs-on: ubuntu-22.04
+    environment: vms
+    env:
+      ALEPH_PRIVATE_KEY: ${{ secrets.ALEPH_DIAGNOSTIC_VM_SIGNER_KEY }}
+      OWNER: ${{ vars.DIAGNOSTIC_VM_OWNER }}
+      PROGRAM_HASH: ${{ vars.DIAGNOSTIC_VM_PROGRAM_HASH }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Sanity-check inputs
+        run: |
+          : "${OWNER:?DIAGNOSTIC_VM_OWNER is not set as a repository/environment variable}"
+          : "${PROGRAM_HASH:?DIAGNOSTIC_VM_PROGRAM_HASH is not set as a repository/environment variable}"
+          if [ -z "${ALEPH_PRIVATE_KEY:-}" ]; then
+            echo "::error::ALEPH_DIAGNOSTIC_VM_SIGNER_KEY secret is missing from the 'vms' environment"
+            exit 1
+          fi
+
+      - name: Build code volume archive
+        working-directory: examples
+        run: |
+          zip -r diagnostic_vm.zip example_fastapi
+          ls -lh diagnostic_vm.zip
+
+      - name: Install aleph CLI
+        run: |
+          curl -fsSL https://apt.aleph.im/install.sh | sudo bash
+          aleph --version
+
+      - name: Resolve code volume reference from PROGRAM message
+        id: resolve
+        run: |
+          aleph message get "$PROGRAM_HASH" > program.json
+
+          owner_from_program=$(jq -r '.content.address' program.json)
+          code_ref=$(jq -r '.content.code.ref' program.json)
+          channel=$(jq -r '.channel // empty' program.json)
+
+          if [ -z "$code_ref" ] || [ "$code_ref" = "null" ]; then
+            echo "::error::Could not resolve content.code.ref from program $PROGRAM_HASH"
+            exit 1
+          fi
+
+          if [ "$owner_from_program" != "$OWNER" ]; then
+            echo "::error::Owner mismatch: program declares $owner_from_program, but DIAGNOSTIC_VM_OWNER is $OWNER"
+            exit 1
+          fi
+
+          echo "Program $PROGRAM_HASH owned by $owner_from_program; amending code volume $code_ref on channel '${channel:-<default>}'"
+          echo "code_ref=$code_ref" >> "$GITHUB_OUTPUT"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+      - name: Publish amend STORE message
+        env:
+          CODE_REF: ${{ steps.resolve.outputs.code_ref }}
+          CHANNEL: ${{ steps.resolve.outputs.channel }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          args=(
+            file upload examples/diagnostic_vm.zip
+            --ref "$CODE_REF"
+            --on-behalf-of "$OWNER"
+            --chain eth
+            --payment-type hold
+            --json
+          )
+
+          if [ -n "$CHANNEL" ]; then
+            args+=(--channel "$CHANNEL")
+          fi
+
+          if [ "$DRY_RUN" = "true" ]; then
+            args+=(--dry-run)
+          fi
+
+          aleph "${args[@]}" | tee upload.json
+
+      - name: Summarize release
+        if: always()
+        env:
+          CODE_REF: ${{ steps.resolve.outputs.code_ref }}
+          CHANNEL: ${{ steps.resolve.outputs.channel }}
+        run: |
+          {
+            echo "# Diagnostic VM code volume release"
+            echo
+            echo "- **Program**: \`$PROGRAM_HASH\`"
+            echo "- **Owner**: \`$OWNER\`"
+            echo "- **Original code volume**: \`$CODE_REF\`"
+            echo "- **Channel**: \`${CHANNEL:-<default>}\`"
+            if [ -f upload.json ]; then
+              new_hash=$(jq -r '.item_hash // empty' upload.json)
+              if [ -n "$new_hash" ]; then
+                echo "- **New STORE \`item_hash\`**: \`$new_hash\`"
+              fi
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload archive as workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostic-vm-code-volume
+          path: examples/diagnostic_vm.zip
+          retention-days: 30
