@@ -22,6 +22,8 @@ from pydantic import ValidationError
 from aleph.vm import haproxy
 from aleph.vm.agent import payment, status
 from aleph.vm.agent.aggregate import update_aggregate_settings
+from aleph.vm.agent.allocation.plan import AllocationState, FailureRecord
+from aleph.vm.agent.allocation.reconciler import AllocationReconciler
 from aleph.vm.agent.allocation.teardown import is_removable_by_allocation, teardown_vm
 from aleph.vm.agent.capacity import CapacityManager, requested_gpu_ids
 from aleph.vm.agent.custom_logs import set_vm_for_logging
@@ -206,6 +208,9 @@ def _datetime_from_ns(ns: int) -> datetime | None:
     )
 
 
+_TIMES_KEYS = ("defined_at", "preparing_at", "prepared_at", "starting_at", "started_at", "stopping_at", "stopped_at")
+
+
 def _times_dict(info: VmInfo) -> dict[str, datetime | None]:
     """The VmExecutionTimes-shaped dict the v2 endpoint has always served."""
     return {
@@ -285,46 +290,90 @@ async def list_executions(request: web.Request) -> web.Response:
     )
 
 
+def _allocation_block(state: AllocationState | None, failure: FailureRecord | None) -> dict | None:
+    """What the agent is doing about a VM, for the executions list; None once
+    the agent has nothing to add to the supervisor's word."""
+    if state is None:
+        return None
+    return {
+        "state": state.value,
+        "attempts": failure.attempts if failure else 0,
+        "error": {"code": failure.code, "message": failure.message} if failure else None,
+        "next_retry_at": failure.next_retry_at if failure else None,
+    }
+
+
 @cors_allow_all
 async def list_executions_v2(request: web.Request) -> web.Response:
-    """List all executions. Returning their status and ip"""
+    """List all executions. Returning their status and ip.
+
+    Two disjoint fields per entry: ``state`` is the supervisor's status,
+    verbatim, and ``allocation`` is what the agent is doing about the VM in
+    the phases the supervisor cannot see. A VM the plan lists that the
+    supervisor does not yet know is listed here with ``state`` None, so the
+    scheduler can tell "working on it" from "never heard of it", which it
+    used to have to guess. A VM the supervisor knows can still carry an
+    allocation block: a create in flight for one it holds dead, or the
+    failure that keeps it dead.
+    """
     # Same single-tenant assumption as list_executions: list_vms() is
     # hypervisor-global, so under a multi-tenant supervisor this would report
     # VMs the agent does not own. See the note there.
     supervisor: Supervisor = request.app["supervisor"]
     registry: AgentVmRegistry = request.app["vm_registry"]
+    reconciler: AllocationReconciler = request.app["allocation_reconciler"]
     infos = await supervisor.list_vms()
     host_info = await supervisor.get_host_info()
     mapped_ports = _group_port_forwards(await supervisor.list_port_forwards())
-    return web.json_response(
-        {
-            info.vm_id: {
-                "networking": (
-                    {
-                        "ipv4_network": info.ipv4.network_cidr,
-                        "host_ipv4": host_info.host_ipv4,
-                        "ipv6_network": info.ipv6.network_cidr,
-                        "ipv6_ip": info.ipv6.address,
-                        "ipv4_ip": info.ipv4.address,
-                        "mapped_ports": mapped_ports.get(info.vm_id, {}),
-                    }
-                    if info.ipv4.network_cidr
-                    else {}
-                ),
-                "status": _times_dict(info),
-                "running": info.status is VmStatus.RUNNING,
-                # Confidential VMs are only started once their owner uploads the
-                # session certificates: not running, but not dead either.
-                "awaiting_confidential_init": info.awaiting_confidential_init,
-                # cast: info.vm_id is a VmId (opaque str at the boundary); the
-                # agent knows its own VMs are keyed by item hash. See the
-                # ownership note at the top of list_executions.
-                "vm_type": _vm_type_name(registry.get(cast(ItemHash, info.vm_id)), info),
-            }
-            for info in infos
-        },
-        dumps=dumps_for_json,
-    )
+    entries = {
+        info.vm_id: {
+            "networking": (
+                {
+                    "ipv4_network": info.ipv4.network_cidr,
+                    "host_ipv4": host_info.host_ipv4,
+                    "ipv6_network": info.ipv6.network_cidr,
+                    "ipv6_ip": info.ipv6.address,
+                    "ipv4_ip": info.ipv4.address,
+                    "mapped_ports": mapped_ports.get(info.vm_id, {}),
+                }
+                if info.ipv4.network_cidr
+                else {}
+            ),
+            "status": _times_dict(info),
+            "state": info.status.value,
+            # Kept for existing consumers, now an alias of state.
+            "running": info.status is VmStatus.RUNNING,
+            # Confidential VMs are only started once their owner uploads the
+            # session certificates: not running, but not dead either.
+            "awaiting_confidential_init": info.awaiting_confidential_init,
+            # cast: info.vm_id is a VmId (opaque str at the boundary); the
+            # agent knows its own VMs are keyed by item hash. See the
+            # ownership note at the top of list_executions.
+            "vm_type": _vm_type_name(registry.get(cast(ItemHash, info.vm_id)), info),
+            "allocation": _allocation_block(*reconciler.state_for(cast(ItemHash, info.vm_id))),
+        }
+        for info in infos
+    }
+    pending = reconciler.pending_hashes()
+    for vm_hash in reconciler.planned_hashes():
+        if str(vm_hash) in entries:
+            continue
+        state, failure = reconciler.state_for(vm_hash)
+        if state is None:
+            # The loop has not reached it: what it will do first is fetch the
+            # message, or not.
+            state = AllocationState.RESOLVING if vm_hash in pending else AllocationState.PLANNED
+        record = registry.get(vm_hash)
+        entries[str(vm_hash)] = {
+            "networking": {},
+            "status": dict.fromkeys(_TIMES_KEYS),
+            "state": None,
+            "running": False,
+            "awaiting_confidential_init": False,
+            "vm_type": VmType.from_message_content(record.message).name if record is not None else None,
+            "allocation": _allocation_block(state, failure),
+        }
+    return web.json_response(entries, dumps=dumps_for_json)
 
 
 @cors_allow_all

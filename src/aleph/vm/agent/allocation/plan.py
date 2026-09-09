@@ -48,15 +48,14 @@ class AllocationState(str, Enum):
     whereas a merged enum would need maintaining in lockstep forever.
 
     The reconciler sets DOWNLOADING and FAILED, the only two it can observe.
-    The rest are the executions list's to report from the plan: PLANNED for
-    an entry the loop has not reached, RESOLVING for one still waiting on its
-    message, SUBMITTING for one handed to the supervisor.
+    The executions list derives the other two from the plan, for an entry the
+    loop has not reached: PLANNED when the push carried its message, RESOLVING
+    when the create will have to fetch it first.
     """
 
     PLANNED = "planned"
     RESOLVING = "resolving"
     DOWNLOADING = "downloading"
-    SUBMITTING = "submitting"
     FAILED = "failed"
 
 
