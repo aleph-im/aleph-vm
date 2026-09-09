@@ -414,9 +414,10 @@ pub fn cc_mode_of(state: &DaemonState, pci_host: &str) -> Option<crate::gpu_cc::
 
 /// Probe every NVIDIA card no VM owns and remember the answer. A card that
 /// becomes attached keeps its last value (the register is never read under
-/// a guest); a probe error is logged and leaves the card unknown, which
-/// advertises nothing. Runs on the blocking pool: mmap of a BAR is a
-/// syscall against device memory.
+/// a guest). A probe that errors, or that reads a register encoding with no
+/// mode, forgets the card: whatever it advertised before is no longer known
+/// to be true, and an unknown card advertises nothing. Runs on the blocking
+/// pool: mmap of a BAR is a syscall against device memory.
 fn refresh_cc_modes(state: &DaemonState) {
     refresh_cc_modes_with(state, crate::gpu_cc::probe_cc_mode);
 }
@@ -443,17 +444,20 @@ fn refresh_cc_modes_with(
         if attached.contains(&gpu.pci_host) || gpu.vendor != "NVIDIA" {
             continue;
         }
-        match probe(&gpu.pci_host, &gpu.device_id) {
-            Ok(Some(mode)) => {
-                state
-                    .gpu_cc_modes
-                    .lock()
-                    .expect("gpu_cc_modes poisoned")
-                    .insert(gpu.pci_host.clone(), mode);
-            }
-            Ok(None) => {}
+        let mode = match probe(&gpu.pci_host, &gpu.device_id) {
+            Ok(mode) => mode,
             Err(error) => {
-                tracing::warn!(pci_host = %gpu.pci_host, %error, "GPU CC mode probe failed")
+                tracing::warn!(pci_host = %gpu.pci_host, %error, "GPU CC mode probe failed");
+                None
+            }
+        };
+        let mut cache = state.gpu_cc_modes.lock().expect("gpu_cc_modes poisoned");
+        match mode {
+            Some(mode) => {
+                cache.insert(gpu.pci_host.clone(), mode);
+            }
+            None => {
+                cache.remove(&gpu.pci_host);
             }
         }
     }
@@ -1504,6 +1508,52 @@ mod tests {
         assert_eq!(cache.len(), 1);
         assert_eq!(cache.get("07:00.0"), Some(&crate::gpu_cc::CcMode::On));
         assert_eq!(cache.get("06:00.0"), None);
+    }
+
+    #[test]
+    fn refresh_cc_modes_forgets_a_card_whose_probe_no_longer_answers() {
+        // Two free cards, both cached as CC-on from an earlier probe. One
+        // now fails to probe, the other reads a register encoding with no
+        // mode. Neither may keep advertising the stale value: a scheduler
+        // trusting it would place a confidential workload on a card the
+        // host can no longer vouch for.
+        let card = |pci_host: &str| GpuDevice {
+            vendor: "NVIDIA".to_string(),
+            device_name: "GB202 [GeForce RTX 5090]".to_string(),
+            device_class: "0300".to_string(),
+            pci_host: pci_host.to_string(),
+            device_id: "10de:2b85".to_string(),
+            cc_mode: None,
+        };
+        let host = HostState {
+            settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
+            host_ipv4: String::new(),
+            network_interface: None,
+            gpus: vec![card("06:00.0"), card("07:00.0")],
+            dns_nameservers: None,
+        };
+        let state = DaemonState::hermetic(
+            host,
+            WorldView::default(),
+            Arc::new(crate::units::StaticUnitStates::default()),
+            Arc::new(crate::logs::StaticLogSource::new(Vec::new())),
+        );
+        {
+            let mut cache = state.gpu_cc_modes.lock().unwrap();
+            cache.insert("06:00.0".to_string(), crate::gpu_cc::CcMode::On);
+            cache.insert("07:00.0".to_string(), crate::gpu_cc::CcMode::On);
+        }
+
+        refresh_cc_modes_with(&state, |pci_host, _device_id| match pci_host {
+            "06:00.0" => Err(DaemonError::GpuProbe("BAR0 went away".to_string())),
+            _ => Ok(None),
+        });
+
+        let cache = state.gpu_cc_modes.lock().unwrap();
+        assert!(
+            cache.is_empty(),
+            "a failed or modeless probe must evict the stale entry: {cache:?}"
+        );
     }
 
     #[test]
