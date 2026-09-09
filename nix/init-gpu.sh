@@ -212,6 +212,17 @@ gpu_claims=""
 gpu_chroot_prepared=""
 if gpu_present; then
     echo "init: NVIDIA GPU present, loading the driver"
+    # The GSP firmware lives in the verity rootfs, not in this initrd, so the
+    # measured initrd stays small and blob-free. The kernel resolves a
+    # driver's firmware request against PID 1's root, this initramfs,
+    # whatever chroot the requesting process sits in, and the open driver
+    # asks for the blob when the card is first opened (by nvattest below).
+    # Point the loader's runtime search path at the rootfs copy and check it
+    # took: a silent miss would only surface as an opaque nvattest failure.
+    fw_path=/sys/module/firmware_class/parameters/path
+    echo /mnt/root/lib/firmware > "$fw_path" || gpu_fatal "setting the firmware search path"
+    [ "$(/bin/busybox cat "$fw_path")" = "/mnt/root/lib/firmware" ] \
+        || gpu_fatal "firmware search path did not stick"
     /bin/busybox insmod /lib/modules/nvidia.ko NVreg_EnableGpuFirmware=1 || gpu_fatal "insmod nvidia.ko"
     /bin/busybox insmod /lib/modules/nvidia-uvm.ko || gpu_fatal "insmod nvidia-uvm.ko"
     # shellcheck disable=SC2016  # $1/$2 are awk fields, not shell variables
