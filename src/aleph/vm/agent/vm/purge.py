@@ -214,9 +214,9 @@ def purge_vm_storage(vm_hash: ItemHash | str) -> PurgeResult:
     # audit trail an erase should leave.
     deleted = len(purge_vm_volumes(namespace))
     kept: list[KeptDirectory] = []
+    held = [volume for volume in iter_volume_files(namespace) if _held_by_device_mapper(namespace, volume)]
 
     for volumes_dir in list(iter_namespace_dirs(namespace)):
-        held = [volume for volume in iter_volume_files(namespace) if _held_by_device_mapper(namespace, volume)]
         held_here = [volume.name for volume in held if volume.parent == volumes_dir]
         if held_here:
             # Same rule as purge_vm_volumes: an rmtree here would unlink the
