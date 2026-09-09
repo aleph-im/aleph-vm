@@ -13,7 +13,8 @@ use std::time::Duration;
 use hyper_util::rt::TokioIo;
 use prost::Message;
 use supervisor_daemon::config::Settings;
-use supervisor_daemon::gpu_cc::CcMode;
+use supervisor_daemon::error::DaemonError;
+use supervisor_daemon::gpu_cc::{self, CcMode, CcProbe};
 use supervisor_daemon::logs::{LogEntry, LogStream, StaticLogSource};
 use supervisor_daemon::lspci::GpuDevice;
 use supervisor_daemon::server::{self, SocketGuard};
@@ -47,6 +48,11 @@ fn populate_execution_root(root: &Path) {
 }
 
 fn fixture_daemon_state(root: &Path) -> Arc<DaemonState> {
+    fixture_daemon_state_probing(root, gpu_cc::no_probe)
+}
+
+/// The fixture state with a CC mode probe of the test's choosing.
+fn fixture_daemon_state_probing(root: &Path, probe: CcProbe) -> Arc<DaemonState> {
     let mut settings = Settings::from_vars(
         [(
             "ALEPH_VM_EXECUTION_ROOT".to_string(),
@@ -94,7 +100,7 @@ fn fixture_daemon_state(root: &Path) -> Arc<DaemonState> {
         dns_nameservers: None,
     };
     let world = build_world_view(&host.settings, units.as_ref(), &host.gpus);
-    Arc::new(DaemonState::hermetic(
+    let mut state = DaemonState::hermetic(
         host,
         world,
         units,
@@ -115,7 +121,9 @@ fn fixture_daemon_state(root: &Path) -> Arc<DaemonState> {
                 source: LogStream::Stdout,
             },
         ])),
-    ))
+    );
+    state.gpu_cc_probe = probe;
+    Arc::new(state)
 }
 
 async fn connect(socket_path: PathBuf) -> Channel {
@@ -386,19 +394,22 @@ async fn serves_the_read_only_world_over_the_socket() {
     server_task.await.unwrap().unwrap();
 }
 
+/// A probe that finds every card in CC mode, whatever its device id: the
+/// test below is about what GetHostInfo does with an answer, not about
+/// which cards can give one.
+fn every_card_is_cc_on(_pci_host: &str, _device_id: &str) -> Result<Option<CcMode>, DaemonError> {
+    Ok(Some(CcMode::On))
+}
+
 #[tokio::test]
 async fn get_host_info_reports_probed_cc_modes_and_omits_unprobed_ones() {
     let tmp = tempfile::tempdir().unwrap();
     populate_execution_root(tmp.path());
-    let state = fixture_daemon_state(tmp.path());
-    // Seed a probed mode for the free card ("0000:02:00.0"), which also
-    // shows up in available_gpus_json; the attached card ("0000:01:00.0")
-    // is left unprobed.
-    state
-        .gpu_cc_modes
-        .lock()
-        .unwrap()
-        .insert("0000:02:00.0".to_string(), CcMode::On);
+    // The probe answers "on" for any card it is asked about. GetHostInfo
+    // asks about the free card ("0000:02:00.0"), which also shows up in
+    // available_gpus_json, and must not ask about the attached one
+    // ("0000:01:00.0"), which therefore stays unprobed.
+    let state = fixture_daemon_state_probing(tmp.path(), every_card_is_cc_on);
     let socket_path = state.host.settings.supervisor_grpc_socket.clone();
 
     let guard = Arc::new(SocketGuard::new(socket_path.clone()));

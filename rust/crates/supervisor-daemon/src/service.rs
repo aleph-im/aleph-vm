@@ -180,6 +180,9 @@ pub struct DaemonState {
     /// every NVIDIA card no VM currently owns; a card never probed, or
     /// whose last probe failed, has no entry.
     pub gpu_cc_modes: std::sync::Mutex<HashMap<String, crate::gpu_cc::CcMode>>,
+    /// How a card's CC mode is read: the BAR0 register in production,
+    /// `gpu_cc::no_probe` on hermetic state so tests never open sysfs.
+    pub gpu_cc_probe: crate::gpu_cc::CcProbe,
 }
 
 /// See [`DaemonState::log_follows`].
@@ -219,6 +222,7 @@ impl DaemonState {
                 crate::numa::NumaTopology::empty(),
             )),
             gpu_cc_modes: std::sync::Mutex::new(HashMap::new()),
+            gpu_cc_probe: crate::gpu_cc::no_probe,
         }
     }
 
@@ -419,10 +423,11 @@ pub fn cc_mode_of(state: &DaemonState, pci_host: &str) -> Option<crate::gpu_cc::
 /// to be true, and an unknown card advertises nothing. Runs on the blocking
 /// pool: mmap of a BAR is a syscall against device memory.
 fn refresh_cc_modes(state: &DaemonState) {
-    refresh_cc_modes_with(state, crate::gpu_cc::probe_cc_mode);
+    refresh_cc_modes_with(state, state.gpu_cc_probe);
 }
 
-/// `refresh_cc_modes`, with the probe injected for testing. The world read
+/// `refresh_cc_modes` over an explicit probe, so unit tests can hand in a
+/// closure that records what was probed. The world read
 /// guard is held across the whole loop, not just while the attached set is
 /// collected: CreateVm registers a VM's cards in the world view under the
 /// write lock before it boots anything, so under this guard a card is

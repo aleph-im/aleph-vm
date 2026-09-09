@@ -157,6 +157,17 @@ pub fn read_bar0_u32(resource0: &Path, offset: u64) -> Result<u32, DaemonError> 
     }
 }
 
+/// The shape of a CC mode probe: (pci_host, device_id) to the mode, `None`
+/// when the card has no mode. `probe_cc_mode` is the real one; hermetic
+/// daemon state carries `no_probe` so no test ever opens sysfs.
+pub type CcProbe = fn(&str, &str) -> Result<Option<CcMode>, DaemonError>;
+
+/// A probe that never finds a mode: the seam for state that must not touch
+/// the host's PCI devices.
+pub fn no_probe(_pci_host: &str, _device_id: &str) -> Result<Option<CcMode>, DaemonError> {
+    Ok(None)
+}
+
 /// The CC mode of one vfio-bound NVIDIA card, `None` for cards without a
 /// CC mode (other vendors, pre-Hopper) or a reserved register encoding.
 pub fn probe_cc_mode(pci_host: &str, device_id: &str) -> Result<Option<CcMode>, DaemonError> {
