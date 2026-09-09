@@ -58,8 +58,10 @@ pub struct GpuState {
     /// as information for the client; nothing in it replaces a client-side
     /// cryptographic check.
     pub boot_claims: serde_json::Value,
-    /// One SPDM exchange at a time: concurrent callers queue.
-    pub lock: tokio::sync::Mutex<()>,
+    /// One SPDM exchange at a time: concurrent callers queue. Held in its
+    /// own `Arc` so the guard can be owned and moved into the blocking task
+    /// that runs the collector, which outlives the request handler.
+    pub lock: Arc<tokio::sync::Mutex<()>>,
     /// How long a caller queues for the exchange before being told to
     /// retry. A collection takes well under a second, so a queue this deep
     /// means the collector is wedged; failing fast keeps a pile-up from
@@ -116,11 +118,14 @@ pub async fn attestation_endpoint(
 }
 
 #[derive(Serialize)]
-pub struct GpuAttestationResponse {
+pub struct GpuAttestationResponse<'a> {
     pub tee_type: &'static str,
-    pub client_nonce: String,
+    pub client_nonce: &'a str,
     pub gpus: Vec<GpuEvidence>,
-    pub boot_claims: serde_json::Value,
+    /// Borrowed from the agent's state: the boot claims are the same
+    /// document for the life of the process, so a response serializes them
+    /// in place rather than cloning the tree per request.
+    pub boot_claims: &'a serde_json::Value,
 }
 
 /// Decode and bound the hex nonce shared by both attestation routes.
@@ -156,20 +161,31 @@ pub async fn gpu_attestation_endpoint(
         Err(resp) => return resp,
     };
     let nonce = gpu_nonce(&state.served_public_key_raw, &client_nonce);
-    let Ok(_serialized) = tokio::time::timeout(gpu.lock_wait, gpu.lock.lock()).await else {
+    let Ok(serialized) =
+        tokio::time::timeout(gpu.lock_wait, Arc::clone(&gpu.lock).lock_owned()).await
+    else {
         return HttpResponse::ServiceUnavailable()
             .insert_header(("Retry-After", "10"))
             .json(serde_json::json!({"error": "gpu attestation busy"}));
     };
-    // The collector is a blocking child process; keep it off the async workers.
+    // The collector is a blocking child process; keep it off the async
+    // workers. The guard travels into the blocking task rather than staying
+    // in this future: a client that disconnects drops the handler but not
+    // the collection it started, and releasing the GPU here would let the
+    // next caller open a second SPDM exchange against a driver still busy
+    // with the first.
     let gpu_for_task = Arc::clone(gpu);
-    let collected = web::block(move || gpu_for_task.source.collect(&nonce)).await;
+    let collected = web::block(move || {
+        let _serialized = serialized;
+        gpu_for_task.source.collect(&nonce)
+    })
+    .await;
     match collected {
         Ok(Ok(gpus)) => HttpResponse::Ok().json(GpuAttestationResponse {
             tee_type: "nvidia-cc",
-            client_nonce: query.nonce.clone(),
+            client_nonce: &query.nonce,
             gpus,
-            boot_claims: gpu.boot_claims.clone(),
+            boot_claims: &gpu.boot_claims,
         }),
         Ok(Err(e)) => {
             tracing::error!("gpu evidence collection failed: {e:#}");
@@ -273,6 +289,7 @@ mod tests {
     use actix_web::http::StatusCode;
     use aleph_tee::types::{AttestationReport, TeeType};
     use anyhow::Result;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Echoes `report_data` into the blob so the test can see what was bound.
     struct MockBackend;
@@ -405,7 +422,7 @@ mod tests {
         let state = gpu_state(Some(Arc::new(GpuState {
             source: Box::new(FakeGpu),
             boot_claims: serde_json::json!([{"measres": "Success"}]),
-            lock: tokio::sync::Mutex::new(()),
+            lock: Arc::new(tokio::sync::Mutex::new(())),
             lock_wait: GPU_LOCK_WAIT,
         })));
         let client_nonce = hex::encode(b"client-nonce");
@@ -434,7 +451,7 @@ mod tests {
         let state = gpu_state(Some(Arc::new(GpuState {
             source: Box::new(FakeGpu),
             boot_claims: serde_json::Value::Null,
-            lock: tokio::sync::Mutex::new(()),
+            lock: Arc::new(tokio::sync::Mutex::new(())),
             lock_wait: GPU_LOCK_WAIT,
         })));
         let (status, _) = gpu_attest(state.clone(), &"a".repeat(MAX_NONCE_LEN * 2 + 2)).await;
@@ -450,7 +467,7 @@ mod tests {
         let gpu = Arc::new(GpuState {
             source: Box::new(FakeGpu),
             boot_claims: serde_json::Value::Null,
-            lock: tokio::sync::Mutex::new(()),
+            lock: Arc::new(tokio::sync::Mutex::new(())),
             lock_wait: Duration::from_millis(50),
         });
         let held = gpu.lock.lock().await;
@@ -460,5 +477,116 @@ mod tests {
         drop(held);
         let (status, _) = gpu_attest(gpu_state(Some(gpu)), "00").await;
         assert_eq!(status, StatusCode::OK);
+    }
+
+    /// How long [`GatedGpu`] parks before giving up on the gate. A failing
+    /// assertion must never leave a blocking thread parked forever: the
+    /// runtime waits for its blocking tasks when the test ends.
+    const GATE_CAP: Duration = Duration::from_secs(5);
+
+    /// A collector that parks inside `collect()` until the test opens its
+    /// gate, recording how many callers were inside at the same time.
+    struct GatedGpu {
+        entries: Arc<AtomicUsize>,
+        inside: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+        gate: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    }
+
+    impl crate::gpu::GpuEvidenceSource for GatedGpu {
+        fn collect(&self, nonce: &[u8; 32]) -> anyhow::Result<Vec<crate::gpu::GpuEvidence>> {
+            self.entries.fetch_add(1, Ordering::SeqCst);
+            let now = self.inside.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(now, Ordering::SeqCst);
+            let (open, condvar) = &*self.gate;
+            let deadline = std::time::Instant::now() + GATE_CAP;
+            let mut open = open.lock().expect("gate");
+            while !*open {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    break;
+                }
+                open = condvar.wait_timeout(open, left).expect("gate").0;
+            }
+            drop(open);
+            self.inside.fetch_sub(1, Ordering::SeqCst);
+            Ok(vec![crate::gpu::GpuEvidence {
+                arch: "BLACKWELL".into(),
+                nonce: hex::encode(nonce),
+                evidence: "ZXZpZGVuY2U=".into(),
+                certificate: "Y2VydA==".into(),
+            }])
+        }
+    }
+
+    /// A client that goes away mid-collection must not hand the GPU to the
+    /// next caller: the collector keeps running to its own timeout, so a
+    /// second exchange started now would talk to the driver at the same
+    /// time as the abandoned one.
+    #[actix_web::test]
+    async fn a_dropped_client_keeps_the_gpu_taken_until_the_collection_ends() {
+        let entries = Arc::new(AtomicUsize::new(0));
+        let inside = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let gpu = Arc::new(GpuState {
+            source: Box::new(GatedGpu {
+                entries: Arc::clone(&entries),
+                inside: Arc::clone(&inside),
+                peak: Arc::clone(&peak),
+                gate: Arc::clone(&gate),
+            }),
+            boot_claims: serde_json::Value::Null,
+            lock: Arc::new(tokio::sync::Mutex::new(())),
+            lock_wait: Duration::from_millis(500),
+        });
+
+        // Poll the first request until its collection has started, then drop
+        // the handler future: that is exactly what actix does to a handler
+        // whose client disconnected.
+        let mut first = Box::pin(gpu_attestation_endpoint(
+            gpu_state(Some(Arc::clone(&gpu))),
+            web::Query(AttestationQuery {
+                nonce: "00".to_string(),
+            }),
+        ));
+        while entries.load(Ordering::SeqCst) == 0 {
+            let _ = tokio::time::timeout(Duration::from_millis(5), &mut first).await;
+        }
+        drop(first);
+
+        // The abandoned collection still owns the GPU, so the next caller is
+        // told to retry rather than starting a concurrent SPDM exchange.
+        let second = tokio::time::timeout(
+            Duration::from_secs(2),
+            gpu_attest(gpu_state(Some(Arc::clone(&gpu))), "00"),
+        )
+        .await;
+        assert_eq!(
+            peak.load(Ordering::SeqCst),
+            1,
+            "the collector was entered twice at once"
+        );
+        let (status, body) = second.expect("the second caller must be answered, not left queueing");
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"], "gpu attestation busy");
+
+        // Once the abandoned collection ends, the GPU is free again.
+        {
+            let (open, condvar) = &*gate;
+            *open.lock().expect("gate") = true;
+            condvar.notify_all();
+        }
+        while inside.load(Ordering::SeqCst) > 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let (status, _) = gpu_attest(gpu_state(Some(gpu)), "00").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(peak.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            entries.load(Ordering::SeqCst),
+            2,
+            "the caller that was told to retry must never reach the collector"
+        );
     }
 }
