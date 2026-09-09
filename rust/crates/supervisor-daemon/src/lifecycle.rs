@@ -2038,12 +2038,20 @@ fn snp_image_format(format: i32) -> Result<String, RpcError> {
 }
 
 fn snp_config_slice(state: &DaemonState, spec: &pb::VmSpec) -> Result<Option<SnpSlice>, RpcError> {
-    snp_config_slice_with(state, spec, crate::gpu_bar::gpu_mmio64_mb)
+    snp_config_slice_with(
+        state,
+        spec,
+        state.gpu_cc_probe,
+        crate::gpu_bar::gpu_mmio64_mb,
+    )
 }
 
+/// `snp_config_slice` with the two hardware reads injected: the CC mode
+/// probe and the BAR-driven MMIO window, so tests need no sysfs.
 fn snp_config_slice_with(
     state: &DaemonState,
     spec: &pb::VmSpec,
+    probe: impl Fn(&str, &str) -> Result<Option<crate::gpu_cc::CcMode>, crate::error::DaemonError>,
     mmio_window: impl Fn(&[String]) -> Result<u64, crate::error::DaemonError>,
 ) -> Result<Option<SnpSlice>, RpcError> {
     let Some(tee) = &spec.tee else {
@@ -2066,31 +2074,46 @@ fn snp_config_slice_with(
     }
     // A GPU may enter a confidential guest only in NVIDIA CC mode: the card
     // then refuses plaintext DMA and answers attestation, and the guest
-    // verifies it at boot. Any other card, mode, or an unprobed card, would
-    // hand the owner hardware the guest cannot trust. Fail closed.
+    // verifies it at boot. The mode is read from the card now rather than
+    // taken from the inventory cache: an operator can switch a card off
+    // between two host probes, and a stale "on" would hand the owner
+    // hardware the guest cannot trust. Reading the register here is safe.
+    // The spec's cards were validated unattached, and this runs under the
+    // world write lock with creation serialized, so no guest can own the
+    // card before this VM does. Any other answer, including a card that
+    // cannot be read, fails closed. The cache learns the answer either way.
     for gpu in &spec.gpus {
-        let known = state
+        let Some(device) = state
             .host
             .gpus
             .iter()
-            .any(|device| device.pci_host == gpu.pci_host);
-        if !known {
+            .find(|device| device.pci_host == gpu.pci_host)
+        else {
             return Err(RpcError::InvalidBackend(format!(
                 "GPU at pci_host '{}' is not in the host inventory",
                 gpu.pci_host
             )));
+        };
+        let mode = probe(&device.pci_host, &device.device_id).map_err(|error| {
+            RpcError::InvalidBackend(format!(
+                "cannot read the confidential-computing mode of GPU at pci_host '{}': {error}",
+                gpu.pci_host
+            ))
+        })?;
+        {
+            let mut cache = state.gpu_cc_modes.lock().expect("gpu_cc_modes poisoned");
+            match mode {
+                Some(mode) => cache.insert(gpu.pci_host.clone(), mode),
+                None => cache.remove(&gpu.pci_host),
+            };
         }
-        match crate::service::cc_mode_of(state, &gpu.pci_host) {
-            Some(crate::gpu_cc::CcMode::On) => {}
-            other => {
-                return Err(RpcError::InvalidBackend(format!(
-                    "GPU at pci_host '{}' is not in NVIDIA confidential-computing mode (probed: {})",
-                    gpu.pci_host,
-                    other
-                        .map(|m| m.to_string())
-                        .unwrap_or_else(|| "unknown".into())
-                )));
-            }
+        if mode != Some(crate::gpu_cc::CcMode::On) {
+            return Err(RpcError::InvalidBackend(format!(
+                "GPU at pci_host '{}' is not in NVIDIA confidential-computing mode (probed: {})",
+                gpu.pci_host,
+                mode.map(|m| m.to_string())
+                    .unwrap_or_else(|| "unknown".into())
+            )));
         }
     }
     let pci_mmio64_mb = if spec.gpus.is_empty() {
@@ -4916,20 +4939,18 @@ mod tests {
     fn snp_config_slice_rejects_a_gpu_not_in_cc_mode() {
         let harness = harness_with_gpus(vec![nvidia_card("06:00.0")]);
         let state = &harness.state;
-        // Off, devtools and unknown all fail closed.
+        // Off, devtools and no mode all fail closed, and each answer
+        // replaces whatever the inventory cache held.
         for mode in [
             None,
             Some(crate::gpu_cc::CcMode::Off),
             Some(crate::gpu_cc::CcMode::Devtools),
         ] {
-            state.gpu_cc_modes.lock().unwrap().clear();
-            if let Some(mode) = mode {
-                state
-                    .gpu_cc_modes
-                    .lock()
-                    .unwrap()
-                    .insert("06:00.0".into(), mode);
-            }
+            state
+                .gpu_cc_modes
+                .lock()
+                .unwrap()
+                .insert("06:00.0".into(), crate::gpu_cc::CcMode::On);
             let root = state.host.settings.execution_root.clone();
             let firmware = root.join("OVMF.fd");
             std::fs::write(&firmware, b"ovmf").unwrap();
@@ -4938,13 +4959,69 @@ mod tests {
                 pci_host: "06:00.0".into(),
                 supports_x_vga: true,
             }];
-            match snp_config_slice(state, &spec) {
+            match snp_config_slice_with(state, &spec, |_, _| Ok(mode), |_| Ok(1024)) {
                 Err(RpcError::InvalidBackend(msg)) => {
                     assert!(msg.contains("confidential-computing mode"), "{msg}")
                 }
                 other => panic!("mode {mode:?} must be InvalidBackend, got {other:?}"),
             }
+            assert_eq!(
+                crate::service::cc_mode_of(state, "06:00.0"),
+                mode,
+                "the stale cached mode must not survive the probe"
+            );
         }
+    }
+
+    #[test]
+    fn snp_config_slice_rejects_a_gpu_whose_mode_cannot_be_read() {
+        let harness = harness_with_gpus(vec![nvidia_card("06:00.0")]);
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let mut spec = snp_spec(&hash('j'), &root, &firmware.to_string_lossy());
+        spec.gpus = vec![pb::GpuConfig {
+            pci_host: "06:00.0".into(),
+            supports_x_vga: true,
+        }];
+        let unreadable = |_: &str, _: &str| {
+            Err(crate::error::DaemonError::GpuProbe(
+                "BAR0 went away".to_string(),
+            ))
+        };
+        match snp_config_slice_with(state, &spec, unreadable, |_| Ok(1024)) {
+            Err(RpcError::InvalidBackend(msg)) => {
+                assert!(msg.contains("BAR0 went away"), "{msg}")
+            }
+            other => panic!("an unreadable card must be InvalidBackend, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn snp_config_slice_probes_the_card_and_never_the_cache() {
+        // The hermetic probe never finds a mode, so a cached "on" alone
+        // must not admit the card: the gate reads the hardware.
+        let harness = harness_with_gpus(vec![nvidia_card("06:00.0")]);
+        let state = &harness.state;
+        state
+            .gpu_cc_modes
+            .lock()
+            .unwrap()
+            .insert("06:00.0".into(), crate::gpu_cc::CcMode::On);
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let mut spec = snp_spec(&hash('j'), &root, &firmware.to_string_lossy());
+        spec.gpus = vec![pb::GpuConfig {
+            pci_host: "06:00.0".into(),
+            supports_x_vga: true,
+        }];
+        assert!(matches!(
+            snp_config_slice(state, &spec),
+            Err(RpcError::InvalidBackend(_))
+        ));
+        assert_eq!(crate::service::cc_mode_of(state, "06:00.0"), None);
     }
 
     #[test]
@@ -4969,11 +5046,6 @@ mod tests {
     fn snp_config_slice_accepts_a_cc_mode_gpu_and_sizes_the_window() {
         let harness = harness_with_gpus(vec![nvidia_card("06:00.0")]);
         let state = &harness.state;
-        state
-            .gpu_cc_modes
-            .lock()
-            .unwrap()
-            .insert("06:00.0".into(), crate::gpu_cc::CcMode::On);
         let root = state.host.settings.execution_root.clone();
         let firmware = root.join("OVMF.fd");
         std::fs::write(&firmware, b"ovmf").unwrap();
@@ -4982,11 +5054,29 @@ mod tests {
             pci_host: "06:00.0".into(),
             supports_x_vga: true,
         }];
-        // The window reader is injected so the test needs no sysfs.
-        let slice = snp_config_slice_with(state, &spec, |_| Ok(524288))
+        // The probe and the window reader are injected so the test needs no
+        // sysfs; the probe records which card it was asked about.
+        let probed: std::sync::Mutex<Vec<(String, String)>> = Default::default();
+        let cc_on = |pci_host: &str, device_id: &str| {
+            probed
+                .lock()
+                .unwrap()
+                .push((pci_host.to_string(), device_id.to_string()));
+            Ok(Some(crate::gpu_cc::CcMode::On))
+        };
+        let slice = snp_config_slice_with(state, &spec, cc_on, |_| Ok(524288))
             .unwrap()
             .unwrap();
         assert_eq!(slice.pci_mmio64_mb, Some(524288));
+        assert_eq!(
+            probed.into_inner().unwrap(),
+            vec![("06:00.0".to_string(), "10de:2b85".to_string())]
+        );
+        // The inventory cache learns the fresh answer.
+        assert_eq!(
+            crate::service::cc_mode_of(state, "06:00.0"),
+            Some(crate::gpu_cc::CcMode::On)
+        );
     }
 
     #[test]
