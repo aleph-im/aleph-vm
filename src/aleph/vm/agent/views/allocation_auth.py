@@ -33,6 +33,21 @@ ALEPH_EIP191_V1_SCHEME = "Aleph-EIP191-V1"
 # requests are short JSON; 1 MiB is plenty.
 MAX_SIGNED_REQUEST_BODY_BYTES = 1 * 1024 * 1024
 
+# A plan body carries one signed message per VM, so it is far larger than any
+# other signed request. Still bounded, since the body is buffered to hash it.
+MAX_SIGNED_PLAN_BODY_BYTES = 8 * 1024 * 1024
+
+
+class RequestTooLarge(Exception):
+    """The body exceeds the cap for this route.
+
+    Its own exception rather than a False: a False means the request could
+    not be authenticated and answers 401, which sends a scheduler whose plan
+    outgrew the cap looking at its key. Too large answers 413, and only for
+    a signer the verifier has already accepted, so an anonymous client still
+    learns nothing about the cap.
+    """
+
 
 ALLOWED_AUTH_PARAMS = frozenset({"sig", "payload"})
 
@@ -128,13 +143,16 @@ async def _accept_payload_if_new(signer_key: str, payload_hash: str, iat: int) -
         return True
 
 
-async def _verify_aleph_signature(request: web.Request, auth_header: str) -> bool:
+async def _verify_aleph_signature(
+    request: web.Request, auth_header: str, *, max_body_bytes: int = MAX_SIGNED_REQUEST_BODY_BYTES
+) -> bool:
     """Verify a request bearing an `Authorization: Aleph-EIP191-V1 ...` header.
 
     Returns True iff the signature is valid, recovers an authorized signer,
     binds the request, and is not a duplicate of an already-accepted payload.
-    All failure modes return False (the dispatcher decides the response
-    shape).
+    Every failure mode returns False (the dispatcher decides the response
+    shape) except a body over ``max_body_bytes``, which raises
+    RequestTooLarge once the signer is known to be authorized.
 
     Side effect: calls `await request.read()`, which buffers the body into
     aiohttp's request cache. Downstream handlers using `request.json()` or
@@ -186,8 +204,10 @@ async def _verify_aleph_signature(request: web.Request, auth_header: str) -> boo
         # (chunked encoding) is rejected: scheduler clients always send
         # length-delimited JSON.
         content_length = request.content_length
-        if content_length is None or content_length > MAX_SIGNED_REQUEST_BODY_BYTES:
+        if content_length is None:
             return False
+        if content_length > max_body_bytes:
+            raise RequestTooLarge
 
         # Body hash binding.
         body = await request.read()
@@ -200,6 +220,8 @@ async def _verify_aleph_signature(request: web.Request, auth_header: str) -> boo
         # that would otherwise fail downstream.
         payload_hash = sha256(payload_bytes).hexdigest()
         return await _accept_payload_if_new(recovered.lower(), payload_hash, iat)
+    except RequestTooLarge:
+        raise
     except Exception as exc:  # broad catch intentional — auth verifier MUST NOT raise
         # Signature recovery, hex decoding, JSON parsing, and field type
         # coercion all raise different exception types. For an auth verifier,
@@ -211,12 +233,17 @@ async def _verify_aleph_signature(request: web.Request, auth_header: str) -> boo
         return False
 
 
-async def authenticate_api_request(request: web.Request) -> bool:
+async def authenticate_api_request(
+    request: web.Request, *, max_body_bytes: int = MAX_SIGNED_REQUEST_BODY_BYTES
+) -> bool:
     """Authenticate a scheduler-only request via Aleph-EIP191-V1.
 
     An `Authorization` header carrying any other scheme, or no `Authorization`
     header at all, is rejected: Aleph-EIP191-V1 is the only accepted scheme.
     The scheme name is matched case-insensitively (RFC 7235 §2.1).
+
+    ``max_body_bytes`` is the route's cap on the signed body; see
+    RequestTooLarge for what exceeding it answers.
     """
     auth = request.headers.get("Authorization", "")
     if not auth:
@@ -224,7 +251,7 @@ async def authenticate_api_request(request: web.Request) -> bool:
     scheme, sep, _ = auth.partition(" ")
     if not sep or scheme.casefold() != ALEPH_EIP191_V1_SCHEME.casefold():
         return False
-    return await _verify_aleph_signature(request, auth)
+    return await _verify_aleph_signature(request, auth, max_body_bytes=max_body_bytes)
 
 
 def log_allocation_auth_config() -> None:
@@ -249,17 +276,28 @@ def log_allocation_auth_config() -> None:
         )
 
 
-def requires_allocation_auth(handler):
+def requires_allocation_auth(handler=None, *, max_body_bytes: int = MAX_SIGNED_REQUEST_BODY_BYTES):
     """Decorator: reject the request with 401 unless the auth check passes.
 
     Requires `Authorization: Aleph-EIP191-V1 sig=...,payload=...`. Apply BELOW
     any CORS decorator so OPTIONS preflights pass through unauthenticated.
+
+    Usable bare (``@requires_allocation_auth``) or with a body cap for the
+    route (``@requires_allocation_auth(max_body_bytes=...)``); a body over
+    the cap answers 413.
     """
 
-    @functools.wraps(handler)
-    async def wrapper(request: web.Request) -> web.StreamResponse:
-        if not await authenticate_api_request(request):
-            return web.HTTPUnauthorized(text="Authentication token received is invalid")
-        return await handler(request)
+    def decorate(handler):
+        @functools.wraps(handler)
+        async def wrapper(request: web.Request) -> web.StreamResponse:
+            try:
+                authorized = await authenticate_api_request(request, max_body_bytes=max_body_bytes)
+            except RequestTooLarge:
+                return web.HTTPRequestEntityTooLarge(max_size=max_body_bytes, actual_size=request.content_length or 0)
+            if not authorized:
+                return web.HTTPUnauthorized(text="Authentication token received is invalid")
+            return await handler(request)
 
-    return wrapper
+        return wrapper
+
+    return decorate(handler) if handler is not None else decorate
