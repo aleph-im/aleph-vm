@@ -266,16 +266,15 @@ if [ "$gpu_total" -gt 0 ]; then
     # flag below).
     prepare_chroot /mnt/root
     gpu_chroot_prepared=1
-    if ! gpu_nvattest --format json attest --device gpu --verifier local --nonce "$boot_nonce" \
+    # The full result carries the detached EAT and the log can echo it on
+    # failure; neither is served, so both are created 0600 (the umask in the
+    # subshell covers the redirections), same as the extracted claims below.
+    if ! (umask 077; gpu_nvattest --format json attest --device gpu --verifier local --nonce "$boot_nonce" \
               --rim-url https://rim.attestation.nvidia.com --ocsp-url https://ocsp.ndis.nvidia.com \
-              > /run/aleph/gpu-attest.json 2> /run/aleph/gpu-attest.log; then
+              > /run/aleph/gpu-attest.json 2> /run/aleph/gpu-attest.log); then
         /bin/busybox cat /run/aleph/gpu-attest.log
         gpu_fatal "nvattest exited non-zero"
     fi
-    # The full result carries the detached EAT and the log can echo it on
-    # failure; neither is served, so neither stays world-readable, same as
-    # the extracted claims below.
-    /bin/busybox chmod 0600 /run/aleph/gpu-attest.json /run/aleph/gpu-attest.log
     # result_code 0, or power off. The CLI pretty-prints its JSON (nlohmann
     # dump(4)) with the top-level keys in alphabetical order, so every key is
     # on its own line. result_message follows result_code today, hence the
