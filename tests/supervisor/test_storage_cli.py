@@ -475,7 +475,12 @@ def test_the_env_file_reaches_the_settings(tmp_path, monkeypatch, isolated_envir
     isolated_environ.pop("ALEPH_VM_VOLUME_RETENTION", None)
     monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
     seen: list[str] = []
-    monkeypatch.setattr(cli, "run", lambda *_: seen.append(settings.VOLUME_RETENTION) or 0)
+
+    def record_retention(*_args: object) -> int:
+        seen.append(settings.VOLUME_RETENTION)
+        return 0
+
+    monkeypatch.setattr(cli, "run", record_retention)
 
     code = cli.main(["--env-file", str(env_file), "status"])
 
