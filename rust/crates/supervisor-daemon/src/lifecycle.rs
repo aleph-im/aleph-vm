@@ -1102,16 +1102,42 @@ fn recreate_port_redirect_rules(state: &DaemonState, vm_id: &str) -> Result<(), 
 /// port mappings.
 fn start_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
+    // The start opens the same window a reboot does, and it is longer: the
+    // stop stamps go the moment this begins, while the unit stays down
+    // through the tap, the nftables rules, the DHCP server, RestartUnit and
+    // the readiness wait, and `started_at` still holds the value it had
+    // before the stop. A status read takes no per-VM lock, so a poll landing
+    // in there finds a VM the daemon has seen alive, no stop recorded and a
+    // dead unit, which is the dead-unit arm's exact shape: it would report
+    // FAILED where it used to report BOOTING, and the hub would announce a
+    // death that wakes the agent's reconciler against a VM that is coming up
+    // as asked. Mark the window like the reboot does, with a fresh
+    // `starting_at` so the VM reports BOOTING, and clear it below on the
+    // way out, success or failure. A start that fails really is a VM that is
+    // down and should say so.
     with_entry_mut(state, vm_id, |entry| {
         entry.times.stopping_at_ns = 0;
         entry.times.stopped_at_ns = 0;
-        // A reboot that died between marking the window and clearing it
-        // would otherwise leave the VM permanently exempt from the
-        // dead-unit arm; the start settles the question either way.
-        entry.restarting = false;
+        entry.restarting = true;
+        entry.times.starting_at_ns = now_ns();
     });
+    let started = start_vm_execution_marked(state, vm_id, &entry);
+    // A reboot that died between marking the window and clearing it would
+    // otherwise leave the VM permanently exempt from the dead-unit arm; this
+    // clear settles the question either way.
+    with_entry_mut(state, vm_id, |entry| entry.restarting = false);
+    started
+}
 
-    if networking_enabled(state, &entry) {
+/// The body of [`start_vm_execution`], run with the restarting marker set.
+/// Every exit from here, including the error ones, goes back through the
+/// caller so the marker is cleared exactly once.
+fn start_vm_execution_marked(
+    state: &DaemonState,
+    vm_id: &str,
+    entry: &VmEntry,
+) -> Result<(), RpcError> {
+    if networking_enabled(state, entry) {
         let tap = tap_assignment(state, vm_id)?;
         let _net = net_lock(state);
         if !state.taps.interface_exists(&tap.device_name) {
@@ -1191,6 +1217,14 @@ pub fn start_vm(state: &DaemonState, vm_id: &str) -> Result<(VmEntry, bool), Rpc
     }
     if unit_active(state, &entry.unit_name()) {
         // Python start_vm: the already-running short circuit emits nothing.
+        //
+        // It also returns before `start_vm_execution`, so the clear of
+        // `restarting` that call ends with does not run here: a VM left
+        // marked by a reboot that died mid-window keeps the marker. That
+        // costs nothing, because the marker only ever suppresses the
+        // dead-unit arm, and the unit this branch tested is active, so the
+        // status is RUNNING either way. The next stop, start or reboot
+        // clears it.
         return Ok((entry, true));
     }
     let old_status = status_snapshot(state, &entry);
@@ -6594,6 +6628,67 @@ mod tests {
             !announced.contains(&pb::VmStatus::Failed),
             "a reboot in progress is not a death: {announced:?}"
         );
+    }
+
+    #[test]
+    fn a_poll_during_a_start_sees_booting_not_a_death() {
+        // The start clears the stop stamps at its very first step and then
+        // spends the tap, the nftables rules, the DHCP server, RestartUnit
+        // and the readiness wait with the unit still down, while started_at
+        // keeps the value it had before the stop. That is the dead-unit
+        // arm's exact shape, so without the marker a poll in there reports
+        // FAILED and the hub announces a death against a VM that is coming
+        // up as asked.
+        let mut probe = mid_job_observation();
+        stop_vm(&probe.state, &probe.vm_id).unwrap();
+        probe.seen.lock().unwrap().clear();
+        let _ = probe.announced();
+
+        let (entry, running) = start_vm(&probe.state, &probe.vm_id).unwrap();
+        assert!(running);
+        assert!(
+            !entry.restarting,
+            "the marker is cleared once the unit is up"
+        );
+
+        assert_eq!(
+            probe.seen(),
+            vec![pb::VmStatus::Booting],
+            "a start in progress is a VM booting"
+        );
+        let announced = probe.announced();
+        assert!(
+            !announced.contains(&pb::VmStatus::Failed),
+            "a start in progress is not a death: {announced:?}"
+        );
+    }
+
+    #[test]
+    fn a_start_that_fails_before_the_unit_still_reports_failed() {
+        // The marker is the window, not the VM. This start fails at its
+        // first real step, well before RestartUnit, which is the path most
+        // likely to leak the marker: the stop stamps are already cleared,
+        // so a VM left marked would report BOOTING for ever and the agent
+        // would hold it live and never rebuild it.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('e');
+        create_vm(state, spec(&vm_id, &root)).unwrap();
+        stop_vm(state, &vm_id).unwrap();
+        harness.taps.fail_create(|| TapError::Command {
+            argv: "tuntap add name vmtap4 mode tap".to_string(),
+            stderr: "Operation not permitted".to_string(),
+        });
+
+        start_vm(state, &vm_id).expect_err("the tap cannot be recreated");
+
+        let entry = entry_snapshot(state, &vm_id).unwrap();
+        assert!(
+            !entry.restarting,
+            "a failed start must not leave the VM exempt from the dead-unit arm"
+        );
+        assert_eq!(status_snapshot(state, &entry), pb::VmStatus::Failed);
     }
 
     #[test]
