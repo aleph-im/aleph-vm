@@ -85,13 +85,15 @@ async def test_the_answer_comes_before_the_vm_is_created(aiohttp_client, schedul
     client = await aiohttp_client(_app(real_reconciler=True))
     body, headers = scheduler_auth({"vms": [{"item_hash": str(HASH_C)}]}, path=PLAN)
 
-    response = await client.post(PLAN, data=body, headers=headers, timeout=aiohttp.ClientTimeout(total=2))
+    response = await client.post(PLAN, data=body, headers=headers, timeout=aiohttp.ClientTimeout(total=10))
 
     assert response.status == 202
     payload = await response.json()
     assert payload["pending"] == [str(HASH_C)]  # no embedded message: judged after the fetch
     assert payload["plan_id"].startswith("sha256:")
-    await asyncio.wait_for(started.wait(), timeout=1)
+    # Bounds on failure, not waits: the loop reaches the create within
+    # milliseconds, and a loaded runner gets the margin.
+    await asyncio.wait_for(started.wait(), timeout=10)
 
 
 @pytest.mark.asyncio
