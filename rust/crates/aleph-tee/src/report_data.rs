@@ -23,7 +23,7 @@
 //! report with `nonce = SHA-384(attacker_key)` and receive a genuine,
 //! AMD-signed report whose `report_data` is byte-identical to a legitimate
 //! key-bound report for the attacker's key: an attested-key confusion that
-//! enables a full MITM. See the rust-port-divergences ledger.
+//! enables a full MITM.
 //!
 //! The fix, encoded here:
 //!   * Each scheme is prefixed with a distinct domain constant (with a trailing

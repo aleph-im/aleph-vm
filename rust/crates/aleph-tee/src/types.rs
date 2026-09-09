@@ -27,8 +27,8 @@ pub enum TeeType {
 /// those alongside `data`, but they are unsigned: an attacker can replay any
 /// genuine AMD-signed blob as `data` and set the JSON copies to whatever passes
 /// a check. Removing them makes it structurally impossible to gate trust on the
-/// unsigned copies. This is a deliberate divergence from the donor; see the
-/// rust-port-divergences ledger.
+/// unsigned copies. This is a deliberate divergence from the donor, which
+/// carried both copies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttestationReport {
     pub tee_type: TeeType,
