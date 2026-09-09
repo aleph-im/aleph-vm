@@ -233,6 +233,16 @@ def existing_volume_files(vm_hash: ItemHash | str) -> dict[str, Path]:
     bare join, so an unchecked hash lets "../.." resolve and be counted as
     space the VM already holds, and an inflated discount relaxes admission.
 
+    A directory still carrying its reclaimable marker holds nothing, as far as
+    this is concerned: its bytes already count as free (``_available_disk_bytes``
+    adds the reclaimable total to what the pools report), so discounting them
+    off the request as well would credit them twice and admit a VM the node has
+    no room for. The create path does not lose the discount to this, because
+    the create guard adopts the directory and clears its marker before
+    admission runs, at which point the same bytes stop counting as free. The
+    plan simulation adopts nothing, and charging it the declared size against a
+    free figure that includes those bytes is the same arithmetic.
+
     Symlinks and the marker are skipped, and pools are walked in order with
     the first match winning, so the result does not depend on iteration luck.
     """
@@ -244,8 +254,10 @@ def existing_volume_files(vm_hash: ItemHash | str) -> dict[str, Path]:
         except OSError:
             logger.warning("Volume directory %s not readable, not discounting it", directory)
             continue
+        if any(entry.name == MARKER_NAME for entry in entries):
+            continue
         for entry in entries:
-            if entry.name == MARKER_NAME or entry.is_symlink() or not entry.is_file():
+            if entry.is_symlink() or not entry.is_file():
                 continue
             files.setdefault(entry.name, entry)
     return files

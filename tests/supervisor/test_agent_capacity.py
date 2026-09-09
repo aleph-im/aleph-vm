@@ -25,6 +25,7 @@ from aleph.vm.agent.capacity import (
     ResourceRequirements,
     requirements_from_message,
 )
+from aleph.vm.agent.vm.reclaimable import MARKER_NAME
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
 from aleph.vm.resources import GpuDevice, GpuDeviceClass, InsufficientResourcesError
@@ -1243,6 +1244,32 @@ def test_check_message_caps_a_volumes_discount_at_what_it_declares(mocker, tmp_p
     assert check.call_args.kwargs["disk_mib"] == 5_000
 
 
+def test_a_directory_marked_reclaimable_discounts_nothing(mocker, tmp_path):
+    """Its bytes already count as free, so discounting them off the request too
+    credits them twice and admits a VM the node has no room for.
+
+    A retained directory is counted in the free figure (_available_disk_bytes
+    adds the reclaimable total to the pools' own), because placement evicts it
+    when a create needs the room. The create path never meets this case: the
+    create guard adopts the directory and drops its marker before admission
+    runs, and the bytes stop counting as free at that moment. The plan
+    simulation adopts nothing, so a marked directory has to be left alone
+    there, which lands on the same arithmetic either way.
+    """
+    manager = _manager()
+    check = mocker.patch.object(manager, "check_capacity")
+    directory = _stage_volume_files(mocker, tmp_path / "pool0", {"rootfs.qcow2": 20_000 * 1024 * 1024})
+    (directory / MARKER_NAME).write_text("{}")
+    _patch_namespace_dirs(mocker, directory)
+    content = _instance_content(rootfs_mib=20_000)
+
+    manager.check_message(content, exclude_vm_hash=_VM_HASH)
+
+    kwargs = check.call_args.kwargs
+    assert kwargs["disk_mib"] == 20_000
+    assert kwargs["max_volume_credit"] is None
+
+
 def test_check_message_ignores_a_file_no_declared_volume_claims(mocker, tmp_path):
     """The discount is per declared volume, not per directory. A user who
     renames or drops a persistent volume in an updated message leaves the old
@@ -1489,17 +1516,20 @@ def test_existing_volume_files_spans_pools_and_skips_what_is_not_a_volume(mocker
 
     first = tmp_path / "pool0" / str(_VM_HASH)
     second = tmp_path / "pool1" / str(_VM_HASH)
-    for directory in (first, second):
+    retained = tmp_path / "pool2" / str(_VM_HASH)
+    for directory in (first, second, retained):
         directory.mkdir(parents=True)
     (first / "rootfs.qcow2").write_bytes(b"x")
-    (first / ".reclaimable").write_text("{}")
     (first / "elsewhere.ext4").symlink_to(tmp_path / "somewhere-else")
     (second / "data.ext4").write_bytes(b"x")
-    _patch_namespace_dirs(mocker, first, second)
+    (retained / "old.ext4").write_bytes(b"x")
+    (retained / MARKER_NAME).write_text("{}")
+    _patch_namespace_dirs(mocker, first, second, retained)
 
     found = existing_volume_files(_VM_HASH)
 
-    # The marker is not a volume, and a symlink is not this directory's space.
+    # A symlink is not this directory's space, and a directory still marked
+    # reclaimable holds nothing here: its bytes are already counted as free.
     # Files are keyed by name, suffix included: rootfs.qcow2 and rootfs.ext4
     # share a stem but are different volumes.
     assert set(found) == {"rootfs.qcow2", "data.ext4"}
