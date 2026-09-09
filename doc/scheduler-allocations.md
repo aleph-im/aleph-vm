@@ -111,8 +111,29 @@ it" is distinguishable from "never heard of it".
 
 `allocation` is `null` once the agent has nothing to add to the supervisor's
 word. `attempts` is 0 and `error` and `next_retry_at` are `null` while
-nothing has failed. The `error.code` vocabulary is still settling for 2.1:
-treat it as an opaque string for now and show `error.message` to humans.
+nothing has failed.
+
+`error.code` comes from a closed set, and `error.message` is the one sentence
+that belongs to that code. This endpoint is unauthenticated and readable from
+any origin, so nothing an exception wrote is published here: the full reason a
+start failed is in the node's log, which is the operator's to read.
+
+| `error.code` | `error.message` | What it means |
+|--------------|-----------------|---------------|
+| `insufficient_capacity` | This node has no room for this VM | The node's own admission refused the VM, or the hypervisor reported insufficient resources. Place it elsewhere |
+| `download_failed` | A resource this VM needs could not be downloaded | A runtime, code or data resource could not be fetched, or exceeded the node's archive size cap |
+| `message_unavailable` | This VM's message could not be read from the network | The node had to fetch the message and the API did not have it, or the connector was down. Usually transient |
+| `unsupported` | This node cannot run this VM | The VM asks for something this node does not offer: an unsupported backend, a TEE it cannot launch, or a content type it cannot run. No later attempt does better |
+| `startup_failed` | The VM was created but did not reach the running state | Setup or guest init failed after the VM was defined |
+| `supervisor_error` | The hypervisor refused to run this VM | The supervisor daemon refused for a reason with no more specific code. The daemon's own code is in the log |
+| `vm_failed` | The VM was rebuilt after the hypervisor reported it failed | The guest died after it had been running. This is the crash-loop case, so `attempts` and `next_retry_at` say where the backoff stands |
+| `internal` | Unhandled error | The node failed in a way it does not recognise. A bug on the node, not a statement about the VM |
+
+The set is closed and coarser than the node's internal error codes on
+purpose: it carries what a scheduler decides on (place the VM elsewhere,
+wait, or stop asking), not what an operator debugs with. Treat an unknown
+code as `internal` rather than failing to parse, so the node can add one
+without breaking a consumer.
 
 A VM the owner stopped carries no allocation block, since the supervisor
 already reports it stopped and the agent has nothing to add. A start the
