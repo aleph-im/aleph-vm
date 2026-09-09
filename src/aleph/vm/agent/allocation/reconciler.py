@@ -164,7 +164,14 @@ class AllocationReconciler:
 
     async def _teardown_dropped(self, plan: AllocationPlan, known: dict[ItemHash, VmInfo]) -> None:
         for vm_hash, info in known.items():
-            if vm_hash in plan.entries or info.status not in TEARDOWN_STATUSES:
+            # Torn down only if the push never named this VM. A hash the
+            # answer refused is named: the scheduler was told the VM was
+            # rejected, not that it was deleted, so it still believes the VM
+            # is here, while a teardown retires it GONE and reaps its disks.
+            # Every refusal is temporary too, so the loop would be destroying
+            # a VM over a full disk or over a node hash it has not read back
+            # since its last restart.
+            if plan.lists(vm_hash) or info.status not in TEARDOWN_STATUSES:
                 continue
             # The plan is re-read here rather than taken from the pass, which
             # may have been parked in list_vms or in an earlier teardown while
@@ -173,7 +180,7 @@ class AllocationReconciler:
             # cannot, since GONE reaps the volumes. The read and the await
             # below are in one turn, so nothing lands in between.
             current = self._desired
-            if current is None or vm_hash in current.entries:
+            if current is None or current.lists(vm_hash):
                 continue
             record = self.registry.get(vm_hash)
             if record is None or not is_removable_by_allocation(record, info):

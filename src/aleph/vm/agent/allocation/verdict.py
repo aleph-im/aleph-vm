@@ -238,6 +238,15 @@ def narrow_plan(plan: AllocationPlan, verdict: PlanVerdict) -> AllocationPlan:
     is the loop's own. The identity stays too, since it names the push, and a
     re-push of the same set is the same plan whatever the host had room for
     the first time.
+
+    Dropped is not forgotten: the refused hashes are carried alongside, so
+    the loop can tell a VM this push refused from one it never mentioned. It
+    tears down the second kind, and a refusal is no reason to destroy a VM.
     """
     entries = {vm_hash: planned for vm_hash, planned in plan.entries.items() if vm_hash not in verdict.rejected}
-    return AllocationPlan(plan_id=plan.plan_id, received_at=plan.received_at, entries=entries)
+    return AllocationPlan(
+        plan_id=plan.plan_id,
+        received_at=plan.received_at,
+        entries=entries,
+        refused=frozenset(plan.entries) - frozenset(entries),
+    )

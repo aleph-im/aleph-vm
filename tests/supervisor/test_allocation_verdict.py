@@ -500,3 +500,50 @@ def test_narrowing_drops_what_the_answer_refused_and_nothing_else():
     assert set(narrowed.entries) == {HASH_A, HASH_C}
     assert narrowed.entries[HASH_A] is plan.entries[HASH_A]
     assert (narrowed.plan_id, narrowed.received_at) == (plan.plan_id, plan.received_at)
+    assert narrowed.refused == frozenset({HASH_B})
+
+
+def test_a_stopped_vm_the_answer_refused_is_carried_as_refused():
+    """The chain the reconciler reads. The supervisor holds C stopped, so the
+    answer sizes it as a candidate instead of reading it as unchanged, and a
+    node with no room left refuses it. Narrowing has to keep it out of the
+    entries, or the loop would retry it forever, but dropping it silently is
+    what turned "rejected" into "deleted": to the loop a hash the plan does
+    not list is one the scheduler took away, and it reaps the disks of every
+    VM it takes away."""
+    plan = _plan(HASH_C)
+    capacity = _capacity([AdmissionVerdict(HASH_C, False, "insufficient_capacity", "not enough capacity on this CRN")])
+
+    verdict = compute_verdict(
+        plan,
+        infos=[_info(HASH_C, status=VmStatus.STOPPED)],
+        registry=_registry({HASH_C: _record()}),
+        capacity=capacity,
+    )
+    narrowed = narrow_plan(plan, verdict)
+
+    assert verdict.rejected[HASH_C]["code"] == "insufficient_capacity"
+    assert narrowed.entries == {}
+    assert narrowed.refused == frozenset({HASH_C})
+
+
+def test_a_vm_refused_for_an_undiscovered_node_hash_is_carried_as_refused():
+    """The same, for the refusal that is purely transient: right after a
+    restart the agent has not read its own hash back, so every VM the push
+    pins to this node is refused for that one pass. Reading those refusals as
+    deletions would make a restart wipe the node."""
+    content = _make_qemu_instance_message()
+    content.requirements = SimpleNamespace(node=SimpleNamespace(node_hash="some-node"), gpu=None)
+    plan = _plan(HASH_C, content=content)
+
+    verdict = compute_verdict(
+        plan,
+        infos=[_info(HASH_C, status=VmStatus.STOPPED)],
+        registry=_registry({HASH_C: _record()}),
+        capacity=_capacity([]),
+        node_hash=None,
+    )
+    narrowed = narrow_plan(plan, verdict)
+
+    assert verdict.rejected[HASH_C]["code"] == "node_hash_unknown"
+    assert narrowed.refused == frozenset({HASH_C})
