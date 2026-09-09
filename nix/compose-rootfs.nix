@@ -147,8 +147,10 @@ export CONTAINERS_STORAGE_CONF=/etc/containers/storage.conf
 /bin/busybox mount -t tmpfs tmpfs /run || fatal "mount /run failed"
 # This deliberately shadows the outer init's /tmp/secrets bind mount
 # (prepare_chroot in nix/init-compose.sh): attested secret injection is out
-# of scope for aleph.compose/1 v1, see the "Out of scope" section of
-# docs/plans/2026-08-19-compose-runtime-port-design.md.
+# of scope for aleph.compose/1 v1. The compose subset rejects `volumes:`
+# entirely (see below), so even if this shadow were avoided, no container
+# in the stack has a mount path into the guest's /tmp/secrets; there is no
+# in-schema way to deliver an injected secret to a compose service.
 /bin/busybox mount -t tmpfs tmpfs /tmp || fatal "mount /tmp failed"
 /bin/busybox mount -t tmpfs tmpfs /var || fatal "mount /var failed"
 /bin/busybox mkdir -p /var/lib/containers /var/tmp /var/run /run/containers

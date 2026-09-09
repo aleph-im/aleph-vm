@@ -10,7 +10,14 @@
   # Excluded from the donor: compose-demo (compose-rootfs, initially excluded
   # too, returned as the aleph.compose/1 flavor: composeRootfs /
   # composeInitrd / composeImage below, sharing initrd.nix with init-compose.sh
-  # as /init; see docs/plans/2026-08-19-compose-runtime-port-design.md). The
+  # as /init. Unlike aleph.exec/1, where the workload volume owns the
+  # entrypoint and the platform rootfs's own /sbin/init is only a
+  # no-workload fallback, aleph.compose/1 inverts this: the platform
+  # rootfs's /sbin/init (the podman/podman-compose runner) is always the
+  # chroot entrypoint, and the workload volume is bind-mounted in as data
+  # only, never entered directly. The two flavors differ only in which Nix
+  # outputs get built and baked into the bundle, not in any CRN launch
+  # code). The
   # encrypted-rootfs (LUKS) mode returns as a second, separate image flavor
   # for confidential instances (instanceInitrd / instanceImage below), built
   # from the same initrd.nix with withVerity=false withNft=false withLuks=true;
