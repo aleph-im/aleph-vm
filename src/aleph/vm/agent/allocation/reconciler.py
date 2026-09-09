@@ -40,6 +40,13 @@ logger = logging.getLogger(__name__)
 # deliberately: those are mid-creation, and deleting one races the creation
 # that is still in flight. A VM stuck there is caught on a later pass once it
 # reaches one of these.
+#
+# Wider than the removing list compute_verdict answers with, which is RUNNING
+# only: the answer names what this push stops that was up, while a pass sweeps
+# what the plan dropped whatever state it is in. Capacity stays conservative
+# under the difference, because a commitment is held by the registry record
+# rather than by the status, so a stopped VM left out of releasing has its
+# memory counted against the push that is about to free it.
 TEARDOWN_STATUSES = (VmStatus.RUNNING, VmStatus.STOPPED, VmStatus.FAILED)
 
 
