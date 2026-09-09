@@ -34,6 +34,9 @@ async def _read_plan(request: web.Request) -> tuple[AllocationPlan, dict[str, di
     One validation boundary for both routes: build_plan owns what an entry
     must look like and what a body must not be read as, so the check and the
     push cannot disagree about a request.
+
+    It yields while the entries are verified in a worker thread, which is why
+    it is called before anything the answer is computed from is read.
     """
     try:
         body = await request.json()
@@ -42,7 +45,7 @@ async def _read_plan(request: web.Request) -> tuple[AllocationPlan, dict[str, di
         # text: request.json() decodes before it parses.
         raise web.HTTPBadRequest(text="Body is not valid JSON") from error
     try:
-        return build_plan(body, now=datetime.now(tz=timezone.utc))
+        return await build_plan(body, now=datetime.now(tz=timezone.utc))
     except ValueError as error:
         raise web.HTTPBadRequest(text="Body is not a plan: 'vms' must be a list") from error
 
