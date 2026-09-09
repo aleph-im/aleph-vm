@@ -685,7 +685,7 @@ in its `--help` epilog) needs no running *agent process*:
   - **The agent is down and the supervisor answers.** The full pass runs.
     Nothing is being created, so the age of the directory is a sound guard
     again, and the live set is a known one (registry union `list_vms`), so
-    `_teardown_orphan_devices` removes the dm devices of every namespace no
+    `teardown_orphan_devices` removes the dm devices of every namespace no
     live VM owns before the walk, or the purge that follows would be refused
     on a volume file a target still holds.
   - **The supervisor does not answer.** The live set is the registry alone,
