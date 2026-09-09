@@ -140,7 +140,14 @@ echo -n "${DISK_PASSWORD}" >"${KEY_FILE}"
 
 sudo cryptsetup --batch-mode --type luks1 --key-file "${KEY_FILE}" luksFormat "${OS_PARTITION_DEVICE_ID}"
 sudo cryptsetup open --key-file "${KEY_FILE}" "${OS_PARTITION_DEVICE_ID}" "${MAPPER_NAME}"
-sudo mkfs.ext4 "${MAPPED_DEVICE_ID}"
+# The GRUB embedded in the confidential OVMF is what opens this volume and
+# loads its grub.cfg, and its ext2 driver cannot read a filesystem created
+# with the orphan_file and metadata_csum_seed features: the guest unlocks
+# the volume, prints "Failed to find any grub configuration on the encrypted
+# volume" and halts. e2fsprogs 1.47.2 (Ubuntu 26.04) enables both by
+# default, so turn them off explicitly instead of depending on the build
+# host's mke2fs.conf.
+sudo mkfs.ext4 -O ^orphan_file,^metadata_csum_seed "${MAPPED_DEVICE_ID}"
 
 echo "Copying root file system to the new OS partition..."
 sudo mkdir -p "${MOUNT_POINT}"
