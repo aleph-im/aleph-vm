@@ -20,7 +20,7 @@ use serde::Deserialize;
 use super::certs::verify_signer_chain;
 use super::collateral::TdxCollateral;
 use super::pck_extension::{PckPlatform, parse_pck_platform};
-use super::quote::TdxQuote;
+use super::quote::{TdReportBody, TdxQuote};
 
 /// A platform's trusted-computing-base status, from Intel's signed TCB Info.
 /// Ordered by severity: a larger value is worse.
@@ -438,6 +438,41 @@ fn walk_platform_tcb(
     bail!("the platform TCB is below every level in Intel's TCB Info");
 }
 
+/// Walk the TCB levels for every TDX SVN vector the report body carries.
+///
+/// A TD report 1.0 body has one vector. A 1.5 body adds `tee_tcb_svn2`,
+/// which exists because a TD-preserving update swaps the TDX module under a
+/// running TD: one vector describes the module TCB the TD launched on, the
+/// other the one it runs on now, and either can be the lower of the two.
+/// Walking only the first would let a TD whose other vector matches no
+/// published level appraise on the vector that happens to be current, so
+/// both are walked, the worse status wins and either walk failing fails the
+/// appraisal. Intel's own verifier does the same for a 1.5 body.
+fn appraise_platform_tcb(
+    tcb_info: &TcbInfo,
+    platform: &PckPlatform,
+    body: &TdReportBody,
+) -> Result<(TcbStatus, Vec<String>)> {
+    let (mut status, mut advisories) = walk_platform_tcb(tcb_info, platform, &body.tee_tcb_svn)?;
+    if let Some(v15) = &body.v15 {
+        let (second_status, second_advisories) =
+            walk_platform_tcb(tcb_info, platform, &v15.tee_tcb_svn2)
+                .context("appraising the TD report 1.5 second TCB vector (tee_tcb_svn2)")?;
+        status = status.converge(second_status);
+        merge_advisories(&mut advisories, second_advisories);
+    }
+    Ok((status, advisories))
+}
+
+/// Append the advisories `into` does not already carry, keeping their order.
+fn merge_advisories(into: &mut Vec<String>, from: Vec<String>) {
+    for advisory in from {
+        if !into.contains(&advisory) {
+            into.push(advisory);
+        }
+    }
+}
+
 /// Converge the TDX module's own status into the platform status.
 ///
 /// `tee_tcb_svn[0]` is the module SVN and `[1]` its major version, which
@@ -617,25 +652,16 @@ pub fn evaluate_tcb(
         );
     }
 
-    let (mut status, mut advisories) =
-        walk_platform_tcb(&tcb_info, &platform, &quote.body.tee_tcb_svn)?;
+    let (mut status, mut advisories) = appraise_platform_tcb(&tcb_info, &platform, &quote.body)?;
 
     if let Some((module_status, module_advisories)) = tdx_module_status(&tcb_info, quote)? {
         status = status.converge(module_status);
-        for advisory in module_advisories {
-            if !advisories.contains(&advisory) {
-                advisories.push(advisory);
-            }
-        }
+        merge_advisories(&mut advisories, module_advisories);
     }
 
     let (qe_status, qe_advisories) = qe_identity_status(&qe_identity, &quote.signature.qe_report)?;
     status = status.converge(qe_status);
-    for advisory in qe_advisories {
-        if !advisories.contains(&advisory) {
-            advisories.push(advisory);
-        }
-    }
+    merge_advisories(&mut advisories, qe_advisories);
 
     check_policy(status, &advisories, policy)?;
 
@@ -648,7 +674,7 @@ pub fn evaluate_tcb(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tdx::quote::parse_tdx_quote;
+    use crate::tdx::quote::{TdReport15Extension, parse_tdx_quote};
     use std::time::{Duration, UNIX_EPOCH};
 
     const QUOTE_V4: &[u8] = include_bytes!("../../tests/fixtures/tdx/tdx_quote_v4.bin");
@@ -999,6 +1025,109 @@ mod tests {
         .unwrap();
         let (status, _) = walk_platform_tcb(&tcb_info, &platform, &quote.body.tee_tcb_svn).unwrap();
         assert_eq!(status, TcbStatus::OutOfDate);
+    }
+
+    /// A TCB Info carrying one level per (TDX component ladder, status,
+    /// advisories) triple, in the given document order. The SGX side is all
+    /// zeros so any real PCK platform satisfies it and the TDX components
+    /// decide the walk.
+    fn tcb_info_with_tdx_levels(levels: &[([u8; 16], &str, &[&str])]) -> TcbInfo {
+        let zeros = vec![serde_json::json!({"svn": 0}); 16];
+        let levels: Vec<serde_json::Value> = levels
+            .iter()
+            .map(|(tdx, status, advisories)| {
+                serde_json::json!({
+                    "tcb": {
+                        "sgxtcbcomponents": zeros,
+                        "tdxtcbcomponents": tdx.iter().map(|svn| serde_json::json!({"svn": svn}))
+                            .collect::<Vec<_>>(),
+                        "pcesvn": 0
+                    },
+                    "tcbStatus": status,
+                    "advisoryIDs": advisories
+                })
+            })
+            .collect();
+        serde_json::from_value(serde_json::json!({
+            "id": "TDX",
+            "version": 3,
+            "issueDate": "2025-06-19T10:16:03Z",
+            "nextUpdate": "2025-07-19T10:16:03Z",
+            "fmspc": "b0c06f000000",
+            "tcbLevels": levels
+        }))
+        .expect("synthetic TCB Info parses")
+    }
+
+    /// The v4 fixture's body with a TD report 1.5 extension bolted on, so
+    /// the second SVN vector can be set without a signed 1.5 fixture.
+    fn body_with_tee_tcb_svn2(tee_tcb_svn: [u8; 16], tee_tcb_svn2: [u8; 16]) -> TdReportBody {
+        let mut body = parse_tdx_quote(QUOTE_V4).unwrap().body;
+        body.tee_tcb_svn = tee_tcb_svn;
+        body.v15 = Some(TdReport15Extension {
+            tee_tcb_svn2,
+            mrservicetd: [0u8; 48],
+        });
+        body
+    }
+
+    #[test]
+    fn report_15_second_svn_vector_is_appraised_too() {
+        // A TD report 1.5 carries a second TDX SVN vector for the module
+        // TCB a TD-preserving update moved it to. Appraising only the first
+        // one accepts a TD running under a module TCB Intel lists nowhere.
+        let platform = parse_pck_platform(&pck_leaf(QUOTE_V4)).unwrap();
+        let mut wanted = [0u8; 16];
+        wanted[0] = 3;
+        let tcb_info = tcb_info_with_tdx_levels(&[(wanted, "UpToDate", &[])]);
+
+        let body = body_with_tee_tcb_svn2([5u8; 16], [0u8; 16]);
+        let err = format!(
+            "{:#}",
+            appraise_platform_tcb(&tcb_info, &platform, &body).unwrap_err()
+        );
+        assert!(err.contains("tee_tcb_svn2"), "got: {err}");
+        assert!(err.contains("below every level"), "got: {err}");
+
+        // The same body with a second vector that does meet the level is
+        // accepted: the walk is not simply refusing every 1.5 body.
+        let body = body_with_tee_tcb_svn2([5u8; 16], [4u8; 16]);
+        let (status, _) = appraise_platform_tcb(&tcb_info, &platform, &body).unwrap();
+        assert_eq!(status, TcbStatus::UpToDate);
+    }
+
+    #[test]
+    fn report_15_takes_the_worse_of_the_two_svn_vectors() {
+        // Each vector matches a different level: the worse status wins, and
+        // the advisories of both levels are reported.
+        let platform = parse_pck_platform(&pck_leaf(QUOTE_V4)).unwrap();
+        let tcb_info = tcb_info_with_tdx_levels(&[
+            ([5u8; 16], "UpToDate", &["INTEL-SA-00100"]),
+            ([1u8; 16], "OutOfDate", &["INTEL-SA-00200"]),
+        ]);
+
+        let body = body_with_tee_tcb_svn2([5u8; 16], [1u8; 16]);
+        let (status, advisories) = appraise_platform_tcb(&tcb_info, &platform, &body).unwrap();
+        assert_eq!(status, TcbStatus::OutOfDate);
+        assert_eq!(advisories, ["INTEL-SA-00100", "INTEL-SA-00200"]);
+
+        // Order does not matter: the worse level is the answer either way.
+        let body = body_with_tee_tcb_svn2([1u8; 16], [5u8; 16]);
+        let (status, _) = appraise_platform_tcb(&tcb_info, &platform, &body).unwrap();
+        assert_eq!(status, TcbStatus::OutOfDate);
+    }
+
+    #[test]
+    fn report_10_body_walks_once() {
+        // A 1.0 body has no second vector, so nothing changes for it: the
+        // level its single vector satisfies gives the status.
+        let platform = parse_pck_platform(&pck_leaf(QUOTE_V4)).unwrap();
+        let tcb_info = tcb_info_with_tdx_levels(&[([3u8; 16], "UpToDate", &[])]);
+        let mut body = parse_tdx_quote(QUOTE_V4).unwrap().body;
+        body.tee_tcb_svn = [5u8; 16];
+        assert!(body.v15.is_none());
+        let (status, _) = appraise_platform_tcb(&tcb_info, &platform, &body).unwrap();
+        assert_eq!(status, TcbStatus::UpToDate);
     }
 
     #[test]
