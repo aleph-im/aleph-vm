@@ -50,7 +50,7 @@ from aleph.vm.agent.vm.reclaimable import (
     ReclaimableMarker,
     file_size_bytes,
     iter_content_refs,
-    iter_reclaimable,
+    reclaimable_entries,
     refs_from_content,
 )
 from aleph.vm.agent.vm_registry import AgentVmRegistry
@@ -59,7 +59,6 @@ from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.storage import (
     DEVICE_MAPPER_DIRECTORY,
     DEVICE_NAME_MAX_BYTES,
-    is_vm_namespace,
     reserve_download,
     reserved_downloads,
 )
@@ -291,21 +290,13 @@ def _is_creating(namespace: str) -> bool:
     return is_creating(namespace)
 
 
-def _markers() -> list[tuple[Path, ReclaimableMarker]]:
-    """The reclaimable directories, oldest marker first, implausibly named
-    ones dropped (they can never be handed to ``purge_vm_storage``)."""
-    entries = [(directory, marker) for directory, marker in iter_reclaimable() if is_vm_namespace(directory.name)]
-    entries.sort(key=lambda item: item[1].reclaimable_since)
-    return entries
-
-
 def _marker_refs(markers: Iterable[tuple[Path, ReclaimableMarker]]) -> set[str]:
     return {ref for _directory, marker in markers for ref in marker.depends_on}
 
 
 def referenced_hashes(registry: AgentVmRegistry) -> set[str]:
     """Live refs plus what the ``.reclaimable`` markers pin."""
-    return live_refs(registry) | _marker_refs(_markers())
+    return live_refs(registry) | _marker_refs(reclaimable_entries())
 
 
 def cache_budget_bytes(root: Path) -> int:
@@ -557,7 +548,7 @@ def evict_caches(
             continue
         # Re-read the markers per root: what was reclaimed for the previous
         # root changes what this one is allowed to touch.
-        markers = _markers()
+        markers = reclaimable_entries()
         _evict_unreferenced(state, entries, state.live_only | _marker_refs(markers))
         if state.over_budget and reclaim_retained:
             _reclaim_pinning_dirs(state, entries, markers)

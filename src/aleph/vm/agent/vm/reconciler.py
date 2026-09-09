@@ -65,9 +65,9 @@ from aleph.vm.agent.vm.reclaimable import (
     adopt,
     clear_marker,
     directory_size_bytes,
-    iter_reclaimable,
     mark_reclaimable,
     read_marker,
+    reclaimable_entries,
     restore_markers,
 )
 from aleph.vm.agent.vm.retire import teardown_namespace_devices
@@ -642,22 +642,6 @@ def _retention_budget(pool: StoragePool) -> int | None:
     return parse_budget(settings.VOLUME_RETENTION_BUDGET, usage.total)
 
 
-def _reclaimable_on(pool: StoragePool) -> list[tuple[Path, ReclaimableMarker]]:
-    """The pool's reclaimable directories, oldest marker first.
-
-    Implausibly named directories are dropped here rather than left to fail
-    the ``_checked_namespace`` guard mid-pass: a hand-made marker under a
-    directory nobody named after a VM must not abort a reconcile.
-    """
-    entries = [
-        (directory, marker)
-        for directory, marker in iter_reclaimable()
-        if directory.parent == pool.path and _plausible(directory.name)
-    ]
-    entries.sort(key=lambda item: item[1].reclaimable_since)
-    return entries
-
-
 def _evict(
     namespace: str,
     report: ReconcileReport,
@@ -710,7 +694,7 @@ def _enforce_retention_budget(
 ) -> None:
     reap = settings.VOLUME_RETENTION == "reap"
     for pool in get_pools():
-        entries = _reclaimable_on(pool)
+        entries = reclaimable_entries(pool.path)
         if not entries:
             continue
         budget = _retention_budget(pool)
@@ -826,7 +810,7 @@ def make_room(pool: StoragePool, needed_bytes: int, *, live: Collection[str] | N
     free = usage.free
     if free >= needed_bytes:
         return 0
-    entries = _reclaimable_on(pool)
+    entries = reclaimable_entries(pool.path)
     reclaimable = sum(directory_size_bytes(directory) for directory, _marker in entries)
     if free + reclaimable < needed_bytes:
         logger.info(

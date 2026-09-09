@@ -25,6 +25,7 @@ from typing import Literal, get_args
 from aleph_message.models import ExecutableContent
 
 from aleph.vm.agent.vm.purge import _checked_namespace
+from aleph.vm.storage import is_vm_namespace
 from aleph.vm.storage_pools import get_pools, iter_namespace_dirs
 
 logger = logging.getLogger(__name__)
@@ -440,6 +441,27 @@ def iter_reclaimable(*, repair: bool = True) -> Iterator[tuple[Path, Reclaimable
         marker = read_marker(directory, repair=repair)
         if marker is not None:
             yield directory, marker
+
+
+def reclaimable_entries(pool_path: Path | None = None) -> list[tuple[Path, ReclaimableMarker]]:
+    """The marked directories, oldest marker first, or one pool's alone.
+
+    The eviction order every reclaiming pass uses, in one place: the
+    retention budget takes a pool at a time, the cache pass takes them all,
+    and both have to agree on which directory goes first.
+
+    Implausibly named directories are dropped here rather than left to fail
+    the purge guard mid-pass: a hand-made marker under a directory nobody
+    named after a VM must not abort a reconcile, and could never be handed
+    to ``purge_vm_storage`` anyway.
+    """
+    entries = [
+        (directory, marker)
+        for directory, marker in iter_reclaimable()
+        if is_vm_namespace(directory.name) and (pool_path is None or directory.parent == pool_path)
+    ]
+    entries.sort(key=lambda item: item[1].reclaimable_since)
+    return entries
 
 
 # reclaimable_bytes runs on every admission check and every capacity report,
