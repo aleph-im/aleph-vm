@@ -216,6 +216,12 @@ pub struct QemuVmConfig {
     #[serde(default)]
     pub hugepage_size: Option<String>,
 
+    // The 64-bit PCI MMIO window (MiB) OVMF should reserve for passthrough
+    // BARs, Rust-only, SNP+GPU only. Round-trips on adoption; unused by the
+    // daemon itself (the controller reads it), so it stays informational here.
+    #[serde(default)]
+    pub pci_mmio64_mb: Option<u64>,
+
     // The guest IPv6 /124 CIDR the daemon assigned at create time, Rust-only.
     // The agent computes the Aleph static address now, so adoption reads this
     // back rather than re-deriving it from (pool, vm_hash, vm_type). Absent on
@@ -266,6 +272,7 @@ impl QemuVmConfig {
             cpu_model: None,
             numa_node: None,
             hugepage_size: None,
+            pci_mmio64_mb: None,
             guest_ipv6_cidr: None,
             image_format: None,
             image_readonly: None,
@@ -515,6 +522,11 @@ pub struct WrittenQemuVmConfiguration {
     pub numa_node: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hugepage_size: Option<String>,
+    // The 64-bit PCI MMIO window (MiB) OVMF should reserve for passthrough
+    // BARs, Rust-only, SNP+GPU only. Sized by `snp_config_slice` from the
+    // card's sysfs BARs; `None` (and so omitted) on every other config.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pci_mmio64_mb: Option<u64>,
     // The guest IPv6 /124 CIDR the daemon assigned, Rust-only. Set under the
     // static policy so a daemon restart adopts the address without re-deriving
     // it; None (and so omitted, keeping the bytes identical to the pydantic
@@ -964,6 +976,7 @@ mod tests {
                 cpu_model: None,
                 numa_node: None,
                 hugepage_size: None,
+                pci_mmio64_mb: None,
                 guest_ipv6_cidr: None,
                 // The opaque-SNP keys are absent here on purpose: this fixture
                 // pins the PYDANTIC bytes, and the writer must keep emitting
@@ -1010,6 +1023,7 @@ mod tests {
             cpu_model: None,
             numa_node: None,
             hugepage_size: None,
+            pci_mmio64_mb: None,
             guest_ipv6_cidr: None,
             image_format: None,
             image_readonly: None,
@@ -1099,6 +1113,7 @@ mod tests {
                 cpu_model: None,
                 numa_node: None,
                 hugepage_size: None,
+                pci_mmio64_mb: None,
                 guest_ipv6_cidr: None,
                 image_format: None,
                 image_readonly: None,

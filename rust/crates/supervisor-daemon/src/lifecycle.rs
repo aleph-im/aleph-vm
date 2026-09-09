@@ -1872,6 +1872,9 @@ fn build_written_config(
             // leaves them None (byte-identical to pre-C2).
             numa_node: None,
             hugepage_size: None,
+            // Sized directly by snp_config_slice (no placement dependency);
+            // None whenever the spec carries no GPUs.
+            pci_mmio64_mb: snp_slice.as_ref().and_then(|snp| snp.pci_mmio64_mb),
             // The assigned guest IPv6 is injected by the create path after the
             // tap is derived (the address is not known here); None keeps a
             // no-tap config's bytes identical to the pydantic writer.
@@ -1951,6 +1954,36 @@ const MAX_ROOTHASH_SIDECAR_BYTES: u64 = 4096;
 /// can address.
 const MAX_VERIFIED_VOLUMES: usize = 8;
 
+/// Read a sidecar that is allowed to be entirely absent, capped at
+/// `MAX_ROOTHASH_SIDECAR_BYTES`. `Ok(None)` when the file does not exist;
+/// `Ok(Some(contents))` with the raw (untrimmed) bytes otherwise; an
+/// `InvalidBackend` for any other read failure or an over-cap file, never a
+/// silent truncation.
+fn read_optional_sidecar(path: &str) -> Result<Option<String>, RpcError> {
+    use std::io::Read as _;
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(RpcError::InvalidBackend(format!(
+                "cannot read the sidecar {path}: {error}"
+            )));
+        }
+    };
+    let mut contents = String::new();
+    file.take(MAX_ROOTHASH_SIDECAR_BYTES + 1)
+        .read_to_string(&mut contents)
+        .map_err(|error| {
+            RpcError::InvalidBackend(format!("cannot read the sidecar {path}: {error}"))
+        })?;
+    if contents.len() as u64 > MAX_ROOTHASH_SIDECAR_BYTES {
+        return Err(RpcError::InvalidBackend(format!(
+            "the sidecar {path} exceeds {MAX_ROOTHASH_SIDECAR_BYTES} bytes"
+        )));
+    }
+    Ok(Some(contents))
+}
+
 /// The SEV-SNP measured-boot slice `build_written_config` fills, or `None` when
 /// the spec is not SNP. A measured SNP launch must present the EXACT OVMF +
 /// kernel + initrd + cmdline the B2a Nix image's `sev-snp-measure` covered, or
@@ -1983,6 +2016,10 @@ struct SnpSlice {
     /// read-only raw image behind the verity mapper.
     rootfs_format: Option<String>,
     rootfs_readonly: Option<bool>,
+    /// The 64-bit PCI MMIO window (MiB) OVMF should reserve for the spec's
+    /// GPUs, sized from their sysfs BARs. `None` when the spec carries no
+    /// GPUs.
+    pci_mmio64_mb: Option<u64>,
 }
 
 /// The spec's rootfs `DiskConfig.format` as the controller's `image_format`
@@ -2000,7 +2037,23 @@ fn snp_image_format(format: i32) -> Result<String, RpcError> {
     }
 }
 
-fn snp_config_slice(_state: &DaemonState, spec: &pb::VmSpec) -> Result<Option<SnpSlice>, RpcError> {
+fn snp_config_slice(state: &DaemonState, spec: &pb::VmSpec) -> Result<Option<SnpSlice>, RpcError> {
+    snp_config_slice_with(
+        state,
+        spec,
+        state.gpu_cc_probe,
+        crate::gpu_bar::gpu_mmio64_mb,
+    )
+}
+
+/// `snp_config_slice` with the two hardware reads injected: the CC mode
+/// probe and the BAR-driven MMIO window, so tests need no sysfs.
+fn snp_config_slice_with(
+    state: &DaemonState,
+    spec: &pb::VmSpec,
+    probe: impl Fn(&str, &str) -> Result<Option<crate::gpu_cc::CcMode>, crate::error::DaemonError>,
+    mmio_window: impl Fn(&[String]) -> Result<u64, crate::error::DaemonError>,
+) -> Result<Option<SnpSlice>, RpcError> {
     let Some(tee) = &spec.tee else {
         return Ok(None);
     };
@@ -2019,16 +2072,58 @@ fn snp_config_slice(_state: &DaemonState, spec: &pb::VmSpec) -> Result<Option<Sn
             "SEV-SNP measured boot requires kernel_path and initrd_path".to_string(),
         ));
     }
-    // GPU passthrough into a confidential SEV-SNP guest (confidential GPU /
-    // NVIDIA CC) is not supported yet, and `build_snp_argv` emits no passthrough
-    // devices. Accepting GPUs here would write them into the controller config
-    // and then silently drop them at launch, giving the owner a VM without the
-    // hardware they asked for. Fail closed instead. See divergence 68.
-    if !spec.gpus.is_empty() {
-        return Err(RpcError::InvalidBackend(
-            "GPU passthrough is not supported on SEV-SNP VMs yet".to_string(),
-        ));
+    // A GPU may enter a confidential guest only in NVIDIA CC mode: the card
+    // then refuses plaintext DMA and answers attestation, and the guest
+    // verifies it at boot. The mode is read from the card now rather than
+    // taken from the inventory cache: an operator can switch a card off
+    // between two host probes, and a stale "on" would hand the owner
+    // hardware the guest cannot trust. Reading the register here is safe.
+    // The spec's cards were validated unattached, and this runs under the
+    // world write lock with creation serialized, so no guest can own the
+    // card before this VM does. Any other answer, including a card that
+    // cannot be read, fails closed. The cache learns the answer either way.
+    for gpu in &spec.gpus {
+        let Some(device) = state
+            .host
+            .gpus
+            .iter()
+            .find(|device| device.pci_host == gpu.pci_host)
+        else {
+            return Err(RpcError::InvalidBackend(format!(
+                "GPU at pci_host '{}' is not in the host inventory",
+                gpu.pci_host
+            )));
+        };
+        let mode = probe(&device.pci_host, &device.device_id).map_err(|error| {
+            RpcError::InvalidBackend(format!(
+                "cannot read the confidential-computing mode of GPU at pci_host '{}': {error}",
+                gpu.pci_host
+            ))
+        })?;
+        {
+            let mut cache = state.gpu_cc_modes.lock().expect("gpu_cc_modes poisoned");
+            match mode {
+                Some(mode) => cache.insert(gpu.pci_host.clone(), mode),
+                None => cache.remove(&gpu.pci_host),
+            };
+        }
+        if mode != Some(crate::gpu_cc::CcMode::On) {
+            return Err(RpcError::InvalidBackend(format!(
+                "GPU at pci_host '{}' is not in NVIDIA confidential-computing mode (probed: {})",
+                gpu.pci_host,
+                mode.map(|m| m.to_string())
+                    .unwrap_or_else(|| "unknown".into())
+            )));
+        }
     }
+    let pci_mmio64_mb = if spec.gpus.is_empty() {
+        None
+    } else {
+        let hosts: Vec<String> = spec.gpus.iter().map(|g| g.pci_host.clone()).collect();
+        Some(mmio_window(&hosts).map_err(|e| {
+            RpcError::InvalidBackend(format!("cannot size the GPU MMIO window: {e}"))
+        })?)
+    };
     let rootfs = require_rootfs(spec)?;
     let rootfs_path = rootfs.path.clone();
     let roothash_path = format!("{rootfs_path}.roothash");
@@ -2071,6 +2166,7 @@ fn snp_config_slice(_state: &DaemonState, spec: &pb::VmSpec) -> Result<Option<Sn
             hashtree_path: None,
             rootfs_format: Some(snp_image_format(rootfs.format)?),
             rootfs_readonly: Some(rootfs.readonly),
+            pci_mmio64_mb,
         }));
     }
     // The verity arm. The dm-verity roothash and hash tree are sidecars of the
@@ -2123,24 +2219,8 @@ fn snp_config_slice(_state: &DaemonState, spec: &pb::VmSpec) -> Result<Option<Sn
     // byte-identical to a workload-less SNP VM (parity with every existing
     // measured image).
     let workload_roothash_path = format!("{rootfs_path}.workload_roothash");
-    let kernel_cmdline = match std::fs::File::open(&workload_roothash_path) {
-        Ok(file) => {
-            use std::io::Read as _;
-            let mut contents = String::new();
-            file.take(MAX_ROOTHASH_SIDECAR_BYTES + 1)
-                .read_to_string(&mut contents)
-                .map_err(|error| {
-                    RpcError::InvalidBackend(format!(
-                        "cannot read the workload roothash sidecar {workload_roothash_path}: \
-                         {error}"
-                    ))
-                })?;
-            if contents.len() as u64 > MAX_ROOTHASH_SIDECAR_BYTES {
-                return Err(RpcError::InvalidBackend(format!(
-                    "the workload roothash sidecar {workload_roothash_path} exceeds \
-                     {MAX_ROOTHASH_SIDECAR_BYTES} bytes"
-                )));
-            }
+    let kernel_cmdline = match read_optional_sidecar(&workload_roothash_path)? {
+        Some(contents) => {
             let workload_roothash = contents.trim().to_string();
             // Like the platform roothash, this is spliced verbatim into
             // -append, so only a bare hex string is accepted.
@@ -2153,12 +2233,33 @@ fn snp_config_slice(_state: &DaemonState, spec: &pb::VmSpec) -> Result<Option<Sn
             }
             format!("{kernel_cmdline} workload_roothash={workload_roothash}")
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => kernel_cmdline,
-        Err(error) => {
-            return Err(RpcError::InvalidBackend(format!(
-                "cannot read the workload roothash sidecar {workload_roothash_path}: {error}"
-            )));
+        None => kernel_cmdline,
+    };
+    // Fixed cmdline text the runtime manifest carries between the workload
+    // roothash and the verified volumes (today: the SWIOTLB size a
+    // confidential-GPU guest needs). The agent copies it from the manifest
+    // into this sidecar; it is spliced verbatim into the measured cmdline,
+    // so only a closed allowlist may pass, never free text.
+    let extra_path = format!("{rootfs_path}.cmdline_extra");
+    let kernel_cmdline = match read_optional_sidecar(&extra_path)? {
+        Some(contents) => {
+            let extra = contents.trim();
+            // The kernel parses the value with base auto-detection, so a
+            // leading zero would make it octal and the guest's bounce buffer
+            // would not be the size the manifest measured.
+            let allowed = extra.strip_prefix("swiotlb=").is_some_and(|digits| {
+                (1..=9).contains(&digits.len())
+                    && !digits.starts_with('0')
+                    && digits.bytes().all(|b| b.is_ascii_digit())
+            });
+            if !allowed {
+                return Err(RpcError::InvalidBackend(format!(
+                    "cmdline_extra sidecar {extra_path} carries {extra:?}; only swiotlb=<decimal digits> is allowed"
+                )));
+            }
+            format!("{kernel_cmdline} {extra}")
         }
+        None => kernel_cmdline,
     };
     // Verified data volumes: the launcher stages a {rootfs}.verified_volumes
     // sidecar holding the comma-joined dm-verity roothashes of
@@ -2167,23 +2268,8 @@ fn snp_config_slice(_state: &DaemonState, spec: &pb::VmSpec) -> Result<Option<Sn
     // the cmdline byte-identical to a volume-less V-PROGRAM, matching the
     // CLI's template-token dropping.
     let verified_volumes_path = format!("{rootfs_path}.verified_volumes");
-    let kernel_cmdline = match std::fs::File::open(&verified_volumes_path) {
-        Ok(file) => {
-            use std::io::Read as _;
-            let mut contents = String::new();
-            file.take(MAX_ROOTHASH_SIDECAR_BYTES + 1)
-                .read_to_string(&mut contents)
-                .map_err(|error| {
-                    RpcError::InvalidBackend(format!(
-                        "cannot read the verified-volumes sidecar {verified_volumes_path}: {error}"
-                    ))
-                })?;
-            if contents.len() as u64 > MAX_ROOTHASH_SIDECAR_BYTES {
-                return Err(RpcError::InvalidBackend(format!(
-                    "the verified-volumes sidecar {verified_volumes_path} exceeds \
-                     {MAX_ROOTHASH_SIDECAR_BYTES} bytes"
-                )));
-            }
+    let kernel_cmdline = match read_optional_sidecar(&verified_volumes_path)? {
+        Some(contents) => {
             // Spliced verbatim into -append: only a comma-joined list of at
             // most MAX_VERIFIED_VOLUMES bare lowercase sha256 hex roothashes
             // is accepted.
@@ -2203,12 +2289,7 @@ fn snp_config_slice(_state: &DaemonState, spec: &pb::VmSpec) -> Result<Option<Sn
             }
             format!("{kernel_cmdline} verified_volumes={joined}")
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => kernel_cmdline,
-        Err(error) => {
-            return Err(RpcError::InvalidBackend(format!(
-                "cannot read the verified-volumes sidecar {verified_volumes_path}: {error}"
-            )));
-        }
+        None => kernel_cmdline,
     };
     Ok(Some(SnpSlice {
         ovmf_path: tee.firmware_path.clone(),
@@ -2223,6 +2304,7 @@ fn snp_config_slice(_state: &DaemonState, spec: &pb::VmSpec) -> Result<Option<Sn
         // absent and the written bytes stay identical.
         rootfs_format: None,
         rootfs_readonly: None,
+        pci_mmio64_mb,
     }))
 }
 
@@ -3730,6 +3812,14 @@ mod tests {
         ruleset: Vec<Value>,
         ipv6_allocation_policy: crate::config::Ipv6AllocationPolicy,
     ) -> Harness {
+        harness_full(ruleset, ipv6_allocation_policy, Vec::new())
+    }
+
+    fn harness_full(
+        ruleset: Vec<Value>,
+        ipv6_allocation_policy: crate::config::Ipv6AllocationPolicy,
+        gpus: Vec<crate::lspci::GpuDevice>,
+    ) -> Harness {
         let tmp = tempfile::tempdir().unwrap();
         let mut settings = Settings::from_vars(
             [(
@@ -3748,7 +3838,7 @@ mod tests {
             settings,
             host_ipv4: "192.0.2.10".to_string(),
             network_interface: Some("eth0".to_string()),
-            gpus: Vec::new(),
+            gpus,
             dns_nameservers: Some(vec!["1.1.1.1".to_string()]),
         };
         let systemd = Arc::new(FakeSystemd::new());
@@ -3774,6 +3864,25 @@ mod tests {
             nft: nft_executor,
             programs,
             _tmp: tmp,
+        }
+    }
+
+    fn harness_with_gpus(gpus: Vec<crate::lspci::GpuDevice>) -> Harness {
+        harness_full(
+            bare_host_ruleset(),
+            crate::config::Ipv6AllocationPolicy::Static,
+            gpus,
+        )
+    }
+
+    fn nvidia_card(pci_host: &str) -> crate::lspci::GpuDevice {
+        crate::lspci::GpuDevice {
+            vendor: "NVIDIA".into(),
+            device_name: "GB202 [RTX PRO 6000 Blackwell]".into(),
+            device_class: "0302".into(),
+            pci_host: pci_host.into(),
+            device_id: "10de:2b85".into(),
+            cc_mode: None,
         }
     }
 
@@ -4827,26 +4936,147 @@ mod tests {
     }
 
     #[test]
-    fn snp_config_slice_rejects_gpus_so_they_are_not_silently_dropped() {
-        // build_snp_argv emits no GPU passthrough devices, so an SNP spec that
-        // carries GPUs must fail closed here rather than launch a VM missing the
-        // requested hardware. Removing the guard makes this return Ok.
+    fn snp_config_slice_rejects_a_gpu_not_in_cc_mode() {
+        let harness = harness_with_gpus(vec![nvidia_card("06:00.0")]);
+        let state = &harness.state;
+        // Off, devtools and no mode all fail closed, and each answer
+        // replaces whatever the inventory cache held.
+        for mode in [
+            None,
+            Some(crate::gpu_cc::CcMode::Off),
+            Some(crate::gpu_cc::CcMode::Devtools),
+        ] {
+            state
+                .gpu_cc_modes
+                .lock()
+                .unwrap()
+                .insert("06:00.0".into(), crate::gpu_cc::CcMode::On);
+            let root = state.host.settings.execution_root.clone();
+            let firmware = root.join("OVMF.fd");
+            std::fs::write(&firmware, b"ovmf").unwrap();
+            let mut spec = snp_spec(&hash('j'), &root, &firmware.to_string_lossy());
+            spec.gpus = vec![pb::GpuConfig {
+                pci_host: "06:00.0".into(),
+                supports_x_vga: true,
+            }];
+            match snp_config_slice_with(state, &spec, |_, _| Ok(mode), |_| Ok(1024)) {
+                Err(RpcError::InvalidBackend(msg)) => {
+                    assert!(msg.contains("confidential-computing mode"), "{msg}")
+                }
+                other => panic!("mode {mode:?} must be InvalidBackend, got {other:?}"),
+            }
+            assert_eq!(
+                crate::service::cc_mode_of(state, "06:00.0"),
+                mode,
+                "the stale cached mode must not survive the probe"
+            );
+        }
+    }
+
+    #[test]
+    fn snp_config_slice_rejects_a_gpu_whose_mode_cannot_be_read() {
+        let harness = harness_with_gpus(vec![nvidia_card("06:00.0")]);
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let mut spec = snp_spec(&hash('j'), &root, &firmware.to_string_lossy());
+        spec.gpus = vec![pb::GpuConfig {
+            pci_host: "06:00.0".into(),
+            supports_x_vga: true,
+        }];
+        let unreadable = |_: &str, _: &str| {
+            Err(crate::error::DaemonError::GpuProbe(
+                "BAR0 went away".to_string(),
+            ))
+        };
+        match snp_config_slice_with(state, &spec, unreadable, |_| Ok(1024)) {
+            Err(RpcError::InvalidBackend(msg)) => {
+                assert!(msg.contains("BAR0 went away"), "{msg}")
+            }
+            other => panic!("an unreadable card must be InvalidBackend, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn snp_config_slice_probes_the_card_and_never_the_cache() {
+        // The hermetic probe never finds a mode, so a cached "on" alone
+        // must not admit the card: the gate reads the hardware.
+        let harness = harness_with_gpus(vec![nvidia_card("06:00.0")]);
+        let state = &harness.state;
+        state
+            .gpu_cc_modes
+            .lock()
+            .unwrap()
+            .insert("06:00.0".into(), crate::gpu_cc::CcMode::On);
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let mut spec = snp_spec(&hash('j'), &root, &firmware.to_string_lossy());
+        spec.gpus = vec![pb::GpuConfig {
+            pci_host: "06:00.0".into(),
+            supports_x_vga: true,
+        }];
+        assert!(matches!(
+            snp_config_slice(state, &spec),
+            Err(RpcError::InvalidBackend(_))
+        ));
+        assert_eq!(crate::service::cc_mode_of(state, "06:00.0"), None);
+    }
+
+    #[test]
+    fn snp_config_slice_rejects_a_gpu_absent_from_the_inventory() {
         let harness = harness();
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
         let firmware = root.join("OVMF.fd");
         std::fs::write(&firmware, b"ovmf").unwrap();
-
-        let vm_id = hash('j');
-        let mut spec = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+        let mut spec = snp_spec(&hash('j'), &root, &firmware.to_string_lossy());
         spec.gpus = vec![pb::GpuConfig {
-            pci_host: "0000:01:00.0".to_string(),
+            pci_host: "0000:01:00.0".into(),
             supports_x_vga: true,
         }];
-        match snp_config_slice(state, &spec) {
-            Err(RpcError::InvalidBackend(_)) => {}
-            other => panic!("an SNP spec with GPUs must be InvalidBackend, got {other:?}"),
-        }
+        assert!(matches!(
+            snp_config_slice(state, &spec),
+            Err(RpcError::InvalidBackend(_))
+        ));
+    }
+
+    #[test]
+    fn snp_config_slice_accepts_a_cc_mode_gpu_and_sizes_the_window() {
+        let harness = harness_with_gpus(vec![nvidia_card("06:00.0")]);
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let mut spec = snp_spec(&hash('j'), &root, &firmware.to_string_lossy());
+        spec.gpus = vec![pb::GpuConfig {
+            pci_host: "06:00.0".into(),
+            supports_x_vga: true,
+        }];
+        // The probe and the window reader are injected so the test needs no
+        // sysfs; the probe records which card it was asked about.
+        let probed: std::sync::Mutex<Vec<(String, String)>> = Default::default();
+        let cc_on = |pci_host: &str, device_id: &str| {
+            probed
+                .lock()
+                .unwrap()
+                .push((pci_host.to_string(), device_id.to_string()));
+            Ok(Some(crate::gpu_cc::CcMode::On))
+        };
+        let slice = snp_config_slice_with(state, &spec, cc_on, |_| Ok(524288))
+            .unwrap()
+            .unwrap();
+        assert_eq!(slice.pci_mmio64_mb, Some(524288));
+        assert_eq!(
+            probed.into_inner().unwrap(),
+            vec![("06:00.0".to_string(), "10de:2b85".to_string())]
+        );
+        // The inventory cache learns the fresh answer.
+        assert_eq!(
+            crate::service::cc_mode_of(state, "06:00.0"),
+            Some(crate::gpu_cc::CcMode::On)
+        );
     }
 
     #[test]
@@ -5029,6 +5259,78 @@ mod tests {
                 Err(RpcError::InvalidBackend(_)) => {}
                 other => panic!("sidecar {bad:?} must be InvalidBackend, got {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn snp_cmdline_extra_sidecar_is_spliced_after_the_workload_roothash() {
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let vm_id = hash('k');
+        let spec = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+        let rootfs = root.join(format!("{vm_id}-rootfs.ext4"));
+        std::fs::write(format!("{}.workload_roothash", rootfs.display()), b"beef\n").unwrap();
+        std::fs::write(
+            format!("{}.cmdline_extra", rootfs.display()),
+            b"swiotlb=262144\n",
+        )
+        .unwrap();
+        // The verified-volumes sidecar only accepts bare lowercase sha256 hex
+        // roothashes (64 chars each), so the fixture uses two of those rather
+        // than the shorthand "aa,bb" (which the existing entry-length guard,
+        // pinned by snp_config_slice_rejects_a_malformed_verified_volumes_sidecar,
+        // would reject).
+        let vol_a = "aa".repeat(32);
+        let vol_b = "bb".repeat(32);
+        std::fs::write(
+            format!("{}.verified_volumes", rootfs.display()),
+            format!("{vol_a},{vol_b}\n"),
+        )
+        .unwrap();
+        let slice = snp_config_slice(state, &spec).unwrap().unwrap();
+        assert_eq!(
+            slice.kernel_cmdline,
+            format!(
+                "console=ttyS0 root=/dev/mapper/verity-root ro roothash=deadbeef00 \
+                 workload_roothash=beef swiotlb=262144 verified_volumes={vol_a},{vol_b}"
+            )
+        );
+    }
+
+    #[test]
+    fn snp_cmdline_extra_sidecar_rejects_anything_but_swiotlb() {
+        for bad in [
+            "console=ttyS1",
+            "swiotlb=262144 init=/bin/sh",
+            "swiotlb=",
+            "swiotlb=1234567890",
+            "swiotlb=0262144",
+            "swiotlb=0",
+            "root=/dev/vdb",
+        ] {
+            let harness = harness();
+            let state = &harness.state;
+            let root = state.host.settings.execution_root.clone();
+            let firmware = root.join("OVMF.fd");
+            std::fs::write(&firmware, b"ovmf").unwrap();
+            let vm_id = hash('l');
+            let spec = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+            let rootfs = root.join(format!("{vm_id}-rootfs.ext4"));
+            std::fs::write(
+                format!("{}.cmdline_extra", rootfs.display()),
+                format!("{bad}\n"),
+            )
+            .unwrap();
+            assert!(
+                matches!(
+                    snp_config_slice(state, &spec),
+                    Err(RpcError::InvalidBackend(_))
+                ),
+                "{bad:?} must be refused"
+            );
         }
     }
 
