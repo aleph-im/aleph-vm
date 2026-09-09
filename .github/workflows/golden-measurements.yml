@@ -132,10 +132,10 @@ jobs:
           fi
           # Inputs that can move gpuMeasurement: the GPU-only files, the
           # shared ones the GPU chain also builds from (flake, lock, OVMF,
-          # kernel recipe and base fragment, initrd recipe, init-common.sh),
-          # the attest-agent's measured source set (the same one the trigger
-          # paths above name) and the golden file itself. An entry with a
-          # trailing slash matches everything under it.
+          # kernel recipe and base fragment, initrd recipe and every script
+          # it ships), the attest-agent's measured source set (the same one
+          # the trigger paths above name) and the golden file itself. An
+          # entry with a trailing slash matches everything under it.
           gpu_inputs="
           nix/nvidia.nix
           nix/nvat.nix
@@ -151,6 +151,8 @@ jobs:
           nix/kernel-config.fragment
           nix/initrd.nix
           nix/init-common.sh
+          nix/udhcpc.script
+          nix/udhcpc6.script
           rust/Cargo.toml
           rust/crates/aleph-attest-agent/
           rust/crates/aleph-tee/
