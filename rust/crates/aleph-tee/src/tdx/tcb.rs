@@ -17,6 +17,8 @@ use openssl::hash::MessageDigest;
 use openssl::x509::X509;
 use serde::Deserialize;
 
+use crate::pki::ecdsa_from_raw;
+
 use super::certs::verify_signer_chain;
 use super::collateral::TdxCollateral;
 use super::pck_extension::{PckPlatform, parse_pck_platform};
@@ -262,9 +264,8 @@ fn verify_signed_document(
     if sig_raw.len() != 64 {
         bail!("{what} signature is {} bytes, expected 64", sig_raw.len());
     }
-    let r = openssl::bn::BigNum::from_slice(&sig_raw[..32])?;
-    let s = openssl::bn::BigNum::from_slice(&sig_raw[32..])?;
-    let sig = openssl::ecdsa::EcdsaSig::from_private_components(r, s)?;
+    let sig =
+        ecdsa_from_raw(&sig_raw).with_context(|| format!("failed to read the {what} signature"))?;
     let digest = openssl::hash::hash(MessageDigest::sha256(), body.as_bytes())
         .with_context(|| format!("failed to hash the {what} body"))?;
     if !sig

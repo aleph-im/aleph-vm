@@ -1,11 +1,11 @@
 use anyhow::{Context, Result, bail};
 use openssl::asn1::Asn1Time;
-use openssl::ecdsa::EcdsaSig;
 use openssl::hash::MessageDigest;
 use openssl::x509::X509;
 use serde_json::json;
 use sev::certs::snp::builtin;
 
+use crate::pki::ecdsa_from_components;
 use crate::types::{AttestationReport, SevSnpRegisters, TeeType, VerificationResult};
 
 use super::certs::{CertChain, TcbParams, fetch_ca_chain, fetch_vcek};
@@ -406,13 +406,7 @@ pub fn verify_report_signature(report_raw: &[u8], vcek_der: &[u8]) -> Result<()>
     let s_trimmed = strip_leading_zeros(&s_bytes_be);
 
     // Build ECDSA signature from r and s components
-    let r_bn = openssl::bn::BigNum::from_slice(r_trimmed)
-        .context("failed to create BigNum from r component")?;
-    let s_bn = openssl::bn::BigNum::from_slice(s_trimmed)
-        .context("failed to create BigNum from s component")?;
-
-    let ecdsa_sig = EcdsaSig::from_private_components(r_bn, s_bn)
-        .context("failed to create ECDSA signature")?;
+    let ecdsa_sig = ecdsa_from_components(r_trimmed, s_trimmed)?;
 
     // Hash the signed portion with SHA-384
     let digest = openssl::hash::hash(MessageDigest::sha384(), signed_data)
@@ -454,6 +448,7 @@ mod tests {
     use super::*;
     use openssl::bn::{BigNum, MsbOption};
     use openssl::ec::{EcGroup, EcKey};
+    use openssl::ecdsa::EcdsaSig;
     use openssl::hash::hash;
     use openssl::nid::Nid;
     use openssl::pkey::{PKey, Private};
