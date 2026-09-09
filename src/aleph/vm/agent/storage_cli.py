@@ -12,32 +12,46 @@ supervisor daemon over the same gRPC socket the agent dials
 timeout, and union its answer into the live set. ``status`` and ``list``
 are read-only and never touch the supervisor.
 
-The answer decides what ``reconcile`` may do, and the two outcomes are
-opposite by design:
+Two processes matter here, and they are not the same one. The *agent* is
+this Python service (``aleph-vm-agent``, bound to
+``settings.SUPERVISOR_HOST``/``SUPERVISOR_PORT``); it owns the reconciler
+and the creates. The *supervisor* is the Rust daemon that runs the VMs and
+answers ``list_vms`` on the gRPC socket. Either can be up without the
+other, and the case an operator needs this command for is precisely the
+awkward one: VMs running under a supervisor that is perfectly healthy while
+the agent is down or will not start.
 
-* The supervisor answers. The agent is running, and the one thing this
-  process can never see is exactly the thing the running agent holds: the
-  set of creates it has in flight (``reconciler.creating()`` is in-process
-  state). A create that outlives ``VOLUME_CREATE_GUARD`` before its DB
-  record exists (a long migration import routinely does) is invisible here
-  and looks like an orphan, directory and devices alike. So a real pass is
-  refused: the agent runs its own pass at startup, periodically and after
-  every VM goes away, and that pass sees everything this one does plus the
-  creates. ``--dry-run`` is still allowed, and is how an operator inspects
-  a running node.
-* The supervisor does not answer. Nothing is being created, so the age of
-  the directory is a sound guard again, and this command becomes the way to
-  reconcile a node whose agent will not start. The live set is then the
-  registry alone, which is not a safe one, so the pass runs dry and exits
-  non-zero unless ``--trust-registry`` says to proceed on the registry's
-  word. ``reclaim`` refuses on the same terms.
+So a purge is decided in three states:
 
-Whether the daemon is down is a claim this module only makes when it can
-back it up: a socket that is missing or refuses a connection. A dial that
-failed for any other reason (a socket this user may not open, a deadline, a
-reply that does not parse) leaves the daemon's state unknown, and the
-advice to purge on the registry alone is then withheld: it would invite the
-one purge the union exists to prevent.
+* The agent is running (or cannot be ruled out as running). A real pass and
+  ``reclaim`` are refused. The one thing this process can never see is
+  exactly what the running agent holds: the set of creates it has in flight
+  (``reconciler.creating()`` is in-process state). A create that outlives
+  ``VOLUME_CREATE_GUARD`` before its DB record exists (a long migration
+  import routinely does) is invisible here and looks like an orphan,
+  directory and devices alike, and a CLI pass holds no lock against the
+  agent's own. The agent runs that pass itself at startup, periodically and
+  after every VM goes away, and its pass sees the creates too.
+  ``--dry-run`` is still allowed, and is how a running node is inspected.
+* The agent is stopped and the supervisor answers. Nothing is being
+  created, and the live set is a known one (registry union ``list_vms``), so
+  the full pass runs: the orphan-namespace device teardown first, exactly as
+  the agent's own passes do it, then the walk.
+* The supervisor does not answer. The live set is the registry alone, which
+  is not a safe one, so the pass runs dry, warns and exits non-zero unless
+  ``--trust-registry`` says to proceed on the registry's word, and no device
+  is torn down (that would take the disk of a VM that was merely unlisted).
+  ``reclaim`` refuses on the same terms.
+
+Both "is it running" questions are answered fail-closed, and neither claims
+more than it can back up. The agent is called stopped only when nothing
+accepts a connection on its bind address; a probe that fails any other way
+leaves it possibly running, and the refusal stands. The supervisor is
+called down only when its socket is missing or refuses a connection; a dial
+that failed for any other reason (a socket this user may not open, a
+deadline, a reply that does not parse) leaves its state unknown, and the
+advice to purge on the registry alone is then withheld, since it would
+invite the one purge the union exists to prevent.
 
 Running with no agent process also means setting up the process the way the
 systemd units set it up for the daemon: the node's environment file is read
@@ -84,6 +98,7 @@ from aleph.vm.agent.vm.reconciler import (
     _release_cache_devices,
     _startup_refusal,
     _still_on_disk,
+    _teardown_orphan_devices,
     live_hashes,
     reconcile_storage,
     supervisor_hashes,
@@ -98,6 +113,11 @@ from aleph.vm.supervisor_interface.abc import Supervisor
 # unreachable. Short on purpose: an operator running this by hand should not
 # sit through a 30 second RPC deadline just to learn the daemon is down.
 SUPERVISOR_CONNECT_TIMEOUT_SECS = 3.0
+
+# How long to wait for the agent's own bind address. Shorter still: it is a
+# loopback connect, and a node that does not answer it in two seconds is a
+# node this command must assume is alive anyway.
+AGENT_PROBE_TIMEOUT_SECS = 2.0
 
 # Exit code for a reconcile that did not reconcile: it was refused because
 # the agent is running (its own pass covers the node), or it silently
@@ -169,12 +189,13 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help="run one reconciler pass",
         description=(
             "Run one reconciler pass against the agent registry (unioned with the supervisor's "
-            "list_vms() when it can be reached). While the agent answers, only --dry-run runs: "
-            "this process cannot see a create the agent is in the middle of (that state lives in "
-            "the agent), so a create that has outlived VOLUME_CREATE_GUARD without reaching the "
-            "registry DB would read as an orphan here. The agent's own pass (at startup, "
-            "periodically, and after every VM goes away) covers a node whose agent is up. This "
-            "command is for a node whose agent is not."
+            "list_vms() when it can be reached). While the aleph-vm agent is running, or cannot be "
+            "ruled out as running, only --dry-run runs: this process cannot see a create the agent "
+            "is in the middle of (that state lives in the agent), so a create that has outlived "
+            "VOLUME_CREATE_GUARD without reaching the registry DB would read as an orphan here, and "
+            "the agent's own pass (at startup, periodically, and after every VM goes away) covers "
+            "that node anyway. This command is for a node whose agent is down, whether or not the "
+            "supervisor daemon under it still runs VMs."
         ),
     )
     reconcile_parser.add_argument("--dry-run", action="store_true")
@@ -234,6 +255,65 @@ def _open_supervisor() -> Supervisor:
     from aleph.vm.supervisor_interface.client import GrpcSupervisor
 
     return GrpcSupervisor(settings.SUPERVISOR_GRPC_SOCKET)
+
+
+class AgentReach(Enum):
+    """How much this process knows about the agent service."""
+
+    RUNNING = "running"
+    # Verified stopped: nothing accepts a connection on its bind address.
+    STOPPED = "stopped"
+    # Could not tell, which counts as running: see AgentProbe.may_be_running.
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class AgentProbe:
+    """Whether the agent service is up, and on what evidence."""
+
+    reach: AgentReach
+    detail: str
+
+    @property
+    def may_be_running(self) -> bool:
+        """Fail closed: only a refused connection rules the agent out.
+
+        Everything a wrong answer here costs is asymmetric. Calling a
+        stopped agent running costs an operator one refused command on a
+        node they can then look at; calling a running agent stopped purges
+        the disks of a VM it is at that moment creating.
+        """
+        return self.reach is not AgentReach.STOPPED
+
+
+def _probe_agent() -> AgentProbe:
+    """Ask the agent's own HTTP bind address whether it is there.
+
+    The cheapest evidence available, and it needs no privileges and no unit
+    name: the agent binds that address for as long as its process lives, and
+    this is a loopback connect that is either refused at once or accepted at
+    once. Anything listening there is treated as the agent, which is the
+    fail-closed reading; a socket configured but unreachable, a name that
+    does not resolve or a deadline all leave the question open, and open
+    counts as running.
+
+    The setting is spelled SUPERVISOR_HOST/PORT for historical reasons: it
+    is this Python service's own bind, not the Rust supervisor's socket.
+    """
+    host = str(settings.SUPERVISOR_HOST)
+    port = int(settings.SUPERVISOR_PORT)
+    address = f"{host}:{port}"
+    # A wildcard bind is not a connectable address: dial the loopback the
+    # agent necessarily also answers on.
+    target = "127.0.0.1" if host in {"", "0.0.0.0", "::", "*"} else host  # noqa: S104
+    try:
+        with socket.create_connection((target, port), timeout=AGENT_PROBE_TIMEOUT_SECS):
+            pass
+    except ConnectionRefusedError:
+        return AgentProbe(AgentReach.STOPPED, f"nothing accepts a connection on {address}")
+    except OSError as error:
+        return AgentProbe(AgentReach.UNKNOWN, f"{address} could not be probed ({type(error).__name__}: {error})")
+    return AgentProbe(AgentReach.RUNNING, f"something is listening on {address}")
 
 
 class SupervisorReach(Enum):
@@ -442,35 +522,49 @@ def _is_marked_reclaimable(vm_hash: str) -> bool:
     return any(directory.name == vm_hash for directory, _marker in iter_reclaimable())
 
 
-def _supervisor_reclaim_refusal(registry: AgentVmRegistry, vm_hash: str, *, trust_registry: bool) -> str | None:
+@dataclass(frozen=True)
+class Refusal:
+    """A reason not to purge, and the exit code that reports it.
+
+    Most refusals say "not this hash" and exit 1. A node whose agent is
+    live, or whose agent database was lost, is a different answer: nothing
+    about the hash is wrong, the command simply may not run here, and a
+    wrapper script has to be able to tell the two apart.
+    """
+
+    message: str
+    code: int = 1
+
+
+def _supervisor_reclaim_refusal(registry: AgentVmRegistry, vm_hash: str, *, trust_registry: bool) -> Refusal | None:
     """The half of the reclaim verdict that needs the daemon's answer."""
     answer = asyncio.run(_ask_supervisor())
     if answer.answered:
         if vm_hash in answer.running:
-            return f"{vm_hash} is running (the supervisor lists it); refusing to purge it"
+            return Refusal(f"{vm_hash} is running (the supervisor lists it); refusing to purge it")
         # The daemon's own reason to distrust a live set, asked here too: a
         # lost agent DB makes every marker on the node look purgeable, and
         # the supervisor's list is no second opinion on a VM it has not
         # started yet.
         lost_database = _startup_refusal(registry, len(answer.running))
         if lost_database is not None:
-            return f"Refusing to purge {vm_hash}: {lost_database}"
+            return Refusal(f"Refusing to purge {vm_hash}: {lost_database}", DEGRADED_EXIT_CODE)
         return None
     if trust_registry:
         return None
     if answer.reach is SupervisorReach.DOWN:
-        return (
+        return Refusal(
             f"Supervisor unreachable ({answer.problem}); cannot confirm {vm_hash} is not running. "
             "Pass --trust-registry to purge using the registry alone"
         )
-    return (
+    return Refusal(
         f"The supervisor could not be asked ({answer.problem}); cannot confirm {vm_hash} is not "
         "running. That error is no proof the daemon is stopped, so purging on the registry alone "
         "is not offered here: fix it and retry"
     )
 
 
-def _reclaim_refusal(registry: AgentVmRegistry, vm_hash: str, *, trust_registry: bool) -> str | None:
+def _reclaim_refusal(registry: AgentVmRegistry, vm_hash: str, *, trust_registry: bool) -> Refusal | None:
     """Why reclaim must not purge this hash, or None when it may.
 
     Cheapest, purely local checks first: a typo or an unrelated hash fails
@@ -481,23 +575,36 @@ def _reclaim_refusal(registry: AgentVmRegistry, vm_hash: str, *, trust_registry:
     purge_vm_storage after every other check passed.
     """
     if not _plausible(vm_hash):
-        return f"{vm_hash!r} is not a VM hash; refusing to purge a directory not named after a VM"
+        return Refusal(f"{vm_hash!r} is not a VM hash; refusing to purge a directory not named after a VM")
     if not _is_marked_reclaimable(vm_hash):
-        return f"{vm_hash} is not reclaimable (no .reclaimable marker); refusing to purge a directory a VM may own"
+        return Refusal(
+            f"{vm_hash} is not reclaimable (no .reclaimable marker); refusing to purge a directory a VM may own"
+        )
     if vm_hash in live_hashes(registry):
-        return f"{vm_hash} is a live VM in the agent registry; refusing to purge it"
+        return Refusal(f"{vm_hash} is a live VM in the agent registry; refusing to purge it")
+    probe = _probe_agent()
+    if probe.may_be_running:
+        # A marked directory is not safe to purge merely because it is
+        # marked: a create adopts it by clearing the marker, and this
+        # process would have to win a race with that to notice.
+        return Refusal(
+            f"Refusing to purge {vm_hash}: {_agent_at_work_reason(probe)}. {_agent_pass_note()}; "
+            "run 'storage list --reclaimable' to see what it will find",
+            DEGRADED_EXIT_CODE,
+        )
     return _supervisor_reclaim_refusal(registry, vm_hash, trust_registry=trust_registry)
 
 
 def _reclaim(registry: AgentVmRegistry, vm_hash: str, out: TextIO, *, trust_registry: bool) -> int:
     refusal = _reclaim_refusal(registry, vm_hash, trust_registry=trust_registry)
     if refusal is not None:
-        out.write(refusal + "\n")
-        return 1
-    # Asked again, after the dial: a re-create adopts its retained
-    # directories by clearing their markers, and a create that started while
-    # the supervisor was being asked is in no answer this process has. The
-    # marker is the one thing that says the disks are nobody's.
+        out.write(refusal.message + "\n")
+        return refusal.code
+    # Asked again, after the probe and the dial: a re-create adopts its
+    # retained directories by clearing their markers, and a create that
+    # started while the supervisor was being asked is in no answer this
+    # process has. The marker is the one thing that says the disks are
+    # nobody's.
     if not _is_marked_reclaimable(vm_hash):
         out.write(
             f"{vm_hash} is no longer marked reclaimable: a create adopted its directory while the "
@@ -508,25 +615,49 @@ def _reclaim(registry: AgentVmRegistry, vm_hash: str, out: TextIO, *, trust_regi
     if _still_on_disk(vm_hash):
         out.write(
             f"Purge of {vm_hash} left directories behind: a device-mapper target still holds its volumes. "
-            "Tearing a device down needs the certainty only the agent has, so start it and let its own "
-            "pass reclaim the device, then retry\n"
+            "Run 'storage reconcile' to tear down the devices of every VM nothing owns, then retry\n"
         )
         return 1
     out.write(f"Purged {vm_hash}: {deleted} volume file(s)\n")
     return 0
 
 
-def _running_daemon_refusal(live_set: LiveSet) -> str:
-    """What to tell an operator who asked for a real pass on a live node."""
-    reason = live_set.refusal or (
-        "the agent is running, and the creates it has in flight are invisible to this process "
-        "(that state lives in the agent itself), so a VM being built would read as an orphan here"
-    )
+def _agent_at_work_reason(probe: AgentProbe) -> str:
+    """Why a live agent takes the purge away from this command."""
+    if probe.reach is AgentReach.RUNNING:
+        opening = f"the agent is running ({probe.detail})"
+    else:
+        opening = f"the agent cannot be ruled out as running ({probe.detail})"
     return (
-        f"Refusing to reconcile: {reason}. The agent runs its own pass at startup, periodically, "
-        "and after every VM goes away, and that pass sees the creates too; use --dry-run to "
-        "preview what one would find.\n"
+        f"{opening}, and the creates it has in flight are invisible to this process (that state "
+        "lives in the agent itself), so a VM being built would read as an orphan here"
     )
+
+
+def _agent_pass_note() -> str:
+    return (
+        "The agent runs its own pass at startup, periodically, and after every VM goes away, and "
+        "that pass sees the creates too"
+    )
+
+
+def _pass_refusal(probe: AgentProbe, live_set: LiveSet) -> str | None:
+    """Why a real reconcile must not run at all, or None when it may."""
+    if probe.may_be_running:
+        return (
+            f"Refusing to reconcile: {_agent_at_work_reason(probe)}. {_agent_pass_note()}; use "
+            "--dry-run to preview what one would find.\n"
+        )
+    # The agent is out of the way, but the daemon's own reason to distrust a
+    # live set still applies: an empty registry while the supervisor runs VMs
+    # means the agent DB was lost, and every directory on the node then reads
+    # as an orphan.
+    if live_set.refusal is not None:
+        return (
+            f"Refusing to reconcile: {live_set.refusal}. Restore the agent database, or use "
+            "--dry-run to see what a pass would find.\n"
+        )
+    return None
 
 
 def _unanswered_warning(answer: SupervisorAnswer, *, dry_run: bool, trust_registry: bool) -> str:
@@ -553,18 +684,30 @@ def _unanswered_warning(answer: SupervisorAnswer, *, dry_run: bool, trust_regist
 def _reconcile(registry: AgentVmRegistry, out: TextIO, *, dry_run: bool, trust_registry: bool) -> int:
     live_set = _cli_live_set(registry)
     answer = live_set.supervisor
+    probe = _probe_agent()
+    if not dry_run:
+        refusal = _pass_refusal(probe, live_set)
+        if refusal is not None:
+            sys.stderr.write(refusal)
+            return DEGRADED_EXIT_CODE
+    elif probe.may_be_running:
+        sys.stderr.write(
+            f"Note: {_agent_at_work_reason(probe)}, so this preview can name a directory the "
+            "agent is at that moment creating\n"
+        )
     if not answer.answered:
         sys.stderr.write(_unanswered_warning(answer, dry_run=dry_run, trust_registry=trust_registry))
-    elif not dry_run:
-        # A running agent is the one state where this process is strictly
-        # less informed than the agent's own pass, so it does not get to
-        # purge. The preview still runs: it is how a node under load is
-        # inspected.
-        sys.stderr.write(_running_daemon_refusal(live_set))
-        return DEGRADED_EXIT_CODE
     downgraded = not answer.answered and not trust_registry
     effective_dry_run = dry_run or downgraded
     live = set(live_set.hashes)
+    # Mirrors reconcile_now: the devices of every namespace nothing owns go
+    # before the walk, or the purge that follows refuses those directories
+    # (a dm target still holds their volume files) exactly as the agent's
+    # passes used to. Only when the supervisor answered, since removing the
+    # device of a VM that is merely unlisted takes that VM's disk with it:
+    # --trust-registry buys a purge on the registry's word, not a teardown.
+    if not effective_dry_run and answer.answered:
+        asyncio.run(_teardown_orphan_devices(live))
     report = reconcile_storage(registry, dry_run=effective_dry_run, live=live, live_known=answer.answered)
     prefix = "Dry run: " if effective_dry_run else "Reconciled: "
     out.write(prefix + report.summary() + "\n")

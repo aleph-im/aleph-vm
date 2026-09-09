@@ -29,6 +29,9 @@ from aleph.vm.conf import settings
 
 LIVE = "dead" * 16
 NOW = datetime(2026, 8, 24, tzinfo=timezone.utc)
+# Captured before the autouse fixture below replaces it, for the tests that
+# are about the probe itself rather than about what a verb does with it.
+REAL_PROBE_AGENT = cli._probe_agent
 
 
 @pytest.fixture
@@ -76,6 +79,26 @@ def _fake_supervisor(*vm_ids: str, fails: bool = False, error: Exception | None 
     if fails:
         return SimpleNamespace(list_vms=AsyncMock(side_effect=RuntimeError("no answer")))
     return SimpleNamespace(list_vms=AsyncMock(return_value=[SimpleNamespace(vm_id=vm_id) for vm_id in vm_ids]))
+
+
+@pytest.fixture(autouse=True)
+def _agent_stopped(monkeypatch):
+    """By default the aleph-vm agent is down, which is the node this command
+    is for: the tests that care about a live agent say so themselves."""
+    monkeypatch.setattr(
+        cli,
+        "_probe_agent",
+        lambda: cli.AgentProbe(cli.AgentReach.STOPPED, "nothing accepts a connection on 127.0.0.1:4020"),
+    )
+
+
+def _agent_up(reach=None):
+    """A probe that says the agent is running, or that it cannot be ruled
+    out as running (which counts as running)."""
+    reach = reach or cli.AgentReach.RUNNING
+    if reach is cli.AgentReach.RUNNING:
+        return lambda: cli.AgentProbe(reach, "something is listening on 127.0.0.1:4020")
+    return lambda: cli.AgentProbe(reach, "127.0.0.1:4020 could not be probed (PermissionError: denied)")
 
 
 @pytest.fixture(autouse=True)
@@ -247,7 +270,7 @@ def test_reclaim_refuses_an_empty_registry_the_supervisor_contradicts(pools, mon
 
     code, out = _run(["reclaim", VM_HASH], AgentVmRegistry())
 
-    assert code == 1 and "registry is empty" in out
+    assert code == cli.DEGRADED_EXIT_CODE and "registry is empty" in out
     assert gone.exists()
 
 
@@ -296,16 +319,24 @@ def test_reconcile_dry_run_reports_without_changing(pools, registry, monkeypatch
     assert code == 0 and "Dry run" in out and "purged=1" in out
     assert orphan.exists()
 
+    # The agent is down (the autouse fixture) and the supervisor is
+    # reachable and lists nothing running, so a real pass may purge.
+    code, out = _run(["reconcile"], registry)
+    assert code == 0 and not orphan.exists()
 
-def test_reconcile_refuses_a_real_pass_while_the_daemon_answers(pools, registry, monkeypatch, capsys):  # noqa: F811
-    """The daemon holds the one thing this process cannot see: the set of
+
+@pytest.mark.parametrize("reach", [None, "unknown"])
+def test_reconcile_refuses_a_real_pass_while_the_agent_may_be_running(pools, registry, monkeypatch, capsys, reach):  # noqa: F811
+    """The agent holds the one thing this process cannot see: the set of
     creates it has in flight. A long import outlives VOLUME_CREATE_GUARD
-    before its DB record exists, and a CLI pass would purge it as an orphan,
-    so a real pass is refused for as long as the daemon answers."""
+    before its DB record exists, and a CLI pass would purge it as an orphan.
+    A probe that could not answer counts as a running agent: the cost of
+    being wrong is one refused command against a deleted disk."""
     monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
     orphan = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
     stamp = time.time() - 10_000
     os.utime(orphan.parent, (stamp, stamp))
+    monkeypatch.setattr(cli, "_probe_agent", _agent_up(cli.AgentReach.UNKNOWN if reach else None))
 
     code, out = _run(["reconcile"], registry)
 
@@ -314,11 +345,29 @@ def test_reconcile_refuses_a_real_pass_while_the_daemon_answers(pools, registry,
     assert out == ""  # nothing was reconciled, so there is no report to print
     err = capsys.readouterr().err
     assert "Refusing to reconcile" in err and "--dry-run" in err
+    assert ("cannot be ruled out" in err) is bool(reach)
 
-    # The preview is still available, and still sees the orphan.
+    # The preview is still available, still sees the orphan, and says what
+    # the running agent does to its reading.
     code, out = _run(["reconcile", "--dry-run"], registry)
     assert code == 0 and "purged=1" in out
     assert orphan.exists()
+    assert "creating" in capsys.readouterr().err
+
+
+def test_reclaim_refuses_while_the_agent_may_be_running(pools, registry, monkeypatch):  # noqa: F811
+    """Same rule, no --dry-run to fall back on: a marked directory is not
+    safe to purge merely because it is marked, since a create adopts one by
+    clearing its marker."""
+    gone = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    mark_reclaimable(VM_HASH, "gone", now=NOW)
+    monkeypatch.setattr(cli, "_probe_agent", _agent_up())
+
+    code, out = _run(["reclaim", VM_HASH], registry)
+
+    assert code == cli.DEGRADED_EXIT_CODE
+    assert "the agent is running" in out
+    assert gone.exists()
 
 
 def test_reconcile_refuses_an_empty_registry_the_supervisor_contradicts(pools, monkeypatch, capsys):  # noqa: F811, ARG001
@@ -336,19 +385,18 @@ def test_reconcile_refuses_an_empty_registry_the_supervisor_contradicts(pools, m
 
 
 def test_reconcile_leaves_a_supervisor_known_vm_the_registry_does_not(pools, registry, monkeypatch):  # noqa: F811
-    """The union with the supervisor's list, visible in the one mode a
-    reachable daemon still allows: OTHER_HASH is not in the registry, so
-    only that union keeps it out of the report."""
+    """The agent is down but the supervisor still runs VMs: the case this
+    command exists for. OTHER_HASH is not in the registry, so only the union
+    with list_vms keeps its disks."""
     monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
     unknown = volume(pools["pool0"], OTHER_HASH, "rootfs.qcow2")
     stamp = time.time() - 10_000
     os.utime(unknown.parent, (stamp, stamp))
     monkeypatch.setattr(cli, "_open_supervisor", lambda: _fake_supervisor(OTHER_HASH))
 
-    code, out = _run(["reconcile", "--dry-run"], registry)
+    code, out = _run(["reconcile"], registry)
 
     assert code == 0
-    assert "purged=0" in out and OTHER_HASH not in out
     assert unknown.exists()
 
 
@@ -421,6 +469,48 @@ def test_a_timeout_is_never_reported_as_a_stopped_daemon(pools, registry, monkey
     assert "--trust-registry" not in err
 
 
+def test_the_agent_probe_reads_a_listening_socket_as_running(monkeypatch):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        monkeypatch.setattr(settings, "SUPERVISOR_HOST", "127.0.0.1")
+        monkeypatch.setattr(settings, "SUPERVISOR_PORT", server.getsockname()[1])
+
+        probe = REAL_PROBE_AGENT()
+
+    assert probe.reach is cli.AgentReach.RUNNING
+    assert probe.may_be_running
+
+
+def test_the_agent_probe_reads_a_refused_port_as_stopped(monkeypatch):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as bound:
+        bound.bind(("127.0.0.1", 0))
+        port = bound.getsockname()[1]
+    monkeypatch.setattr(settings, "SUPERVISOR_HOST", "127.0.0.1")
+    monkeypatch.setattr(settings, "SUPERVISOR_PORT", port)
+
+    probe = REAL_PROBE_AGENT()
+
+    assert probe.reach is cli.AgentReach.STOPPED
+    assert not probe.may_be_running
+
+
+def test_an_agent_probe_that_cannot_answer_counts_as_running(monkeypatch):
+    """Fail closed: being wrong the other way purges the disks of a VM the
+    agent is at that moment creating."""
+
+    def denied(*_args, **_kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(socket, "create_connection", denied)
+
+    probe = REAL_PROBE_AGENT()
+
+    assert probe.reach is cli.AgentReach.UNKNOWN
+    assert probe.may_be_running
+    assert "PermissionError" in probe.detail
+
+
 def test_a_socket_that_accepts_is_never_read_as_a_stopped_daemon(tmp_path):
     """The fallback classification, on its own: a daemon that is listening
     but would not answer must never end in the advice to purge without it."""
@@ -484,22 +574,36 @@ def test_reconcile_passes_live_known_false_when_supervisor_unreachable(pools, re
 
 
 def test_reconcile_passes_live_known_true_when_supervisor_reachable(pools, registry, monkeypatch):  # noqa: F811
-    # The autouse fixture already installs a reachable fake supervisor, and a
-    # reachable one leaves --dry-run as the only mode that reaches the pass.
+    # The autouse fixtures already install a reachable fake supervisor and a
+    # stopped agent.
     fake_report = reconciler_module.ReconcileReport()
     spy = MagicMock(return_value=fake_report)
     monkeypatch.setattr(cli, "reconcile_storage", spy)
 
-    code, out = _run(["reconcile", "--dry-run"], registry)
+    code, out = _run(["reconcile"], registry)
 
     assert code == 0
     assert spy.call_args.kwargs["live_known"] is True
 
 
-def test_reconcile_evicts_no_cache_entry_while_the_daemon_answers(pools, registry, monkeypatch):  # noqa: F811
-    """The cache pass runs inside the reconcile the daemon's presence
-    refuses, devices included: what the daemon is up for, the daemon does."""
+def test_reconcile_tears_down_devices_of_evicted_cache_parents(pools, registry, monkeypatch):  # noqa: F811
     monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
+    stale = pools["runtime"] / "stale"
+    stale.write_bytes(b"x" * 4096)
+    removed: list[str] = []
+    monkeypatch.setattr(reconciler_module, "remove_parent_device", AsyncMock(side_effect=removed.append))
+
+    code, out = _run(["reconcile"], registry)
+
+    assert code == 0
+    assert not stale.exists()
+    assert removed == ["stale"]
+
+
+def test_reconcile_touches_no_cache_entry_while_the_agent_is_running(pools, registry, monkeypatch):  # noqa: F811
+    """The cache pass runs inside the pass a live agent refuses."""
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
+    monkeypatch.setattr(cli, "_probe_agent", _agent_up())
     stale = pools["runtime"] / "stale"
     stale.write_bytes(b"x" * 4096)
     removed: list[str] = []
@@ -539,12 +643,24 @@ def test_cli_main_dispatches_storage_subcommand(mocker):
     assert args.loglevel == logging.DEBUG
 
 
-def test_a_cli_pass_never_tears_down_an_orphan_namespace_device(pools, registry, monkeypatch, tmp_path):  # noqa: F811
-    """Tearing a device down takes the VM's disk with it if the VM was only
-    unlisted rather than gone. The one answer that made that safe (the
-    supervisor's) is now the answer that refuses the pass outright, so the
-    devices of an orphan namespace are the daemon's own pass to reclaim."""
+def test_reconcile_tears_down_the_devices_of_an_orphan_namespace(pools, registry, monkeypatch, tmp_path):  # noqa: F811
+    """Same parity as the cache devices: without this the CLI keeps refusing
+    the dm-held directories the agent's own pass reclaims. The live set is a
+    known one here (the agent is down, the supervisor answered), which is
+    what makes a teardown safe."""
     _fake_mapper(monkeypatch, tmp_path, f"{VM_HASH}_rootfs", f"{LIVE}_rootfs")
+    torn: list[str] = []
+    monkeypatch.setattr(reconciler_module, "teardown_namespace_devices", AsyncMock(side_effect=torn.append))
+
+    code, _out = _run(["reconcile"], registry)
+
+    assert code == 0
+    assert torn == [VM_HASH]
+
+
+def test_no_device_is_torn_down_while_the_agent_is_running(pools, registry, monkeypatch, tmp_path):  # noqa: F811
+    _fake_mapper(monkeypatch, tmp_path, f"{VM_HASH}_rootfs")
+    monkeypatch.setattr(cli, "_probe_agent", _agent_up())
     torn: list[str] = []
     monkeypatch.setattr(reconciler_module, "teardown_namespace_devices", AsyncMock(side_effect=torn.append))
 
@@ -759,15 +875,13 @@ def test_an_unmigrated_database_is_brought_up_to_date(pools, tmp_path, monkeypat
 
 def test_reconcile_reports_its_purges_on_stderr(pools, monkeypatch, plumbing, capsys):  # noqa: F811
     """The purge logs what it removed; with no handler configured those INFO
-    lines went nowhere and an operator watching a purge saw nothing. A real
-    purge needs a daemon that is down, which is the case this command is for."""
+    lines went nowhere and an operator watching a purge saw nothing."""
     monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
-    monkeypatch.setattr(cli, "_open_supervisor", lambda: _fake_supervisor(fails=True))
     orphan = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
     stamp = time.time() - 10_000
     os.utime(orphan.parent, (stamp, stamp))
 
-    code = cli.main(["reconcile", "--trust-registry"])
+    code = cli.main(["reconcile"])
 
     assert code == 0
     assert not orphan.exists()
