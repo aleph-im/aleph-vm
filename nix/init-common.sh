@@ -185,12 +185,19 @@ prepare_chroot() {
     # and needs no bind. The workload image must ship the /opt/nvidia/lib
     # mount point (runtime contract, manifest gpu.library_path). The device
     # nodes ride in on the /dev bind above.
+    #
+    # Fail closed like every other GPU error: a workload that got the device
+    # nodes but not the libraries cannot use the card, and the guest would
+    # still serve GPU evidence for it. A warning here would leave a client
+    # holding an attested GPU that cannot run CUDA.
     if [ -d /mnt/root/opt/nvidia/lib ] && [ "$target" != /mnt/root ]; then
-        if [ -d "$target/opt/nvidia/lib" ]; then
-            /bin/busybox mount --bind -o ro /mnt/root/opt/nvidia/lib "$target/opt/nvidia/lib" \
-                || echo "init: WARNING: driver userland bind-mount failed"
-        else
-            echo "init: WARNING: ${target} has no /opt/nvidia/lib mount point; the workload cannot use the GPU"
+        if [ ! -d "$target/opt/nvidia/lib" ]; then
+            echo "init: FATAL: ${target} has no /opt/nvidia/lib mount point; the workload could not use the GPU"
+            exec /bin/busybox poweroff -f
+        fi
+        if ! /bin/busybox mount --bind -o ro /mnt/root/opt/nvidia/lib "$target/opt/nvidia/lib"; then
+            echo "init: FATAL: driver userland bind-mount failed"
+            exec /bin/busybox poweroff -f
         fi
     fi
     echo "init: chroot environment prepared at ${target} (proc, sys, dev, secrets, DNS)"
