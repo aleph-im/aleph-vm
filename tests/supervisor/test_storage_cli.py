@@ -610,6 +610,16 @@ def test_an_unset_socket_path_says_nothing_about_the_daemon():
     assert cli._socket_reach(None) is cli.SupervisorReach.UNKNOWN
 
 
+def test_a_refusal_behind_a_permission_error_is_still_proof_of_down():
+    """The chain is walked front to back; a PermissionError closer to the
+    head must not hide a ConnectionRefusedError deeper in the same chain."""
+    refused = ConnectionRefusedError(111, "Connection refused")
+    denied = PermissionError(13, "Permission denied")
+    denied.__cause__ = refused
+
+    assert cli._reach_from_failure(denied) is cli.SupervisorReach.DOWN
+
+
 def test_a_refused_socket_is_reported_as_a_stopped_daemon(pools, registry, monkeypatch):  # noqa: F811
     refused = ConnectionRefusedError(111, "Connection refused")
     monkeypatch.setattr(cli, "_open_supervisor", lambda: _fake_supervisor(error=refused))

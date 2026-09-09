@@ -47,12 +47,15 @@ Both "is it running" questions are answered fail-closed, and neither claims
 more than it can back up. The agent is called stopped only when nothing
 accepts a connection on its bind address, on every loopback a wildcard bind
 could be answering on; a probe that fails any other way leaves it possibly
-running, and the refusal stands. The supervisor is called down only when
-its own socket is missing or refuses a connection; a dial that failed for
-any other reason (a socket this user may not open, a deadline, a reply that
-does not parse) leaves its state unknown, and the advice to purge on the
-registry alone is then withheld, since it would invite the one purge the
-union exists to prevent.
+running, and the refusal stands. One gap this cannot close: aiohttp runs
+the agent's on_startup hooks, including the reconciler launch, before its
+listener binds, so a starting agent can read as stopped for a moment; the
+create guard covers most of that window. The supervisor is called down
+only when its own socket is missing or refuses a connection; a dial that
+failed for any other reason (a socket this user may not open, a deadline,
+a reply that does not parse) leaves its state unknown, and the advice to
+purge on the registry alone is then withheld, since it would invite the
+one purge the union exists to prevent.
 
 Every verb writes what it found or achieved to ``out`` and every warning,
 refusal and diagnostic to ``err``, so a wrapper can parse one without
@@ -435,19 +438,22 @@ def _reach_from_failure(error: BaseException) -> SupervisorReach:
     The gRPC client rebuilds transport failures into its own error classes,
     so the exception alone rarely says whether the daemon is stopped; when
     it does not, the socket itself is asked. A refused connection anywhere
-    in the chain is proof enough. A missing *file* is not, whatever the
-    chain says: the client opens more than its socket (a TLS material path,
-    a config file), and only a stat of the socket path itself can tell a
-    stopped daemon from a running one that tripped over something else, so
-    that case falls through to _socket_reach. A permission error is never
-    proof, and neither is a deadline (a daemon that is up but wedged is the
-    textbook way to time out).
+    in the chain is proof enough, checked across the whole chain before
+    anything else: a PermissionError closer to the head of the chain must
+    not hide a ConnectionRefusedError sitting deeper in it. A missing
+    *file* is not proof, whatever the chain says: the client opens more
+    than its socket (a TLS material path, a config file), and only a stat
+    of the socket path itself can tell a stopped daemon from a running one
+    that tripped over something else, so that case falls through to
+    _socket_reach. A permission error on its own is never proof, and
+    neither is a deadline (a daemon that is up but wedged is the textbook
+    way to time out).
     """
-    for cause in _exception_chain(error):
-        if isinstance(cause, ConnectionRefusedError):
-            return SupervisorReach.DOWN
-        if isinstance(cause, PermissionError):
-            return SupervisorReach.UNKNOWN
+    chain = list(_exception_chain(error))
+    if any(isinstance(cause, ConnectionRefusedError) for cause in chain):
+        return SupervisorReach.DOWN
+    if any(isinstance(cause, PermissionError) for cause in chain):
+        return SupervisorReach.UNKNOWN
     if isinstance(error, TimeoutError):
         return SupervisorReach.UNKNOWN
     return _socket_reach(settings.SUPERVISOR_GRPC_SOCKET)
@@ -630,7 +636,7 @@ def _reclaim_refusal(registry: AgentVmRegistry, vm_hash: str, *, trust_registry:
         # process would have to win a race with that to notice.
         return Refusal(
             f"Refusing to purge {vm_hash}: {_agent_at_work_reason(probe)}. {_agent_pass_note()}; "
-            "run 'storage list --reclaimable' to see what it will find",
+            "run 'storage reconcile --dry-run' to preview what the agent's own pass will find",
             DEGRADED_EXIT_CODE,
         )
     return _supervisor_reclaim_refusal(registry, vm_hash, trust_registry=trust_registry)
