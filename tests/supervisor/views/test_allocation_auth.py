@@ -148,6 +148,10 @@ def mock_request(mocker):
         # No query string by default; tests covering H2 override this.
         request.query_string = ""
         request.remote = "127.0.0.1"
+        # The decorator re-bounds a request to its route's cap by cloning it;
+        # this double is its own clone.
+        request.client_max_size = MAX_SIGNED_REQUEST_BODY_BYTES
+        request.clone = lambda **_kwargs: request
         return request
 
     return factory

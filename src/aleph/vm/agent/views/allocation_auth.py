@@ -290,11 +290,19 @@ def requires_allocation_auth(handler=None, *, max_body_bytes: int = MAX_SIGNED_R
     Usable bare (``@requires_allocation_auth``) or with a body cap for the
     route (``@requires_allocation_auth(max_body_bytes=...)``); a body over
     the cap answers 413.
+
+    The cap is the route's alone. aiohttp bounds a buffered body at the
+    application's client_max_size, 1 MiB by default, and that stays: the
+    request is re-bounded to the route's cap before anything reads it (a
+    clone shares the payload and applies its own limit on read), so a plan
+    body gets through here and nowhere else.
     """
 
     def decorate(handler):
         @functools.wraps(handler)
         async def wrapper(request: web.Request) -> web.StreamResponse:
+            if request.client_max_size != max_body_bytes:
+                request = request.clone(client_max_size=max_body_bytes)
             try:
                 authorized = await authenticate_api_request(request, max_body_bytes=max_body_bytes)
             except RequestTooLarge as too_large:

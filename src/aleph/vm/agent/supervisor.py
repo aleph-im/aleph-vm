@@ -78,7 +78,6 @@ from .views import (
     status_public_config,
     update_allocations,
 )
-from .views.allocation_auth import MAX_SIGNED_PLAN_BODY_BYTES
 from .views.allocations_v2 import capacity_check, update_allocations_v2
 from .views.migration import (
     migration_cleanup,
@@ -274,13 +273,7 @@ def setup_webapp(supervisor: Supervisor):
     recreation, GPU reservation, persistent programs) goes through the
     `Supervisor` interface.
     """
-    # The ceiling on any buffered body, signed or not. It has to admit a plan
-    # body, the largest thing a signed route takes: aiohttp's 1 MiB default
-    # cut a plan off inside the verifier, which reported it as a bad
-    # signature. The signed routes each enforce their own, smaller cap below
-    # it (allocation_auth); the operator routes, which authenticate by JWK,
-    # go from a 1 MiB ceiling to this one, which the control plane can bear.
-    app = web.Application(middlewares=[drain_middleware, error_middleware], client_max_size=MAX_SIGNED_PLAN_BODY_BYTES)
+    app = web.Application(middlewares=[drain_middleware, error_middleware])
     app.on_response_prepare.append(on_prepare_server_version)
     # Agent-owned drain flag: drain_middleware rejects new VM requests when set;
     # flipped by drain_in_flight_requests.

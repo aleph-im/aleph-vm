@@ -199,9 +199,11 @@ async def test_the_hosts_cards_reach_the_verdict(aiohttp_client, scheduler_auth,
 
 @pytest.mark.asyncio
 async def test_a_plan_body_over_the_legacy_cap_reaches_the_handler(aiohttp_client, scheduler_auth):
-    """A plan carries a signed message per VM, so it outgrows the 1 MiB the
-    other signed routes are bounded to. The app's own ceiling used to cut it
-    off inside the verifier, which reported it as a bad signature."""
+    """A plan carries a signed message per VM, so it outgrows the 1 MiB
+    aiohttp bounds a body to by default. That default stays for every other
+    route; this one re-bounds the request to its own cap before reading,
+    where the app-wide limit used to cut the plan off inside the verifier
+    and report it as a bad signature."""
     client = await aiohttp_client(_app())
     body, headers = scheduler_auth({"vms": [], "padding": "x" * (MAX_SIGNED_REQUEST_BODY_BYTES + 1)}, path=PLAN)
 
