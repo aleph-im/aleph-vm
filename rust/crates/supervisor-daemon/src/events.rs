@@ -1,7 +1,7 @@
 //! Lifecycle event fan-out, the engine behind WatchEvents.
 //!
-//! Python parity (`LocalSupervisor._emit_event` / `watch_events`,
-//! src/aleph/vm/supervisor/local.py): every lifecycle transition the daemon
+//! Python parity (`LocalSupervisor._emit_event` / `watch_events`): every
+//! lifecycle transition the daemon
 //! itself performs (create/stop/start/reboot/delete) is fanned
 //! out to every live subscriber; there is no replay (a subscriber joining
 //! mid-flight only sees later events; clients snapshot with ListVms first,

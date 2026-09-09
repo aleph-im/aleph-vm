@@ -1,11 +1,8 @@
 //! The ephemeral Firecracker launcher (increment 4).
 //!
 //! A literal port of the Python spawn/teardown mechanics for non-persistent
-//! programs: `MicroVM` (src/aleph/vm/hypervisors/firecracker/microvm.py),
-//! the `FirecrackerConfig` pydantic models
-//! (src/aleph/vm/hypervisors/firecracker/config.py) and the
-//! `SpecFirecrackerProgram.setup()` config assembly
-//! (src/aleph/vm/supervisor/controllers/firecracker/spec_program.py).
+//! programs: the `MicroVM` runner, the `FirecrackerConfig` pydantic models
+//! and the `SpecFirecrackerProgram.setup()` config assembly.
 //! Ephemeral programs are direct children of the daemon, which is what
 //! lets them skip systemd entirely: jailer chroot prep and setfacl, the
 //! Firecracker config
@@ -715,7 +712,8 @@ impl FirecrackerLauncher {
         // enable_kernel / enable_rootfs / enable_drive: stage files into
         // the chroot when jailed, pass host paths through otherwise. Block
         // device rootfs (the Python device-mapper branch) is not ported:
-        // the spec path only ever stages regular files (ledgered).
+        // the spec path only ever stages regular files, so porting live
+        // dmsetup semantics would be untestable dead weight.
         // Python enable_rootfs: is_file() and is_block_device() both answer
         // False for a missing path, so the ValueError message is the bare
         // path, without any OS error appended.

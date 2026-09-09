@@ -3,9 +3,9 @@
 //! RecreateNetwork and the boot-time reconcile (adoption step 5).
 //!
 //! Ported 1:1 from the Python LocalSupervisor + VmPool + VmExecution
-//! composition (src/aleph/vm/supervisor/local.py, src/aleph/vm/pool.py,
-//! src/aleph/vm/models.py), QEMU persistent instances only: ephemeral
-//! Firecracker programs are increment 4, confidential creation increment 6.
+//! composition, QEMU persistent instances only: the ephemeral Firecracker
+//! programs live in firecracker.rs and the confidential mutations in
+//! confidential.rs.
 //!
 //! Every function here is BLOCKING (subprocesses, D-Bus round trips, sqlite,
 //! poll-with-sleep waits); the gRPC handlers hop to the blocking pool, the
@@ -31,8 +31,8 @@ use crate::world::{self, AttachedGpu, ProgramEntry, VmEntry, VmTimes, VmType, no
 use crate::{checks, cloudinit, dhcp, nft, ports};
 
 /// The closed error vocabulary slice these RPCs can produce, mapped in
-/// service.rs onto the same gRPC status codes and ErrorDetail trailers as
-/// src/aleph/vm/supervisor/grpc_server.py.
+/// service.rs onto the same gRPC status codes and ErrorDetail trailers the
+/// Python gRPC server produced.
 ///
 /// Every payload IS the message that reaches the client, so `Display` is
 /// `{0}` verbatim on every variant: `MicroVmInit(String::new())` renders
@@ -1412,7 +1412,7 @@ pub fn delete_vm(
         }
     }
     // A still-live SNP VM whose adoption failed ran a per-tap DHCP server
-    // (increment D2, ledger 77). The tracked teardown paths stop it, but this
+    // for its guest. The tracked teardown paths stop it, but this
     // discard path did not, orphaning aleph-vm-dhcp-<hash>.service (and leaking
     // its lease file) on every failed-adoption delete of a live SNP VM. Stop it
     // here too, gated on the parsed config being SNP so plain/SEV VMs (which
@@ -2829,7 +2829,7 @@ fn create_vm_inner(
             if request.persistent {
                 // Ephemeral programs landed with increment 4; persistent
                 // programs boot under systemd controller units and follow
-                // with the controller port (ledgered).
+                // with the controller port.
                 return Err(RpcError::Unimplemented(
                     "CreateVm for persistent Firecracker programs is not implemented yet \
                      by the Rust supervisor daemon"
@@ -3038,8 +3038,8 @@ fn create_vm_inner(
             // Set below once the NUMA placement is chosen (increment C1).
             numa_node: None,
         };
-        // Increment D2 (ledger 77): create starts the per-tap DHCP server on
-        // the request predicate `snp`, while every teardown path keys DHCP
+        // Create starts the per-tap DHCP server on the request predicate
+        // `snp`, while every teardown path keys DHCP
         // cleanup on `config.snp().is_some()`. They must agree, or a started
         // server leaks. The two predicates are derived independently (request
         // TEE backend vs the written-then-parsed config), so assert here that
@@ -3766,7 +3766,7 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
 /// create-if-absent taps, primed ndppd ranges, per-VM nftables chains and
 /// persisted port redirects. Never flush-and-rebuild (live connections
 /// survive), exactly the `_restore_network` half of the Python reattach. A
-/// per-VM failure hides the VM like a failed Python reattach (ledger 13).
+/// per-VM failure hides the VM like a failed Python reattach.
 pub fn reconcile_boot(state: &DaemonState) {
     if !state.host.settings.allow_vm_networking {
         return;
@@ -4237,8 +4237,8 @@ mod tests {
         );
         // Only the SNP measured image DHCPs; a SEV-ES VM keeps its cloud-init
         // static config, so no per-tap DHCP server is stood up (this guards the
-        // startup predicate against being loosened from `snp` to `confidential`,
-        // ledger 77).
+        // startup predicate against being loosened from `snp` to
+        // `confidential`).
         assert!(
             harness.dhcp.started().is_empty(),
             "a SEV-ES VM uses cloud-init static config, no DHCP server"
@@ -4937,7 +4937,7 @@ mod tests {
         // A plain VM never started a per-tap DHCP server, so its teardown must
         // NOT call dhcp.stop (this guards the `snp().is_some()` teardown gate
         // against being removed, which would spuriously stop a nonexistent
-        // server for every plain VM delete, ledger 77).
+        // server for every plain VM delete).
         let harness = harness();
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -5020,7 +5020,7 @@ mod tests {
         // A live SNP VM whose adoption failed (untracked, config still on disk)
         // ran a per-tap DHCP server. The discard_failed_reattach delete path
         // must stop it too, or aleph-vm-dhcp-<hash>.service (and its lease file)
-        // is orphaned (increment D2, ledger 77).
+        // is orphaned.
         let harness = harness();
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -6720,7 +6720,8 @@ mod tests {
         // C14: Python's reboot_vm restarts the unit and stamps started_at
         // but never clears stopped_at/stopping_at nor reloads
         // mapped_ports, so a rebooted stopped VM still reports STOPPED
-        // with no forwards (the shared wart is ledgered).
+        // with no forwards (a shared wart: both daemons should either
+        // refuse the reboot or run the full start path).
         let harness = harness();
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();

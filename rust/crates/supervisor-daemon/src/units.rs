@@ -1,7 +1,7 @@
 //! systemd unit states, the daemon's view of which controllers are alive.
 //!
-//! Mirrors the Python `SystemDManager.get_services_active_states`
-//! (src/aleph/vm/systemd.py): one batched `ListUnits()` D-Bus call, units
+//! Mirrors the Python `SystemDManager.get_services_active_states`: one
+//! batched `ListUnits()` D-Bus call, units
 //! absent from the reply count as inactive. Unlike the Python method, a bus
 //! failure surfaces as an error instead of degrading to "everything
 //! inactive" inside this module: callers need the distinction between "the

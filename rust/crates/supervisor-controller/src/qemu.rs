@@ -1,6 +1,5 @@
 //! The QEMU argv builder, process spawn and graceful-stop escalation, a 1:1
-//! port of the Python `QemuVM` (src/aleph/vm/hypervisors/qemu/qemuvm.py) for
-//! the non-confidential persistent path.
+//! port of the Python `QemuVM`, for the non-confidential persistent path.
 //!
 //! `build_argv` is the parity core: it reproduces `QemuVM.start()`'s argv
 //! byte for byte (the Python controller is the oracle; the conformance
@@ -309,9 +308,8 @@ pub fn build_argv(config: &QemuConfig) -> Vec<String> {
 }
 
 /// Build the QEMU argv for a SEV / SEV-ES confidential persistent VM,
-/// byte-identical to `QemuConfidentialVM.start()`
-/// (src/aleph/vm/hypervisors/qemu_confidential/qemuvm.py). SEV-SNP is a
-/// separate path (increment B1).
+/// byte-identical to the Python `QemuConfidentialVM.start()`. SEV-SNP is a
+/// separate path, see `build_snp_argv`.
 ///
 /// `sev` carries the host-CPUID-derived `cbitpos` / `reduced-phys-bits`,
 /// injected (not read here) so the builder is testable off-SEV. The four

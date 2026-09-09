@@ -32,10 +32,12 @@
 //!   ListVms and queue it for (doomed) background retries.
 //! - When the boot-time ListUnits call FAILS (bus unreachable), no VM is
 //!   stamped stopped: unit states are unknown, and each VM's status defers
-//!   to the live per-RPC unit queries until the bus answers (ledger 13).
+//!   to the live per-RPC unit queries until the bus answers.
 //! - A per-VM IP-derivation failure hides the VM (skipped with a WARN),
 //!   like a failed Python reattach that excludes the VM from ListVms via
-//!   the retry queue (ledger 13; negative vm_index in ledger 17).
+//!   the retry queue. A negative vm_index is one such failure: Python's
+//!   list indexing would silently serve the pool's LAST subnet for it,
+//!   aliasing a valid subnet between two VMs.
 //!
 //! A controller unit without a config file gets a WARN and is left alone.
 //!
@@ -274,8 +276,8 @@ pub struct VmEntry {
     /// until StartVm reloads it from the database).
     pub port_forwards: Vec<PortForward>,
     /// The `execution.gpus` attachments `_to_vm_info` reports: rebuilt from
-    /// the inventory for VMs adopted running (post-#1023 Python, ledger
-    /// entry 14) and set from the validated request at create.
+    /// the inventory for VMs adopted running (post-#1023 Python) and set
+    /// from the validated request at create.
     pub gpus: Vec<AttachedGpu>,
     /// The original VmSpec for VMs created through CreateVm on this daemon
     /// instance: the exact idempotency comparand and GetVmSpec payload,
@@ -528,7 +530,7 @@ pub fn build_world_view(
         .collect();
     // None: the bus did not answer, so unit states are UNKNOWN. Adopted
     // entries must not be stamped stopped on a transient bus outage; their
-    // status defers to the live per-RPC unit queries instead (ledger 13).
+    // status defers to the live per-RPC unit queries instead.
     let active_states: Option<std::collections::HashMap<String, bool>> =
         match units.active_states(&unit_names) {
             Ok(states) => Some(states),

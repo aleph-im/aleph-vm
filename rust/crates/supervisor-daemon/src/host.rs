@@ -1,6 +1,5 @@
 //! Live host figures for GetHostInfo, read from the same primary sources as
-//! the Python daemon (see LocalSupervisor.get_host_info in
-//! src/aleph/vm/supervisor/local.py):
+//! the Python daemon's `LocalSupervisor.get_host_info`:
 //!
 //! - cpu_count: sysconf(_SC_NPROCESSORS_ONLN), what os.cpu_count() calls
 //! - memory_mib: MemTotal from /proc/meminfo, what psutil's total is;

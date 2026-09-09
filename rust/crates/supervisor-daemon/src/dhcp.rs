@@ -1,8 +1,7 @@
 //! Per-tap DHCP for SEV-SNP measured VMs.
 //!
 //! aleph-vm normally assigns a VM its IPv4 STATICALLY: the QEMU controller
-//! seeds cloud-init with the guest address, gateway and mask
-//! (src/aleph/vm/supervisor/controllers/qemu/cloudinit.py
+//! seeds cloud-init with the guest address, gateway and mask (the Python
 //! `create_network_file`). The SEV-SNP measured image (nix/) deliberately
 //! omits `ip=` from its kernel cmdline so the launch measurement is
 //! host-independent, and its guest init (nix/init.sh) therefore falls back to

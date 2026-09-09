@@ -1,6 +1,5 @@
-//! Blocking QMP and QGA clients (increments 5-6), a 1:1 port of the Python
-//! `QemuVmClient` / `QemuGuestAgentClient`
-//! (src/aleph/vm/supervisor/controllers/qemu/client.py).
+//! Blocking QMP and QGA clients, a 1:1 port of the Python `QemuVmClient` /
+//! `QemuGuestAgentClient`.
 //!
 //! Both speak line-delimited JSON over a Unix socket. QGA (the guest agent,
 //! used by the backup fs-freeze) is plain request/response with no
@@ -473,7 +472,7 @@ mod tests {
         let mut client = QmpClient::connect(&socket).unwrap();
         client.inject_secret("aGVhZGVy", "c2VjcmV0").unwrap();
         // The exact command name and argument keys, matching the Python
-        // QemuVmClient.inject_secret (src/aleph/vm/controllers/qemu/client.py).
+        // QemuVmClient.inject_secret.
         assert_eq!(
             requests.lock().unwrap()[1],
             json!({

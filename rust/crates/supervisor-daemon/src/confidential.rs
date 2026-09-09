@@ -1,6 +1,6 @@
 //! Confidential-VM mutations (increment 6), a 1:1 port of the Python
 //! `LocalSupervisor.initialize_confidential` / `get_measurement` /
-//! `inject_secret` (src/aleph/vm/supervisor/local.py).
+//! `inject_secret`.
 //!
 //! Scope: the daemon does the non-hardware work exactly as Python does. `initialize_confidential`
 //! writes the owner's SEV session certificates and starts the controller

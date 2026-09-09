@@ -1,6 +1,5 @@
-//! aleph-vm-controller entry point: the process lifecycle port of
-//! `src/aleph/vm/supervisor/controllers/__main__.py` for the non-confidential
-//! persistent QEMU path.
+//! aleph-vm-controller entry point: the port of the Python controller's
+//! process lifecycle, for the non-confidential persistent QEMU path.
 //!
 //! Arg parse (`--config`, `--print-settings`, `-vv`), validate the one
 //! settings field Network cannot default (`NETWORK_INTERFACE`), wait for the

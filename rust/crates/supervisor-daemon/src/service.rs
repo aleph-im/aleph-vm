@@ -2,13 +2,12 @@
 //!
 //! Health, GetHostInfo, GetVm, GetVmSpec, ListVms, ListPortForwards and
 //! GetLogs are field-for-field ports of the Python LocalSupervisor
-//! (src/aleph/vm/supervisor/local.py) as observed after a daemon restart:
+//! as observed after a daemon restart:
 //! the pool state is the world view rebuilt from disk/systemd/sqlite
 //! (src/world.rs), unit liveness is queried live per RPC like
 //! `_is_running`/`_running_states`, and the VmSpec served for an adopted VM
-//! is the `spec_from_controller_configuration` reconstruction
-//! (src/aleph/vm/supervisor/qemu_build.py) the restarted Python daemon
-//! holds. The lifecycle mutations live in src/lifecycle.rs, guest
+//! is the `spec_from_controller_configuration` reconstruction the restarted
+//! Python daemon holds. The lifecycle mutations live in src/lifecycle.rs, guest
 //! quiescence in src/quiesce.rs and the confidential mutations in
 //! src/confidential.rs; all run on the blocking pool. The only remaining
 //! UNIMPLEMENTED path is a persistent Firecracker CreateVm,
@@ -120,8 +119,8 @@ pub struct DaemonState {
     pub logs: Arc<dyn LogSource>,
     pub nft: Arc<dyn crate::nft::NftExecutor>,
     pub taps: Arc<dyn crate::tap::TapBackend>,
-    /// Per-tap DHCP for SEV-SNP measured VMs (Phase 3 increment D2, ledger
-    /// entry 77): the measured image DHCPs (nix/init.sh udhcpc) and its
+    /// Per-tap DHCP for SEV-SNP measured VMs: the measured image DHCPs
+    /// (nix/init.sh udhcpc) and its
     /// cmdline omits `ip=` for measurement determinism, so the daemon serves
     /// the guest its allocated IPv4 over a single-address dnsmasq on the tap.
     /// Only the SNP path uses this; plain and SEV VMs keep cloud-init static
@@ -2941,8 +2940,8 @@ mod tests {
 
     #[test]
     fn the_journal_subprocess_is_bounded_except_for_head_reads() {
-        // R3: "unlimited" requests get the Rust-only server cap (ledger
-        // entry 16), tail requests pass their own bound, and head reads
+        // "unlimited" requests get the server cap, tail requests pass
+        // their own bound, and head reads
         // cannot use -n (it keeps the LAST n entries) so they slice after
         // parsing instead.
         assert_eq!(journal_tail_bound(0, false), Some(GET_LOGS_SERVER_CAP));
