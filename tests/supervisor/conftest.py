@@ -160,9 +160,8 @@ def scheduler_auth(monkeypatch):
     return sign
 
 
-@pytest.fixture(autouse=True)
-def clean_agent_state():
-    """Empty the agent's process-wide storage state around every test.
+def reset_agent_state() -> None:
+    """Empty the agent's process-wide storage state and uninstall its hooks.
 
     Five module globals survive a test: the live-VM snapshot the cache pass
     judges orphans against, the creates in flight, the memoised reclaimable
@@ -176,21 +175,33 @@ def clean_agent_state():
     the whole of the order dependence in these files, and the tests that reach
     into these globals by hand only ever cleaned up the one they touched.
 
-    Cleared on the way in as well as on the way out, so a test is unaffected by
-    a module that was imported and exercised before the fixture existed.
+    The installed hooks go back to none for the same reason. Every test that
+    installs one puts it back today, but a test that dies between installing an
+    evictor and its cleanup would leave later placements evicting into that
+    test's tree, which is exactly the class of leak this closes for the state.
+
+    ``clean_agent_state`` calls this around every test; a test may call it
+    directly to pin that it does.
     """
     import aleph.vm.agent.vm.cache as cache_module
     import aleph.vm.agent.vm.reclaimable as reclaimable_module
     import aleph.vm.agent.vm.reconciler as reconciler_module
     import aleph.vm.storage as storage_module
+    from aleph.vm.hooks import AgentHooks, install_hooks
 
-    def reset() -> None:
-        cache_module._live_snapshot = None
-        reconciler_module._last_supervisor_hashes = set()
-        reconciler_module._creating.clear()
-        reclaimable_module._reclaimable_cache.clear()
-        storage_module._reserved_downloads.clear()
+    cache_module._live_snapshot = None
+    reconciler_module._last_supervisor_hashes = set()
+    reconciler_module._creating.clear()
+    reclaimable_module._reclaimable_cache.clear()
+    storage_module._reserved_downloads.clear()
+    install_hooks(AgentHooks())
 
-    reset()
+
+@pytest.fixture(autouse=True)
+def clean_agent_state():
+    """Reset the agent's process-wide state on the way in as well as on the way
+    out, so a test is unaffected by a module that was imported and exercised
+    before the fixture existed."""
+    reset_agent_state()
     yield
-    reset()
+    reset_agent_state()
