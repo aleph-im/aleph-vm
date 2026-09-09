@@ -298,10 +298,8 @@ impl SupervisorService {
         // Python destroys at startup, entry 11).
         let attached: HashSet<String> = {
             let world = self.state.world.read().await;
-            world
-                .entries
-                .values()
-                .flat_map(|entry| entry.config.gpus.iter().map(|gpu| gpu.pci_host.clone()))
+            attached_gpus(&world)
+                .map(|(pci_host, _)| pci_host.to_string())
                 .collect()
         };
         // Refresh every unattached NVIDIA card whose CC mode has gone
@@ -457,6 +455,33 @@ fn gpu_json(gpus: &[GpuDevice]) -> Result<String, DaemonError> {
     })
 }
 
+/// Every GPU the world view's controller configs attach, each paired with
+/// whether a live confidential guest vouches for its CC mode. Two callers
+/// need the same walk: the inventory subtracts these cards from what it
+/// advertises as available, and the CC refresh skips them, taking the
+/// create gate's answer for the vouched ones.
+///
+/// The flag needs the VM to be confidential AND live, a start with no stop
+/// after it. A stopped VM's QEMU is gone, so its card is idle hardware an
+/// operator can re-mode and the gate's reading no longer holds; the card is
+/// still attached, so it is still subtracted and still never read. "Live"
+/// is not just the absence of a stop: an entry that was never started (a
+/// Defined one, or one adopted while the systemd bus was unreachable, where
+/// no stage timestamp but defined_at is set) has no guest holding its card
+/// either, and the adopted case is precisely where the daemon cannot tell
+/// whether the guest is alive.
+fn attached_gpus(world: &WorldView) -> impl Iterator<Item = (&str, bool)> {
+    world.entries.values().flat_map(|entry| {
+        let live = entry.times.started_at_ns != 0 && entry.times.stopped_at_ns == 0;
+        let vouched_cc_on = entry.config.snp().is_some() && live;
+        entry
+            .config
+            .gpus
+            .iter()
+            .map(move |gpu| (gpu.pci_host.as_str(), vouched_cc_on))
+    })
+}
+
 /// The cached CC mode of one card, if it has been probed successfully.
 pub fn cc_mode_of(state: &DaemonState, pci_host: &str) -> Option<crate::gpu_cc::CcMode> {
     state
@@ -560,21 +585,14 @@ fn refresh_cc_modes_with(
     // of the card at every boot) or the VM is deleted and the card is read
     // as free.
     //
-    // "Live" is a start with no stop after it, not just the absence of a
-    // stop: an entry that was never started (a Defined one, or one adopted
-    // while the systemd bus was unreachable, where no stage timestamp but
-    // defined_at is set) has no guest holding its card either, and the
-    // adopted case is precisely where the daemon cannot tell whether the
-    // guest is alive. Both would otherwise read as live and be seeded.
+    // What counts as live is `attached_gpus`'s rule: a start with no stop
+    // after it, so a never-started or bus-unreachable adopted entry is not
+    // seeded either.
     let mut known_cc_on: HashSet<String> = HashSet::new();
-    for entry in world.entries.values() {
-        let live = entry.times.started_at_ns != 0 && entry.times.stopped_at_ns == 0;
-        let confidential = entry.config.snp().is_some() && live;
-        for gpu in &entry.config.gpus {
-            attached.insert(gpu.pci_host.clone());
-            if confidential {
-                known_cc_on.insert(gpu.pci_host.clone());
-            }
+    for (pci_host, vouched_cc_on) in attached_gpus(&world) {
+        attached.insert(pci_host.to_string());
+        if vouched_cc_on {
+            known_cc_on.insert(pci_host.to_string());
         }
     }
     {

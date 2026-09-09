@@ -1736,6 +1736,20 @@ fn same_spec_or_conflict(entry: &VmEntry, request: &pb::VmSpec) -> Result<VmEntr
     }
 }
 
+/// The host inventory entry for a pci address, if the host has such a
+/// card. The inventory is the lspci listing collected once at startup, so
+/// this is a lookup over a handful of entries, not a probe.
+fn inventory_gpu<'a>(
+    state: &'a DaemonState,
+    pci_host: &str,
+) -> Option<&'a crate::lspci::GpuDevice> {
+    state
+        .host
+        .gpus
+        .iter()
+        .find(|device| device.pci_host == pci_host)
+}
+
 /// Python `_validate_spec_gpus`: every requested pci_host exists in the
 /// inventory and is attached nowhere (nor claimed twice).
 fn validate_spec_gpus(
@@ -1747,12 +1761,7 @@ fn validate_spec_gpus(
     let mut claimed: std::collections::HashSet<&str> = Default::default();
     for request in requested {
         let pci_host = request.pci_host.as_str();
-        let Some(device) = state
-            .host
-            .gpus
-            .iter()
-            .find(|device| device.pci_host == pci_host)
-        else {
+        let Some(device) = inventory_gpu(state, pci_host) else {
             return Err(RpcError::InsufficientResources(format!(
                 "No GPU at pci_host '{pci_host}' in the host inventory"
             )));
@@ -2268,12 +2277,7 @@ fn snp_config_slice_with(
         // the sysfs path `gpu_bar.rs` reads: only an address the host scan
         // itself produced gets past here, so a spec-supplied string never
         // reaches either. Keep this order.
-        let Some(device) = state
-            .host
-            .gpus
-            .iter()
-            .find(|device| device.pci_host == gpu.pci_host)
-        else {
+        let Some(device) = inventory_gpu(state, &gpu.pci_host) else {
             return Err(RpcError::InvalidBackend(format!(
                 "GPU at pci_host '{}' is not in the host inventory",
                 gpu.pci_host
