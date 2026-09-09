@@ -233,6 +233,14 @@ def compute_verdict(
     this answer is computed. The supervisor goes on listing such a VM until
     its delete returns, so its status alone would have this call report it as
     running and untouched.
+
+    A VM in that set is judged as a candidate, which means it can be refused,
+    and a refusal at that moment is final for this push: the delete cannot be
+    called off, so the VM goes with its disks and nothing builds it back. That
+    is the honest answer rather than a bad one, since a refusal says the host
+    has no room for it, and the scheduler learns to place it elsewhere instead
+    of believing a VM is running here. The hash still leaves through the plan's
+    refused set, so no later pass reads its absence as one more VM to delete.
     """
     verdict = PlanVerdict()
     known = by_hash(infos)

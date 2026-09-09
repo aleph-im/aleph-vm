@@ -254,6 +254,37 @@ def test_a_vm_being_torn_down_with_no_message_is_pending_not_unchanged():
     assert verdict.pending == [HASH_A]
 
 
+def test_a_vm_being_torn_down_that_the_host_cannot_take_back_is_refused_and_stays_gone():
+    """The worst outcome the in-flight set can produce, pinned so it is a
+    decision and not a surprise.
+
+    The teardown is past the point where a push can call it off, so the VM is
+    going away with its disks whatever this answer says. Judged as a candidate,
+    it can be refused, and then it is dropped from the plan: the loop will not
+    build it back, and the scheduler is told "rejected" rather than being left
+    to discover a VM it believes is running has silently gone. Refusing is
+    still the right answer, since the host genuinely has no room for it, and
+    the hash stays in the plan's refused set so no later pass reads its absence
+    as one more VM to delete.
+    """
+    plan = _plan(HASH_A)
+    verdict = compute_verdict(
+        plan,
+        infos=[_info(HASH_A)],
+        registry=_registry({HASH_A: _record()}),
+        capacity=_capacity([AdmissionVerdict(HASH_A, Refusal.for_code(AllocationFailureCode.INSUFFICIENT_CAPACITY))]),
+        removing_now=frozenset({HASH_A}),
+    )
+
+    assert verdict.unchanged == []
+    assert verdict.rejected[HASH_A].code is AllocationFailureCode.INSUFFICIENT_CAPACITY
+
+    narrowed = narrow_plan(plan, verdict)
+
+    assert narrowed.entries == {}
+    assert narrowed.refused == frozenset({HASH_A})
+
+
 def test_a_vm_being_torn_down_that_the_push_drops_is_still_removing():
     """The in-flight set only speaks about VMs the push names. One it does not
     name is being removed, which is exactly what the answer already said."""

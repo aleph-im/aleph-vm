@@ -934,6 +934,29 @@ async def test_a_teardown_that_fails_leaves_no_vm_marked_removing(reconciler, mo
     assert reconciler.removing_hashes() == frozenset()
 
 
+@pytest.mark.asyncio
+async def test_a_cancelled_teardown_leaves_no_vm_marked_removing(reconciler, monkeypatch):
+    """The agent shutting down cancels the loop task, and a cancellation can
+    land inside the delete. The set has to be clean afterwards for the same
+    reason a failed delete does: a hash left behind would have every later
+    push answered as a rebuild of a VM that is up and staying up. Nothing
+    catches CancelledError here, so what is being pinned is that the discard
+    happens on the way out and not on the success path only."""
+    _record_starts(reconciler, monkeypatch)
+    entered, _gate = _park_the_teardown(reconciler, monkeypatch)
+    reconciler.supervisor.list_vms.return_value = [_info(HASH_B)]
+    reconciler.submit(_plan())
+    pass_one = asyncio.create_task(reconciler._converge_once())
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    assert reconciler.removing_hashes() == frozenset({HASH_B})
+
+    pass_one.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pass_one
+
+    assert reconciler.removing_hashes() == frozenset()
+
+
 # ── The loop around a pass ─────────────────────────────────────────────────
 
 
