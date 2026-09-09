@@ -186,15 +186,17 @@ async def _network_gpu_models() -> dict[str, str]:
     return {gpu.device_id: gpu.model for gpu in get_compatible_gpus()}
 
 
-async def _gpus_from_host_info(host_info: "HostInfo") -> GpuProperties:
+async def _gpus_from_host_info(host_info: "HostInfo", network_models: dict[str, str] | None = None) -> GpuProperties:
     """Rebuild the rich GPU inventory from the supervisor's HostInfo.
 
     GetHostInfo carries raw GpuDevice fields as plain dicts (gpu_inventory /
     available_gpus): the supervisor never talks to the network, so the
     network annotation (AnnotatedGpuDevice: `model`, `compatible`) is
-    applied here from the settings aggregate.
+    applied here from the settings aggregate's map. A caller that already
+    built that map for the request passes it in; otherwise it is fetched.
     """
-    network_models = await _network_gpu_models()
+    if network_models is None:
+        network_models = await _network_gpu_models()
 
     def annotate(gpu: dict) -> AnnotatedGpuDevice:
         return AnnotatedGpuDevice.model_validate(
@@ -212,7 +214,9 @@ async def _gpus_from_host_info(host_info: "HostInfo") -> GpuProperties:
 
 
 async def _tee_properties(
-    supported_vcpu_types: list[str], host_info: "HostInfo | None"
+    supported_vcpu_types: list[str],
+    host_info: "HostInfo | None",
+    network_models: dict[str, str] | None = None,
 ) -> TeeProperties | None:
     """The tee block, absent when there is nothing provable to advertise.
 
@@ -223,13 +227,17 @@ async def _tee_properties(
     ``nvidia_cc`` rides alongside ``sev_snp`` and only there: a confidential
     GPU on a host that cannot launch a confidential guest is not a usable
     capability. Without host info (the supervisor could not be asked) the
-    block is withheld and the rest of the tee block stands.
+    block is withheld and the rest of the tee block stands. A caller that
+    already built the network model map for this request passes it in, so
+    the settings aggregate is refreshed once per request, not per block.
     """
     if not supported_vcpu_types:
         return None
     nvidia_cc = None
     if host_info is not None:
-        nvidia_cc = nvidia_cc_properties(list(host_info.available_gpus), await _network_gpu_models())
+        if network_models is None:
+            network_models = await _network_gpu_models()
+        nvidia_cc = nvidia_cc_properties(list(host_info.available_gpus), network_models)
     return TeeProperties(
         sev_snp=SevSnpProperties(supported_vcpu_types=supported_vcpu_types),
         nvidia_cc=nvidia_cc,
@@ -269,7 +277,9 @@ async def _get_static_machine_properties() -> MachineProperties:
     )
 
 
-async def get_machine_properties(host_info: "HostInfo") -> MachineProperties:
+async def get_machine_properties(
+    host_info: "HostInfo", network_models: dict[str, str] | None = None
+) -> MachineProperties:
     """Fetch machine properties such as architecture, CPU vendor, ...
 
     The static part is cached; the TEE block is re-evaluated on every call so
@@ -284,7 +294,7 @@ async def get_machine_properties(host_info: "HostInfo") -> MachineProperties:
     In the future, some properties may have to be fetched from within a VM.
     """
     static = await _get_static_machine_properties()
-    tee = await _tee_properties(await get_supported_snp_vcpu_types(), host_info)
+    tee = await _tee_properties(await get_supported_snp_vcpu_types(), host_info, network_models)
     return static.model_copy(update={"tee": tee})
 
 
@@ -426,8 +436,11 @@ async def about_system_usage(request: web.Request):
     """Public endpoint to expose information about the system usage."""
     period_start = datetime.now(timezone.utc).replace(second=0, microsecond=0)
     host_info = await request.app["supervisor"].get_host_info()
+    # One settings-aggregate refresh per poll: the same map annotates the
+    # gpu block below and the tee block inside the properties.
+    network_models = await _network_gpu_models()
 
-    machine_properties = await get_machine_properties(host_info)
+    machine_properties = await get_machine_properties(host_info, network_models)
     usage: MachineUsage = MachineUsage(
         cpu=CpuUsage(
             count=psutil.cpu_count(),
@@ -446,7 +459,7 @@ async def about_system_usage(request: web.Request):
             duration_seconds=60,
         ),
         properties=machine_properties,
-        gpu=await _gpus_from_host_info(host_info),
+        gpu=await _gpus_from_host_info(host_info, network_models),
     )
 
     return web.json_response(text=usage.model_dump_json(exclude_none=True))
