@@ -2191,7 +2191,7 @@ fn snp_config_slice_with(
     state: &DaemonState,
     spec: &pb::VmSpec,
     probe: impl Fn(&str, &str) -> Result<Option<crate::gpu_cc::CcMode>, crate::error::DaemonError>,
-    mmio_window: impl Fn(&[String]) -> Result<u64, crate::error::DaemonError>,
+    mmio_window: impl Fn(&[&str]) -> Result<u64, crate::error::DaemonError>,
 ) -> Result<Option<SnpSlice>, RpcError> {
     let Some(tee) = &spec.tee else {
         return Ok(None);
@@ -2304,7 +2304,7 @@ fn snp_config_slice_with(
     let pci_mmio64_mb = if spec.gpus.is_empty() {
         None
     } else {
-        let hosts: Vec<String> = spec.gpus.iter().map(|g| g.pci_host.clone()).collect();
+        let hosts: Vec<&str> = spec.gpus.iter().map(|g| g.pci_host.as_str()).collect();
         let window_mb = mmio_window(&hosts).map_err(|e| {
             RpcError::InvalidBackend(format!("cannot size the GPU MMIO window: {e}"))
         })?;
