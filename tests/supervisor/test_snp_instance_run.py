@@ -379,9 +379,7 @@ async def test_vprogram_create_resolves_confidential_gpus(monkeypatch):
     supervisor = _fake_supervisor()
     registry = AgentVmRegistry()
 
-    await run_module.create_vm_execution(
-        message.item_hash, supervisor=supervisor, registry=registry, capacity=capacity, persistent=True
-    )
+    await run_module.create_vm_execution(message.item_hash, supervisor=supervisor, registry=registry, capacity=capacity)
 
     capacity.resolve_confidential_gpus.assert_awaited_once_with(
         arch=content.gpu.arch, count=content.gpu.count, models=content.gpu.models, owner=content.address
