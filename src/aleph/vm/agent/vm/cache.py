@@ -38,7 +38,7 @@ import json
 import logging
 import os
 import shutil
-from collections.abc import Callable, Collection, Iterable
+from collections.abc import Callable, Collection, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -357,27 +357,30 @@ def parent_refs_of(evicted: list[Path]) -> list[str]:
     return [path.name for path in evicted if path.parent == runtime]
 
 
-def _loop_devices_backing(path: Path) -> list[str]:
-    """The loop devices backed by ``path``, found through sysfs.
+def _iter_loop_backings() -> Iterator[tuple[str, str]]:
+    """``(loop device, backing file)`` for every loop device the kernel lists.
 
-    ``storage.detach_loop_devices`` asks ``losetup -j``, which has to stat
-    the backing file; an evicted cache entry is already unlinked, and the
-    loop that still pins its blocks is exactly the one that has to go. sysfs
-    keeps the path, marked " (deleted)".
+    Read from sysfs rather than with ``losetup -j``, which has to stat the
+    backing file: an evicted cache entry is already unlinked, and the loop
+    that still pins its blocks is exactly the one that has to go. sysfs keeps
+    the path of an unlinked file, marked " (deleted)", and the marker is left
+    on the string here because it is what tells the two callers apart.
     """
-    devices: list[str] = []
     try:
         backing_files = sorted(SYS_BLOCK.glob("loop*/loop/backing_file"))
     except OSError:
-        return devices
+        return
     for backing_file in backing_files:
         try:
             backing = backing_file.read_text().strip()
         except OSError:
             continue
-        if backing.removesuffix(DELETED_SUFFIX) == str(path):
-            devices.append(f"/dev/{backing_file.parent.parent.name}")
-    return devices
+        yield f"/dev/{backing_file.parent.parent.name}", backing
+
+
+def _loop_devices_backing(path: Path) -> list[str]:
+    """The loop devices backed by ``path``, unlinked or not."""
+    return [device for device, backing in _iter_loop_backings() if backing.removesuffix(DELETED_SUFFIX) == str(path)]
 
 
 async def remove_parent_device(ref: str) -> None:
@@ -832,20 +835,12 @@ def _deleted_cache_backings() -> list[tuple[str, Path]]:
     cache entry that is already unlinked."""
     roots = cache_roots()
     leaked: list[tuple[str, Path]] = []
-    try:
-        backing_files = sorted(SYS_BLOCK.glob("loop*/loop/backing_file"))
-    except OSError:
-        return leaked
-    for backing_file in backing_files:
-        try:
-            backing = backing_file.read_text().strip()
-        except OSError:
-            continue
+    for device, backing in _iter_loop_backings():
         if not backing.endswith(DELETED_SUFFIX):
             continue
         path = Path(backing.removesuffix(DELETED_SUFFIX))
         if path.parent in roots:
-            leaked.append((f"/dev/{backing_file.parent.parent.name}", path))
+            leaked.append((device, path))
     return leaked
 
 
