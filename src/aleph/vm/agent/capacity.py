@@ -901,10 +901,15 @@ class CapacityManager:
         if count <= 0:
             return []
         async with self._lock:
+            # Three gates: the card is in CC mode, it is of the requested
+            # family, and, when the message narrows the family, of one of
+            # the listed models.
             candidates = [
                 gpu
                 for gpu in await self.available_gpus()
-                if gpu.cc_mode == "on" and gpu.arch == arch and (models is None or gpu.device_id in models)
+                if gpu.cc_mode == "on"
+                if gpu.arch == arch
+                if models is None or gpu.device_id in models
             ]
             resolved = self._match_family(candidates, count, owner)
             if len(resolved) < count:
