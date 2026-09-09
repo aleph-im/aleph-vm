@@ -76,7 +76,12 @@ from aleph.vm.conf import settings
 # MOUNT_ROOT is /mnt, where a volume's mount point is {namespace}_{volume name}.
 from aleph.vm.storage import DEVICE_MAPPER_DIRECTORY, MOUNT_ROOT, is_vm_namespace
 from aleph.vm.storage_budget import parse_budget
-from aleph.vm.storage_pools import StoragePool, get_pools, iter_namespace_dirs
+from aleph.vm.storage_pools import (
+    StoragePool,
+    get_pools,
+    iter_namespace_dirs,
+    pool_usage_bytes,
+)
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.utils import create_task_log_exceptions
 
@@ -607,21 +612,29 @@ def _sweep_side_dirs(
             report.side_dirs_removed += 1
 
 
-def _pool_total(pool: StoragePool) -> int:
-    try:
-        return shutil.disk_usage(str(pool.path)).total
-    except OSError:
+def _retention_budget(pool: StoragePool) -> int | None:
+    """Bytes of retained data ``pool`` may hold, or ``None`` when its size
+    cannot be read and the budget therefore cannot be worked out.
+
+    Reap needs no size at all: it retains nothing, so a node switched from
+    keep to reap gives back everything marked, whatever the pool reports.
+    """
+    if settings.VOLUME_RETENTION == "reap":
         return 0
+    usage = pool_usage_bytes(pool)
+    if usage is None:
+        return None
+    return parse_budget(settings.VOLUME_RETENTION_BUDGET, usage.total)
 
 
 def _pool_free(pool: StoragePool) -> int:
-    try:
-        return shutil.disk_usage(str(pool.path)).free
-    except OSError:
+    usage = pool_usage_bytes(pool)
+    if usage is None:
         # Unknown free space: report none, so make_room falls back to its
         # "stop once needed_bytes have been freed" bound instead of looping.
         logger.warning("Volume pool %s not accessible; freeing on the evicted bytes alone", pool.path)
         return 0
+    return usage.free
 
 
 def _reclaimable_on(pool: StoragePool) -> list[tuple[Path, ReclaimableMarker]]:
@@ -695,9 +708,19 @@ def _enforce_retention_budget(
         entries = _reclaimable_on(pool)
         if not entries:
             continue
-        # Under reap nothing is retained: a node switched from keep to reap
-        # gives back everything marked, whatever the budget says.
-        budget = 0 if reap else parse_budget(settings.VOLUME_RETENTION_BUDGET, _pool_total(pool))
+        budget = _retention_budget(pool)
+        if budget is None:
+            # A budget is a share of the pool's size, so a size nobody can
+            # read would come out as zero bytes allowed and take every
+            # marked directory here with it. Enforcement is only ever a
+            # deletion: leaving the pool over budget until it can be
+            # measured again costs a pass, guessing costs the data.
+            logger.warning(
+                "Volume pool %s not accessible; leaving the %d directory(ies) it retains alone this pass",
+                pool.path,
+                len(entries),
+            )
+            continue
         total = sum(marker.size_bytes for _, marker in entries)
         for directory, marker in entries:
             if not reap and total <= budget:

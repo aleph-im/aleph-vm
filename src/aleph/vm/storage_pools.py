@@ -24,6 +24,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import NamedTuple
 
 from aleph.vm.conf import settings
 from aleph.vm.resources import InsufficientResourcesError
@@ -278,12 +279,32 @@ def reset_pools() -> None:
     _pools = None
 
 
-def _pool_free_bytes(pool: StoragePool) -> int | None:
+class PoolUsage(NamedTuple):
+    total: int
+    free: int
+
+
+def pool_usage_bytes(pool: StoragePool) -> PoolUsage | None:
+    """The pool filesystem's total and free bytes, or ``None`` when they
+    cannot be read.
+
+    Deliberately silent: what an unreadable pool means differs by caller
+    (leave it out of the capacity it advertises, refuse to evict from it),
+    so each one logs its own consequence.
+    """
     try:
-        return shutil.disk_usage(str(pool.path)).free
+        usage = shutil.disk_usage(str(pool.path))
     except OSError:
+        return None
+    return PoolUsage(total=usage.total, free=usage.free)
+
+
+def _pool_free_bytes(pool: StoragePool) -> int | None:
+    usage = pool_usage_bytes(pool)
+    if usage is None:
         logger.error("Volume pool %s not accessible, skipping", pool.path)
         return None
+    return usage.free
 
 
 RoomMaker = Callable[["StoragePool", int], int]
