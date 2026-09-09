@@ -162,6 +162,7 @@ def compute_verdict(
     capacity: _Capacity,
     node_hash: str | None = None,
     available_gpus: list[GpuDevice] | None = None,
+    removing_now: frozenset[ItemHash] = frozenset(),
 ) -> PlanVerdict:
     """The immediate answer: what we take, what we drop, what we refuse.
 
@@ -170,6 +171,11 @@ def compute_verdict(
     the top of the module, so the handler reads them first and hands them in.
     Without them simulate refuses every candidate that asks for a card, which
     is the right answer to give when the cards were not looked at.
+
+    ``removing_now`` is the set of VMs the convergence loop is deleting as
+    this answer is computed. The supervisor goes on listing such a VM until
+    its delete returns, so its status alone would have this call report it as
+    running and untouched.
     """
     verdict = PlanVerdict()
     known = by_hash(infos)
@@ -185,7 +191,18 @@ def compute_verdict(
             # sizing it as a candidate would let a node that is tight on room
             # refuse a VM it is already holding, and a refusal is what takes
             # the VM out of the plan the loop converges on.
-            if info.status in LIVE_STATUSES or info.status in STOPPED_STATUSES or info.awaiting_confidential_init:
+            #
+            # A VM whose teardown is already running is the exception, however
+            # alive or however stopped the supervisor says it is: the retire is
+            # past the point where a push can call it off, so the VM is going
+            # away with its disks and this node will have to build it again.
+            # Judged as a candidate instead, it is answered accepted, or
+            # pending while the push carried no message to size it by, which is
+            # what the loop will actually do about it on the pass after the
+            # delete returns.
+            if (
+                info.status in LIVE_STATUSES or info.status in STOPPED_STATUSES or info.awaiting_confidential_init
+            ) and vm_hash not in removing_now:
                 unchanged.add(vm_hash)
                 verdict.unchanged.append(vm_hash)
             # A planned VM the supervisor holds dead is about to be created

@@ -794,6 +794,97 @@ async def test_a_vm_waiting_on_its_confidential_session_is_not_started_again(rec
     assert starts.attempts == 0
 
 
+# ── A teardown that is still in flight ─────────────────────────────────────
+
+
+def _park_the_teardown(reconciler, monkeypatch):
+    """Hold the teardown of a VM inside the supervisor's delete.
+
+    A real delete takes as long as the VM takes to stop, and that is the
+    window a re-push lands in. Returns the event that lets it finish and the
+    one that says it has started.
+    """
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def parked_delete(vm_id, **_kwargs):
+        entered.set()
+        await gate.wait()
+
+    async def teardown_through_the_supervisor(vm_hash, *, supervisor, registry):
+        await supervisor.delete_vm(str(vm_hash))
+
+    reconciler.supervisor.delete_vm = parked_delete
+    monkeypatch.setattr(reconciler_module, "teardown_vm", teardown_through_the_supervisor)
+    return entered, gate
+
+
+@pytest.mark.asyncio
+async def test_a_teardown_in_flight_is_visible_while_it_runs(reconciler, monkeypatch):
+    """The window the answer has to know about. The pass re-reads the plan
+    before it starts a teardown, so a push that arrives first is honoured, but
+    once the delete is under way the retire is past the point where a push can
+    stop it: the VM will be retired GONE and its disks reaped whatever the
+    scheduler is told. Answering "unchanged" for it, which is what the
+    supervisor's list says while the delete runs, tells the scheduler a VM is
+    up that is on its way to being destroyed and rebuilt from scratch."""
+    _record_starts(reconciler, monkeypatch)
+    entered, gate = _park_the_teardown(reconciler, monkeypatch)
+    reconciler.supervisor.list_vms.return_value = [_info(HASH_B)]
+    reconciler.submit(_plan())
+
+    assert reconciler.removing_hashes() == frozenset()
+    pass_one = asyncio.create_task(reconciler._converge_once())
+    # Bounds on failure, not a wait: the pass reaches the delete at once.
+    await asyncio.wait_for(entered.wait(), timeout=5)
+
+    assert reconciler.removing_hashes() == frozenset({HASH_B})
+
+    reconciler.submit(_plan(HASH_B))
+    gate.set()
+    await asyncio.wait_for(pass_one, timeout=5)
+
+    assert reconciler.removing_hashes() == frozenset()
+    # The pass worked off the plan that dropped the VM, so it started nothing.
+    assert reconciler.started == []
+
+
+@pytest.mark.asyncio
+async def test_a_vm_re_added_while_it_was_being_torn_down_is_started_again(reconciler, monkeypatch):
+    """The other half of the answer: telling the scheduler the VM is accepted
+    is only honest if the loop then builds it."""
+    _record_starts(reconciler, monkeypatch)
+    entered, gate = _park_the_teardown(reconciler, monkeypatch)
+    reconciler.supervisor.list_vms.return_value = [_info(HASH_B)]
+    reconciler.submit(_plan())
+    pass_one = asyncio.create_task(reconciler._converge_once())
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    reconciler.submit(_plan(HASH_B))
+    gate.set()
+    await asyncio.wait_for(pass_one, timeout=5)
+
+    # The delete went through, so the supervisor no longer lists it.
+    reconciler.supervisor.list_vms.return_value = []
+    await reconciler._converge_once()
+
+    assert reconciler.started == [HASH_B]
+
+
+@pytest.mark.asyncio
+async def test_a_teardown_that_fails_leaves_no_vm_marked_removing(reconciler, monkeypatch):
+    """A delete the supervisor refuses is retried on the next pass, so the
+    hash must not stay in the in-flight set: it would make every later push
+    answer accepted for a VM that is up and staying up."""
+    _record_starts(reconciler, monkeypatch)
+    monkeypatch.setattr(reconciler_module, "teardown_vm", AsyncMock(side_effect=RuntimeError("delete failed")))
+    reconciler.supervisor.list_vms.return_value = [_info(HASH_B)]
+    reconciler.submit(_plan())
+
+    await reconciler._converge_once()
+
+    assert reconciler.removing_hashes() == frozenset()
+
+
 # ── The loop around a pass ─────────────────────────────────────────────────
 
 
