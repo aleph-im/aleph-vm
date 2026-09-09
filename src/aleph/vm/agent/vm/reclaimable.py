@@ -20,7 +20,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 from aleph_message.models import ExecutableContent
 
@@ -33,6 +33,16 @@ MARKER_NAME = ".reclaimable"
 MARKER_VERSION = 1
 
 ReclaimReason = Literal["gone", "orphan"]
+RECLAIM_REASONS: frozenset[str] = frozenset(get_args(ReclaimReason))
+
+
+class UnsupportedMarkerVersion(ValueError):
+    """A marker written to a schema this agent does not know.
+
+    Distinct from a corrupt marker: the file is intact, a newer agent wrote
+    it, and the fields it holds may not mean what this version thinks they
+    do. The reader keeps such a file rather than removing it.
+    """
 
 
 @dataclass(frozen=True)
@@ -58,9 +68,25 @@ class ReclaimableMarker:
 
     @classmethod
     def from_json(cls, text: str) -> ReclaimableMarker:
+        """Parse a marker, refusing anything this agent did not write.
+
+        The reason and the version are checked rather than taken on trust:
+        both decide what happens to the directory (an orphan marker is
+        claimed exclusively and carries no owner, a gone one authorizes the
+        owner's erase), and a value from outside the set this agent knows
+        would be carried into those decisions unread.
+        """
         data = json.loads(text)
         if not isinstance(data, dict):
             msg = f"marker is not a JSON object: {type(data).__name__}"
+            raise ValueError(msg)
+        version = int(data.get("version", MARKER_VERSION))
+        if version != MARKER_VERSION:
+            msg = f"marker version {version} is not the version {MARKER_VERSION} this agent writes"
+            raise UnsupportedMarkerVersion(msg)
+        reason = data["reason"]
+        if reason not in RECLAIM_REASONS:
+            msg = f"marker reason {reason!r} is not one of {', '.join(sorted(RECLAIM_REASONS))}"
             raise ValueError(msg)
         owner = data.get("owner")
         since = datetime.fromisoformat(data["reclaimable_since"])
@@ -74,11 +100,11 @@ class ReclaimableMarker:
             since = since.replace(tzinfo=timezone.utc)
         return cls(
             reclaimable_since=since,
-            reason=data["reason"],
+            reason=reason,
             size_bytes=int(data["size_bytes"]),
             depends_on=tuple(data.get("depends_on", ())),
             owner=str(owner) if owner else None,
-            version=int(data.get("version", MARKER_VERSION)),
+            version=version,
         )
 
 
@@ -129,6 +155,12 @@ def read_marker(namespace_dir: Path, *, repair: bool = True) -> ReclaimableMarke
     cannot unlink it at all, and an operator inspecting a node has not asked
     for anything on disk to change). The reconciler keeps the repair, since
     it is the pass that has to be able to move the directory on.
+
+    A marker whose schema version this agent does not know is the exception:
+    it is intact, a newer agent wrote it, and removing it would hand a
+    retained directory to the orphan flow, which re-marks it without the
+    owner and the parent-image pins it was carrying. It is kept and reported
+    instead, and the operator is told which agent has to look at it.
     """
     path = namespace_dir / MARKER_NAME
     if not path.is_file():
@@ -137,6 +169,9 @@ def read_marker(namespace_dir: Path, *, repair: bool = True) -> ReclaimableMarke
         return ReclaimableMarker.from_json(path.read_text())
     except OSError:
         logger.warning("Unreadable reclaimable marker at %s, ignoring it", path)
+        return None
+    except UnsupportedMarkerVersion as error:
+        logger.error("Reclaimable marker at %s is in a schema this agent does not know (%s); keeping it", path, error)
         return None
     except (ValueError, KeyError, TypeError, AttributeError):
         if not repair:
