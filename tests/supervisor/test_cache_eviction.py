@@ -749,6 +749,33 @@ def test_a_measured_download_still_evicts_to_make_room(pools, monkeypatch):
     assert not old.exists()
 
 
+def test_a_body_bigger_than_its_reserve_is_recovered_by_the_next_pass(pools, monkeypatch):
+    """The reserve is a guess, so a chunked body can outgrow it. The root is
+    over its budget while the extra bytes land, and nothing may unlink the
+    .part under the download writing it; what the pass does instead is count
+    those bytes (they are a measurement, unlike the reserve) and evict least
+    recently used for them, and once the download finishes its own entry is
+    evictable like any other."""
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "8192")
+    monkeypatch.setattr(settings, "UNKNOWN_LENGTH_RESERVE", "4096")
+    registry = AgentVmRegistry()
+    cache_module.record_live_snapshot(set())
+    root = pools["code"]
+    old = _entry(root, "old", size=4096, age=1000)
+    chunked = root / "chunked.part"
+
+    admit_download(registry, chunked, None, 100 * 1024**3)
+    chunked.write_bytes(b"x" * 8192)
+
+    assert cache_module._root_usage(root, cache_entries(root)) > 8192
+    assert evict_caches(registry) == [old]
+
+    storage_module.release_download(chunked)
+    chunked.rename(root / "chunked")
+
+    assert cache_module._root_usage(root, cache_entries(root)) <= 8192
+
+
 def test_the_cache_disk_is_read_once_per_admission(pools, monkeypatch):
     """Both the budget and the reserve held for an unmeasured body are shares
     of the cache disk's size. Reading it twice gave the second read its own

@@ -545,7 +545,12 @@ truth as the body lands, since the bytes on disk are counted the moment they
 are written. A ceiling never sets the eviction target either: a root's usage
 counts a guessed reservation only at the bytes it has actually written when
 the question is how much to evict, and at the full figure when the question
-is whether the next download fits. What is admitted is then charged to
+is whether the next download fits. A body bigger than its reserve therefore
+takes its root over the budget while the extra bytes land: a `.part` is not an
+entry and nothing may unlink it under the download writing it. The overshoot
+is transient rather than permitted. Those bytes are a measurement, so the next
+pass counts them and evicts least recently used for them, and once the
+download finishes its entry is evictable like any other. What is admitted is then charged to
 the download's `.part` path (`reserve_download`) until `download_file`
 releases it, so a second create arriving while the first is still writing
 sees the room the first was promised rather than only the bytes it has
