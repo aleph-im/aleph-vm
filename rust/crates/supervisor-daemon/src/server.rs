@@ -1,7 +1,7 @@
 //! Unix socket lifecycle and the tonic server.
 //!
-//! Same lifecycle as the Python daemon (src/aleph/vm/supervisor/daemon.py):
-//! mkdir the socket parent, unlink a stale socket, serve, unlink on exit.
+//! Same lifecycle as the Python daemon: mkdir the socket parent, unlink a
+//! stale socket, serve, unlink on exit.
 //! Day-one improvements over Python, taken on the first day of the port
 //! rather than deferred:
 //! - the socket is bound under umask 0o077, so it is never observable with

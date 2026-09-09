@@ -1,6 +1,6 @@
-//! Cloud-init NoCloud seed generation, ported from
-//! src/aleph/vm/supervisor/controllers/qemu/cloudinit.py and the
-//! `build_cloud_init_drive` half of src/aleph/vm/supervisor/qemu_build.py.
+//! Cloud-init NoCloud seed generation, ported from the Python controller's
+//! cloud-init builders and the `build_cloud_init_drive` half of its QEMU
+//! configuration assembly.
 //!
 //! The Python builder emits YAML (yaml.safe_dump); this port emits the
 //! `#cloud-config` header plus a JSON body. JSON is a YAML subset, so

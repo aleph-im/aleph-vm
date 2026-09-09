@@ -1,6 +1,5 @@
-//! TAP device management, ported from the Python `TapInterface`
-//! (src/aleph/vm/network/interfaces.py) and `Network.prepare_tap`
-//! (src/aleph/vm/network/hostnetwork.py).
+//! TAP device management, ported from the Python `TapInterface` and
+//! `Network.prepare_tap`.
 //!
 //! The address math (the vm_index-th IPv4 subnet, the static/dynamic IPv6
 //! allocation) lives in src/world.rs; this module owns the derived

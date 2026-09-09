@@ -2,8 +2,8 @@
 //! (`{SUPERVISOR_DATABASE}`, default `{EXECUTION_ROOT}/supervisor.sqlite3`)
 //! and the host-port allocator.
 //!
-//! Schema (SQLAlchemy `PortMapping` in
-//! src/aleph/vm/supervisor/networking_db.py): `port_mappings(id INTEGER
+//! Schema (the SQLAlchemy `PortMapping` model):
+//! `port_mappings(id INTEGER
 //! PRIMARY KEY, vm_hash TEXT, vm_port INTEGER, host_port INTEGER, tcp
 //! BOOLEAN, udp BOOLEAN, created_at DATETIME, deleted_at DATETIME)`, soft
 //! delete via `deleted_at IS NULL`, a partial unique index on active

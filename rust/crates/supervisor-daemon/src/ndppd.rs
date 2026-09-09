@@ -1,5 +1,4 @@
-//! NDP proxy handling, ported from the Python `NdpProxy`
-//! (src/aleph/vm/network/ndp_proxy.py).
+//! NDP proxy handling, ported from the Python `NdpProxy`.
 //!
 //! The proxy state is an in-memory interface-to-range map (insertion
 //! ordered, like the Python dict); every update rewrites /etc/ndppd.conf

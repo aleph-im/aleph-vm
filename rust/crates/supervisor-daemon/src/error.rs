@@ -1,10 +1,10 @@
 //! Daemon-level error type.
 //!
-//! Increments 1 and 2 only need two corners of the wire vocabulary:
-//! VM_NOT_FOUND (an unknown vm_id on the read RPCs) and the INTERNAL
-//! catch-all (mirroring the Python `translating_errors()` in
-//! src/aleph/vm/supervisor/error_mapping.py). The full ErrorCode mapping
-//! arrives with the lifecycle RPCs in increment 3.
+//! The failures the daemon itself produces, as opposed to the closed
+//! vocabulary the RPC boundary answers with (`RpcError` in lifecycle.rs,
+//! which carries the wire ErrorCode). Anything here that escapes to a
+//! handler becomes the INTERNAL catch-all, the way the Python
+//! `translating_errors()` wrapper did.
 
 use std::path::PathBuf;
 
