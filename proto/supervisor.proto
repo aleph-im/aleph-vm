@@ -154,6 +154,7 @@ message GpuDevice {
   string model = 3;
   bool supports_x_vga = 4;
   string cc_mode = 5;  // NVIDIA confidential-computing mode: "on", "devtools", "off"; empty when unknown
+  string arch = 6;  // NVIDIA architecture family from the device id: "hopper" or "blackwell"; empty when unknown
 }
 
 // ── Lifecycle ────────────────────────────────────────────────────────────

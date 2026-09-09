@@ -877,6 +877,79 @@ class CapacityManager:
             for gpu in resolved
         ]
 
+    async def resolve_confidential_gpus(
+        self, *, arch: str, count: int, models: list[str] | None, owner: str
+    ) -> list[GpuSpec]:
+        """Resolve a confidential-GPU family requirement to concrete cards.
+
+        A V-PROGRAM names a kind of card (architecture, optionally narrowed to
+        specific vendor:device ids) and how many, never a concrete device, so
+        this picks any ``count`` distinct available cards probed in NVIDIA CC
+        mode whose architecture matches. Card architectures come from the
+        supervisor, which owns the device-id table the BAR0 probe already
+        needs.
+
+        `supports_x_vga` is always False: the SNP launcher never emits x-vga
+        for a headless confidential guest. The error names the confidential
+        requirement so the scheduler and the log can tell it from a plain
+        GPU shortage.
+
+        Raises:
+            InsufficientResourcesError: fewer than ``count`` matching cards
+                are available and free of another user's hold.
+        """
+        if count <= 0:
+            return []
+        async with self._lock:
+            # Three gates: the card is in CC mode, it is of the requested
+            # family, and, when the message narrows the family, of one of
+            # the listed models.
+            candidates = [
+                gpu
+                for gpu in await self.available_gpus()
+                if gpu.cc_mode == "on"
+                if gpu.arch == arch
+                if models is None or gpu.device_id in models
+            ]
+            resolved = self._match_family(candidates, count, owner)
+            if len(resolved) < count:
+                detail = f"No {count} available GPU(s) in confidential-computing mode for arch {arch!r}"
+                if models:
+                    detail += f" among models {models!r}"
+                logger.warning(detail)
+                raise InsufficientResourcesError(
+                    detail,
+                    required={"confidential_gpu": {"arch": arch, "count": count, "models": models}},
+                    available={
+                        "confidential_gpus": [{"device_id": gpu.device_id, "arch": gpu.arch} for gpu in candidates]
+                    },
+                )
+            for gpu in resolved:
+                self.holds.pop(gpu.pci_host, None)
+        return [GpuSpec(pci_host=PciAddress(gpu.pci_host), supports_x_vga=False) for gpu in resolved]
+
+    def _match_family(self, candidates: list[GpuDevice], count: int, user: str) -> list[GpuDevice]:
+        """Take up to ``count`` distinct candidates ``user`` may have.
+
+        Same hold rules as :meth:`_match_requests`: a card held by ANOTHER
+        user is not available to this one, the user's own hold is consumable.
+        Holds are only dropped once the whole requirement is satisfied, so a
+        shortage leaves the ledger untouched. Called under ``self._lock``.
+        """
+        resolved: list[GpuDevice] = []
+        for gpu in candidates:
+            if len(resolved) == count:
+                break
+            if not self._is_available_to(gpu.pci_host, user):
+                continue
+            resolved.append(gpu)
+        return resolved
+
+    def _is_available_to(self, pci_host: str, user: str) -> bool:
+        """Whether ``user`` may take this card: unheld, or held by them."""
+        hold = self._get_valid_hold(pci_host)
+        return hold is None or hold.user == user
+
     def _match_requests(
         self,
         available_gpus: list[GpuDevice],
@@ -894,10 +967,9 @@ class CapacityManager:
             for gpu in available_gpus:
                 if gpu.device_id != device_id:
                     continue
-                hold = self._get_valid_hold(gpu.pci_host)
-                if hold is not None and hold.user != user:
-                    # Held by another user: not available to this one.
+                if not self._is_available_to(gpu.pci_host, user):
                     continue
+                hold = self._get_valid_hold(gpu.pci_host)
                 if hold is not None and consume_own_hold:
                     del self.holds[gpu.pci_host]
                 available_gpus.remove(gpu)

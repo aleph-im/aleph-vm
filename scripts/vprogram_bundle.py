@@ -70,6 +70,8 @@ def _nix_target(flavor: str) -> str:
         return "instanceImage"
     if flavor == "compose":
         return "composeImage"
+    if flavor == "gpu":
+        return "gpuImage"
     return "image"
 
 
@@ -137,6 +139,7 @@ def cmd_manifest(args: argparse.Namespace) -> int:
             runtime_version=args.runtime_version,
             exec_runtime=args.exec_runtime,
             compose_runtime=args.flavor == "compose",
+            gpu_runtime=args.flavor == "gpu",
         )
     out: Path = args.out if args.out is not None else args.bundle_info.parent / MANIFEST_NAME
     out.write_text(manifest.to_canonical_json())
@@ -162,10 +165,11 @@ def main(argv: list[str] | None = None) -> int:
     p_build.add_argument("--out", type=Path, required=True, help="output directory")
     p_build.add_argument(
         "--flavor",
-        choices=("vprogram", "instance", "compose"),
+        choices=("vprogram", "instance", "compose", "gpu"),
         default="vprogram",
         help="bundle flavor: vprogram (default, nix#image), instance (nix#instanceImage, "
-        "no verity sidecars), or compose (nix#composeImage, same byte layout as vprogram)",
+        "no verity sidecars), compose (nix#composeImage, same byte layout as vprogram), or "
+        "gpu (nix#gpuImage, same byte layout as vprogram plus a gpu.json facts sidecar)",
     )
     p_build.set_defaults(func=cmd_build)
 
@@ -177,12 +181,14 @@ def main(argv: list[str] | None = None) -> int:
     p_manifest.add_argument("--out", type=Path, default=None, help="manifest path (default: next to bundle-info)")
     p_manifest.add_argument(
         "--flavor",
-        choices=("vprogram", "instance", "compose"),
+        choices=("vprogram", "instance", "compose", "gpu"),
         default="vprogram",
         help="manifest flavor: vprogram (default, aleph-vprogram-runtime), "
-        "instance (aleph-instance-runtime, luks cmdline template), or "
+        "instance (aleph-instance-runtime, luks cmdline template), "
         "compose (aleph-vprogram-runtime with the aleph.compose/1 workload contract "
-        "and the workload_roothash cmdline template)",
+        "and the workload_roothash cmdline template), or "
+        "gpu (aleph-vprogram-runtime with the aleph.exec/1 workload contract, the gpu "
+        "cmdline template, and the gpu block carried from the bundle-info)",
     )
     p_manifest.add_argument(
         "--exec",
@@ -190,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="build the aleph.exec/1 workload-runtime manifest (workload_roothash in the "
         "cmdline template) instead of the builtin no-workload form; "
-        "incompatible with --flavor instance/compose",
+        "incompatible with --flavor instance/compose/gpu",
     )
     p_manifest.set_defaults(func=cmd_manifest)
 

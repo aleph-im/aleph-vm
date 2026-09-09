@@ -25,6 +25,9 @@ class HostGPU(BaseModel):
     cc_mode: Literal["on", "devtools", "off"] | None = Field(
         default=None, description="NVIDIA confidential-computing mode when probed"
     )
+    arch: Literal["hopper", "blackwell"] | None = Field(
+        default=None, description="NVIDIA architecture family, as the supervisor derives it"
+    )
 
     model_config = ConfigDict(extra="forbid")
 
@@ -53,6 +56,12 @@ class GpuDevice(HashableModel):
     device_id: str = Field(description="GPU vendor & device ids")
     cc_mode: Literal["on", "devtools", "off"] | None = Field(
         default=None, description="NVIDIA confidential-computing mode when probed"
+    )
+    # The supervisor is the single source of a card's architecture: it owns
+    # the device-id ranges the BAR0 probe already needs. Nothing here maps
+    # device ids to families a second time.
+    arch: Literal["hopper", "blackwell"] | None = Field(
+        default=None, description="NVIDIA architecture family, as the supervisor derives it"
     )
 
     @property

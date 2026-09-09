@@ -31,10 +31,20 @@ impl fmt::Display for CcMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum GpuArch {
     Hopper,
     Blackwell,
+}
+
+impl fmt::Display for GpuArch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            GpuArch::Hopper => "hopper",
+            GpuArch::Blackwell => "blackwell",
+        })
+    }
 }
 
 /// (first, last, arch) PCI device-id ranges. Blackwell rows are copied from
@@ -280,5 +290,24 @@ mod tests {
     fn cc_mode_serializes_lowercase() {
         assert_eq!(serde_json::to_string(&CcMode::On).unwrap(), "\"on\"");
         assert_eq!(CcMode::Devtools.to_string(), "devtools");
+    }
+
+    #[test]
+    fn gpu_arch_serializes_lowercase() {
+        // The wire spelling the agent and the V-PROGRAM schema share.
+        assert_eq!(
+            serde_json::to_string(&GpuArch::Blackwell).unwrap(),
+            "\"blackwell\""
+        );
+        assert_eq!(
+            serde_json::to_string(&GpuArch::Hopper).unwrap(),
+            "\"hopper\""
+        );
+        assert_eq!(GpuArch::Blackwell.to_string(), "blackwell");
+        assert_eq!(GpuArch::Hopper.to_string(), "hopper");
+        assert_eq!(
+            serde_json::from_str::<GpuArch>("\"hopper\"").unwrap(),
+            GpuArch::Hopper
+        );
     }
 }

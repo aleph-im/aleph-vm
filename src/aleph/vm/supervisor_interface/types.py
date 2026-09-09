@@ -366,6 +366,11 @@ class GpuDevice:
     # NVIDIA confidential-computing mode ("on", "devtools", "off"), or None
     # when the card is not NVIDIA, not yet probed, or the probe failed.
     cc_mode: str | None = None
+    # NVIDIA architecture family ("hopper", "blackwell"), or None for a card
+    # outside the CC-capable device-id ranges. The supervisor owns the
+    # device-id table and carries the answer across; nothing above recomputes
+    # it from the device id.
+    arch: str | None = None
 
 
 @dataclass(frozen=True)

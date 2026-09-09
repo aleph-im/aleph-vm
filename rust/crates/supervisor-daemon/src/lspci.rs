@@ -35,6 +35,14 @@ pub struct GpuDevice {
     /// keeps today's inventory bytes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cc_mode: Option<crate::gpu_cc::CcMode>,
+    /// NVIDIA architecture family derived from the device id (gpu_cc.rs);
+    /// `None` for cards outside the CC-capable ranges. The daemon owns the
+    /// device-id table, so this travels to the agent rather than being
+    /// recomputed there. Set alongside `cc_mode` when the inventory is
+    /// annotated, never at lspci parse time, and skipped when absent so a
+    /// fleet without CC cards keeps today's inventory bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arch: Option<crate::gpu_cc::GpuArch>,
 }
 
 impl GpuDevice {
@@ -132,6 +140,7 @@ pub fn parse_gpu_device_info(
         pci_host: pci_host.to_string(),
         device_id: format!("{vendor_id}:{model_id}"),
         cc_mode: None,
+        arch: None,
     }))
 }
 
@@ -291,10 +300,15 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(device.cc_mode, None);
+        assert_eq!(device.arch, None);
         let json = serde_json::to_string(&device).unwrap();
         assert!(
             !json.contains("cc_mode"),
             "absent mode must not change the inventory bytes: {json}"
+        );
+        assert!(
+            !json.contains("arch"),
+            "absent arch must not change the inventory bytes: {json}"
         );
     }
 
@@ -307,6 +321,21 @@ mod tests {
         let json = serde_json::to_string(&device).unwrap();
         assert!(
             json.ends_with(r#""device_id":"10de:2b85","cc_mode":"on"}"#),
+            "{json}"
+        );
+    }
+
+    #[test]
+    fn a_probed_blackwell_card_carries_its_architecture() {
+        let mut device = parse_gpu_device_info(NVIDIA_VGA_LINE, &mut vfio_everywhere)
+            .unwrap()
+            .unwrap();
+        device.cc_mode = Some(crate::gpu_cc::CcMode::On);
+        device.arch = crate::gpu_cc::arch_from_device_id(&device.device_id);
+        assert_eq!(device.arch, Some(crate::gpu_cc::GpuArch::Blackwell));
+        let json = serde_json::to_string(&device).unwrap();
+        assert!(
+            json.ends_with(r#""cc_mode":"on","arch":"blackwell"}"#),
             "{json}"
         );
     }
