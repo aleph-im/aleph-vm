@@ -25,6 +25,7 @@ from aleph.vm.agent.vm.reclaimable import mark_reclaimable
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
 from aleph.vm.resources import InsufficientResourcesError
+from aleph.vm.storage import DownloadReservation
 
 NOW = datetime(2026, 8, 24, tzinfo=timezone.utc)
 OLDER = datetime(2026, 8, 23, tzinfo=timezone.utc)
@@ -643,7 +644,9 @@ def test_an_unknown_length_download_evicts_nothing(pools, monkeypatch):
     admit_download(registry, pools["runtime"] / "new.part", None, 100 * 1024**3)
 
     assert old.exists()
-    assert storage_module.reserved_downloads() == {pools["runtime"] / "new.part": 8192}
+    assert storage_module.reserved_downloads() == {
+        pools["runtime"] / "new.part": DownloadReservation(8192, measured=False)
+    }
 
 
 def test_an_unknown_length_download_is_refused_on_a_root_over_budget(pools, monkeypatch):
@@ -672,7 +675,10 @@ def test_two_unknown_length_downloads_are_both_charged_the_capped_figure(pools, 
     admit_download(registry, first, None, 4096)
     admit_download(registry, second, None, 100 * 1024**3)
 
-    assert storage_module.reserved_downloads() == {first: 4096, second: 8192}
+    assert storage_module.reserved_downloads() == {
+        first: DownloadReservation(4096, measured=False),
+        second: DownloadReservation(8192, measured=False),
+    }
     with pytest.raises(InsufficientResourcesError):
         admit_download(registry, pools["runtime"] / "c.part", None, 4096)
 
@@ -688,3 +694,77 @@ def test_a_measured_download_still_evicts_to_make_room(pools, monkeypatch):
     admit_download(registry, pools["code"] / "new.part", 8000)
 
     assert not old.exists()
+
+
+def test_a_measured_download_fits_beside_an_unknown_length_one(pools, monkeypatch):
+    """The whole budget used to go to the chunked response, so the next
+    measured download found the root at its cap: it evicted every unreferenced
+    entry trying to make room that a guess was holding, and was refused
+    anyway."""
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "16384")
+    monkeypatch.setattr(settings, "UNKNOWN_LENGTH_RESERVE", "4096")
+    registry = AgentVmRegistry()
+    cache_module.record_live_snapshot(set())
+    root = pools["code"]
+    old = _entry(root, "old", size=4096, age=1000)
+    chunked = root / "chunked.part"
+
+    admit_download(registry, chunked, None, 100 * 1024**3)
+    admit_download(registry, root / "measured.part", 4096)
+
+    assert old.exists()
+    assert storage_module.reserved_downloads()[chunked] == DownloadReservation(4096, measured=False)
+
+
+def test_a_ceiling_reservation_never_drives_the_pass_to_evict(pools, monkeypatch):
+    """A guess may make a later download wait, never make an entry go: until
+    the chunked body writes bytes, the room it holds is hypothetical and the
+    eviction target leaves it out."""
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "8192")
+    monkeypatch.setattr(settings, "UNKNOWN_LENGTH_RESERVE", "4096")
+    registry = AgentVmRegistry()
+    cache_module.record_live_snapshot(set())
+    old = _entry(pools["code"], "old", size=8192, age=1000)
+
+    admit_download(registry, pools["code"] / "chunked.part", None, 100 * 1024**3)
+
+    assert evict_caches(registry) == []
+    assert old.exists()
+
+
+def test_the_bytes_a_ceiling_download_writes_are_counted_as_they_land(pools, monkeypatch):
+    """The reconciliation of the guess: what the ``.part`` actually holds is a
+    measurement, so it counts against the budget like any other blocks."""
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "8192")
+    monkeypatch.setattr(settings, "UNKNOWN_LENGTH_RESERVE", "4096")
+    registry = AgentVmRegistry()
+    cache_module.record_live_snapshot(set())
+    old = _entry(pools["code"], "old", size=8192, age=1000)
+    chunked = pools["code"] / "chunked.part"
+
+    admit_download(registry, chunked, None, 100 * 1024**3)
+    chunked.write_bytes(b"x" * 4096)
+
+    assert evict_caches(registry) == [old]
+
+
+def test_both_downloads_together_stay_inside_the_budget(pools, monkeypatch):
+    """The guess is a placeholder, not a licence: what the two downloads leave
+    behind once they land is still under the cap."""
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "16384")
+    monkeypatch.setattr(settings, "UNKNOWN_LENGTH_RESERVE", "4096")
+    registry = AgentVmRegistry()
+    cache_module.record_live_snapshot(set())
+    root = pools["code"]
+    _entry(root, "old", size=4096, age=1000)
+    chunked = root / "chunked.part"
+    measured = root / "measured.part"
+
+    admit_download(registry, chunked, None, 100 * 1024**3)
+    admit_download(registry, measured, 4096)
+    for part in (chunked, measured):
+        part.write_bytes(b"x" * 4096)
+        storage_module.release_download(part)
+        part.rename(part.with_suffix(""))
+
+    assert cache_module._root_usage(root, cache_entries(root)) <= 16384
