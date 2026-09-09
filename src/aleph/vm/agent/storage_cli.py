@@ -527,6 +527,43 @@ def _cli_live_set(registry: AgentVmRegistry) -> LiveSet:
     )
 
 
+def _pool_usage(path: Path) -> tuple[int | None, int | None]:
+    """(total, free) bytes of the filesystem holding ``path``, or (None,
+    None) when it cannot be read: a mountpoint that went away, a directory
+    this user may not stat, a filesystem that is gone."""
+    try:
+        usage = shutil.disk_usage(str(path))
+    except OSError:
+        logger.warning("Could not read the usage of %s", path, exc_info=True)
+        return None, None
+    return usage.total, usage.free
+
+
+def _retention_budget(total: int | None) -> int | None:
+    """The retention budget in bytes, or None when it cannot be computed.
+
+    Under ``reap`` it is zero and nothing else, whatever the filesystem
+    says. Otherwise it is measured against the pool's size (typically a
+    percentage of it), so a size this process could not read leaves the
+    budget unknown rather than zero.
+    """
+    if settings.VOLUME_RETENTION == "reap":
+        return 0
+    if total is None:
+        return None
+    return parse_budget(settings.VOLUME_RETENTION_BUDGET, total)
+
+
+def _figure(size: int | None) -> str:
+    """A byte figure, or ``unknown`` for one this process could not measure.
+
+    Zero is a measurement, and a pool printed as 0 bytes free with a 0 byte
+    budget looks exactly like a full pool, which is the state an operator
+    runs this command to find. An unreadable pool has to say so.
+    """
+    return "unknown" if size is None else _human(size)
+
+
 def _status(registry: AgentVmRegistry, out: TextIO) -> int:
     live = live_hashes(registry)
     out.write("POOL\tLIVE\tRECLAIMABLE\tBUDGET\tFREE\n")
@@ -536,24 +573,22 @@ def _status(registry: AgentVmRegistry, out: TextIO) -> int:
             for directory in iter_namespace_dirs()
             if directory.parent == pool.path and directory.name in live
         )
-        try:
-            usage = shutil.disk_usage(str(pool.path))
-            total, free = usage.total, usage.free
-        except OSError:
-            total = free = 0
-        budget = 0 if settings.VOLUME_RETENTION == "reap" else parse_budget(settings.VOLUME_RETENTION_BUDGET, total)
+        total, free = _pool_usage(pool.path)
         out.write(
             f"{pool.path}\t{_human(live_bytes)}\t{_human(reclaimable_bytes(pool.path, repair=False))}\t"
-            f"{_human(budget)}\t{_human(free)}\n"
+            f"{_figure(_retention_budget(total))}\t{_figure(free)}\n"
         )
     out.write("CACHE\tUSED\tBUDGET\n")
     for root in cache_roots():
         used = sum(entry.size_bytes for entry in cache_entries(root))
+        # The cache budget is a share of the filesystem holding the root, so
+        # it is unknown for exactly the same reason a pool's is.
         try:
-            budget = cache_budget_bytes(root)
+            budget: int | None = cache_budget_bytes(root)
         except OSError:
-            budget = 0
-        out.write(f"{root}\t{_human(used)}\t{_human(budget)}\n")
+            logger.warning("Could not compute the cache budget of %s", root, exc_info=True)
+            budget = None
+        out.write(f"{root}\t{_human(used)}\t{_figure(budget)}\n")
     return 0
 
 
@@ -584,7 +619,15 @@ def _list(registry: AgentVmRegistry, out: TextIO, *, reclaimable_only: bool) -> 
 
 
 def _is_marked_reclaimable(vm_hash: str) -> bool:
-    return any(directory.name == vm_hash for directory, _marker in iter_reclaimable())
+    """Whether any pool holds a marker for this hash.
+
+    repair=False, like every marker read this process makes: the walk covers
+    every directory on the node, and it runs before the refusals, so with
+    the repair on, a reclaim that is about to be refused would first unlink
+    the corrupt markers of unrelated VMs. Both callers (the refusal, and the
+    second read immediately before the purge) go through here.
+    """
+    return any(directory.name == vm_hash for directory, _marker in iter_reclaimable(repair=False))
 
 
 @dataclass(frozen=True)

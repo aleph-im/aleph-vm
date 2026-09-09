@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import errno
 import io
 import json
 import logging
 import os
 import re
+import shutil
 import socket
 import time
 from datetime import datetime, timedelta, timezone
@@ -1205,3 +1207,62 @@ def test_the_env_file_path_prefers_the_flag_then_the_variable_then_the_default(m
     monkeypatch.setenv(cli.ENV_FILE_VARIABLE, str(tmp_path / "from-variable.env"))
     assert cli._env_file_path(None) == (tmp_path / "from-variable.env", True)
     assert cli._env_file_path(str(tmp_path / "explicit.env")) == (tmp_path / "explicit.env", True)
+
+
+def test_status_says_unknown_for_a_pool_it_cannot_measure(pools, registry, monkeypatch):  # noqa: F811
+    """A pool whose usage cannot be read (a mountpoint that went away, a
+    directory this user may not stat) printed FREE 0.0 B and BUDGET 0.0 B,
+    which is exactly what a full pool prints: the one state an operator runs
+    this command to find."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    monkeypatch.setattr(settings, "VOLUME_RETENTION_BUDGET", "10%")
+    real_disk_usage = shutil.disk_usage
+
+    def refuse(path, *args, **kwargs):
+        if Path(path) == pools["pool0"]:
+            raise OSError(errno.EACCES, "Permission denied")
+        return real_disk_usage(path, *args, **kwargs)
+
+    monkeypatch.setattr(cli.shutil, "disk_usage", refuse)
+
+    code, out, _err = _run(["status"], registry)
+
+    assert code == 0
+    rows = {line.split("\t")[0]: line.split("\t") for line in out.splitlines()[1:]}
+    assert rows[str(pools["pool0"])][3:] == ["unknown", "unknown"]
+    assert rows[str(pools["pool1"])][3:] != ["unknown", "unknown"], "a readable pool still shows figures"
+
+
+def test_status_says_unknown_for_a_cache_budget_it_cannot_compute(pools, registry, monkeypatch):  # noqa: F811
+    """Same arithmetic on the cache table: the budget is a share of a
+    filesystem size, so a size that cannot be read is not a budget of zero."""
+
+    def refuse(root):
+        raise OSError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(cli, "cache_budget_bytes", refuse)
+
+    code, out, _err = _run(["status"], registry)
+
+    assert code == 0
+    cache_rows = [line.split("\t") for line in out.splitlines() if line.startswith(str(pools["runtime"]))]
+    assert cache_rows and all(row[2] == "unknown" for row in cache_rows)
+
+
+def test_a_refused_reclaim_removes_no_marker(pools, registry, monkeypatch):  # noqa: F811
+    """The marker check walks every pool, and it runs before the refusal. A
+    reclaim refused because the agent is running must not have unlinked a
+    corrupt marker on the way to refusing: that is the reconciler's repair,
+    and it is a write the operator did not ask for."""
+    monkeypatch.setattr(cli, "_probe_agent", _agent_up())
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    mark_reclaimable(VM_HASH, "gone", now=NOW)
+    # On the same pool and sorting first, so the walk reaches it before it
+    # finds the hash it was asked about and stops.
+    corrupt = _corrupt_marker(pools["pool0"], OTHER_HASH)
+
+    code, _out, err = _run(["reclaim", VM_HASH], registry)
+
+    assert code == 3
+    assert "the agent is running" in err
+    assert corrupt.exists()

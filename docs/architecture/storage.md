@@ -583,7 +583,15 @@ subparser on `agent/cli.py`'s own parser, which points at `storage --help`
 in its `--help` epilog) needs no running *agent process*:
 
 - `storage status`: per pool, live / reclaimable / cache / free bytes
-  against the budgets. Read-only, registry live set only.
+  against the budgets. Read-only, registry live set only. A figure this
+  process could not measure prints `unknown`, never `0 B`: the free space and
+  the budget of a pool whose filesystem cannot be stat'ed (a mountpoint that
+  went away, a directory this user may not read) would otherwise be
+  indistinguishable from a pool that is genuinely full, which is the state an
+  operator runs this command to find. The cache budget is a share of the
+  filesystem holding the cache root, so it says `unknown` for the same
+  reason. A budget under `VOLUME_RETENTION=reap` is a real zero and prints
+  as one.
 - `storage list [--reclaimable]`: hash, pool, size, reason, age. The reason
   is the marker's for a reclaimable directory; an unmarked directory reads
   `live` when the registry knows its hash and `unmarked` otherwise (an
