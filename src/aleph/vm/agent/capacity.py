@@ -26,6 +26,7 @@ from aleph_message.models import ExecutableContent, ItemHash, VerifiableProgramC
 from aleph_message.models.execution.instance import InstanceContent
 
 from aleph.vm import storage_pools
+from aleph.vm.agent.allocation.refusal import AllocationFailureCode, Refusal
 from aleph.vm.agent.vm.purge import ROOTFS_STEM, _checked_namespace
 from aleph.vm.agent.vm.reclaimable import (
     MARKER_NAME,
@@ -83,14 +84,20 @@ VOLUME_SUFFIXES = (".ext4", ".btrfs", ".qcow2")
 class AdmissionVerdict:
     """One candidate's admission answer.
 
-    ``code`` and ``detail`` are safe to hand back to the scheduler; the full
-    error text stays in the logs.
+    ``refusal`` is None for an accepted candidate, and otherwise the same
+    closed-vocabulary refusal every other allocation route answers with; it is
+    safe to hand back to the scheduler, while the full error text stays in the
+    logs. Admission is read off it rather than carried beside it, so there is
+    no way to build a verdict that refuses without saying why, or one that
+    accepts and carries a refusal anyway.
     """
 
     vm_hash: ItemHash
-    accepted: bool
-    code: str = ""
-    detail: str = ""
+    refusal: Refusal | None = None
+
+    @property
+    def accepted(self) -> bool:
+        return self.refusal is None
 
 
 def is_instance_bucket(content: ExecutableContent) -> bool:
@@ -681,7 +688,7 @@ class CapacityManager:
         verdicts: list[AdmissionVerdict] = []
         committed_disk = 0
         for vm_hash, requirements in candidates:
-            refusal: tuple[str, str] | None = None
+            refusal: Refusal | None = None
             disk = self._candidate_disk(vm_hash, requirements)
             try:
                 self._check_against(
@@ -698,7 +705,9 @@ class CapacityManager:
                 )
             except InsufficientResourcesError as error:
                 logger.info("Plan candidate %s refused: %s", vm_hash, error)
-                refusal = ("insufficient_capacity", "not enough capacity on this CRN")
+                # The figures the error quotes are the host's, so only the code
+                # and its published sentence leave this node.
+                refusal = Refusal.for_code(AllocationFailureCode.INSUFFICIENT_CAPACITY)
             if refusal is None:
                 # Last, and only once the candidate has cleared everything
                 # else: taking cards is what makes the pool cumulative, so a
@@ -706,9 +715,9 @@ class CapacityManager:
                 gpu_refusal = self._take_gpus(requirements.gpu_device_ids, gpu_pool, owner=requirements.owner)
                 if gpu_refusal is not None:
                     logger.info("Plan candidate %s refused: %s", vm_hash, gpu_refusal)
-                    refusal = ("gpu_unavailable", "no available GPU matches this request")
+                    refusal = Refusal.for_code(AllocationFailureCode.GPU_UNAVAILABLE)
             if refusal is not None:
-                verdicts.append(AdmissionVerdict(vm_hash, False, *refusal))
+                verdicts.append(AdmissionVerdict(vm_hash, refusal))
                 # Discounting the record was a bet that the request would
                 # replace it. It did not: whatever is recorded here is still
                 # here, so it has to weigh on the rest of the batch again.
@@ -726,7 +735,7 @@ class CapacityManager:
                 committed_program += requirements.memory_mib
             committed_vcpus += requirements.vcpus
             committed_disk += disk.disk_mib
-            verdicts.append(AdmissionVerdict(vm_hash, True))
+            verdicts.append(AdmissionVerdict(vm_hash))
         return verdicts
 
     @staticmethod

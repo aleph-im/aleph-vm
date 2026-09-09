@@ -16,15 +16,15 @@ from aleph_message.models import ItemHash
 from test_supervisor_translate import _make_qemu_instance_message
 
 from aleph.vm.agent.allocation import reconciler as reconciler_module
-from aleph.vm.agent.allocation.failures import (
-    AllocationFailureCode,
-    public_failure_message,
-)
 from aleph.vm.agent.allocation.plan import (
     AllocationPlan,
     AllocationState,
     FailureRecord,
     PlannedVm,
+)
+from aleph.vm.agent.allocation.refusal import (
+    AllocationFailureCode,
+    public_failure_message,
 )
 from aleph.vm.agent.supervisor import setup_webapp
 from aleph.vm.resources import InsufficientResourcesError

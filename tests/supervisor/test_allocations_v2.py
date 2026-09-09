@@ -16,6 +16,7 @@ from aleph_message.models import ItemHash
 from test_supervisor_translate import _make_qemu_instance_message
 
 from aleph.vm.agent.allocation import reconciler as reconciler_module
+from aleph.vm.agent.allocation.refusal import AllocationFailureCode, Refusal
 from aleph.vm.agent.capacity import AdmissionVerdict, CapacityManager
 from aleph.vm.agent.supervisor import setup_webapp
 from aleph.vm.agent.views.allocation_auth import (
@@ -172,7 +173,9 @@ async def test_an_entry_the_host_refuses_is_answered_and_not_submitted(
     monkeypatch.setattr(
         app["capacity"],
         "simulate",
-        lambda candidates, **_: [AdmissionVerdict(h, False, "insufficient_capacity", "no room") for h, _ in candidates],
+        lambda candidates, **_: [
+            AdmissionVerdict(h, Refusal.for_code(AllocationFailureCode.INSUFFICIENT_CAPACITY)) for h, _ in candidates
+        ],
     )
     client = await aiohttp_client(app)
     body, headers = scheduler_auth({"vms": [_entry(message)]}, path=PLAN)

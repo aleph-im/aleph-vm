@@ -28,6 +28,7 @@ from aleph.vm.agent.allocation.plan import (
     PlanVerdict,
     by_hash,
 )
+from aleph.vm.agent.allocation.refusal import AllocationFailureCode, Refusal, Refusals
 from aleph.vm.agent.allocation.teardown import is_removable_by_allocation
 from aleph.vm.agent.allocation.verify import (
     VerificationOutcome,
@@ -161,7 +162,7 @@ def judge_entries(entries: list) -> list[JudgedEntry]:
     return [judge_entry(entry) for entry in entries]
 
 
-def assemble_plan(judged: list[JudgedEntry], *, now: datetime) -> tuple[AllocationPlan, dict[str, dict]]:
+def assemble_plan(judged: list[JudgedEntry], *, now: datetime) -> tuple[AllocationPlan, Refusals]:
     """Fold the per-entry judgements into one plan, in the order they arrived.
 
     Rejected entries are returned separately: they are answered in the response
@@ -174,12 +175,12 @@ def assemble_plan(judged: list[JudgedEntry], *, now: datetime) -> tuple[Allocati
     out of that set, since it names no VM here and so has nothing to protect.
     """
     entries: dict[ItemHash, PlannedVm] = {}
-    rejected: dict[str, dict] = {}
+    rejected: Refusals = {}
     refused: set[ItemHash] = set()
     for judgement in judged:
         vm_hash = judgement.vm_hash
         if vm_hash is None:
-            rejected[judgement.raw_hash] = {"code": "invalid_message", "message": judgement.reason}
+            rejected[judgement.raw_hash] = Refusal(AllocationFailureCode.INVALID_MESSAGE, judgement.reason)
             continue
         if vm_hash in rejected:
             # The same hash pushed twice, refused once. A later entry must not
@@ -187,7 +188,7 @@ def assemble_plan(judged: list[JudgedEntry], *, now: datetime) -> tuple[Allocati
             logger.warning("Ignoring a repeat entry for %s: already refused by this push", vm_hash)
             continue
         if judgement.outcome is VerificationOutcome.REJECTED:
-            rejected[vm_hash] = {"code": "invalid_message", "message": judgement.reason}
+            rejected[vm_hash] = Refusal(AllocationFailureCode.INVALID_MESSAGE, judgement.reason)
             refused.add(vm_hash)
             # The other order of the same duplicate: an earlier entry may
             # already have put this hash in the plan.
@@ -199,7 +200,7 @@ def assemble_plan(judged: list[JudgedEntry], *, now: datetime) -> tuple[Allocati
     return plan, rejected
 
 
-async def build_plan(body: dict, *, now: datetime) -> tuple[AllocationPlan, dict[str, dict]]:
+async def build_plan(body: dict, *, now: datetime) -> tuple[AllocationPlan, Refusals]:
     """Verify every entry and assemble the plan.
 
     The per-entry work, a pydantic parse and a signature recovery each, runs
@@ -343,26 +344,20 @@ def compute_verdict(
             # for a different CRN": the legacy path returns 503 here so the
             # scheduler retries rather than treating it as settled.
             logger.info("Cannot place %s: this node has not discovered its own hash", vm_hash)
-            verdict.rejected[vm_hash] = {
-                "code": "node_hash_unknown",
-                "message": "this node has not discovered its own hash yet",
-            }
+            verdict.rejected[vm_hash] = Refusal.for_code(AllocationFailureCode.NODE_HASH_UNKNOWN)
             continue
         if required_node and required_node != str(node_hash):
             logger.info("Refusing %s: allocated to another node", vm_hash)
-            verdict.rejected[vm_hash] = {
-                "code": "node_mismatch",
-                "message": "this instance is allocated to a different node",
-            }
+            verdict.rejected[vm_hash] = Refusal.for_code(AllocationFailureCode.NODE_MISMATCH)
             continue
         candidates.append((vm_hash, requirements_from_message(content)))
 
     admissions = capacity.simulate(candidates, releasing=frozenset(verdict.removing), available_gpus=available_gpus)
     for admission in admissions:
-        if admission.accepted:
+        if admission.refusal is None:
             verdict.accepted.append(admission.vm_hash)
         else:
-            verdict.rejected[admission.vm_hash] = {"code": admission.code, "message": admission.detail}
+            verdict.rejected[admission.vm_hash] = admission.refusal
 
     return verdict
 

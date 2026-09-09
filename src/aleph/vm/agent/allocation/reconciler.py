@@ -32,10 +32,7 @@ from datetime import datetime, timedelta, timezone
 from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash
 
-from aleph.vm.agent.allocation.failures import (
-    AllocationFailureCode,
-    classify_start_failure,
-)
+from aleph.vm.agent.allocation.failures import classify_start_failure
 from aleph.vm.agent.allocation.plan import (
     LIVE_STATUSES,
     STOPPED_STATUSES,
@@ -44,6 +41,7 @@ from aleph.vm.agent.allocation.plan import (
     FailureRecord,
     by_hash,
 )
+from aleph.vm.agent.allocation.refusal import AllocationFailureCode
 from aleph.vm.agent.allocation.teardown import is_removable_by_allocation, teardown_vm
 from aleph.vm.agent.capacity import CapacityManager
 from aleph.vm.agent.expiry import ExpiryManager
