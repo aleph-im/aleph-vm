@@ -9,11 +9,12 @@ import pytest
 from aleph_message.models import ItemHash
 from test_supervisor_translate import _make_qemu_instance_message
 
-from aleph.vm.agent.allocation.plan import AllocationPlan, PlannedVm
-from aleph.vm.agent.allocation.verdict import build_plan, compute_verdict
+from aleph.vm.agent.allocation.plan import AllocationPlan, PlannedVm, PlanVerdict
+from aleph.vm.agent.allocation.verdict import build_plan, compute_verdict, narrow_plan
 from aleph.vm.agent.capacity import AdmissionVerdict, CapacityManager
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
+from aleph.vm.resources import GpuDevice, GpuDeviceClass
 from aleph.vm.supervisor_interface.types import ConfidentialMode, HostInfo, VmStatus
 
 NOW = datetime(2026, 8, 25, tzinfo=timezone.utc)
@@ -427,3 +428,75 @@ def test_a_recreate_still_waiting_on_its_message_frees_nothing(mocker):
 
     assert verdict.pending == [HASH_C]
     assert verdict.rejected[HASH_A]["code"] == "insufficient_capacity"
+
+
+DEVICE_ID = "10de:2504"
+
+
+def _gpu_message(device_id=DEVICE_ID):
+    from aleph_message.models.execution.environment import (
+        GpuProperties,
+        HostRequirements,
+    )
+
+    card = GpuProperties(vendor="NVIDIA", device_name="GH100", device_class="0300", device_id=device_id)
+    return _make_qemu_instance_message().model_copy(update={"requirements": HostRequirements(gpu=[card])})
+
+
+def _card(device_id=DEVICE_ID):
+    return GpuDevice(
+        vendor="NVIDIA",
+        device_name="GH100",
+        device_class=GpuDeviceClass.VGA_COMPATIBLE_CONTROLLER,
+        pci_host="0000:01:00.0",
+        device_id=device_id,
+    )
+
+
+def test_a_gpu_candidate_is_refused_when_no_inventory_reached_the_verdict(mocker):
+    """simulate's rule, seen from here: with nothing to judge a card against,
+    a candidate asking for one is refused rather than admitted on memory."""
+    verdict = compute_verdict(
+        _plan(HASH_C, content=_gpu_message()), infos=[], registry=_registry({}), capacity=_real_capacity(mocker)
+    )
+
+    assert verdict.rejected[HASH_C]["code"] == "gpu_unavailable"
+
+
+def test_a_gpu_candidate_is_judged_against_the_inventory_the_caller_read(mocker):
+    """Reading the host's cards is async and this is not, so the handler reads
+    them and hands them in; from here on a GPU VM can be placed."""
+    verdict = compute_verdict(
+        _plan(HASH_C, content=_gpu_message()),
+        infos=[],
+        registry=_registry({}),
+        capacity=_real_capacity(mocker),
+        available_gpus=[_card()],
+    )
+
+    assert verdict.accepted == [HASH_C]
+    assert verdict.rejected == {}
+
+
+def test_narrowing_drops_what_the_answer_refused_and_nothing_else():
+    """What reaches the reconciler is the push less its refusals. A refused
+    entry left in would be retried forever at backoff rate, and started the
+    moment room appeared, after the scheduler was told no and placed it
+    elsewhere. Pending entries were not judged and stay; so does the identity,
+    which is the push's, not the host's room at the time."""
+    plan = AllocationPlan(
+        plan_id="sha256:push",
+        received_at=NOW,
+        entries={
+            HASH_A: PlannedVm(vm_hash=HASH_A, verified=_verified()),
+            HASH_B: PlannedVm(vm_hash=HASH_B, verified=_verified()),
+            HASH_C: PlannedVm(vm_hash=HASH_C, verified=None),
+        },
+    )
+    verdict = PlanVerdict(accepted=[HASH_A], pending=[HASH_C], rejected={HASH_B: {"code": "insufficient_capacity"}})
+
+    narrowed = narrow_plan(plan, verdict)
+
+    assert set(narrowed.entries) == {HASH_A, HASH_C}
+    assert narrowed.entries[HASH_A] is plan.entries[HASH_A]
+    assert (narrowed.plan_id, narrowed.received_at) == (plan.plan_id, plan.received_at)

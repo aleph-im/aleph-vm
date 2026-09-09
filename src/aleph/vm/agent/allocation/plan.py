@@ -46,6 +46,11 @@ class AllocationState(str, Enum):
     Deliberately NOT a mirror of VmStatus: once create_vm returns, VmStatus is
     the answer and this state stops existing. Two disjoint fields cannot drift,
     whereas a merged enum would need maintaining in lockstep forever.
+
+    The reconciler sets DOWNLOADING and FAILED, the only two it can observe.
+    The rest are the executions list's to report from the plan: PLANNED for
+    an entry the loop has not reached, RESOLVING for one still waiting on its
+    message, SUBMITTING for one handed to the supervisor.
     """
 
     PLANNED = "planned"

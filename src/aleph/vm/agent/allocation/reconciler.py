@@ -230,6 +230,12 @@ class AllocationReconciler:
         self._states.pop(vm_hash, None)
 
     def _record_failure(self, vm_hash: ItemHash, error: Exception) -> None:
+        # There is no terminal failure, on purpose. The plan is the authority
+        # on what should run here, so a VM it still lists is still owed an
+        # attempt, at the capped interval; giving up would leave a listed VM
+        # not running with nothing outside this node able to tell. The
+        # scheduler dropping the hash is what ends the retries, and submit()
+        # clears the record then.
         now = self._now()
         previous = self._failures.get(vm_hash)
         attempts = (previous.attempts if previous else 0) + 1

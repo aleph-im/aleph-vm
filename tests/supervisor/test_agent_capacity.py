@@ -248,6 +248,7 @@ def test_requirements_from_message_extracts_resources():
 
     assert (req.vcpus, req.memory_mib, req.is_instance) == (2, 2048, True)
     assert req.gpu_device_ids == [_DEVICE_ID]
+    assert req.owner == message.address
     # rootfs size is summed into disk_mib (the message fixture sets size_mib=10000)
     assert req.disk_mib == 10000
 
@@ -636,9 +637,17 @@ def test_simulate_releases_vcpus_not_only_memory(mocker):
 # ── simulate: GPU admission ────────────────────────────────────────────────
 
 
-def _gpu_requirements(*, device_ids: list[str], memory_mib: int = 1024) -> ResourceRequirements:
+def _gpu_requirements(
+    *, device_ids: list[str], memory_mib: int = 1024, owner: str | None = None
+) -> ResourceRequirements:
     return ResourceRequirements(
-        vcpus=1, memory_mib=memory_mib, disk_mib=0, max_volume_mib=0, is_instance=True, gpu_device_ids=device_ids
+        vcpus=1,
+        memory_mib=memory_mib,
+        disk_mib=0,
+        max_volume_mib=0,
+        is_instance=True,
+        gpu_device_ids=device_ids,
+        owner=owner,
     )
 
 
@@ -702,6 +711,23 @@ def test_simulate_treats_a_held_card_as_taken(mocker):
     verdicts = manager.simulate([(_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID]))], available_gpus=[gpu])
 
     assert verdicts[0].accepted is False
+
+
+def test_simulate_lets_a_candidate_use_the_hold_its_own_user_took(mocker):
+    """The reserve endpoint exists so a user can hold a card before asking
+    the scheduler for the VM. resolve_gpus consumes that user's own hold at
+    create; an advisory answer that counted it as taken would refuse exactly
+    the allocation the hold was placed for."""
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
+    gpu = _gpu_device()
+    manager = _manager()
+    manager.holds[gpu.pci_host] = GpuHold(user="0xUSER", expiration=datetime.now(tz=timezone.utc) + timedelta(hours=1))
+    mine = _gpu_requirements(device_ids=[_DEVICE_ID], owner="0xUSER")
+    theirs = _gpu_requirements(device_ids=[_DEVICE_ID], owner="0xOTHER")
+
+    assert manager.simulate([(_HASH_A, mine)], available_gpus=[gpu])[0].accepted is True
+    assert manager.simulate([(_HASH_A, theirs)], available_gpus=[gpu])[0].accepted is False
+    assert manager.holds[gpu.pci_host].user == "0xUSER"
 
 
 def test_simulate_does_not_evict_expired_holds(mocker):
@@ -1306,3 +1332,70 @@ def test_existing_volume_files_spans_pools_and_skips_what_is_not_a_volume(mocker
     assert set(found) == {"rootfs.qcow2", "data.ext4"}
     assert found["rootfs.qcow2"] == first / "rootfs.qcow2"
     assert found["data.ext4"] == second / "data.ext4"
+
+
+# ── headroom: what the capacity-check endpoint advertises ──────────────────
+
+
+def test_headroom_is_the_caps_less_what_is_recorded(mocker):
+    """64 GiB, 16 cores, reservations of 2048 and 8192: a 55296 MiB instance
+    bucket, 8192 MiB of program bucket, 64 vCPUs at the default factor.
+    Recording an instance takes its memory and vCPUs out of the figures."""
+    mocker.patch.object(settings, "HOST_MEMORY_RESERVED_MIB", 2048)
+    mocker.patch.object(settings, "PROGRAM_MEMORY_RESERVED_MIB", 8192)
+    mocker.patch.object(settings, "VCPU_OVERCOMMIT_FACTOR", 4.0)
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16, disk_bytes=100 * 1024 * 1024 * 1024)
+    manager = _manager()
+
+    before = manager.headroom()
+    content = _make_qemu_instance_message(memory=16384, vcpus=4)
+    manager.registry.record(_HASH_A, message=content, original=content, persistent=True)
+    after = manager.headroom()
+
+    assert before == {
+        "instance_memory_mib": 55296,
+        "program_memory_mib": 8192,
+        "vcpus": 64,
+        "disk_mib": 100 * 1024,
+        "gpus": None,
+    }
+    assert after["instance_memory_mib"] == 55296 - 16384
+    assert after["vcpus"] == 64 - 4
+    assert after["program_memory_mib"] == 8192
+
+
+def test_headroom_lists_the_cards_a_plan_may_count_on(mocker):
+    """Given the inventory, the cards not under a live hold, by device id.
+    Without it, None rather than an empty list: unknown is not zero."""
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
+    free = _gpu_device("0000:01:00.0")
+    held = _gpu_device("0000:02:00.0")
+    manager = _manager()
+    live = datetime.now(tz=timezone.utc) + timedelta(hours=1)
+    manager.holds[held.pci_host] = GpuHold(user="someone", expiration=live)
+
+    assert manager.headroom(available_gpus=[free, held])["gpus"] == [free.device_id]
+    assert manager.headroom()["gpus"] is None
+
+
+def test_headroom_never_advertises_below_zero(mocker):
+    """A registry holding more than the caps (a phantom record, a shrunk
+    host) reads as nothing left, not as a negative figure."""
+    _patch_host(mocker, memory_bytes=8 * 1024 * 1024 * 1024, cores=1)
+    registry = AgentVmRegistry()
+    content = _make_qemu_instance_message(memory=65536, vcpus=64)
+    registry.record(_HASH_A, message=content, original=content, persistent=True)
+
+    headroom = _manager(registry=registry).headroom()
+
+    assert headroom["instance_memory_mib"] == 0
+    assert headroom["vcpus"] == 0
+
+
+@pytest.mark.asyncio
+async def test_available_gpus_reads_the_supervisors_unattached_cards():
+    """The inventory simulate and headroom are handed comes from here: the
+    handler reads it, since the read is async and those two are not."""
+    gpu = _gpu_device()
+
+    assert await _manager([gpu]).available_gpus() == [gpu]

@@ -6,37 +6,15 @@ that includes item_hash. Neither alone is enough.
 """
 
 import json
-from hashlib import sha256
 from pathlib import Path
 
 import pytest
+from conftest import instance_content_dict, sign_message
 from eth_account import Account
-from eth_account.messages import encode_defunct
 
 from aleph.vm.agent.allocation.verify import VerificationOutcome, verify_entry
 
 SIGNED_VPROGRAM = Path(__file__).parent / "fixtures" / "signed_vprogram_message.json"
-
-
-def sign_message(content_dict: dict, account, *, chain="ETH", message_type="INSTANCE") -> dict:
-    """A full message envelope signed the way the network does: item_hash is
-    sha256(item_content), and the signature covers chain/sender/type/hash."""
-    item_content = json.dumps(content_dict)
-    item_hash = sha256(item_content.encode()).hexdigest()
-    buffer = f"{chain}\n{account.address}\n{message_type}\n{item_hash}".encode()
-    signature = account.sign_message(encode_defunct(buffer)).signature.hex()
-    return {
-        "chain": chain,
-        "sender": account.address,
-        "type": message_type,
-        "item_hash": item_hash,
-        "item_type": "inline",
-        "item_content": item_content,
-        "content": content_dict,
-        "signature": signature if signature.startswith("0x") else "0x" + signature,
-        "time": 1.0,
-        "channel": "TEST",
-    }
 
 
 @pytest.fixture
@@ -52,19 +30,7 @@ def signed_vprogram_message():
 
 @pytest.fixture
 def instance_content(account):
-    return {
-        "address": account.address,
-        "time": 1.0,
-        "allow_amend": False,
-        "environment": {"internet": True, "aleph_api": False, "hypervisor": "qemu"},
-        "resources": {"vcpus": 2, "memory": 2048, "seconds": 300},
-        "volumes": [],
-        "rootfs": {
-            "parent": {"ref": "d" * 64, "use_latest": False},
-            "persistence": "host",
-            "size_mib": 10000,
-        },
-    }
+    return instance_content_dict(account.address)
 
 
 def test_a_correctly_signed_message_is_verified(account, instance_content):
