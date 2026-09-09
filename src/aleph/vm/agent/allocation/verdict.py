@@ -10,10 +10,15 @@ from datetime import datetime
 from hashlib import sha256
 from typing import Protocol
 
-from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ExecutableContent, ItemHash
 
-from aleph.vm.agent.allocation.plan import AllocationPlan, PlannedVm, PlanVerdict
+from aleph.vm.agent.allocation.plan import (
+    LIVE_STATUSES,
+    AllocationPlan,
+    PlannedVm,
+    PlanVerdict,
+    by_hash,
+)
 from aleph.vm.agent.allocation.teardown import is_removable_by_allocation
 from aleph.vm.agent.allocation.verify import VerificationOutcome, verify_entry
 from aleph.vm.agent.capacity import (
@@ -42,10 +47,6 @@ class _Capacity(Protocol):
         *,
         releasing: frozenset[ItemHash] = ...,
     ) -> list[AdmissionVerdict]: ...
-
-
-# A VM the supervisor is already working on does not need re-creating.
-LIVE_STATUSES = (VmStatus.RUNNING, VmStatus.BOOTING, VmStatus.DEFINED)
 
 
 def compute_plan_id(planned: list[str], rejected: list[str]) -> str:
@@ -141,24 +142,6 @@ def _required_node_hash(content: ExecutableContent) -> str | None:
     return str(required) if required else None
 
 
-def _by_hash(infos: list[VmInfo]) -> dict[ItemHash, VmInfo]:
-    """The supervisor's VMs, keyed by item hash.
-
-    An id that is not one is dropped rather than raised on, the way
-    supervisor_hashes and check_payment drop theirs: it cannot name a VM this
-    plan lists, and letting it through would take down a whole push over a VM
-    the push says nothing about. build_plan holds the entries it reads to the
-    same rule.
-    """
-    by_hash: dict[ItemHash, VmInfo] = {}
-    for info in infos:
-        try:
-            by_hash[ItemHash(str(info.vm_id))] = info
-        except (UnknownHashError, ValueError):
-            logger.warning("The supervisor lists a VM whose id is not an item hash: %r", info.vm_id)
-    return by_hash
-
-
 def compute_verdict(
     plan: AllocationPlan,
     *,
@@ -177,10 +160,10 @@ def compute_verdict(
     it is, no plan can place a GPU VM.
     """
     verdict = PlanVerdict()
-    by_hash = _by_hash(infos)
+    known = by_hash(infos)
     unchanged: set[ItemHash] = set()
 
-    for vm_hash, info in by_hash.items():
+    for vm_hash, info in known.items():
         if vm_hash in plan.entries:
             if info.status in LIVE_STATUSES or info.awaiting_confidential_init:
                 unchanged.add(vm_hash)
