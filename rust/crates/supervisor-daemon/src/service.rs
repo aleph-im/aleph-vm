@@ -678,16 +678,21 @@ pub(crate) fn awaiting_confidential_init(entry: &VmEntry, running: bool) -> bool
 
 /// What an observed unit state says about `entry`'s guest.
 ///
-/// Two kinds of VM have a down unit by design, and reading death into it
-/// would condemn a healthy VM: an ephemeral program runs under no controller
-/// unit at all, and a SEV / SEV-ES VM's controller is deliberately held down
-/// until its owner uploads the session certificates. Both report `Unknown`,
-/// which leaves the status exactly where it was before this arm existed. The
-/// same blindness means a SEV / SEV-ES guest that dies after its session was
-/// uploaded is still not reported FAILED; SEV-SNP, which has no session and
-/// boots at create, is judged like any other VM.
+/// Three kinds of VM have a down unit for a reason of their own, and reading
+/// death into it would condemn a healthy VM. An ephemeral program runs under
+/// no controller unit at all. A SEV / SEV-ES VM's controller is deliberately
+/// held down until its owner uploads the session certificates. And a VM in
+/// the middle of a reboot has a restart job in flight, which takes the unit
+/// down and back up with nothing stamped in between. All three report
+/// `Unknown`, which leaves the status exactly where it was before the dead
+/// unit arm existed.
+///
+/// The session blindness has a cost: a SEV / SEV-ES guest that dies after
+/// its session was uploaded is still not reported FAILED, because nothing
+/// distinguishes that from a VM that never got its session. SEV-SNP, which
+/// has no session and boots at create, is judged like any other VM.
 pub(crate) fn guest_liveness(entry: &VmEntry, unit: UnitLiveness) -> UnitLiveness {
-    if entry.is_program || awaiting_confidential_init(entry, unit.is_active()) {
+    if entry.is_program || entry.restarting || awaiting_confidential_init(entry, unit.is_active()) {
         UnitLiveness::Unknown
     } else {
         unit
@@ -1609,6 +1614,7 @@ mod tests {
             settings_slice: config.settings,
             times,
             adopted_running: running,
+            restarting: false,
             ipv4: running.then(|| IpPair {
                 address: "172.16.3.2".to_string(),
                 network_cidr: "172.16.3.0/24".to_string(),
@@ -2327,7 +2333,7 @@ mod tests {
             &empty_state(),
             &entry,
             false,
-            UnitLiveness::Activating,
+            UnitLiveness::Transitional,
             now_ns(),
         );
         assert_eq!(info.status, pb::VmStatus::Defined as i32);
@@ -2356,7 +2362,7 @@ mod tests {
             &empty_state(),
             &entry,
             false,
-            UnitLiveness::Activating,
+            UnitLiveness::Transitional,
             now_ns(),
         );
         assert_eq!(info.status, pb::VmStatus::Booting as i32);
