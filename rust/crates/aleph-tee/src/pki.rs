@@ -4,9 +4,14 @@
 //! both walk certificate validity windows, so the two implementations live
 //! here once instead of drifting apart in each backend.
 
+use std::cmp::Ordering;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use anyhow::{Context, Result, bail};
+use openssl::asn1::{Asn1Time, Asn1TimeRef};
 use openssl::bn::BigNum;
 use openssl::ecdsa::EcdsaSig;
+use openssl::x509::X509;
 
 /// Assemble an ECDSA signature from its raw big-endian `r` and `s`
 /// components.
@@ -35,6 +40,44 @@ pub(crate) fn ecdsa_from_raw(raw: &[u8]) -> Result<EcdsaSig> {
     }
     let (r, s) = raw.split_at(raw.len() / 2);
     ecdsa_from_components(r, s)
+}
+
+/// Convert an injected clock into an ASN.1 time, at second granularity.
+///
+/// Verification time is a parameter everywhere in this crate rather than a
+/// call to the system clock: collateral, CRLs and certificates all carry
+/// validity windows, and a verifier that reads the clock itself cannot be
+/// tested against archived evidence, which has expired by definition.
+pub(crate) fn asn1_now(now: SystemTime) -> Result<Asn1Time> {
+    let secs = now
+        .duration_since(UNIX_EPOCH)
+        .context("verification time predates the unix epoch")?
+        .as_secs();
+    let secs: i64 = secs
+        .try_into()
+        .context("verification time does not fit in an i64")?;
+    Asn1Time::from_unix(secs).context("failed to convert verification time to ASN.1")
+}
+
+/// Reject a validity window that does not contain `now`.
+pub(crate) fn check_validity_window(
+    what: &str,
+    not_before: &Asn1TimeRef,
+    not_after: &Asn1TimeRef,
+    now: &Asn1TimeRef,
+) -> Result<()> {
+    if not_before.compare(now)? == Ordering::Greater {
+        bail!("{what} is not yet valid (notBefore {not_before})");
+    }
+    if not_after.compare(now)? == Ordering::Less {
+        bail!("{what} expired (notAfter {not_after})");
+    }
+    Ok(())
+}
+
+/// Reject a certificate whose validity window does not contain `now`.
+pub(crate) fn check_cert_window(what: &str, cert: &X509, now: &Asn1TimeRef) -> Result<()> {
+    check_validity_window(what, cert.not_before(), cert.not_after(), now)
 }
 
 #[cfg(test)]

@@ -1,12 +1,13 @@
 //! The Intel certificate side of TDX quote verification: the pinned SGX
 //! Root CA, PCK chain verification, and CRL checks.
 
-use std::cmp::Ordering;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
-use openssl::asn1::{Asn1Time, Asn1TimeRef};
+use openssl::asn1::Asn1TimeRef;
 use openssl::x509::{CrlStatus, X509, X509Crl};
+
+use crate::pki::{asn1_now, check_cert_window, check_validity_window};
 
 use super::collateral::TdxCollateral;
 
@@ -29,33 +30,6 @@ const PCK_CHAIN_LEN: usize = 3;
 /// Parse the pinned Intel SGX Root CA.
 pub fn pinned_intel_root() -> Result<X509> {
     X509::from_pem(INTEL_SGX_ROOT_CA_PEM).context("failed to parse the pinned Intel SGX Root CA")
-}
-
-/// Convert an injected clock into an ASN.1 time for certificate checks.
-fn asn1_now(now: SystemTime) -> Result<Asn1Time> {
-    let secs = now
-        .duration_since(UNIX_EPOCH)
-        .context("verification time predates the unix epoch")?
-        .as_secs();
-    let secs: i64 = secs
-        .try_into()
-        .context("verification time does not fit in an i64")?;
-    Asn1Time::from_unix(secs).context("failed to convert verification time to ASN.1")
-}
-
-fn check_window(
-    what: &str,
-    not_before: &Asn1TimeRef,
-    not_after: &Asn1TimeRef,
-    now: &Asn1TimeRef,
-) -> Result<()> {
-    if not_before.compare(now)? == Ordering::Greater {
-        bail!("{what} is not yet valid (notBefore {not_before})");
-    }
-    if not_after.compare(now)? == Ordering::Less {
-        bail!("{what} expired (notAfter {not_after})");
-    }
-    Ok(())
 }
 
 /// Verify one CRL: signature by its issuer, validity window against the
@@ -85,7 +59,7 @@ fn check_crl(
     let next_update = crl
         .next_update()
         .with_context(|| format!("{what} carries no nextUpdate"))?;
-    check_window(what, last_update, next_update, now)?;
+    check_validity_window(what, last_update, next_update, now)?;
 
     match crl.get_by_cert(cert) {
         CrlStatus::NotRevoked => Ok(()),
@@ -149,24 +123,9 @@ pub fn verify_pck_chain(
     {
         bail!("the PCK leaf certificate is not signed by the intermediate CA");
     }
-    check_window(
-        "the root certificate",
-        root.not_before(),
-        root.not_after(),
-        &now,
-    )?;
-    check_window(
-        "the intermediate certificate",
-        intermediate.not_before(),
-        intermediate.not_after(),
-        &now,
-    )?;
-    check_window(
-        "the PCK leaf certificate",
-        leaf.not_before(),
-        leaf.not_after(),
-        &now,
-    )?;
+    check_cert_window("the root certificate", root, &now)?;
+    check_cert_window("the intermediate certificate", intermediate, &now)?;
+    check_cert_window("the PCK leaf certificate", leaf, &now)?;
 
     // Revocation: the root's CRL covers intermediates, the intermediate's
     // covers PCK leaves.
@@ -225,24 +184,9 @@ pub fn verify_signer_chain(chain_pem: &[u8], now: SystemTime) -> Result<X509> {
     {
         bail!("the collateral signer certificate is not signed by the intermediate CA");
     }
-    check_window(
-        "the pinned root certificate",
-        pinned.not_before(),
-        pinned.not_after(),
-        &now,
-    )?;
-    check_window(
-        "the intermediate certificate",
-        intermediate.not_before(),
-        intermediate.not_after(),
-        &now,
-    )?;
-    check_window(
-        "the signer certificate",
-        signer.not_before(),
-        signer.not_after(),
-        &now,
-    )?;
+    check_cert_window("the pinned root certificate", &pinned, &now)?;
+    check_cert_window("the intermediate certificate", intermediate, &now)?;
+    check_cert_window("the signer certificate", signer, &now)?;
     Ok(signer.to_owned())
 }
 

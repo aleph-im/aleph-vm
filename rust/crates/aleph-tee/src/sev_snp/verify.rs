@@ -1,11 +1,12 @@
+use std::time::SystemTime;
+
 use anyhow::{Context, Result, bail};
-use openssl::asn1::Asn1Time;
 use openssl::hash::MessageDigest;
 use openssl::x509::X509;
 use serde_json::json;
 use sev::certs::snp::builtin;
 
-use crate::pki::ecdsa_from_components;
+use crate::pki::{asn1_now, check_cert_window, ecdsa_from_components};
 use crate::types::{AttestationReport, SevSnpRegisters, TeeType, VerificationResult};
 
 use super::certs::{CertChain, TcbParams, fetch_ca_chain, fetch_vcek};
@@ -194,8 +195,25 @@ const AMD_ORG_NAME: &str = "Advanced Micro Devices";
 ///   key).
 /// - ASK is signed by ARK.
 /// - VCEK is signed by ASK.
-/// - ARK, ASK, and VCEK are all within their validity period (notBefore/notAfter).
+/// - ARK, ASK, and VCEK are all within their validity period
+///   (notBefore/notAfter) at the current wall-clock time. Freshness is a
+///   production requirement, so this entry point reads the clock;
+///   [`verify_cert_chain_at`] takes the instant as a parameter instead.
 pub fn verify_cert_chain(chain: &CertChain, pinned_ark_der: &[u8]) -> Result<()> {
+    verify_cert_chain_at(chain, pinned_ark_der, SystemTime::now())
+}
+
+/// [`verify_cert_chain`] against an injected verification time.
+///
+/// The certificate windows are the only clock-dependent step, and taking
+/// the time as a parameter is what lets a test drive a chain that is
+/// expired or not yet valid at a chosen instant without waiting for the
+/// wall clock to get there.
+pub fn verify_cert_chain_at(
+    chain: &CertChain,
+    pinned_ark_der: &[u8],
+    now: SystemTime,
+) -> Result<()> {
     let ark = X509::from_der(&chain.ark_der).context("failed to parse ARK certificate")?;
     let ask = X509::from_der(&chain.ask_der).context("failed to parse ASK certificate")?;
     let vcek = X509::from_der(&chain.vcek_der).context("failed to parse VCEK certificate")?;
@@ -239,9 +257,10 @@ pub fn verify_cert_chain(chain: &CertChain, pinned_ark_der: &[u8]) -> Result<()>
     }
 
     // Reject expired or not-yet-valid certificates.
-    check_cert_validity(&ark, "ARK")?;
-    check_cert_validity(&ask, "ASK")?;
-    check_cert_validity(&vcek, "VCEK")?;
+    let now = asn1_now(now)?;
+    check_cert_window("the ARK certificate", &ark, &now)?;
+    check_cert_window("the ASK certificate", &ask, &now)?;
+    check_cert_window("the VCEK certificate", &vcek, &now)?;
 
     Ok(())
 }
@@ -270,30 +289,6 @@ fn verify_ark_matches_pinned_root(ark: &X509, pinned_ark_der: &[u8]) -> Result<(
             "chain ARK public key does not match the pinned AMD root \
              (possible forged or cache-poisoned ARK)"
         );
-    }
-    Ok(())
-}
-
-/// Reject a certificate whose validity period does not include the current
-/// time (expired, or not yet valid).
-fn check_cert_validity(cert: &X509, label: &str) -> Result<()> {
-    let now = Asn1Time::days_from_now(0).context("failed to obtain current time")?;
-
-    if cert
-        .not_before()
-        .compare(&now)
-        .context("failed to compare notBefore")?
-        == std::cmp::Ordering::Greater
-    {
-        bail!("{label} certificate is not yet valid (notBefore is in the future)");
-    }
-    if cert
-        .not_after()
-        .compare(&now)
-        .context("failed to compare notAfter")?
-        == std::cmp::Ordering::Less
-    {
-        bail!("{label} certificate has expired");
     }
     Ok(())
 }
@@ -947,6 +942,40 @@ mod tests {
         assert!(
             err.contains("expired"),
             "expected expiry failure, got: {err}"
+        );
+    }
+
+    /// The window check must follow the injected instant, not the wall
+    /// clock: a chain that is genuine today is neither valid a year before
+    /// it was issued nor after it expires.
+    #[test]
+    fn test_cert_windows_follow_the_injected_clock() {
+        use std::time::Duration;
+
+        // valid_chain() builds certificates valid one hour either side of
+        // the present.
+        let (chain, _ark_key, _ask_key, _vcek_key, ark) = valid_chain();
+        let pinned = ark.to_der().unwrap();
+        let now = SystemTime::now();
+
+        verify_cert_chain_at(&chain, &pinned, now).expect("valid inside the window");
+
+        let later = now + Duration::from_secs(7200);
+        let err = verify_cert_chain_at(&chain, &pinned, later)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("expired"),
+            "expected an expiry failure, got: {err}"
+        );
+
+        let earlier = now - Duration::from_secs(7200);
+        let err = verify_cert_chain_at(&chain, &pinned, earlier)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("not yet valid"),
+            "expected a not-yet-valid failure, got: {err}"
         );
     }
 
