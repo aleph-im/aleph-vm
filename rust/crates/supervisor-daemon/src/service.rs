@@ -178,10 +178,11 @@ pub struct DaemonState {
     /// The last CC mode probe of each card, keyed by pci_host. Populated
     /// at startup and by `refresh_cc_modes` (called from `get_host_info`)
     /// for every NVIDIA card no VM currently owns, and by the SEV-SNP GPU
-    /// gate when a create probes its cards. A card never probed has no
-    /// entry; a card whose last probe failed has an entry with no mode,
-    /// which advertises nothing and holds the retry off until the entry
-    /// goes stale.
+    /// gate when a create probes its cards. A card an adopted confidential
+    /// VM owns is entered as CC-on without a read, on the gate's word. A
+    /// card never probed has no entry; a card whose last probe failed has
+    /// an entry with no mode, which advertises nothing and holds the retry
+    /// off until the entry goes stale.
     pub gpu_cc_modes: std::sync::Mutex<HashMap<String, crate::gpu_cc::ProbedCcMode>>,
     /// How a card's CC mode is read: the BAR0 register in production,
     /// `gpu_cc::no_probe` on hermetic state so tests never open sysfs.
@@ -447,8 +448,10 @@ pub fn cc_mode_of(state: &DaemonState, pci_host: &str) -> Option<crate::gpu_cc::
 /// (the register is never read under a guest). A probe that errors, or that
 /// reads a register encoding with no mode, replaces the card's answer with
 /// "no mode": whatever it advertised before is no longer known to be true,
-/// and an unknown card advertises nothing. Runs on the blocking pool: mmap
-/// of a BAR is a syscall against device memory.
+/// and an unknown card advertises nothing. A card a confidential guest owns
+/// gets its mode from the create gate that admitted it, with no read at
+/// all. Runs on the blocking pool: mmap of a BAR is a syscall against
+/// device memory.
 pub fn refresh_cc_modes(state: &DaemonState) {
     refresh_cc_modes_with(state, state.gpu_cc_probe, crate::gpu_cc::CC_MODE_TTL);
 }
@@ -482,22 +485,51 @@ fn refresh_cc_modes_with(
     ttl: std::time::Duration,
 ) {
     let world = state.world.blocking_read();
-    let attached: HashSet<String> = world
-        .entries
-        .values()
-        .flat_map(|entry| entry.config.gpus.iter().map(|gpu| gpu.pci_host.clone()))
-        .collect();
+    let mut attached: HashSet<String> = HashSet::new();
+    // The subset a confidential guest owns. Those cards have a known mode
+    // without any read: a card enters an SEV-SNP VM only after the create
+    // gate has read CC-on from it, and the mode cannot change while the
+    // guest holds the card (switching it takes a reset of a free card). A
+    // daemon that adopts such a VM at boot has an empty cache and will
+    // never probe the card, so without this its mode would stay empty for
+    // the VM's whole life. Plain passthrough VMs went through no gate and
+    // get nothing.
+    let mut known_cc_on: HashSet<String> = HashSet::new();
+    for entry in world.entries.values() {
+        let confidential = entry.config.snp().is_some();
+        for gpu in &entry.config.gpus {
+            attached.insert(gpu.pci_host.clone());
+            if confidential {
+                known_cc_on.insert(gpu.pci_host.clone());
+            }
+        }
+    }
     {
         let sweep = state.gpu_cc_sweep.lock().expect("gpu_cc_sweep poisoned");
         if let Some(at) = sweep.at
             && sweep.attached == attached
             && at.elapsed() < ttl
         {
+            // Nothing changed hands since that sweep, so it already seeded
+            // every confidential VM's cards and read every free one.
             return;
         }
     }
     for gpu in &state.host.gpus {
-        if attached.contains(&gpu.pci_host) || gpu.vendor != "NVIDIA" {
+        if gpu.vendor != "NVIDIA" {
+            continue;
+        }
+        if attached.contains(&gpu.pci_host) {
+            if known_cc_on.contains(&gpu.pci_host) {
+                state
+                    .gpu_cc_modes
+                    .lock()
+                    .expect("gpu_cc_modes poisoned")
+                    .entry(gpu.pci_host.clone())
+                    .or_insert_with(|| {
+                        crate::gpu_cc::ProbedCcMode::now(Some(crate::gpu_cc::CcMode::On))
+                    });
+            }
             continue;
         }
         let fresh = state
@@ -1642,10 +1674,9 @@ mod tests {
         );
     }
 
-    /// Two free NVIDIA cards and nothing attached: the fixture both
-    /// freshness tests below build on.
-    fn two_free_cards() -> DaemonState {
-        let card = |pci_host: &str| GpuDevice {
+    /// One unprobed Blackwell card at `pci_host`.
+    fn nvidia_card(pci_host: &str) -> GpuDevice {
+        GpuDevice {
             vendor: "NVIDIA".to_string(),
             device_name: "GB202 [GeForce RTX 5090]".to_string(),
             device_class: "0300".to_string(),
@@ -1653,12 +1684,17 @@ mod tests {
             device_id: "10de:2b85".to_string(),
             cc_mode: None,
             arch: None,
-        };
+        }
+    }
+
+    /// Two free NVIDIA cards and nothing attached: the fixture both
+    /// freshness tests below build on.
+    fn two_free_cards() -> DaemonState {
         let host = HostState {
             settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
             host_ipv4: String::new(),
             network_interface: None,
-            gpus: vec![card("06:00.0"), card("07:00.0")],
+            gpus: vec![nvidia_card("06:00.0"), nvidia_card("07:00.0")],
             dns_nameservers: None,
         };
         DaemonState::hermetic(
@@ -1761,6 +1797,108 @@ mod tests {
     /// freshness check between a card and its register.
     fn force_next_sweep(state: &DaemonState) {
         state.gpu_cc_sweep.lock().unwrap().at = None;
+    }
+
+    /// An adopted VM holding one card: SNP (measured-boot slice present)
+    /// or plain QEMU passthrough, which is the distinction the seeding
+    /// turns on.
+    fn adopted_entry_holding(vm_hash: &str, pci_host: &str, snp: bool) -> VmEntry {
+        let mut entry = fixture_entry(vm_hash, true);
+        if snp {
+            let json = r#"{
+                "vm_id": 9, "vm_hash": "abcd", "settings": {},
+                "hypervisor": "qemu",
+                "vm_configuration": {
+                    "qemu_bin_path": "/usr/bin/qemu-system-x86_64",
+                    "image_path": "/img/rootfs.ext4",
+                    "monitor_socket_path": "/m.sock", "qmp_socket_path": "/q.sock",
+                    "vcpu_count": 2, "mem_size_mb": 2048,
+                    "host_volumes": [], "gpus": [],
+                    "sev_snp": true,
+                    "ovmf_path": "/img/OVMF.fd",
+                    "sev_policy": 196608,
+                    "kernel_path": "/img/bzImage",
+                    "initrd_path": "/img/initrd",
+                    "kernel_cmdline": "console=ttyS0 root=/dev/mapper/verity-root ro"
+                }
+            }"#;
+            let config = crate::controller_config::parse_controller_config(json).unwrap();
+            let crate::controller_config::VmConfiguration::Qemu(qemu) = config.vm else {
+                panic!("the payload is a QEMU configuration");
+            };
+            entry.config = *qemu;
+        }
+        entry.config.gpus = vec![crate::controller_config::QemuGpu {
+            pci_host: pci_host.to_string(),
+            supports_x_vga: true,
+        }];
+        entry.gpus = vec![crate::world::AttachedGpu {
+            pci_host: pci_host.to_string(),
+            device_id: "10de:2b85".to_string(),
+            supports_x_vga: true,
+        }];
+        entry
+    }
+
+    #[test]
+    fn an_adopted_snp_vms_card_reports_cc_on_without_reading_the_card() {
+        // A restart leaves the cache empty, and a card a guest owns is
+        // never probed (its register belongs to the guest), so a
+        // confidential VM adopted at boot used to report no cc_mode for
+        // the rest of its life. It does not need a probe: the create gate
+        // admits a card into an SNP VM only after reading CC-on from it,
+        // and nothing can change the mode while the guest holds the card.
+        // A plain passthrough VM went through no such gate, so its card
+        // stays unknown.
+        let host = HostState {
+            settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
+            host_ipv4: String::new(),
+            network_interface: None,
+            gpus: vec![nvidia_card("06:00.0"), nvidia_card("07:00.0")],
+            dns_nameservers: None,
+        };
+        let snp_entry = adopted_entry_holding(test_fixtures::QEMU_HASH, "06:00.0", true);
+        let mut world = WorldView::default();
+        world.insert_entry(snp_entry.clone());
+        world.insert_entry(adopted_entry_holding(
+            test_fixtures::GPU_HASH,
+            "07:00.0",
+            false,
+        ));
+        let state = DaemonState::hermetic(
+            host,
+            world,
+            Arc::new(crate::units::StaticUnitStates::default()),
+            Arc::new(crate::logs::StaticLogSource::new(Vec::new())),
+        );
+
+        // Any read of a card a guest owns is a bug, so the probe panics.
+        refresh_cc_modes_with(
+            &state,
+            |pci_host: &str, _device_id: &str| {
+                panic!("an attached card must never be probed: {pci_host}")
+            },
+            crate::gpu_cc::CC_MODE_TTL,
+        );
+
+        assert_eq!(
+            cc_mode_of(&state, "06:00.0"),
+            Some(crate::gpu_cc::CcMode::On),
+            "the confidential VM's card is known CC-on"
+        );
+        assert_eq!(
+            cc_mode_of(&state, "07:00.0"),
+            None,
+            "a plain passthrough card went through no gate and stays unknown"
+        );
+        // The VM's own report, which is where the empty mode showed.
+        let info = vm_info_message(&state, &snp_entry, true, snp_entry.times.started_at_ns);
+        assert_eq!(info.gpus.len(), 1);
+        assert_eq!(info.gpus[0].cc_mode, "on");
+        assert_eq!(
+            info.gpus[0].arch, "blackwell",
+            "the architecture comes from the device id, not from a probe"
+        );
     }
 
     #[test]
