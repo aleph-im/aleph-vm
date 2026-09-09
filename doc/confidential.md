@@ -63,6 +63,64 @@ ALEPH_VM_ENABLE_CONFIDENTIAL_COMPUTING=1
 After launching the server you can check the endpoint
 http://localhost:4020/status/config and verify that ENABLE_CONFIDENTIAL_COMPUTING is true
 
+## What 2.1 changes for a confidential CRN
+
+### Intel TDX is not a launch path yet
+
+The supervisor daemon reports whether the host supports TDX, and the TDX
+attestation verifier is in the tree, but there is no TDX launch path on a
+CRN. An instance message asking for a measured TDX mode is rejected up front
+(`<mode> instances are not supported by this CRN`) before any download,
+rather than failing later on a firmware resolve that would hide the real
+cause. The measured mode a CRN can launch remains SEV-SNP, alongside the
+SEV path described above.
+
+### Confidential NVIDIA GPUs
+
+A CRN with NVIDIA cards in confidential-computing mode advertises them on
+`/about/capability` as `properties.tee.nvidia_cc.devices`, so a scheduler
+can place a confidential GPU workload on a host that can actually run one.
+A card is advertised only when all of the following hold:
+
+* It is an NVIDIA Hopper or Blackwell card whose CC mode reads `on`. The
+  mode is set with NVIDIA's `gpu-admin-tools` and read back by the daemon
+  from a BAR0 register, so it needs no driver on the host. `devtools` mode
+  lifts the profiling blocks and is not confidential, so it is not
+  advertised; a card whose mode could not be read advertises nothing.
+* The card is free (no VM owns it) and bound to `vfio-pci`.
+* `ALEPH_VM_ENABLE_GPU_SUPPORT=1`, and `pciutils` is installed: the daemon
+  calls `lspci` for its inventory and refuses to start without it. It is a
+  dependency of the Debian package from 2.1 on.
+* The host can launch SEV-SNP. `nvidia_cc` is advertised only alongside
+  `sev_snp`, since a confidential GPU on a host that cannot launch a
+  confidential guest is not a usable capability.
+
+If the agent cannot reach the supervisor it withholds the `nvidia_cc` block
+with a warning and leaves the rest of `/about/capability` intact.
+
+When a card is actually attached to an SEV-SNP guest, the daemon re-reads
+its CC mode at create time rather than trusting the inventory cache: an
+operator can switch a card off between two polls, and a stale `on` would
+hand the owner hardware the guest cannot trust. Anything but `on`, including
+a card that cannot be read, fails the create. The 64-bit MMIO window the
+guest needs is sized from the card's real BARs and passed through firmware
+configuration, which is not a measurement input, so attaching a card does
+not move the launch measurement.
+
+### V-PROGRAM launch measurements changed
+
+The measured guest image changed substantially in 2.1: a newer LTS guest
+kernel built from a whitelist configuration, a content-only initrd, and a
+rebuilt attestation agent inside it. Every one of those is a measurement
+input, so the launch measurement a 2.1 runtime produces differs from the one
+an earlier release produced.
+
+Runtime bundles and their manifests must therefore be rebuilt from the 2.1
+image outputs and republished, and V-PROGRAM messages repointed at the new
+`runtime.ref`. A client that verifies a guest against a measurement recorded
+for an older bundle will not match a guest launched from the 2.1 runtime,
+and the mismatch is indistinguishable from a real attestation failure.
+
 
 # User side
 The user wanting to launch the VM, referred as the Guest Owner.

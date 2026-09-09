@@ -28,6 +28,21 @@ Read the installation document for the various components and the developer docu
 2. Install the [VM-Supervisor](src/aleph/vm/agent/README.md).
 3. Install and configure a reverse-proxy such as [Caddy](./CONFIGURE_CADDY.md)
 
+## Operator documentation
+
+- [Using multiple disks on a CRN](./doc/multi-disk-storage.md): volume pools,
+  media classes, caches and backups on slow disks.
+- [Reclaiming VM storage](./doc/storage-reclamation.md): what happens to the
+  disks of a VM that is gone, the retention and cache budgets, and the
+  `aleph-vm storage` command.
+- [Scheduler allocations (v2)](./doc/scheduler-allocations.md): the v2
+  allocation and capacity endpoints, the allocation state reported per VM,
+  and the retry settings.
+- [Confidential computing](./doc/confidential.md): SEV requirements, what a
+  2.1 node advertises for confidential GPUs, and the V-PROGRAM measurement
+  change.
+- [Operator authentication](./doc/operator_auth.md).
+
 ## Create and run an Aleph Program 
 
 Have a look at [tutorials/README.md](tutorials/README.md) for a tutorial on how to program VMs
