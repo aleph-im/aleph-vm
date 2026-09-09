@@ -78,6 +78,8 @@ from .views import (
     status_public_config,
     update_allocations,
 )
+from .views.allocation_auth import MAX_SIGNED_PLAN_BODY_BYTES
+from .views.allocations_v2 import capacity_check, update_allocations_v2
 from .views.migration import (
     migration_cleanup,
     migration_disk_download,
@@ -272,7 +274,11 @@ def setup_webapp(supervisor: Supervisor):
     recreation, GPU reservation, persistent programs) goes through the
     `Supervisor` interface.
     """
-    app = web.Application(middlewares=[drain_middleware, error_middleware])
+    # The ceiling on a buffered body. Each signed route enforces its own cap
+    # below it (allocation_auth), and the largest of those is a plan body,
+    # so this has to admit one: aiohttp's 1 MiB default cut a plan off inside
+    # the verifier, which reported it as a bad signature.
+    app = web.Application(middlewares=[drain_middleware, error_middleware], client_max_size=MAX_SIGNED_PLAN_BODY_BYTES)
     app.on_response_prepare.append(on_prepare_server_version)
     # Agent-owned drain flag: drain_middleware rejects new VM requests when set;
     # flipped by drain_in_flight_requests.
@@ -412,6 +418,8 @@ def setup_webapp(supervisor: Supervisor):
     other_routes = [
         # /control APIs are used to control the VMs and access their logs
         web.post("/control/allocations", update_allocations),
+        web.post("/v2/control/allocations", update_allocations_v2),
+        web.post("/v2/control/capacity/check", capacity_check),
         web.post("/control/network/recreate", recreate_network),
         web.post("/control/proxy/regenerate", regenerate_proxy),
         # Migration endpoints (scheduler-only, uses Aleph-EIP191-V1 auth)
