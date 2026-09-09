@@ -136,12 +136,15 @@ class AllocationReconciler:
             # what it remembers.
             return
 
-        infos = await self.supervisor.list_vms()
-        await self._teardown_dropped(plan, infos)
-        await self._start_missing(plan, infos)
+        # Read once and handed to both halves: the two used to key the
+        # supervisor's list by hash apiece, which parsed every id twice and
+        # left them free to disagree about what is running.
+        known = by_hash(await self.supervisor.list_vms())
+        await self._teardown_dropped(plan, known)
+        await self._start_missing(plan, known)
 
-    async def _teardown_dropped(self, plan: AllocationPlan, infos: list[VmInfo]) -> None:
-        for vm_hash, info in by_hash(infos).items():
+    async def _teardown_dropped(self, plan: AllocationPlan, known: dict[ItemHash, VmInfo]) -> None:
+        for vm_hash, info in known.items():
             if vm_hash in plan.entries or info.status not in TEARDOWN_STATUSES:
                 continue
             # The plan is re-read here rather than taken from the pass, which
@@ -166,10 +169,10 @@ class AllocationReconciler:
                 # it did that on every interval for as long as it kept failing.
                 logger.exception("Tearing down %s failed; leaving it for the next pass", vm_hash)
 
-    async def _start_missing(self, plan: AllocationPlan, infos: list[VmInfo]) -> None:
+    async def _start_missing(self, plan: AllocationPlan, known: dict[ItemHash, VmInfo]) -> None:
         live = {
             vm_hash
-            for vm_hash, info in by_hash(infos).items()
+            for vm_hash, info in known.items()
             if info.status in LIVE_STATUSES or info.awaiting_confidential_init
         }
         now = self._now()
