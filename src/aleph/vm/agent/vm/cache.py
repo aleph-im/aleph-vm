@@ -42,6 +42,8 @@ from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from aleph_message.models import ExecutableContent, ItemHash
+
 from aleph.vm.agent.vm.purge import purge_vm_storage
 from aleph.vm.agent.vm.reclaimable import (
     MANIFEST_REF_KINDS,
@@ -253,7 +255,7 @@ def _manifest_bundle_ref(ref: str) -> str | None:
     return str(bundle_ref) if bundle_ref else None
 
 
-def _record_refs(content, vm_hash: object) -> set[str]:
+def _record_refs(content: ExecutableContent, vm_hash: ItemHash) -> set[str]:
     """Every cache entry one live record names.
 
     ``reclaimable.iter_content_refs`` is the enumeration; this adds what only
