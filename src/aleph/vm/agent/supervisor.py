@@ -15,7 +15,6 @@ from aiohttp import hdrs, web
 from aiohttp.web_exceptions import HTTPException
 from aiohttp_cors import ResourceOptions, setup
 
-from aleph.vm import storage, storage_pools
 from aleph.vm.agent.allocation.reconciler import AllocationReconciler
 from aleph.vm.agent.capacity import CapacityManager
 from aleph.vm.agent.expiry import ExpiryManager
@@ -33,9 +32,9 @@ from aleph.vm.agent.vm.reconciler import (
     start_storage_reconcile_task,
     stop_storage_reconcile_task,
 )
-from aleph.vm.agent.vm.retire import set_after_gone_hook
 from aleph.vm.agent.vm_registry import AgentVmRegistry, rehydrate_registry
 from aleph.vm.conf import settings
+from aleph.vm.hooks import AgentHooks, install_hooks
 from aleph.vm.sevclient import SevClient
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.client import GrpcSupervisor
@@ -554,22 +553,23 @@ def run():
     app.on_startup.append(start_storage_reconcile_task)
     app.on_cleanup.append(stop_storage_reconcile_task)
     # Placement asks the reconciler to evict retained volumes when a create
-    # does not fit, and a GONE under keep enforces the retention budget right
-    # away instead of waiting for the next periodic pass. Both are module
-    # hooks: aleph.vm.storage_pools and retire.py cannot import the
-    # reconciler, so the app is what wires them together.
-    storage_pools.set_room_maker(
-        lambda pool, needed: make_room(pool, needed, live=known_live_hashes(app["vm_registry"])),
-    )
-    set_after_gone_hook(lambda: reconcile_now(app))
-    # And the third hook of the same kind: a download about to start asks the
-    # cache budget for room, so a create that would blow it is refused before
-    # the bytes land rather than after.
-    storage.set_cache_admission(
-        lambda tmp_path, content_length, max_bytes: admit_download(
+    # does not fit, a GONE under keep enforces the retention budget right away
+    # instead of waiting for the next periodic pass, and a download about to
+    # start asks the cache budget for room so a create that would blow it is
+    # refused before the bytes land. All three point back into the reconciler,
+    # which imports the storage modules itself, so the app is what wires them
+    # together. One object, installed in a single assignment: a failure while
+    # building it leaves a node with none of the three rather than with a
+    # mixture nothing can report on.
+    hooks = AgentHooks(
+        after_gone=lambda: reconcile_now(app),
+        cache_admission=lambda tmp_path, content_length, max_bytes: admit_download(
             app["vm_registry"], tmp_path, content_length, max_bytes
-        )
+        ),
+        room_maker=lambda pool, needed: make_room(pool, needed, live=known_live_hashes(app["vm_registry"])),
     )
+    app["agent_hooks"] = hooks
+    install_hooks(hooks)
     app.on_startup.append(start_node_hash_discovery)
     app.on_cleanup.append(stop_node_hash_discovery)
 

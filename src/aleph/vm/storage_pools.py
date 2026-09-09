@@ -18,15 +18,16 @@ import json
 import logging
 import os
 import shutil
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import NamedTuple
 
 from aleph.vm.conf import settings
+from aleph.vm.hooks import RoomMaker, current_hooks, install_hooks
 from aleph.vm.resources import InsufficientResourcesError
 
 logger = logging.getLogger(__name__)
@@ -319,22 +320,14 @@ def _pool_free_bytes(pool: StoragePool) -> int | None:
     return usage.free
 
 
-RoomMaker = Callable[["StoragePool", int], int]
-_room_maker: RoomMaker | None = None
-
-
 def set_room_maker(fn: RoomMaker | None) -> None:
-    """Register the agent's evictor: called with (pool, needed_bytes) when no
-    pool fits a placement, before the placement is refused.
+    """Set the room maker slot on its own, leaving the other hooks alone.
 
-    Retained volumes are advertised as free capacity, so a
-    placement that does not fit has to be given the chance to take that space
-    back before it fails. This module cannot import the reconciler (it is
-    agent-side and imports this one), so the agent registers the hook at
-    startup; a node that never registers one keeps the old behaviour.
+    The agent installs all three hooks as one object at startup; this is the
+    single-slot form, for a test that wires an evictor and for anything out
+    of tree that still calls it.
     """
-    global _room_maker  # noqa: PLW0603
-    _room_maker = fn
+    install_hooks(replace(current_hooks(), room_maker=fn))
 
 
 def _select_from(candidates: list[StoragePool], size_mib: int) -> StoragePool:
@@ -363,7 +356,8 @@ def _select_from(candidates: list[StoragePool], size_mib: int) -> StoragePool:
             continue
         if free > best_free:
             best, best_free = pool, free
-    if (best is None or best_free < required_bytes) and _room_maker is not None:
+    room_maker = current_hooks().room_maker
+    if (best is None or best_free < required_bytes) and room_maker is not None:
         # Free-descending order asks the pool that needs the least eviction
         # first. A pool whose free space could not be read sorts last and
         # make_room refuses it outright, so the only pool the evictor can
@@ -374,7 +368,7 @@ def _select_from(candidates: list[StoragePool], size_mib: int) -> StoragePool:
             return -1 if free is None else free
 
         for target in sorted(eligible, key=known_free, reverse=True):
-            if _room_maker(target, required_bytes) <= 0:
+            if room_maker(target, required_bytes) <= 0:
                 continue
             free = _pool_free_bytes(target)
             if free is not None and free >= required_bytes:
