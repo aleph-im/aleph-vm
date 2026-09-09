@@ -191,3 +191,28 @@ jobs:
       - name: Check the GPU launch measurement against the golden file
         if: steps.gate.outputs.run == 'true'
         run: ./nix/check-golden-measurements.sh --gpu-only
+
+      # The GPU image is in this runner's store now, so booting it costs a
+      # QEMU install and a couple of minutes. This is the only CI coverage
+      # init-gpu.sh gets: its no-GPU branch and the marker lines the smoke
+      # greps for. The GPU stage itself needs real hardware.
+      - name: Enable KVM for the runner user
+        if: steps.gate.outputs.run == 'true'
+        # Same recipe as boot-smoke.yml: GitHub-hosted x86_64 runners expose
+        # /dev/kvm to root only.
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Install QEMU
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86
+          qemu-system-x86_64 --version | head -1
+
+      - name: Boot the GPU image under plain QEMU without a GPU
+        if: steps.gate.outputs.run == 'true'
+        run: ./nix/boot-smoke.sh --gpu

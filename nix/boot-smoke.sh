@@ -15,7 +15,8 @@
 # no NVIDIA device, which is the flavor's own no-GPU path: init-gpu.sh must
 # find no 0x10de PCI device, say so, and boot on exactly like the base image.
 # It does not exercise the driver, the verifier or the ready state; those
-# need real Blackwell hardware. Local only: CI runs the base phases.
+# need real Blackwell hardware. CI runs it from the GPU golden job
+# (.github/workflows/golden-measurements.yml), which has the image built.
 #
 # Usage: nix/boot-smoke.sh [--gpu] (curl and python3 are needed for phase 3)
 # Runs in CI on a KVM runner (.github/workflows/boot-smoke.yml) and locally
