@@ -124,7 +124,7 @@ async def capacity_check(request: web.Request) -> web.Response:
     """
     plan, rejected = await _read_plan(request)
     capacity = request.app["capacity"]
-    results: dict[str, dict] = {key: {"accepted": False, **refusal.as_dict()} for key, refusal in rejected.items()}
+    results: dict[str, dict] = {str(key): {"accepted": False, **refusal.as_dict()} for key, refusal in rejected.items()}
     candidates = []
     for vm_hash, planned in plan.entries.items():
         if planned.verified is None:
