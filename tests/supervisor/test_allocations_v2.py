@@ -216,6 +216,21 @@ async def test_a_plan_body_over_the_legacy_cap_reaches_the_handler(aiohttp_clien
 
 
 @pytest.mark.asyncio
+async def test_a_plan_body_of_exactly_the_cap_is_taken(aiohttp_client, scheduler_auth):
+    """The cap is inclusive, and it is the verifier's. aiohttp refuses a body
+    at its own limit rather than over it, so a request bounded to exactly the
+    cap failed on the last byte, inside the verifier, as a 401."""
+    client = await aiohttp_client(_app())
+    frame = len(json.dumps({"vms": [], "padding": ""}))
+    body, headers = scheduler_auth({"vms": [], "padding": "x" * (MAX_SIGNED_PLAN_BODY_BYTES - frame)}, path=PLAN)
+    assert len(body) == MAX_SIGNED_PLAN_BODY_BYTES
+
+    response = await client.post(PLAN, data=body, headers=headers)
+
+    assert response.status == 202
+
+
+@pytest.mark.asyncio
 async def test_a_plan_body_over_its_own_cap_is_too_large(aiohttp_client, scheduler_auth):
     """The route's cap is still a cap: over it, 413 and not 202, before a
     byte of the body is read."""

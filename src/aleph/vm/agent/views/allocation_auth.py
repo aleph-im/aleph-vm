@@ -225,7 +225,9 @@ async def _verify_aleph_signature(
         # that would otherwise fail downstream.
         payload_hash = sha256(payload_bytes).hexdigest()
         return await _accept_payload_if_new(recovered.lower(), payload_hash, iat)
-    except RequestTooLarge:
+    except web.HTTPRequestEntityTooLarge:
+        # Ours, or aiohttp's own from request.read(): over the cap is over
+        # the cap, and both come after the signer check.
         raise
     except Exception as exc:  # broad catch intentional — auth verifier MUST NOT raise
         # Signature recovery, hex decoding, JSON parsing, and field type
@@ -301,8 +303,11 @@ def requires_allocation_auth(handler=None, *, max_body_bytes: int = MAX_SIGNED_R
     def decorate(handler):
         @functools.wraps(handler)
         async def wrapper(request: web.Request) -> web.StreamResponse:
-            if request.client_max_size != max_body_bytes:
-                request = request.clone(client_max_size=max_body_bytes)
+            # One over the cap, because aiohttp refuses at its limit rather
+            # than over it. The verifier's own check on Content-Length is the
+            # authority, and a body of exactly the cap must pass both.
+            if request.client_max_size != max_body_bytes + 1:
+                request = request.clone(client_max_size=max_body_bytes + 1)
             try:
                 authorized = await authenticate_api_request(request, max_body_bytes=max_body_bytes)
             except RequestTooLarge as too_large:
