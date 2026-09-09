@@ -293,6 +293,8 @@ class HostCaps:
 
     physical_memory_mib: int
     physical_cores: int
+    host_reserved_mib: int
+    program_reserved_mib: int
     instance_memory_mib: int
     program_memory_mib: int
     vcpus: int
@@ -306,6 +308,8 @@ class HostCaps:
         return cls(
             physical_memory_mib=physical_memory_mib,
             physical_cores=physical_cores,
+            host_reserved_mib=host_reserved_mib,
+            program_reserved_mib=program_reserved_mib,
             instance_memory_mib=max(physical_memory_mib - host_reserved_mib - program_reserved_mib, 0),
             program_memory_mib=program_reserved_mib,
             vcpus=int(physical_cores * settings.VCPU_OVERCOMMIT_FACTOR),
@@ -459,8 +463,8 @@ class CapacityManager:
         caps = self._caps()
         physical_memory_mib = caps.physical_memory_mib
         physical_cores = caps.physical_cores
-        host_reserved_mib = settings.HOST_MEMORY_RESERVED_MIB
-        program_reserved_mib = settings.PROGRAM_MEMORY_RESERVED_MIB
+        host_reserved_mib = caps.host_reserved_mib
+        program_reserved_mib = caps.program_reserved_mib
         instance_memory_cap_mib = caps.instance_memory_mib
         program_memory_cap_mib = caps.program_memory_mib
         vcpu_cap = caps.vcpus
