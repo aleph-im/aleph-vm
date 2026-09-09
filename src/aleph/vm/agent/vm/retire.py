@@ -143,10 +143,12 @@ async def teardown_vm_devices(namespace: str, record: AgentVmRecord | None) -> N
     try:
         namespace = checked_namespace(namespace)
     except ValueError:
-        # Unreachable from the callers, which pass an ItemHash, but the
-        # best-effort contract holds for the check too: a teardown that
-        # cannot run must not abort the retire between the forget and the
-        # storage release.
+        # Reachable: this is called straight from the reinstall path as well
+        # as from retire_vm, and neither its signature nor the module
+        # boundary promises a hash anyone has parsed. The best-effort
+        # contract covers the check with the rest: a teardown that cannot
+        # run must not abort the retire between the forget and the storage
+        # release.
         logger.exception("Device teardown of %r skipped", namespace)
         return
     for volume in getattr(record.message, "volumes", None) or []:
