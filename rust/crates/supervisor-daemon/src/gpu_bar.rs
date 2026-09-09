@@ -24,12 +24,28 @@ const MIN_WINDOW_MB: u64 = 1024;
 /// hand fw_cfg a window no firmware can lay out, and the VM would fail deep
 /// inside OVMF instead of here. Far above any real card: today's largest is
 /// 128 GiB of BAR1, which asks for 512 GiB.
+///
+/// This caps the number handed to fw_cfg; it is not a statement about what a
+/// guest can reach. `check_mmio64_budget` is the tighter and later gate: it
+/// refuses anything the guest's own address space cannot hold, which today
+/// is a quarter of this. A window that reaches this clamp is therefore
+/// refused rather than launched, and the clamp is there so the arithmetic
+/// stays sane on the way to that refusal.
 const MAX_WINDOW_MB: u64 = 4 * 1024 * 1024;
 
 /// Guest physical address space, in MiB. A confidential VM launches with
 /// `-cpu EPYC-v4` unless the spec names another model, and that model's
 /// default physical address width is 40 bits, so the firmware has 1 TiB to
 /// place everything in.
+///
+/// A spec-supplied `cpu_model` does not move this figure. The confidential
+/// argv passes the model name on its own, with no `phys-bits` and no
+/// `host-phys-bits`, and QEMU's own default for a named x86 model is 40
+/// bits whichever model it is: the width follows the option, not the model.
+/// Should a future argv widen it, the only effect here is that this check
+/// refuses a window the guest could in fact have addressed, which fails a
+/// create that would have worked rather than booting a card into a guest
+/// that cannot reach it.
 const GUEST_PHYS_MB: u64 = 1 << 20;
 
 /// What sits below the guest's RAM and is not counted in the RAM figure:
@@ -94,6 +110,12 @@ pub fn parse_resource_file(contents: &str) -> Result<u64, DaemonError> {
 /// address space the guest's physical address width gives it, or the
 /// firmware assigns no window at all and the guest finds the card's BARs
 /// unassigned: a device that enumerates and then does nothing.
+///
+/// The placement model above is OVMF's, in `OvmfPkg/Library/PlatformInitLib`
+/// (`PlatformDynamicMmioWindow` and `PlatformAddressWidthFromCpuid`): it
+/// derives the address width from CPUID, puts the 64-bit PCI MMIO aperture
+/// above the top of low and high RAM, and aligns the aperture to its own
+/// size. Re-read that code before changing anything here.
 pub fn check_mmio64_budget(window_mb: u64, guest_ram_mb: u64) -> Result<(), DaemonError> {
     let top_of_ram_mb = guest_ram_mb.saturating_add(GUEST_LOW_RESERVED_MB);
     let base_mb = top_of_ram_mb
@@ -276,5 +298,16 @@ mod tests {
         // The window fits on its own, but this much RAM forces the firmware
         // to align it up to the next boundary, which is past the ceiling.
         assert!(check_mmio64_budget(512 * 1024, 600 * 1024).is_err());
+    }
+
+    #[test]
+    fn a_window_that_hits_the_clamp_is_refused_by_the_budget() {
+        // The two ceilings are not alternatives: the clamp keeps the number
+        // handed to fw_cfg finite, and the budget is what actually refuses
+        // the create. A card absurd enough to reach the clamp must not be
+        // launched just because the clamp made its window representable.
+        let clamped = mmio64_window_mb(u64::MAX);
+        assert_eq!(clamped, MAX_WINDOW_MB);
+        assert!(check_mmio64_budget(clamped, 2048).is_err());
     }
 }
