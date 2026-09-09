@@ -144,10 +144,19 @@ class AllocationReconciler:
         for vm_hash, info in by_hash(infos).items():
             if vm_hash in plan.entries or info.status not in TEARDOWN_STATUSES:
                 continue
+            # The plan is re-read here rather than taken from the pass, which
+            # may have been parked in list_vms or in an earlier teardown while
+            # a push re-added this VM. A start can afford to act on a snapshot
+            # one push out of date, because the next pass undoes it; a teardown
+            # cannot, since GONE reaps the volumes. The read and the await
+            # below are in one turn, so nothing lands in between.
+            current = self._desired
+            if current is None or vm_hash in current.entries:
+                continue
             record = self.registry.get(vm_hash)
             if record is None or not is_removable_by_allocation(record, info):
                 continue
-            logger.info("Plan %s dropped %s; tearing it down", plan.plan_id, vm_hash)
+            logger.info("Plan %s dropped %s; tearing it down", current.plan_id, vm_hash)
             try:
                 await teardown_vm(vm_hash, supervisor=self.supervisor, registry=self.registry)
             except Exception:

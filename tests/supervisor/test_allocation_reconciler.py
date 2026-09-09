@@ -121,6 +121,27 @@ async def test_a_vm_dropped_from_the_plan_is_torn_down(reconciler, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_vm_a_newer_plan_re_added_is_not_torn_down(reconciler, monkeypatch):
+    """A push landing while the pass was parked in list_vms, or in an earlier
+    teardown, went unread: the pass held its own snapshot, so a VM the newer
+    plan wants was retired as GONE and its volumes reaped. Every other step is
+    safe to take one push out of date, because the next pass undoes it. This
+    one is not."""
+    _record_starts(reconciler, monkeypatch)
+    reconciler.submit(_plan())
+
+    async def list_vms():
+        reconciler.submit(_plan(HASH_B))
+        return [_info(HASH_B)]
+
+    reconciler.supervisor.list_vms = list_vms
+
+    await reconciler._converge_once()
+
+    reconciler_module.teardown_vm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_a_stream_paid_vm_is_never_torn_down(reconciler, monkeypatch):
     _record_starts(reconciler, monkeypatch)
     reconciler.registry = SimpleNamespace(get=lambda h: _record(stream=True), forget=MagicMock())
