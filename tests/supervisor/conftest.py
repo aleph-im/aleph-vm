@@ -158,3 +158,39 @@ def scheduler_auth(monkeypatch):
         return body, {"Authorization": header, "Content-Type": "application/json"}
 
     return sign
+
+
+@pytest.fixture(autouse=True)
+def clean_agent_state():
+    """Empty the agent's process-wide storage state around every test.
+
+    Five module globals survive a test: the live-VM snapshot the cache pass
+    judges orphans against, the creates in flight, the memoised reclaimable
+    totals, the downloads charged to the cache budget, and the hashes the
+    supervisor listed last. They are caches and in-process bookkeeping, not
+    wiring, so nothing resets them at import time, and a test that leaves one
+    populated changes what the next test sees: a stale live snapshot spares a
+    directory the next test expects purged, a leaked ``_creating`` entry makes
+    every later namespace look like a create in flight, and a memoised total
+    answers a question about a tree the next test has since rewritten. That is
+    the whole of the order dependence in these files, and the tests that reach
+    into these globals by hand only ever cleaned up the one they touched.
+
+    Cleared on the way in as well as on the way out, so a test is unaffected by
+    a module that was imported and exercised before the fixture existed.
+    """
+    import aleph.vm.agent.vm.cache as cache_module
+    import aleph.vm.agent.vm.reclaimable as reclaimable_module
+    import aleph.vm.agent.vm.reconciler as reconciler_module
+    import aleph.vm.storage as storage_module
+
+    def reset() -> None:
+        cache_module._live_snapshot = None
+        reconciler_module._last_supervisor_hashes = set()
+        reconciler_module._creating.clear()
+        reclaimable_module._reclaimable_cache.clear()
+        storage_module._reserved_downloads.clear()
+
+    reset()
+    yield
+    reset()
