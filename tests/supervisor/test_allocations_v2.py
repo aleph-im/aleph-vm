@@ -17,7 +17,10 @@ from aleph_message.models import ItemHash
 from aleph.vm.agent.allocation import reconciler as reconciler_module
 from aleph.vm.agent.capacity import AdmissionVerdict, CapacityManager
 from aleph.vm.agent.supervisor import setup_webapp
-from aleph.vm.agent.views.allocation_auth import MAX_SIGNED_REQUEST_BODY_BYTES
+from aleph.vm.agent.views.allocation_auth import (
+    MAX_SIGNED_PLAN_BODY_BYTES,
+    MAX_SIGNED_REQUEST_BODY_BYTES,
+)
 from aleph.vm.resources import GpuDevice, GpuDeviceClass
 from aleph.vm.supervisor_interface.types import HostInfo
 
@@ -210,6 +213,20 @@ async def test_a_plan_body_over_the_legacy_cap_reaches_the_handler(aiohttp_clien
     response = await client.post(PLAN, data=body, headers=headers)
 
     assert response.status == 202
+
+
+@pytest.mark.asyncio
+async def test_a_plan_body_over_its_own_cap_is_too_large(aiohttp_client, scheduler_auth):
+    """The route's cap is still a cap: over it, 413 and not 202, before a
+    byte of the body is read."""
+    app = _app()
+    client = await aiohttp_client(app)
+    body, headers = scheduler_auth({"vms": [], "padding": "x" * MAX_SIGNED_PLAN_BODY_BYTES}, path=PLAN)
+
+    response = await client.post(PLAN, data=body, headers=headers)
+
+    assert response.status == 413
+    app["allocation_reconciler"].submit.assert_not_called()
 
 
 @pytest.mark.asyncio
