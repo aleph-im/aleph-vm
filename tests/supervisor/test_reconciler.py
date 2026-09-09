@@ -137,6 +137,30 @@ def test_in_flight_create_is_never_an_orphan(pools, registry, monkeypatch):  # n
     assert not is_creating(VM_HASH)
 
 
+def test_a_create_that_lands_mid_walk_keeps_its_directory(pools, registry, monkeypatch):  # noqa: F811
+    """The pass runs in a worker thread while creates land on the event loop,
+    so the liveness question has to be asked again immediately before the
+    purge and not only when the directory was judged an orphan: the walk
+    that measures it takes as long as the directories are big."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    old = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    _age(old.parent, 10_000)
+    measured = reconciler_module._dir_bytes
+
+    def measure_then_create(namespace: str) -> int:
+        size = measured(namespace)
+        reconciler_module._creating[namespace] = 1
+        return size
+
+    monkeypatch.setattr(reconciler_module, "_dir_bytes", measure_then_create)
+
+    report = reconcile_storage(registry, now=NOW)
+
+    assert old.exists()
+    assert report.purged_orphans == []
+    reconciler_module._creating.clear()
+
+
 def test_creating_adopts_retained_dirs(pools, monkeypatch):  # noqa: F811
     monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
     volume(pools["pool0"], VM_HASH, "rootfs.qcow2")

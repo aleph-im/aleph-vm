@@ -439,20 +439,27 @@ def _reconcile_namespace(
     namespace = directory.name
     if not _is_orphan(directory, is_live, now, guard, dry_run=dry_run):
         return False
-    if is_live(namespace) or is_creating(namespace):
-        # A create that committed, or entered creating(), between the
-        # live snapshot and this walk.
-        logger.info("Skipping %s: a VM claimed it while this pass was walking", namespace)
-        return True
     if not dry_run and not has_namespace_dirs(namespace):
         logger.debug("Skipping %s: another pass got there first", namespace)
         return True
-    if settings.VOLUME_RETENTION == "keep":
+    keep = settings.VOLUME_RETENTION == "keep"
+    # Measured before the last liveness check rather than after it: this walks
+    # every pool the VM is on, and the answer that decides whether the disks
+    # go has to be the one taken after the longest pause, not before it.
+    freed = 0 if keep else _dir_bytes(namespace)
+    if is_live(namespace) or is_creating(namespace):
+        # A create that committed, or entered creating(), between the live
+        # snapshot and this walk. Asked here and not where _is_orphan has
+        # just asked it: a pass runs in a worker thread while creates land on
+        # the event loop, so what counts is the last answer before the
+        # directory is marked or removed.
+        logger.info("Skipping %s: a VM claimed it while this pass was walking", namespace)
+        return True
+    if keep:
         if not dry_run:
             mark_reclaimable(namespace, "orphan", now=now)
         report.marked_orphans.append(namespace)
         return True
-    freed = _dir_bytes(namespace)
     if dry_run:
         report.purged_orphans.append(namespace)
         report.bytes_freed += freed
