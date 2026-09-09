@@ -250,8 +250,17 @@ class AllocationReconciler:
                 self._forget(vm_hash)
 
     async def _start_one(self, vm_hash: ItemHash, down: VmInfo | None = None) -> None:
-        """Start a planned VM. `down` is what the supervisor holds for it when
-        it already has one, which makes this start a rebuild of a dead VM."""
+        """Start a planned VM.
+
+        `down` is what the supervisor holds for it when it already has one,
+        which makes this start a rebuild and charges it on the backoff ladder.
+        Any status that is not live counts, not only the FAILED of a guest that
+        panicked: STOPPED is resumed in place, which is cheaper than a rebuild,
+        and STOPPING is waited out and then recreated, and both climb the same
+        ladder. A guest that halt loops needs the wait as much as one that
+        panics, and the cheaper resume is no reason to let it loop at boot
+        speed forever.
+        """
         self._states[vm_hash] = AllocationState.DOWNLOADING
         try:
             await start_persistent_vm(
