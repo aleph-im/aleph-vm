@@ -465,7 +465,7 @@ In `proxy.rs` `tests` module, after the existing `attest` helper, add:
     async fn gpu_route_derives_the_nonce_from_key_and_client_nonce() {
         let state = gpu_state(Some(Arc::new(GpuState {
             source: Box::new(FakeGpu),
-            boot_claims: serde_json::json!([{"measres": "success"}]),
+            boot_claims: serde_json::json!([{"measres": "Success"}]),
             lock: tokio::sync::Mutex::new(()),
         })));
         let client_nonce = hex::encode(b"client-nonce");
@@ -479,7 +479,7 @@ In `proxy.rs` `tests` module, after the existing `attest` helper, add:
             "20e597c53ba9506fc210a99757a7aef042b6d907c5492fa4b3ae91497d5dc71b"
         );
         assert_eq!(body["gpus"][0]["arch"], "BLACKWELL");
-        assert_eq!(body["boot_claims"][0]["measres"], "success");
+        assert_eq!(body["boot_claims"][0]["measres"], "Success");
     }
 
     #[actix_web::test]
