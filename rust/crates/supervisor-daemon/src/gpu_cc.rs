@@ -7,11 +7,31 @@
 //! on Hopper, bits [1:0]). Reading it needs no driver: the card is bound to
 //! vfio-pci, and the register is reachable through the sysfs resource file.
 //! The read only ever runs on a card no VM owns, so it never races a guest.
+//! An idle card is usually runtime-suspended, and a suspended function
+//! answers MMIO with all ones, so the probe pins it awake first and treats
+//! an all-ones answer as no answer at all.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::error::DaemonError;
+
+/// How long a probed mode is served from the cache before the card is read
+/// again. The mode only changes when an operator runs NVIDIA's tool against
+/// an idle card, so a minute of staleness in the advertised inventory costs
+/// nothing, while probing on demand would let anyone who can reach the
+/// agent's capability endpoint make the host mmap device memory on every
+/// NVIDIA card it has, as often as they like.
+pub const CC_MODE_TTL: Duration = Duration::from_secs(60);
+
+/// How long a runtime-suspended card gets to come back before the register
+/// is read anyway. A card that has not resumed reads as all ones, which
+/// fails closed, so the wait is a courtesy and not a correctness bound.
+const RESUME_TIMEOUT: Duration = Duration::from_millis(200);
+
+/// How often `power/runtime_status` is re-read while waiting to resume.
+const RESUME_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -112,43 +132,51 @@ pub fn sysfs_device_dir_under(devices_dir: &Path, pci_host: &str) -> PathBuf {
     devices_dir.join(full)
 }
 
+/// An io error with the file it came from, so the caller's message names
+/// the register file and not just the errno.
+fn at_path(path: &Path, error: std::io::Error) -> std::io::Error {
+    std::io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+}
+
 /// Read one 32-bit register from a BAR0 mapping. sysfs `resourceN` files
 /// only support mmap (read() is refused for memory BARs), so map the page
 /// holding the offset and do a volatile read.
-pub fn read_bar0_u32(resource0: &Path, offset: u64) -> Result<u32, DaemonError> {
+pub fn read_bar0_u32(resource0: &Path, offset: u64) -> Result<u32, std::io::Error> {
+    use std::io::{Error, ErrorKind};
     use std::os::fd::AsRawFd as _;
 
     if !offset.is_multiple_of(4) {
-        return Err(DaemonError::GpuProbe(format!(
-            "register offset {offset:#x} is not 4-byte aligned"
-        )));
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!("register offset {offset:#x} is not 4-byte aligned"),
+        ));
     }
 
-    let file = std::fs::File::open(resource0).map_err(|error| {
-        DaemonError::GpuProbe(format!("cannot open {}: {error}", resource0.display()))
-    })?;
+    let file = std::fs::File::open(resource0).map_err(|error| at_path(resource0, error))?;
     let len = file
         .metadata()
-        .map_err(|error| {
-            DaemonError::GpuProbe(format!("cannot stat {}: {error}", resource0.display()))
-        })?
+        .map_err(|error| at_path(resource0, error))?
         .len();
     let end = offset.checked_add(4).ok_or_else(|| {
-        DaemonError::GpuProbe(format!(
-            "register offset {offset:#x} + 4 would overflow u64"
-        ))
+        Error::new(
+            ErrorKind::InvalidInput,
+            format!("register offset {offset:#x} + 4 would overflow u64"),
+        )
     })?;
     if end > len {
-        return Err(DaemonError::GpuProbe(format!(
-            "register offset {offset:#x} is past the end of {} ({len} bytes)",
-            resource0.display()
-        )));
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "register offset {offset:#x} is past the end of {} ({len} bytes)",
+                resource0.display()
+            ),
+        ));
     }
     // SAFETY: sysconf reads a constant and has no preconditions.
     let page = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
         .ok()
         .filter(|page| page.is_power_of_two())
-        .ok_or_else(|| DaemonError::GpuProbe("cannot determine the page size".to_string()))?;
+        .ok_or_else(|| Error::other("cannot determine the page size"))?;
     let base = offset & !(page - 1);
     let within = (offset - base) as usize;
     // SAFETY: a read-only shared mapping of one page of an open file; the
@@ -165,11 +193,14 @@ pub fn read_bar0_u32(resource0: &Path, offset: u64) -> Result<u32, DaemonError> 
             base as libc::off_t,
         );
         if mapped == libc::MAP_FAILED {
-            return Err(DaemonError::GpuProbe(format!(
-                "mmap of {} at {base:#x} failed: {}",
-                resource0.display(),
-                std::io::Error::last_os_error()
-            )));
+            let error = std::io::Error::last_os_error();
+            return Err(Error::new(
+                error.kind(),
+                format!(
+                    "mmap of {} at {base:#x} failed: {error}",
+                    resource0.display()
+                ),
+            ));
         }
         let value = std::ptr::read_volatile(mapped.cast::<u8>().add(within).cast::<u32>());
         libc::munmap(mapped, page as usize);
@@ -188,14 +219,140 @@ pub fn no_probe(_pci_host: &str, _device_id: &str) -> Result<Option<CcMode>, Dae
     Ok(None)
 }
 
+/// What the last probe of one card read: the mode, or `None` when the
+/// probe failed or the register held an encoding with no mode, plus when
+/// it ran. The `None` answers are cached like the modes are: they are what
+/// keeps a card that cannot be read from being probed again on every
+/// request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProbedCcMode {
+    pub mode: Option<CcMode>,
+    pub probed_at: Instant,
+}
+
+impl ProbedCcMode {
+    /// The answer a probe has just given.
+    pub fn now(mode: Option<CcMode>) -> Self {
+        Self {
+            mode,
+            probed_at: Instant::now(),
+        }
+    }
+
+    /// Whether this answer is young enough to serve without reading the
+    /// card again.
+    pub fn is_fresh(&self, ttl: Duration) -> bool {
+        self.probed_at.elapsed() < ttl
+    }
+}
+
+/// A card held out of runtime suspend for the length of one probe. The
+/// previous `power/control` value goes back on drop, so the card idles
+/// again exactly as the host had it configured.
+struct RuntimePowerHold {
+    control: PathBuf,
+    previous: String,
+}
+
+impl Drop for RuntimePowerHold {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::write(&self.control, format!("{}\n", self.previous)) {
+            tracing::warn!(
+                path = %self.control.display(),
+                previous = %self.previous,
+                %error,
+                "cannot restore the GPU runtime-PM setting; the card stays powered on"
+            );
+        }
+    }
+}
+
+/// Pin a runtime-suspended card awake for a probe. vfio-pci lets a device
+/// nobody has opened runtime-suspend, and MMIO reads to a function in
+/// D3hot come back as all ones, which the register decoder cannot tell
+/// from a real answer. Returns `None`, having written nothing, when the
+/// device exposes no runtime PM or is already active. Waits up to
+/// `timeout` for the kernel to report it active.
+fn hold_runtime_power_on(
+    device_dir: &Path,
+    timeout: Duration,
+) -> Result<Option<RuntimePowerHold>, std::io::Error> {
+    let status_path = device_dir.join("power/runtime_status");
+    let status = match std::fs::read_to_string(&status_path) {
+        Ok(status) => status,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(at_path(&status_path, error)),
+    };
+    if status.trim() == "active" {
+        return Ok(None);
+    }
+    let control_path = device_dir.join("power/control");
+    let previous = std::fs::read_to_string(&control_path)
+        .map_err(|error| at_path(&control_path, error))?
+        .trim()
+        .to_string();
+    std::fs::write(&control_path, "on\n").map_err(|error| at_path(&control_path, error))?;
+    // From here on the hold owns the restore, whatever the wait does.
+    let hold = RuntimePowerHold {
+        control: control_path,
+        previous,
+    };
+    let deadline = Instant::now() + timeout;
+    loop {
+        if std::fs::read_to_string(&status_path).is_ok_and(|status| status.trim() == "active") {
+            break;
+        }
+        if Instant::now() >= deadline {
+            tracing::warn!(
+                path = %device_dir.display(),
+                "the GPU did not leave runtime suspend in time; reading its register anyway"
+            );
+            break;
+        }
+        std::thread::sleep(RESUME_POLL_INTERVAL);
+    }
+    Ok(Some(hold))
+}
+
 /// The CC mode of one vfio-bound NVIDIA card, `None` for cards without a
 /// CC mode (other vendors, pre-Hopper) or a reserved register encoding.
 pub fn probe_cc_mode(pci_host: &str, device_id: &str) -> Result<Option<CcMode>, DaemonError> {
+    probe_cc_mode_in(
+        &sysfs_device_dir(pci_host),
+        pci_host,
+        device_id,
+        RESUME_TIMEOUT,
+    )
+}
+
+/// `probe_cc_mode` against an explicit device directory and resume budget,
+/// so a fixture tree can stand in for sysfs.
+fn probe_cc_mode_in(
+    device_dir: &Path,
+    pci_host: &str,
+    device_id: &str,
+    resume_timeout: Duration,
+) -> Result<Option<CcMode>, DaemonError> {
     let Some(arch) = arch_from_device_id(device_id) else {
         return Ok(None);
     };
-    let resource0 = sysfs_device_dir(pci_host).join("resource0");
-    let value = read_bar0_u32(&resource0, bar0_register_offset(arch))?;
+    let read_error = |source: std::io::Error| DaemonError::GpuRegisterRead {
+        pci_host: pci_host.to_string(),
+        source,
+    };
+    let _resumed = hold_runtime_power_on(device_dir, resume_timeout).map_err(read_error)?;
+    let value = read_bar0_u32(&device_dir.join("resource0"), bar0_register_offset(arch))
+        .map_err(read_error)?;
+    // A function that cannot answer (still in D3hot, a reset in flight, the
+    // card gone off the bus) reads back as all ones, and the low two bits
+    // of that are the devtools encoding. Reporting devtools for a card
+    // nobody could read would advertise confidential capacity the host has
+    // no evidence for, so an unreachable card is an error and not a mode.
+    if value == u32::MAX {
+        return Err(DaemonError::GpuUnreadable {
+            pci_host: pci_host.to_string(),
+        });
+    }
     Ok(cc_mode_from_register(value))
 }
 
@@ -284,6 +441,134 @@ mod tests {
         assert!(err.to_string().contains("aligned"));
         // Aligned offset still reads correctly.
         assert_eq!(read_bar0_u32(&path, 0x590).unwrap(), 0x101);
+    }
+
+    /// A fixture card directory: the sysfs files the probe touches.
+    fn fake_card(dir: &Path, runtime_status: Option<&str>, register: u32) -> PathBuf {
+        let device_dir = dir.join("0000:06:00.0");
+        std::fs::create_dir_all(device_dir.join("power")).unwrap();
+        if let Some(status) = runtime_status {
+            std::fs::write(
+                device_dir.join("power/runtime_status"),
+                format!("{status}\n"),
+            )
+            .unwrap();
+            std::fs::write(device_dir.join("power/control"), "auto\n").unwrap();
+        }
+        let mut bytes = vec![0u8; 0x1000];
+        bytes[0x590..0x594].copy_from_slice(&register.to_le_bytes());
+        std::fs::write(device_dir.join("resource0"), &bytes).unwrap();
+        device_dir
+    }
+
+    #[test]
+    fn an_all_ones_register_is_unreadable_rather_than_devtools() {
+        // A card in D3hot answers every MMIO read with all ones, and the
+        // low two bits of that answer are the devtools encoding. The
+        // decoder cannot tell the difference, so the probe must: an idle
+        // card would otherwise be advertised as confidential capacity in
+        // devtools mode and then refused at create.
+        assert_eq!(cc_mode_from_register(0xffff_ffff), Some(CcMode::Devtools));
+        let dir = tempfile::tempdir().unwrap();
+        let device_dir = fake_card(dir.path(), None, 0xffff_ffff);
+        let error = probe_cc_mode_in(&device_dir, "06:00.0", "10de:2b85", Duration::ZERO)
+            .expect_err("all ones must not decode to a mode");
+        let message = error.to_string();
+        assert!(message.contains("06:00.0"), "{message}");
+        assert!(message.contains("ffffffff"), "{message}");
+    }
+
+    #[test]
+    fn a_suspended_card_is_pinned_awake_and_released_afterwards() {
+        // vfio-pci lets a card nobody has opened runtime-suspend. The
+        // probe pins it awake for the read and hands the host's own
+        // setting back, so the card can idle again once the daemon is
+        // done with it.
+        let dir = tempfile::tempdir().unwrap();
+        let device_dir = fake_card(dir.path(), Some("suspended"), 0x0000_0001);
+        let control = device_dir.join("power/control");
+        {
+            let hold = hold_runtime_power_on(&device_dir, Duration::ZERO)
+                .unwrap()
+                .expect("a suspended card must be held awake");
+            assert_eq!(std::fs::read_to_string(&control).unwrap().trim(), "on");
+            drop(hold);
+        }
+        assert_eq!(
+            std::fs::read_to_string(&control).unwrap().trim(),
+            "auto",
+            "the host's runtime-PM setting must survive the probe"
+        );
+    }
+
+    #[test]
+    fn an_active_card_is_never_written_to() {
+        let dir = tempfile::tempdir().unwrap();
+        let device_dir = fake_card(dir.path(), Some("active"), 0x0000_0001);
+        assert!(
+            hold_runtime_power_on(&device_dir, Duration::ZERO)
+                .unwrap()
+                .is_none(),
+            "an active card needs no hold"
+        );
+        assert_eq!(
+            std::fs::read_to_string(device_dir.join("power/control"))
+                .unwrap()
+                .trim(),
+            "auto"
+        );
+    }
+
+    #[test]
+    fn a_device_without_runtime_pm_files_probes_as_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let device_dir = fake_card(dir.path(), None, 0x0000_0001);
+        assert_eq!(
+            probe_cc_mode_in(&device_dir, "06:00.0", "10de:2b85", Duration::ZERO).unwrap(),
+            Some(CcMode::On)
+        );
+    }
+
+    #[test]
+    fn a_suspended_card_is_resumed_before_its_register_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let device_dir = fake_card(dir.path(), Some("suspended"), 0x0000_0003);
+        assert_eq!(
+            probe_cc_mode_in(&device_dir, "06:00.0", "10de:2b85", Duration::ZERO).unwrap(),
+            Some(CcMode::Devtools)
+        );
+        assert_eq!(
+            std::fs::read_to_string(device_dir.join("power/control"))
+                .unwrap()
+                .trim(),
+            "auto"
+        );
+    }
+
+    #[test]
+    fn a_card_without_a_cc_architecture_is_never_touched() {
+        // The device-id check comes first: no runtime-PM write and no
+        // register read for a card that has no CC mode to read.
+        let dir = tempfile::tempdir().unwrap();
+        let device_dir = fake_card(dir.path(), Some("suspended"), 0xffff_ffff);
+        assert_eq!(
+            probe_cc_mode_in(&device_dir, "06:00.0", "10de:20f1", Duration::ZERO).unwrap(),
+            None
+        );
+        assert_eq!(
+            std::fs::read_to_string(device_dir.join("power/control"))
+                .unwrap()
+                .trim(),
+            "auto"
+        );
+    }
+
+    #[test]
+    fn a_probe_answer_is_fresh_only_inside_its_ttl() {
+        let answer = ProbedCcMode::now(Some(CcMode::On));
+        assert!(answer.is_fresh(CC_MODE_TTL));
+        assert!(!answer.is_fresh(Duration::ZERO));
+        assert_eq!(answer.mode, Some(CcMode::On));
     }
 
     #[test]

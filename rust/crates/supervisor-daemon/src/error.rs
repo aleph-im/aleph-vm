@@ -41,6 +41,19 @@ pub enum DaemonError {
     #[error("GPU probe failed: {0}")]
     GpuProbe(String),
 
+    #[error("cannot read the confidential-computing register of the GPU at {pci_host}: {source}")]
+    GpuRegisterRead {
+        pci_host: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "the GPU at {pci_host} answers 0xffffffff: it is powered down or off the bus, so its \
+         confidential-computing mode cannot be read"
+    )]
+    GpuUnreadable { pci_host: String },
+
     #[error("Device vendor not compatible")]
     IncompatibleGpuVendor,
 

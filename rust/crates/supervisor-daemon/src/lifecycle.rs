@@ -2119,11 +2119,11 @@ fn snp_config_slice_with(
             ))
         })?;
         {
-            let mut cache = state.gpu_cc_modes.lock().expect("gpu_cc_modes poisoned");
-            match mode {
-                Some(mode) => cache.insert(gpu.pci_host.clone(), mode),
-                None => cache.remove(&gpu.pci_host),
-            };
+            state
+                .gpu_cc_modes
+                .lock()
+                .expect("gpu_cc_modes poisoned")
+                .insert(gpu.pci_host.clone(), crate::gpu_cc::ProbedCcMode::now(mode));
         }
         if mode != Some(crate::gpu_cc::CcMode::On) {
             return Err(RpcError::InvalidBackend(format!(
@@ -4965,11 +4965,10 @@ mod tests {
             Some(crate::gpu_cc::CcMode::Off),
             Some(crate::gpu_cc::CcMode::Devtools),
         ] {
-            state
-                .gpu_cc_modes
-                .lock()
-                .unwrap()
-                .insert("06:00.0".into(), crate::gpu_cc::CcMode::On);
+            state.gpu_cc_modes.lock().unwrap().insert(
+                "06:00.0".into(),
+                crate::gpu_cc::ProbedCcMode::now(Some(crate::gpu_cc::CcMode::On)),
+            );
             let root = state.host.settings.execution_root.clone();
             let firmware = root.join("OVMF.fd");
             std::fs::write(&firmware, b"ovmf").unwrap();
@@ -5048,11 +5047,10 @@ mod tests {
         // must not admit the card: the gate reads the hardware.
         let harness = harness_with_gpus(vec![nvidia_card("06:00.0")]);
         let state = &harness.state;
-        state
-            .gpu_cc_modes
-            .lock()
-            .unwrap()
-            .insert("06:00.0".into(), crate::gpu_cc::CcMode::On);
+        state.gpu_cc_modes.lock().unwrap().insert(
+            "06:00.0".into(),
+            crate::gpu_cc::ProbedCcMode::now(Some(crate::gpu_cc::CcMode::On)),
+        );
         let root = state.host.settings.execution_root.clone();
         let firmware = root.join("OVMF.fd");
         std::fs::write(&firmware, b"ovmf").unwrap();
