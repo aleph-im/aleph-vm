@@ -211,6 +211,19 @@ async def test_a_plan_body_over_the_legacy_cap_reaches_the_handler(aiohttp_clien
 
 
 @pytest.mark.asyncio
+async def test_a_legacy_route_answers_too_large_to_a_plan_sized_body(aiohttp_client, scheduler_auth):
+    """The mirror of the test above. The legacy allocation route calls the
+    verifier directly, without the decorator, so once the app ceiling let a
+    plan-sized body through, the verifier's refusal escaped it as a 500."""
+    client = await aiohttp_client(_app())
+    body, headers = scheduler_auth({"persistent_vms": [], "padding": "x" * (MAX_SIGNED_REQUEST_BODY_BYTES + 1)})
+
+    response = await client.post("/control/allocations", data=body, headers=headers)
+
+    assert response.status == 413
+
+
+@pytest.mark.asyncio
 async def test_the_capacity_check_judges_without_touching_anything(
     aiohttp_client, scheduler_auth, signed_message, mocker
 ):

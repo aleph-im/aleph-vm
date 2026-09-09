@@ -38,7 +38,7 @@ MAX_SIGNED_REQUEST_BODY_BYTES = 1 * 1024 * 1024
 MAX_SIGNED_PLAN_BODY_BYTES = 8 * 1024 * 1024
 
 
-class RequestTooLarge(Exception):
+class RequestTooLarge(web.HTTPRequestEntityTooLarge):
     """The body exceeds the cap for this route.
 
     Its own exception rather than a False: a False means the request could
@@ -46,6 +46,11 @@ class RequestTooLarge(Exception):
     outgrew the cap looking at its key. Too large answers 413, and only for
     a signer the verifier has already accepted, so an anonymous client still
     learns nothing about the cap.
+
+    An aiohttp 413 rather than a plain exception so that a handler calling
+    the verifier directly, without the decorator, still answers 413: the
+    error middleware renders any HTTPException, and a plain exception
+    escaping such a handler was a 500.
     """
 
 
@@ -207,7 +212,7 @@ async def _verify_aleph_signature(
         if content_length is None:
             return False
         if content_length > max_body_bytes:
-            raise RequestTooLarge
+            raise RequestTooLarge(max_size=max_body_bytes, actual_size=content_length)
 
         # Body hash binding.
         body = await request.read()
@@ -292,8 +297,8 @@ def requires_allocation_auth(handler=None, *, max_body_bytes: int = MAX_SIGNED_R
         async def wrapper(request: web.Request) -> web.StreamResponse:
             try:
                 authorized = await authenticate_api_request(request, max_body_bytes=max_body_bytes)
-            except RequestTooLarge:
-                return web.HTTPRequestEntityTooLarge(max_size=max_body_bytes, actual_size=request.content_length or 0)
+            except RequestTooLarge as too_large:
+                return too_large
             if not authorized:
                 return web.HTTPUnauthorized(text="Authentication token received is invalid")
             return await handler(request)
