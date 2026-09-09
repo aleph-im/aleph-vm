@@ -490,8 +490,12 @@ fn appraise_platform_tcb(
     platform: &PckPlatform,
     body: &TdReportBody,
 ) -> Result<(TcbStatus, Vec<String>)> {
+    // Both vectors name themselves in their failures. Without the first
+    // one's context an operator reading "the platform TCB is below every
+    // level" off a 1.5 body cannot tell which of the two tripped.
     let (mut status, mut advisories) =
-        appraise_tdx_svn_vector(tcb_info, platform, body, &body.tee_tcb_svn)?;
+        appraise_tdx_svn_vector(tcb_info, platform, body, &body.tee_tcb_svn)
+            .context("appraising the TD report launch TCB vector (tee_tcb_svn)")?;
     if let Some(v15) = &body.v15 {
         let (second_status, second_advisories) =
             appraise_tdx_svn_vector(tcb_info, platform, body, &v15.tee_tcb_svn2)
@@ -760,16 +764,20 @@ mod tests {
         // must not be accepted by the default policy.
         let quote = parse_tdx_quote(QUOTE_OUTDATED).unwrap();
         let collateral = TdxCollateral::from_json(COLLATERAL_OUTDATED).unwrap();
-        let err = evaluate_tcb(
-            &quote,
-            &collateral,
-            &pck_leaf(QUOTE_OUTDATED),
-            now_outdated(),
-            &TdxTcbPolicy::default(),
-        )
-        .unwrap_err()
-        .to_string();
+        let err = format!(
+            "{:#}",
+            evaluate_tcb(
+                &quote,
+                &collateral,
+                &pck_leaf(QUOTE_OUTDATED),
+                now_outdated(),
+                &TdxTcbPolicy::default(),
+            )
+            .unwrap_err()
+        );
         assert!(err.contains("below every level"), "got: {err}");
+        // The failure names the vector that tripped, not just the walk.
+        assert!(err.contains("tee_tcb_svn)"), "got: {err}");
     }
 
     #[test]
