@@ -204,6 +204,8 @@ pub(crate) fn verify_signer_chain(chain_pem: &[u8], now: SystemTime) -> Result<X
     }
     check_signer_identity(signer)?;
 
+    // The pinned copy's window rather than the presented root's, which is
+    // the same check: the two were just established to be the same bytes.
     check_cert_window("the pinned root certificate", &pinned, &now)?;
     check_cert_window("the signer certificate", signer, &now)?;
     Ok(signer.to_owned())
@@ -283,6 +285,60 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("pinned Intel SGX Root CA"), "got: {err}");
+    }
+
+    /// A root carrying the pinned public key in a different envelope is the
+    /// one rejection that is a maintenance task rather than an attack, and
+    /// the message has to say so. Intel has never re-issued its root, so the
+    /// case is built here from the pin's own public key in a fresh
+    /// certificate; the envelope is signed with a throwaway key, which the
+    /// byte-for-byte comparison never looks at.
+    #[test]
+    fn a_root_reissued_with_the_pinned_key_asks_for_a_refresh() {
+        use openssl::asn1::Asn1Time;
+        use openssl::ec::{EcGroup, EcKey};
+        use openssl::hash::MessageDigest;
+        use openssl::pkey::PKey;
+        use openssl::x509::{X509Builder, X509NameBuilder};
+
+        let pinned = pinned_intel_root().expect("pin parses");
+        let mut subject = X509NameBuilder::new().expect("name builder");
+        subject
+            .append_entry_by_text("CN", "Intel SGX Root CA")
+            .expect("append CN");
+        let subject = subject.build();
+        let group = EcGroup::from_curve_name(openssl::nid::Nid::X9_62_PRIME256V1).expect("group");
+        let throwaway = PKey::from_ec_key(EcKey::generate(&group).expect("key")).expect("pkey");
+        let mut builder = X509Builder::new().expect("cert builder");
+        builder.set_subject_name(&subject).expect("subject");
+        builder.set_issuer_name(&subject).expect("issuer");
+        builder
+            .set_pubkey(&pinned.public_key().expect("pinned key extracts"))
+            .expect("pubkey");
+        builder
+            .set_not_before(&Asn1Time::from_unix(1_700_000_000).expect("not before"))
+            .expect("set not before");
+        builder
+            .set_not_after(&Asn1Time::from_unix(1_900_000_000).expect("not after"))
+            .expect("set not after");
+        builder
+            .sign(&throwaway, MessageDigest::sha256())
+            .expect("sign");
+        let reissued = builder.build();
+        assert_ne!(
+            reissued.to_der().unwrap(),
+            pinned.to_der().unwrap(),
+            "the re-issued envelope must differ from the pin"
+        );
+
+        let signer = cert_at(&collateral().tcb_info_issuer_chain, 0);
+        let err = verify_signer_chain(&pem_chain(&[&signer, &reissued]), now_v4())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("same public key"), "got: {err}");
+        assert!(err.contains("pin needs refreshing"), "got: {err}");
+        // And it is not confused with the forged-root case.
+        assert!(!err.contains("forged"), "got: {err}");
     }
 
     /// The PCK Platform CA is a genuine Intel certificate issued by the same
