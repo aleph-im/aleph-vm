@@ -482,7 +482,7 @@ pub fn build_confidential_argv(config: &QemuConfig, sev: SevHostInfo) -> Vec<Str
 /// the per-vCPU VMSA). The model is carried from the agent, which picks it from
 /// the message's launch measurements intersected with what this host's QEMU
 /// can launch; an absent value means `EPYC-v4`, which is what pre-`cpu_model`
-/// configs imply. See divergence 68.
+/// configs imply.
 ///
 /// `kernel-hashes=on` makes OVMF hash-verify the -kernel/-initrd/-append blobs;
 /// `policy` is rendered `hex()`-style (`0x{:x}`) from the daemon-carried u32,
@@ -1216,11 +1216,12 @@ mod tests {
         );
     }
 
-    /// The rootfs `-drive` token has no `aleph-tee` oracle (see
-    /// docs/architecture/divergences.md entry 82: the generator never emits a
-    /// disk line, `encrypted` or not), so these two shapes are asserted as
-    /// this repo's own documented contract instead of a cross-crate parity
-    /// check. Default (both keys absent) stays the read-only raw verity token.
+    /// The rootfs `-drive` token has no `aleph-tee` oracle: that crate's
+    /// launch-argv generator emits the CPU, machine, TEE objects and
+    /// firmware and never a disk line at all, `encrypted` field or not. So
+    /// these two shapes are asserted as this repo's own documented contract
+    /// instead of a cross-crate parity check. Default (both keys absent)
+    /// stays the read-only raw verity token.
     #[test]
     fn snp_rootfs_drive_defaults_to_the_readonly_raw_verity_token_when_the_override_is_absent() {
         let argv = build_snp_argv(&snp_config_with_rootfs_override(None), epyc_sev_host_info());

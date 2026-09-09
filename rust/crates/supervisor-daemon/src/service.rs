@@ -11,7 +11,7 @@
 //! holds. The lifecycle mutations live in src/lifecycle.rs, guest
 //! quiescence in src/quiesce.rs and the confidential mutations in
 //! src/confidential.rs; all run on the blocking pool. The only remaining
-//! UNIMPLEMENTED path is a persistent Firecracker CreateVm (ledger entry 39),
+//! UNIMPLEMENTED path is a persistent Firecracker CreateVm,
 //! which aborts the Python way (grpc-status UNIMPLEMENTED plus a serialized
 //! ErrorDetail, wire code INTERNAL, in the `aleph-supervisor-error-bin`
 //! trailer; the Python client keys the exception type on the status code).
@@ -161,7 +161,8 @@ pub struct DaemonState {
     /// concurrent follows would exhaust tokio's blocking pool and starve
     /// every lifecycle RPC that hops through spawn_blocking. The cap stays
     /// far below the pool size; the excess request is rejected
-    /// RESOURCE_EXHAUSTED (Rust-only bound, ledger entry 44).
+    /// RESOURCE_EXHAUSTED. Python, one asyncio task per stream, accepts
+    /// follows unboundedly and has no such thread to run out of.
     pub log_follows: Arc<tokio::sync::Semaphore>,
     /// Guests frozen through FreezeGuest (the Python `_frozen_guests`),
     /// each with the QGA socket that froze it and the generation its
@@ -292,10 +293,11 @@ impl SupervisorService {
     async fn host_info(&self) -> Result<pb::HostInfo, DaemonError> {
         let (kernel_version, hostname) = host::uname_release_and_nodename()?;
         // Available = inventory minus the GPUs the world view's controller
-        // configs attach (ledger entry 14, closed: post-#1023 Python
-        // rebuilds the attachments for VMs adopted running; the config
-        // union here also withholds adopted-STOPPED VMs' cards, which
-        // Python destroys at startup, entry 11).
+        // configs attach. Post-#1023 Python rebuilds the attachments for
+        // VMs adopted running; the config union here also withholds
+        // adopted-STOPPED VMs' cards, which Python destroys at startup and
+        // this daemon keeps. Reporting an attached card as available is how
+        // a restart invites a double attachment.
         let attached: HashSet<String> = {
             let world = self.state.world.read().await;
             attached_gpus(&world)
@@ -399,7 +401,7 @@ impl SupervisorService {
     /// Live state of one entry's controller unit, off the runtime threads
     /// (the Python `_is_running` D-Bus query equivalent). A bus failure
     /// degrades to `Unknown`: it stays "not running" like the Python
-    /// `get_services_active_states` parity behavior (ledger entry 13), and
+    /// `get_services_active_states` parity behavior, and
     /// it must never read as death, which is a claim only an answering bus
     /// can support.
     async fn unit_liveness(&self, unit: String) -> Result<UnitLiveness, Status> {
@@ -782,7 +784,7 @@ pub fn vm_info_message(
         stopped_at_ns: times.stopped_at_ns,
         confidential_mode: confidential_mode as i32,
         // `_to_vm_info` maps execution.gpus: rebuilt at adoption for
-        // running VMs (post-#1023 Python; ledger entry 14, closed) and set
+        // running VMs (post-#1023 Python) and set
         // from the validated request at create. `model` rides empty: the
         // Python HostGPU carries model=None on both paths.
         gpus: entry
@@ -947,9 +949,10 @@ fn port_forward_messages(entry: &VmEntry) -> Vec<pb::PortForwardInfo> {
     infos
 }
 
-/// Rust-only server cap on GetLogs history (ledger entry 16): the proto
-/// documents max_lines 0 as "unlimited (subject to server cap)"; Python has
-/// no cap today and buffers the whole journal.
+/// Server cap on GetLogs history: the proto documents max_lines 0 as
+/// "unlimited (subject to server cap)"; Python has no cap today and buffers
+/// the whole journal, which an operator can turn into a memory exhaustion
+/// of the daemon with one request.
 const GET_LOGS_SERVER_CAP: u32 = 10_000;
 
 /// The `-n` bound handed to journalctl. `-n` keeps the LAST n entries, so
@@ -1402,7 +1405,8 @@ impl Supervisor for SupervisorService {
             }
             let logs = self.state.logs.clone();
             let history = tokio::task::spawn_blocking(move || {
-                // Server-capped like GetLogs max_lines=0 (ledger entry 16).
+                // Server-capped like GetLogs max_lines=0, so a replay
+                // cannot buffer the whole journal.
                 logs.read_history(&stdout_id, &stderr_id, Some(GET_LOGS_SERVER_CAP))
             })
             .await
@@ -1435,7 +1439,7 @@ impl Supervisor for SupervisorService {
         };
 
         // One journalctl --follow serves both phases gap-free: the bounded
-        // history replay (server cap, ledger entry 16) when asked, then
+        // history replay (the same server cap) when asked, then
         // live entries until the client goes away.
         let last_lines = if request.include_history {
             GET_LOGS_SERVER_CAP
@@ -1490,7 +1494,9 @@ impl Supervisor for SupervisorService {
         if let crate::quiesce::FreezeOutcome::Frozen(generation) = outcome {
             // The freeze deadline: an agent that dies mid-copy must not
             // leave a guest with its filesystems frozen. Clamped like the
-            // other float-seconds settings (ledger entry 44b).
+            // other float-seconds settings, so a crafted value cannot
+            // panic Duration::from_secs_f64 and instead never fires, the
+            // way asyncio.wait_for treats it.
             let timeout_secs = state.host.settings.guest_freeze_timeout;
             let timeout = std::time::Duration::from_secs_f64(timeout_secs.clamp(0.0, 3.15e9));
             tokio::spawn(async move {
@@ -2297,8 +2303,8 @@ mod tests {
         // stopped_at was stamped at adoption, and _status_of checks
         // stopped_at first, so even a unit appearing later cannot resurrect
         // the entry (Python behaves the same for a VM stopped through
-        // StopVm whose unit is started manually; the deliberate parity
-        // wart of ledger entry 11).
+        // StopVm whose unit is started manually; a deliberate parity
+        // wart).
         let entry = fixture_entry(test_fixtures::QEMU_HASH, false);
         for live in [false, true] {
             let unit = if live {

@@ -868,8 +868,8 @@ mod tests {
     #[test]
     fn a_payload_fitting_no_union_member_fails_the_whole_config() {
         // pydantic parity: vm_configuration must validate as one union
-        // member or the whole Configuration raises (Rust: the VM is then
-        // skipped per ledger entry 12).
+        // member or the whole Configuration raises (here the VM is then
+        // logged and skipped, where Python's startup aborts).
         let json = r#"{"vm_id": 1, "vm_hash": "aa", "settings": {}, "vm_configuration": {}}"#;
         assert!(parse_controller_config(json).is_err());
     }

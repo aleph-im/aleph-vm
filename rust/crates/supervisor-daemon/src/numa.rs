@@ -194,7 +194,7 @@ impl NumaTopology {
     /// = all host CPUs, a no-op, so no drop-in is written, no daemon-reload is
     /// issued, no reservation is made, and `VmInfo.numa_node` stays None. The
     /// topology is STILL reported in `HostInfo.numa_nodes` for a single node
-    /// (that is pure reporting). See divergence 73.
+    /// (that is pure reporting, it commits the host to nothing).
     pub fn is_placement_active(&self) -> bool {
         self.nodes.len() > 1
     }

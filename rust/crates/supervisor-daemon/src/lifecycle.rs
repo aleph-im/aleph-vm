@@ -496,7 +496,7 @@ pub fn reconcile_numa_ledger(state: &DaemonState) {
 }
 
 /// Python `_is_running` for one persistent execution: a batched-state
-/// lookup that degrades to "inactive" on a bus failure (ledger entry 13).
+/// lookup that degrades to "inactive" on a bus failure.
 fn unit_active(state: &DaemonState, unit: &str) -> bool {
     match state
         .units
@@ -544,7 +544,7 @@ pub(crate) fn entry_running(state: &DaemonState, entry: &VmEntry) -> bool {
 
 /// The live state of one entry's controller unit, one batched lookup. A bus
 /// failure degrades to `Unknown` rather than `Dead`: "the guest died" is a
-/// claim only an answering bus can support (ledger entry 13). An ephemeral
+/// claim only an answering bus can support. An ephemeral
 /// program runs under no unit and has nothing to ask about.
 fn entry_liveness(state: &DaemonState, entry: &VmEntry) -> UnitLiveness {
     if entry.is_program {
@@ -871,8 +871,7 @@ fn stop_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
             // SNP measured VMs ran a per-tap DHCP server; tear it down with
             // the tap (idempotent, SNP only). Covers StopVm and
             // delete_tracked_vm, which both route through here. Plain and SEV
-            // VMs never started one, so this is a no-op for them (ledger entry
-            // 77).
+            // VMs never started one, so this is a no-op for them.
             if entry.config.snp().is_some()
                 && let Err(dhcp_error) = state
                     .dhcp
@@ -1151,7 +1150,8 @@ fn start_vm_execution_marked(
         nft_setup_vm(state, entry.vm_index, &tap.device_name)?;
         // Stop tore the SNP per-tap DHCP server down with the tap and nft
         // rules; recreate it with them, or the rebooting measured guest
-        // (whose cmdline has no `ip=`, ledger entry 78) can never lease its
+        // (whose cmdline has no `ip=`, by measurement design) can never
+        // lease its
         // IP and attestation is unreachable. `DhcpBackend::start` replaces a
         // leftover unit, so a partial stop cannot fail this start.
         if entry.config.snp().is_some() {
@@ -1510,7 +1510,8 @@ fn update_port_redirects(
     if entry.is_program && entry.ipv4.is_none() {
         // Python: update_port_redirects dereferences vm.tap_interface,
         // which is None for a program created without internet_access; the
-        // AttributeError aborts INTERNAL (text differs, ledger entry 33).
+        // AttributeError aborts INTERNAL (the message text differs, which
+        // nothing pins).
         return Err(RpcError::Internal(format!(
             "VM {vm_id} has no tap interface; cannot change port redirects"
         )));
@@ -2370,7 +2371,9 @@ fn snp_config_slice_with(
     // (`rootfs.ext4.roothash` / `rootfs.ext4.verity`) and the aleph-cvm donor's
     // `ensure_verity` uses. With no agent cmdline, the measured cmdline is
     // DERIVED here from the roothash, exactly as the donor's
-    // `build_kernel_cmdline` does. See divergence 68.
+    // `build_kernel_cmdline` does. There is no Python oracle for SNP: its
+    // controller never emitted an SNP guest object, so the donor and the
+    // measured image are the reference here.
     // Bound the sidecar read: a real dm-verity roothash is ~64 hex chars, so a
     // 4 KiB cap is generous. A pathological sidecar (the node builds its own
     // image, but defense in depth) cannot then load unbounded into RAM; an
@@ -2513,8 +2516,8 @@ fn snp_config_slice_with(
 /// Python's int is signed and arbitrary precision; a SEV policy is a small
 /// unsigned bitfield (`sev_policy: u32`). A syntactically valid but negative
 /// (`"-5"`) or `> u32::MAX` value, which Python would accept, cannot be
-/// represented and is rejected INTERNAL rather than silently truncated
-/// (ledger entry 49); such a policy is not reachable from a real agent.
+/// represented and is rejected INTERNAL rather than silently truncated;
+/// such a policy is not reachable from a real agent.
 fn parse_sev_policy(policy: &str) -> Result<u32, RpcError> {
     parse_int_base0(policy)
         .and_then(|value| u32::try_from(value).ok())
@@ -3136,8 +3139,9 @@ fn create_vm_inner(
                 nft_setup_vm(state, vm_index, &tap.device_name)?;
                 // SNP measured VMs get their IPv4 via a per-tap DHCP server, not
                 // cloud-init static config: the measured image DHCPs and its
-                // cmdline omits `ip=` for measurement determinism (ledger entry
-                // 77). The tap already carries the gateway address (create_tap
+                // cmdline omits `ip=` so the launch measurement stays
+                // host-independent. The tap already carries the gateway
+                // address (create_tap
                 // added host_ipv4_cidr), so dnsmasq can bind and route. Plain and
                 // SEV VMs skip this and keep their cloud-init static config.
                 if snp {
@@ -3232,7 +3236,7 @@ fn create_vm_inner(
             let _net = net_lock(state);
             // Tear the per-tap DHCP server down alongside the tap (SNP only,
             // idempotent): a failed SNP boot must not leave a dnsmasq bound to
-            // a tap that is about to be deleted (ledger entry 77).
+            // a tap that is about to be deleted.
             if snp
                 && let Err(dhcp_error) = state.dhcp.stop(
                     &vm_id,
@@ -3529,7 +3533,7 @@ pub fn run_program_code(
     // grpc_server.py:158 msgpack.unpackb-validates the scope BEFORE touching
     // the VM (invalid msgpack aborts INTERNAL even for unknown vm_ids); on
     // success the original bytes are still forwarded untouched (the
-    // pass-through of ledger entry 38 is shape-checked, never re-encoded).
+    // opaque pass-through is shape-checked, never re-encoded).
     crate::firecracker::validate_msgpack(scope_msgpack)?;
     // The vm_lock stands in for the Python `becomes_ready` wait: CreateVm
     // holds it through the whole boot, so acquiring it means the boot
@@ -3599,8 +3603,8 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
                 .map(|unit| (unit.clone(), false))
                 .collect()
         });
-    // Rederive missing IP assignments before filtering (ledger entry 24,
-    // closed): entries adopted during a bus outage carry no derived IPs
+    // Rederive missing IP assignments before filtering: entries adopted
+    // during a bus outage carry no derived IPs
     // (world.rs stamps nothing when unit states are unknown), and without
     // this an operator could not heal their chains through RecreateNetwork.
     // tap_assignment derives from vm_index/vm_hash (both known) and stores
@@ -4719,10 +4723,9 @@ mod tests {
     fn create_snp_allocates_the_v_program_ipv6_hextet() {
         // The static IPv6 scheme keys a vm-type hextet into the /124
         // (world::VmType::prefix). SEV-SNP is the V-PROGRAM's exclusive
-        // launch path (docs/plans/2026-07-11-vprogram-scheduler-support-
-        // design.md section 2), so an SNP create must get the 0x4 nibble
-        // (Python VmType.v_program / scheduler VmType::ipv6_value()), not
-        // the plain-instance 0x3 it used to get before VmType::VProgram
+        // launch path, so an SNP create must get the 0x4 nibble (Python
+        // VmType.v_program / scheduler VmType::ipv6_value()), not the
+        // plain-instance 0x3 it used to get before VmType::VProgram
         // existed.
         let harness = harness();
         let state = &harness.state;
@@ -7644,7 +7647,7 @@ mod tests {
         assert!(events.try_recv().is_err());
     }
 
-    // ── Reattach retry loop (ledger entry 23, closed with increment 4) ──
+    // ── Reattach retry loop ──────────────────────────────────────────
 
     /// A hidden VM as adoption leaves it: config on disk, vm_index claim
     /// reserved, queued for background retry.
@@ -7847,7 +7850,7 @@ mod tests {
         assert_eq!(queued.attempts, 1);
     }
 
-    // ── RecreateNetwork IP rederivation (ledger entry 24, closed) ───────
+    // ── RecreateNetwork IP rederivation ─────────────────────────────────
 
     #[test]
     fn recreate_network_rederives_ips_after_a_bus_outage_adoption() {

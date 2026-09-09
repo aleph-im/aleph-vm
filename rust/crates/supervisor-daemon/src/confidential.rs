@@ -2,15 +2,14 @@
 //! `LocalSupervisor.initialize_confidential` / `get_measurement` /
 //! `inject_secret` (src/aleph/vm/supervisor/local.py).
 //!
-//! Scope (design doc section 7 row 6, "Confidential stubs"): the daemon does
-//! the non-hardware work exactly as Python does. `initialize_confidential`
+//! Scope: the daemon does the non-hardware work exactly as Python does. `initialize_confidential`
 //! writes the owner's SEV session certificates and starts the controller
 //! unit (no SEV hardware involved). `get_measurement` and `inject_secret` are
 //! QMP passthrough to a running confidential QEMU: the protocol is ported
 //! (src/qmp.rs), but the SEV data path only answers on an SEV host, so those
 //! two are HARDWARE-GATED like the Python Tier-2 path. The real attestation
 //! stack is Phase 3 (aleph-cvm); nothing here invents SEV behavior beyond
-//! what Python already performs. See ledger entry 49 for the boundary.
+//! what Python already performs.
 
 use std::path::PathBuf;
 
