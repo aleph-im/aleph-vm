@@ -108,8 +108,16 @@ def _check_cmdline_tokens(value: str, fixed_tokens: frozenset[str]) -> None:
     placeholder must be one of `fixed_tokens` (closed set); a token that
     carries a placeholder must be exactly `key={placeholder}`, with the key
     pinned per placeholder by CMDLINE_PLACEHOLDER_KEYS, and nothing glued
-    onto either side."""
+    onto either side. No token may appear twice: the daemon's sidecar
+    allowlist admits a fixed token once, so a repeated one would pass here
+    and fail at create, and the manifest is meant to be the single source
+    of truth for what boots."""
+    seen: set[str] = set()
     for token in value.split():
+        if token in seen:
+            msg = f"cmdline token {token!r} appears more than once"
+            raise ValueError(msg)
+        seen.add(token)
         if "{" not in token and "}" not in token:
             if token not in fixed_tokens:
                 msg = f"unknown fixed cmdline token {token!r}; allowed: {sorted(fixed_tokens)}"

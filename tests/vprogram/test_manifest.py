@@ -138,6 +138,24 @@ REJECTION_CASES: list[tuple[str, Callable[[dict[str, Any]], None]]] = [
             cmdline_template="console=ttyS0 root=/dev/mapper/verity-root ro rdinit={platform_roothash}"
         ),
     ),
+    (
+        "fixed token repeated",
+        lambda d: d["boot"].update(
+            cmdline_template=(
+                "console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash} "
+                "swiotlb=262144 swiotlb=262144"
+            )
+        ),
+    ),
+    (
+        "placeholder token repeated",
+        lambda d: d["boot"].update(
+            cmdline_template=(
+                "console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash} "
+                "roothash={platform_roothash}"
+            )
+        ),
+    ),
 ]
 
 
