@@ -130,10 +130,12 @@ jobs:
             echo "run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # Inputs that can move gpuMeasurement: the GPU-only files, plus the
-          # shared ones the GPU chain also builds from (flake, lock, kernel
-          # recipe and base fragment, initrd recipe, init-common.sh) and the
-          # golden file itself.
+          # Inputs that can move gpuMeasurement: the GPU-only files, the
+          # shared ones the GPU chain also builds from (flake, lock, OVMF,
+          # kernel recipe and base fragment, initrd recipe, init-common.sh),
+          # the attest-agent's measured source set (the same one the trigger
+          # paths above name) and the golden file itself. An entry with a
+          # trailing slash matches everything under it.
           gpu_inputs="
           nix/nvidia.nix
           nix/nvat.nix
@@ -144,16 +146,24 @@ jobs:
           nix/golden-measurements.json
           nix/flake.nix
           nix/flake.lock
+          nix/ovmf.nix
           nix/kernel.nix
           nix/kernel-config.fragment
           nix/initrd.nix
           nix/init-common.sh
+          rust/Cargo.toml
+          rust/crates/aleph-attest-agent/
+          rust/crates/aleph-tee/
           "
           changed="$(git diff --name-only "$BASE_SHA"...HEAD)"
           echo "Changed files:"
           echo "$changed"
           for f in $gpu_inputs; do
-            if echo "$changed" | grep -qxF "$f"; then
+            case "$f" in
+              */) hit="$(echo "$changed" | grep -c "^$f" || true)" ;;
+              *) hit="$(echo "$changed" | grep -cxF "$f" || true)" ;;
+            esac
+            if [ "$hit" -gt 0 ]; then
               echo "GPU chain: $f changed."
               echo "run=true" >> "$GITHUB_OUTPUT"
               exit 0
