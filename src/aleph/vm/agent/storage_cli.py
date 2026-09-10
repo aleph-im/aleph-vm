@@ -58,7 +58,7 @@ from pydantic import ValidationError
 
 from aleph.vm import storage_pools
 from aleph.vm.agent import metrics
-from aleph.vm.agent.cli import initialise_database
+from aleph.vm.agent.cli import LOG_LEVEL_NAMES, initialise_database
 from aleph.vm.agent.vm.cache import cache_budget_bytes, cache_entries, cache_roots
 from aleph.vm.agent.vm.purge import purge_vm_storage
 from aleph.vm.agent.vm.reclaimable import (
@@ -112,11 +112,6 @@ READ_ONLY_COMMANDS = frozenset({"status", "list"})
 # line.
 _LOG_HANDLER_NAME = "aleph-vm-storage-cli"
 
-# Validated against --loglevel: an unknown name must be a clean argparse
-# usage error (exit 2), not a raw ValueError traceback out of
-# logging.Logger.setLevel.
-_LOG_LEVEL_NAMES = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
-
 logger = logging.getLogger(__name__)
 
 
@@ -136,13 +131,13 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "--loglevel",
         dest="loglevel",
         type=str.upper,
-        choices=_LOG_LEVEL_NAMES,
+        choices=LOG_LEVEL_NAMES,
         # SUPPRESS, not a real default: this parser also runs as a subparser
         # of the agent CLI, whose own --loglevel and -v/-vv write the same
         # destination, and a subparser default overwrites what the parent
         # already parsed.
         default=argparse.SUPPRESS,
-        help="Log level by name (DEBUG, INFO, WARNING, ERROR); INFO by default",
+        help="Log level by name (DEBUG, INFO, WARNING, ERROR, CRITICAL); INFO by default",
     )
     sub = parser.add_subparsers(dest="storage_command", required=True)
     sub.add_parser("status", help="per-pool and per-cache usage against the budgets")

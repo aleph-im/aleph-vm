@@ -21,6 +21,12 @@ from .custom_logs import setup_handlers
 logger = logging.getLogger(__name__)
 
 
+# Validated against --loglevel, here and on the storage subcommand: an
+# unknown name must be a clean argparse usage error (exit 2), not a raw
+# ValueError traceback out of logging.Logger.setLevel further down.
+LOG_LEVEL_NAMES = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
+
 def parse_args(args):
     parser = argparse.ArgumentParser(
         prog="aleph-vm",
@@ -127,11 +133,12 @@ def parse_args(args):
         "--loglevel",
         dest="loglevel",
         type=str.upper,
+        choices=LOG_LEVEL_NAMES,
         # -v/--verbose is registered first and already supplies the default,
         # so this one must not offer a second one: argparse would keep the
         # first anyway, and SUPPRESS says so out loud.
         default=argparse.SUPPRESS,
-        help="Log level by name (DEBUG, INFO, WARNING, ERROR)",
+        help="Log level by name (DEBUG, INFO, WARNING, ERROR, CRITICAL)",
     )
     subparsers = parser.add_subparsers(dest="command")
     # Imported here rather than at module scope: storage_cli imports this

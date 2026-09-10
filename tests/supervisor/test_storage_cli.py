@@ -463,7 +463,13 @@ def plumbing(tmp_path, monkeypatch, registry):
     database = tmp_path / "executions.sqlite3"
     database.touch()
     monkeypatch.setattr(settings, "EXECUTION_DATABASE", database)
-    return database
+    # An env file the CLI loads rebuilds every field of the settings
+    # singleton, not only the ones a test monkeypatched, so the whole
+    # namespace is put back rather than trusting the two patches to cover it.
+    snapshot = dict(settings.__dict__)
+    yield database
+    settings.__dict__.clear()
+    settings.__dict__.update(snapshot)
 
 
 def test_the_env_file_reaches_the_settings(tmp_path, monkeypatch, isolated_environ, plumbing):
@@ -622,3 +628,31 @@ def test_an_unknown_loglevel_is_a_usage_error_not_a_traceback(capsys):
 
     assert exit_info.value.code == 2
     assert "--loglevel" in capsys.readouterr().err
+
+
+def test_the_agent_level_loglevel_is_validated_the_same_way(capsys):
+    """The flag exists on the agent parser too, ahead of the subcommand, and
+    `aleph-vm --loglevel verbos storage status` reached the same setLevel
+    traceback after the storage parser's own flag had been fixed."""
+    with pytest.raises(SystemExit) as exit_info:
+        agent_cli.parse_args(["--loglevel", "verbos", "storage", "status"])
+
+    assert exit_info.value.code == 2
+    assert "--loglevel" in capsys.readouterr().err
+
+
+def test_a_write_verb_creates_a_missing_database(pools, tmp_path, monkeypatch, caplog):  # noqa: F811
+    """status and list refuse a missing database; reconcile creates it, since
+    a fresh node has no file at all and the pass has to record what it
+    does. This runs the real table creation and migrations."""
+    database = tmp_path / "executions.sqlite3"
+    monkeypatch.setattr(settings, "EXECUTION_DATABASE", database)
+    monkeypatch.setattr(cli, "DEFAULT_ENV_FILE", tmp_path / "no-such-file.env")
+    monkeypatch.setattr(type(settings), "setup", lambda _self: None)
+    monkeypatch.setattr(storage_pools, "setup_pools", lambda: None)
+
+    with caplog.at_level(logging.INFO, logger=cli.logger.name):
+        assert cli.main(["reconcile", "--dry-run"]) == 0
+
+    assert database.exists()
+    assert any("Creating the agent database" in record.message for record in caplog.records)
