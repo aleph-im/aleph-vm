@@ -317,6 +317,12 @@ class Settings(BaseSettings):
         description="Cap on each download cache (runtime, code, data, message): a percentage of the "
         "filesystem the cache sits on or an absolute size.",
     )
+    UNKNOWN_LENGTH_RESERVE: str = Field(
+        default="2G",
+        description="Room held in a download cache for a response that carries no Content-Length, "
+        "as a percentage of the filesystem the cache sits on or an absolute size. Never more than "
+        "the download's own cap or the cache budget.",
+    )
 
     HOST_MEMORY_RESERVED_MIB: int = Field(
         default=2048,
@@ -616,7 +622,7 @@ class Settings(BaseSettings):
         if self.ENABLE_GPU_SUPPORT:
             assert self.ENABLE_QEMU_SUPPORT, "Qemu Support is needed for GPU support and it's disabled, "
 
-        for setting_name in ("VOLUME_RETENTION_BUDGET", "CACHE_BUDGET"):
+        for setting_name in ("VOLUME_RETENTION_BUDGET", "CACHE_BUDGET", "UNKNOWN_LENGTH_RESERVE"):
             try:
                 parse_budget(getattr(self, setting_name), 0)
             except ValueError as error:

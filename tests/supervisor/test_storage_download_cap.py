@@ -227,13 +227,13 @@ async def test_an_admitted_download_is_reserved_until_the_part_is_gone(tmp_path)
 
     async def fake_chunks(url, part, max_bytes=None):
         # What download_file_in_chunks does once the admission hook returns.
-        storage_module.reserve_download(part, max_bytes)
+        storage_module.reserve_download(part, max_bytes, measured=True)
         reserved_mid_download.update(storage_module.reserved_downloads())
 
     with patch("aleph.vm.storage.download_file_in_chunks", side_effect=fake_chunks):
         await download_file("http://x/f", tmp_path / "f", max_bytes=999)
 
-    assert reserved_mid_download == {tmp_path / "f.part": 999}
+    assert reserved_mid_download == {tmp_path / "f.part": storage_module.DownloadReservation(999, measured=True)}
     assert storage_module.reserved_downloads() == {}
 
 

@@ -438,7 +438,8 @@ kilobytes of JSON each, so it never approaches a budget sized for runtime
 images, and one setting is one thing for an operator to reason about. A root's
 usage is its finished entries plus what it owes to downloads that have not
 finished (`in_flight_bytes`): the allocated blocks of `.part` and `.tmp`
-files, and the size any admitted download was promised.
+files, and the size any admitted download was promised (the greater of the
+two for a download still being written, never their sum).
 
 The pass evicts least recently used first, mtime being a real
 signal because the downloader touches an entry on every cache hit
@@ -502,9 +503,17 @@ ceiling for a runtime image and equally the ceiling for a few kilobytes of
 manifest, so charging it as a size would evict a whole cache root for a
 download that never needed the room. An unknown-length download therefore
 never evicts, is refused only when the root is already over its budget, and
-is charged `min(cap, budget)`: bounded, so a stream of them still runs the
-root over budget and the next one is refused, and never more than the budget
-itself. What is admitted is then charged to
+is charged `UNKNOWN_LENGTH_RESERVE` (2 GiB by default), never more than its
+own cap nor than the whole budget. The reserve is a modest, deliberately
+arbitrary figure: charging the budget itself let one chunked response hold a
+whole root, so every other download on it was refused for as long as that one
+ran. It is still charged against the next admission, so a stream of
+unknown-length downloads ends in a refusal, and it is reconciled against the
+truth as the body lands, since the bytes on disk are counted the moment they
+are written. A ceiling never sets the eviction target either: a root's usage
+counts a guessed reservation only at the bytes it has actually written when
+the question is how much to evict, and at the full figure when the question
+is whether the next download fits. What is admitted is then charged to
 the download's `.part` path (`reserve_download`) until `download_file`
 releases it, so a second create arriving while the first is still writing
 sees the room the first was promised rather than only the bytes it has
@@ -534,6 +543,7 @@ budget as it stands.
 | `VOLUME_RECONCILE_INTERVAL` | `3600` | Seconds between periodic passes |
 | `VOLUME_CREATE_GUARD` | `600` | Seconds a young directory or `.part` file is assumed to be an in-flight create |
 | `CACHE_BUDGET` | `20%` | Cap on each download cache (runtime, code, data, message) |
+| `UNKNOWN_LENGTH_RESERVE` | `2G` | Room held for a download whose response carries no `Content-Length` |
 
 `keep` is not a promise of "forever": reclaimable disks are unpaid storage,
 and an attacker does not need to stop paying to create them (create, forget,
