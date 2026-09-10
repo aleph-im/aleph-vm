@@ -17,13 +17,61 @@ use std::time::{Duration, Instant};
 
 use crate::error::DaemonError;
 
-/// How long a probed mode is served from the cache before the card is read
-/// again. The mode only changes when an operator runs NVIDIA's tool against
-/// an idle card, so a minute of staleness in the advertised inventory costs
-/// nothing, while probing on demand would let anyone who can reach the
-/// agent's capability endpoint make the host mmap device memory on every
-/// NVIDIA card it has, as often as they like.
-pub const CC_MODE_TTL: Duration = Duration::from_secs(60);
+/// Default length, in seconds, of the window a cached answer that decoded
+/// to a mode is served for. A card's mode only changes when an operator
+/// runs NVIDIA's tool against an idle card, a handful of times in the life
+/// of a node, and nothing the daemon decides rests on the cache being
+/// current: the create and start gates read the hardware themselves, a stop
+/// or a delete forgets the card's entry, and a restart begins with an empty
+/// cache. So the window only has to cover "an idle card was re-moded and
+/// nothing on this node stopped or was deleted since", and an hour of that
+/// costs far less than waking every idle card out of runtime suspend once a
+/// minute for the rest of the node's life. Operators who re-mode cards
+/// often can shorten it with `ALEPH_VM_GPU_CC_MODE_TTL`.
+pub const DEFAULT_CC_MODE_TTL_SECS: u64 = 3600;
+
+/// How long an answer that carries no mode (the probe errored, the register
+/// read all ones, the encoding is reserved) is served before the card is
+/// read again. Deliberately not a setting: this is transient handling
+/// rather than an operator policy. An operator's mode change ends in a card
+/// reset, and a sweep landing during the reset reads all ones and caches
+/// "unreadable"; held for the long window, that one blink would hide a
+/// perfectly good card for an hour. A minute is still long enough to serve
+/// the reason failed answers are cached at all, which is to keep a card
+/// that cannot be read from being probed again on every request.
+pub const UNREADABLE_CC_MODE_TTL: Duration = Duration::from_secs(60);
+
+/// How long each kind of cached answer is served before its card is read
+/// again. Both windows do the same job for the unauthenticated host-info
+/// path: a card is read at most once per window whatever the request rate,
+/// so nobody who can reach the agent's capability endpoint can make the
+/// host mmap device memory on demand. Only the length differs, because a
+/// decoded mode stays true far longer than a failed read stays worth
+/// believing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CcCacheWindows {
+    /// For an answer that decoded to a mode.
+    pub mode: Duration,
+    /// For an answer that carries no mode.
+    pub unreadable: Duration,
+}
+
+impl CcCacheWindows {
+    /// The windows a running daemon serves under: the configured long one
+    /// for a decoded mode, the fixed short one for an answer without one.
+    pub fn with_mode_ttl(mode: Duration) -> Self {
+        Self {
+            mode,
+            unreadable: UNREADABLE_CC_MODE_TTL,
+        }
+    }
+
+    /// The shortest window any cached answer can be held under, which is
+    /// how long a decision taken over the whole cache at once stays true.
+    pub fn shortest(self) -> Duration {
+        self.mode.min(self.unreadable)
+    }
+}
 
 /// How long a runtime-suspended card gets to come back before the register
 /// is read anyway. A card that has not resumed reads as all ones, which
@@ -240,9 +288,18 @@ impl ProbedCcMode {
     }
 
     /// Whether this answer is young enough to serve without reading the
-    /// card again.
-    pub fn is_fresh(&self, ttl: Duration) -> bool {
-        self.probed_at.elapsed() < ttl
+    /// card again. Which window applies is the answer's own business: a
+    /// decoded mode gets the long one, an answer with no mode the short
+    /// one, so a card that read as unreadable while it was being reset
+    /// comes back on its own within the minute instead of staying hidden
+    /// for the length of the long window.
+    pub fn is_fresh(&self, windows: CcCacheWindows) -> bool {
+        let window = if self.mode.is_some() {
+            windows.mode
+        } else {
+            windows.unreadable
+        };
+        self.probed_at.elapsed() < window
     }
 }
 
@@ -635,10 +692,17 @@ mod tests {
     }
 
     #[test]
-    fn a_probe_answer_is_fresh_only_inside_its_ttl() {
+    fn a_probe_answer_is_fresh_only_inside_its_window() {
         let answer = ProbedCcMode::now(Some(CcMode::On));
-        assert!(answer.is_fresh(CC_MODE_TTL));
-        assert!(!answer.is_fresh(Duration::ZERO));
+        assert!(
+            answer.is_fresh(CcCacheWindows::with_mode_ttl(Duration::from_secs(
+                DEFAULT_CC_MODE_TTL_SECS
+            )))
+        );
+        assert!(!answer.is_fresh(CcCacheWindows {
+            mode: Duration::ZERO,
+            unreadable: Duration::ZERO,
+        }));
         assert_eq!(answer.mode, Some(CcMode::On));
     }
 

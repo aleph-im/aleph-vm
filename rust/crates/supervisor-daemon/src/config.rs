@@ -186,6 +186,16 @@ pub struct Settings {
     /// unset bounds the reservation by total RAM minus the per-node headroom.
     /// Only read when `numa_hugepages` is on. Rust-only (no Python oracle).
     pub numa_hugepages_limit_mb: Option<u64>,
+
+    /// ALEPH_VM_GPU_CC_MODE_TTL, in SECONDS, default
+    /// [`crate::gpu_cc::DEFAULT_CC_MODE_TTL_SECS`] (3600). How long a GPU
+    /// confidential-computing mode that was read successfully is served
+    /// from the cache before the card is read again. The read wakes an idle
+    /// card out of runtime suspend, so this is the rate at which host-info
+    /// polling touches idle hardware; shorten it on a node whose cards are
+    /// re-moded often. An answer that carries no mode is held for a fixed
+    /// minute instead, whatever this says. Rust-only (no Python oracle).
+    pub gpu_cc_mode_ttl: u64,
 }
 
 /// conf.py DnsResolver: how DNS_NAMESERVERS is derived when unset.
@@ -374,6 +384,9 @@ impl Settings {
             .get_u32("NUMA_HUGEPAGES_HEADROOM_MB")?
             .unwrap_or(crate::hugepages::DEFAULT_HEADROOM_MB);
         let numa_hugepages_limit_mb = env.get_u64("NUMA_HUGEPAGES_LIMIT_MB")?;
+        let gpu_cc_mode_ttl = env
+            .get_u64("GPU_CC_MODE_TTL")?
+            .unwrap_or(crate::gpu_cc::DEFAULT_CC_MODE_TTL_SECS);
         let dns_resolution = match env.get("DNS_RESOLUTION") {
             None => DnsResolution::Detect,
             Some(value) if value == "detect" => DnsResolution::Detect,
@@ -428,6 +441,7 @@ impl Settings {
             numa_hugepages,
             numa_hugepages_headroom_mb,
             numa_hugepages_limit_mb,
+            gpu_cc_mode_ttl,
         })
     }
 

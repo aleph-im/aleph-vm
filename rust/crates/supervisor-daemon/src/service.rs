@@ -182,7 +182,8 @@ pub struct DaemonState {
     /// VM owns is entered as CC-on without a read, on the gate's word. A
     /// card never probed has no entry; a card whose last probe failed has
     /// an entry with no mode, which advertises nothing and holds the retry
-    /// off until the entry goes stale.
+    /// off until the entry goes stale, which happens sooner than it does
+    /// for a decoded mode (see `gpu_cc::CcCacheWindows`).
     pub gpu_cc_modes: std::sync::Mutex<HashMap<String, crate::gpu_cc::ProbedCcMode>>,
     /// How a card's CC mode is read: the BAR0 register in production,
     /// `gpu_cc::no_probe` on hermetic state so tests never open sysfs.
@@ -200,8 +201,12 @@ pub struct DaemonState {
 }
 
 /// The attached set the last CC-mode sweep saw, and when it ran. A sweep
-/// against an unchanged set within `gpu_cc::CC_MODE_TTL` is skipped whole,
-/// which is the cheap outer gate over the per-card freshness check inside.
+/// against an unchanged set within the shortest of the cache windows
+/// (`gpu_cc::CcCacheWindows::shortest`) is skipped whole, which is the
+/// cheap outer gate over the per-card freshness check inside. It is the
+/// shortest window and not the longest because one decision covers every
+/// card here, so it must not outlive the tier of the card that ages out
+/// first.
 #[derive(Debug, Default)]
 pub struct CcSweep {
     pub attached: HashSet<String>,
@@ -460,11 +465,14 @@ pub fn cc_mode_of(state: &DaemonState, pci_host: &str) -> Option<crate::gpu_cc::
 /// all. Runs on the blocking pool: mmap of a BAR is a syscall against
 /// device memory.
 pub fn refresh_cc_modes(state: &DaemonState) {
-    refresh_cc_modes_with(state, state.gpu_cc_probe, crate::gpu_cc::CC_MODE_TTL);
+    let windows = crate::gpu_cc::CcCacheWindows::with_mode_ttl(std::time::Duration::from_secs(
+        state.host.settings.gpu_cc_mode_ttl,
+    ));
+    refresh_cc_modes_with(state, state.gpu_cc_probe, windows);
 }
 
-/// `refresh_cc_modes` over an explicit probe and freshness window, so unit
-/// tests can hand in a closure that records what was probed and decide
+/// `refresh_cc_modes` over an explicit probe and explicit cache windows, so
+/// unit tests can hand in a closure that records what was probed and decide
 /// whether the last sweep and each card's last answer count as fresh.
 ///
 /// One pass at a time. The pass lock is taken before the world guard (a
@@ -488,23 +496,32 @@ pub fn refresh_cc_modes(state: &DaemonState) {
 /// (stale suspended cards) x 200 ms, and tokio's RwLock is
 /// write-preferring, so a CreateVm arriving mid-pass waits that long. What
 /// keeps that off the hot path is the freshness window below: a given card
-/// is read at most once a minute, whatever the request rate.
+/// is read at most once per the window its own last answer falls under,
+/// whatever the request rate.
 ///
-/// Two gates share the one `ttl`. The outer one skips the sweep whole when
-/// it last ran against the same attached set less than `ttl` ago: nothing
-/// the daemon does can have changed an answer since. The inner one skips
-/// any single card whose own last answer is younger than `ttl`, which is
-/// what covers a sweep the outer gate let through because some other card
-/// changed hands. Host info is served on an unauthenticated path, and
-/// reading device memory once per request is both a needless cost and a
-/// lever an outsider gets to pull; the mode itself only changes when an
-/// operator runs NVIDIA's tool against an idle card, which no request can
-/// do. The create gate does not come through here: it always reads the
-/// card.
+/// Two gates, over different windows. The outer one skips the sweep whole
+/// when it last ran against the same attached set less than
+/// `windows.shortest()` ago. It is one decision for every card at once, so
+/// it cannot be allowed to outlive the shortest tier any of them is held
+/// under: gated on the long window instead, a card cached as unreadable
+/// would sit behind the pass gate for an hour, and the short tier that is
+/// meant to bring it back within the minute would never be reached. The
+/// inner one skips any single card whose own last answer is fresh under
+/// its own tier, and that is where the long window for a decoded mode
+/// actually pays. Walking the cache to check every entry against its own
+/// tier before skipping the pass would be equally correct and buy nothing
+/// back, since the per-card gate walks the same cards anyway; the price of
+/// the short outer gate is one walk over the inventory with no register
+/// reads per short window. Host info is served on an unauthenticated path,
+/// and reading device memory once per request is both a needless cost and
+/// a lever an outsider gets to pull; both windows bound that the same way,
+/// and the mode itself only changes when an operator runs NVIDIA's tool
+/// against an idle card, which no request can do. The create gate does not
+/// come through here: it always reads the card.
 fn refresh_cc_modes_with(
     state: &DaemonState,
     probe: impl Fn(&str, &str) -> Result<Option<crate::gpu_cc::CcMode>, DaemonError>,
-    ttl: std::time::Duration,
+    windows: crate::gpu_cc::CcCacheWindows,
 ) {
     let _pass = state
         .gpu_cc_refresh
@@ -552,10 +569,12 @@ fn refresh_cc_modes_with(
         let sweep = state.gpu_cc_sweep.lock().expect("gpu_cc_sweep poisoned");
         if let Some(at) = sweep.at
             && sweep.attached == attached
-            && at.elapsed() < ttl
+            && at.elapsed() < windows.shortest()
         {
             // Nothing changed hands since that sweep, so it already seeded
-            // every confidential VM's cards and read every free one.
+            // every confidential VM's cards and read every free one, and no
+            // card's answer can have aged out of even the shortest window
+            // in between.
             return;
         }
     }
@@ -581,7 +600,7 @@ fn refresh_cc_modes_with(
             .lock()
             .expect("gpu_cc_modes poisoned")
             .get(&gpu.pci_host)
-            .is_some_and(|probed| probed.is_fresh(ttl));
+            .is_some_and(|probed| probed.is_fresh(windows));
         if fresh {
             continue;
         }
@@ -1645,7 +1664,7 @@ mod tests {
                 probed.lock().unwrap().push(pci_host.to_string());
                 Ok(Some(crate::gpu_cc::CcMode::On))
             },
-            crate::gpu_cc::CC_MODE_TTL,
+            default_windows(),
         );
 
         assert_eq!(
@@ -1706,9 +1725,9 @@ mod tests {
                 }),
                 _ => Ok(None),
             },
-            // The cached answers are seconds old, so only a zero window
-            // makes the refresh read the cards again.
-            std::time::Duration::ZERO,
+            // The cached answers are seconds old, so only zero-length
+            // windows make the refresh read the cards again.
+            expired_windows(),
         );
 
         let cache = state.gpu_cc_modes.lock().unwrap();
@@ -1753,39 +1772,38 @@ mod tests {
     fn refresh_cc_modes_repeats_a_sweep_only_when_a_card_changed_hands_or_the_ttl_passed() {
         // A public poller hitting GetHostInfo must not turn every request
         // into a register read: a sweep against the same attached set
-        // within the TTL is skipped whole, before any card is looked at. A
-        // card changing hands, or the TTL passing, brings the next sweep
-        // back.
+        // within the shortest window is skipped whole, before any card is
+        // looked at. A card changing hands, or the windows passing, brings
+        // the next sweep back.
         let state = two_free_cards();
         let probes = std::sync::atomic::AtomicUsize::new(0);
         let counting = |_: &str, _: &str| {
             probes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(Some(crate::gpu_cc::CcMode::On))
         };
-        let hour = std::time::Duration::from_secs(3600);
 
-        refresh_cc_modes_with(&state, counting, hour);
-        refresh_cc_modes_with(&state, counting, hour);
+        refresh_cc_modes_with(&state, counting, default_windows());
+        refresh_cc_modes_with(&state, counting, default_windows());
         assert_eq!(
             probes.load(std::sync::atomic::Ordering::SeqCst),
             2,
-            "the second sweep within the TTL against the same attached set is skipped"
+            "the second sweep inside the pass window against the same attached set is skipped"
         );
 
         // A card changes hands: the sweep runs again, over the free card
-        // only, and that card's own answer is an hour fresh, so nothing is
-        // read.
+        // only, and that card's own answer is a decoded mode, fresh for
+        // the long window, so nothing is read.
         let mut entry = fixture_entry(test_fixtures::QEMU_HASH, true);
         entry.config.gpus = vec![crate::controller_config::QemuGpu {
             pci_host: "06:00.0".to_string(),
             supports_x_vga: true,
         }];
         state.world.blocking_write().insert_entry(entry);
-        refresh_cc_modes_with(&state, counting, hour);
+        refresh_cc_modes_with(&state, counting, default_windows());
         assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 2);
 
-        // A zero TTL means every sweep runs and every card is read.
-        refresh_cc_modes_with(&state, counting, std::time::Duration::ZERO);
+        // Zero-length windows mean every sweep runs and every card is read.
+        refresh_cc_modes_with(&state, counting, expired_windows());
         assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 3);
     }
 
@@ -1812,9 +1830,9 @@ mod tests {
             }
         };
 
-        refresh_cc_modes_with(&state, probe, crate::gpu_cc::CC_MODE_TTL);
+        refresh_cc_modes_with(&state, probe, default_windows());
         force_next_sweep(&state);
-        refresh_cc_modes_with(&state, probe, crate::gpu_cc::CC_MODE_TTL);
+        refresh_cc_modes_with(&state, probe, default_windows());
         let after_two_refreshes = probed.lock().unwrap().clone();
         assert_eq!(
             after_two_refreshes.len(),
@@ -1832,15 +1850,33 @@ mod tests {
         );
 
         // An entry past its TTL is read again, both the mode and the failure.
-        refresh_cc_modes_with(&state, probe, std::time::Duration::ZERO);
+        refresh_cc_modes_with(&state, probe, expired_windows());
         assert_eq!(probed.into_inner().unwrap().len(), 4);
     }
 
     /// Drop the record of the last sweep so the next `refresh_cc_modes_with`
-    /// walks the cards whatever its `ttl` is, leaving only the per-card
+    /// walks the cards whatever its windows are, leaving only the per-card
     /// freshness check between a card and its register.
     fn force_next_sweep(state: &DaemonState) {
         state.gpu_cc_sweep.lock().unwrap().at = None;
+    }
+
+    /// The windows a daemon runs with out of the box: the default long
+    /// tier for a decoded mode, the fixed short one for an answer with no
+    /// mode.
+    fn default_windows() -> crate::gpu_cc::CcCacheWindows {
+        crate::gpu_cc::CcCacheWindows::with_mode_ttl(std::time::Duration::from_secs(
+            crate::gpu_cc::DEFAULT_CC_MODE_TTL_SECS,
+        ))
+    }
+
+    /// Windows that hold nothing, so every sweep runs and every card is
+    /// read again.
+    fn expired_windows() -> crate::gpu_cc::CcCacheWindows {
+        crate::gpu_cc::CcCacheWindows {
+            mode: std::time::Duration::ZERO,
+            unreadable: std::time::Duration::ZERO,
+        }
     }
 
     /// An adopted VM holding one card: SNP (measured-boot slice present)
@@ -1892,7 +1928,7 @@ mod tests {
         };
         std::thread::scope(|scope| {
             for _ in 0..2 {
-                scope.spawn(|| refresh_cc_modes_with(&state, probe, crate::gpu_cc::CC_MODE_TTL));
+                scope.spawn(|| refresh_cc_modes_with(&state, probe, default_windows()));
             }
         });
 
@@ -1990,7 +2026,7 @@ mod tests {
             |pci_host: &str, _device_id: &str| {
                 panic!("an attached card must never be probed: {pci_host}")
             },
-            crate::gpu_cc::CC_MODE_TTL,
+            default_windows(),
         );
 
         assert_eq!(
@@ -2046,7 +2082,7 @@ mod tests {
             |pci_host: &str, _device_id: &str| {
                 panic!("a card an entry still claims must never be probed: {pci_host}")
             },
-            crate::gpu_cc::CC_MODE_TTL,
+            default_windows(),
         );
 
         assert_eq!(
@@ -2089,7 +2125,7 @@ mod tests {
             |pci_host: &str, _device_id: &str| {
                 panic!("a card an entry still claims must never be probed: {pci_host}")
             },
-            crate::gpu_cc::CC_MODE_TTL,
+            default_windows(),
         );
 
         assert_eq!(
