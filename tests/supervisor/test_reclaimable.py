@@ -287,9 +287,9 @@ def test_reclaimable_bytes_is_cached_between_marker_changes(pools, monkeypatch):
     walks = []
     real_iter = reclaimable_module.iter_reclaimable
 
-    def counting_iter():
+    def counting_iter(**kwargs):
         walks.append(1)
-        return real_iter()
+        return real_iter(**kwargs)
 
     monkeypatch.setattr(reclaimable_module, "iter_reclaimable", counting_iter)
     volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=8192)
@@ -433,3 +433,59 @@ def test_depends_on_is_the_parent_subset_of_the_same_enumeration(mocker):
 
     assert depends_on_from_content(content) == ("parent",)
     assert set(depends_on_from_content(content)) <= refs_from_content(content)
+
+
+def test_a_reader_that_may_not_repair_keeps_a_corrupt_marker(pools):  # noqa: F811
+    """The repair is the reconciler's, not every reader's. A read-only caller
+    (the storage CLI's status and list) must leave the file where it is: it
+    may be running as a user who cannot unlink it at all, and an operator
+    inspecting a node has not asked for anything on disk to change."""
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    marker_path = pools["pool0"] / VM_HASH / MARKER_NAME
+    marker_path.write_text("{not json")
+
+    assert read_marker(pools["pool0"] / VM_HASH, repair=False) is None
+    assert marker_path.exists()
+    assert reclaimable_bytes(repair=False) == 0
+    assert marker_path.exists()
+
+
+def test_a_corrupt_marker_that_cannot_be_removed_still_reads_as_none(pools, monkeypatch, caplog):  # noqa: F811
+    """Removing the corrupt marker is best effort: a read-only filesystem or
+    a marker this user does not own must not raise out of a pass that was
+    only reading."""
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    marker_path = pools["pool0"] / VM_HASH / MARKER_NAME
+    marker_path.write_text("{not json")
+    real_unlink = Path.unlink
+
+    def refuse(self, *args, **kwargs):
+        if self.name == MARKER_NAME:
+            raise PermissionError("not yours to remove")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", refuse)
+
+    assert read_marker(pools["pool0"] / VM_HASH) is None
+    assert "Could not remove" in caplog.text
+
+
+def test_a_timestamp_without_an_offset_reads_as_utc():
+    """A hand-edited marker (an operator restoring one, an older writer) can
+    carry a naive timestamp. Parsed naive it mixes with the aware clock
+    everything else uses, and every subtraction raises TypeError."""
+    text = json.dumps(
+        {
+            "version": 1,
+            "reclaimable_since": "2026-08-24T12:00:00",
+            "reason": "gone",
+            "size_bytes": 7,
+            "depends_on": [],
+        }
+    )
+
+    marker = ReclaimableMarker.from_json(text)
+
+    assert marker.reclaimable_since == NOW
+    assert marker.reclaimable_since.tzinfo is not None
+    assert (datetime.now(tz=timezone.utc) - marker.reclaimable_since).total_seconds() > 0

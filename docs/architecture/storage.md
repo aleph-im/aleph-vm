@@ -334,8 +334,12 @@ because the marker outlives every other record of it (the registry record is
 forgotten and the DB rows are deleted), and it is what lets the node
 authorize the owner's own erase of retained data; it is optional, so markers
 written before the field and orphan markers for a VM whose message the node
-never held simply have none. Under `reap` no marker is ever written: the
-purge is immediate.
+never held simply have none. `reclaimable_since` is written in UTC with an
+offset; a timestamp that arrives without one (a marker restored or edited by
+hand) is read as UTC rather than as a naive datetime, since a naive one
+cannot be compared with the aware clock the rest of the agent uses and every
+subtraction against it raises, costing a whole listing or eviction pass for
+one marker. Under `reap` no marker is ever written: the purge is immediate.
 A create for the same hash adopts the directory (the marker is unlinked and
 the volumes are reused through the existing sticky placement in
 `volume_path_for`), which is what `reconciler.creating()` does on entry.
@@ -586,12 +590,39 @@ subparser on `agent/cli.py`'s own parser, which points at `storage --help`
 in its `--help` epilog) needs no running *agent process*:
 
 - `storage status`: per pool, live / reclaimable / cache / free bytes
-  against the budgets. Read-only, registry live set only.
+  against the budgets. Read-only, registry live set only. A figure this
+  process could not measure prints `unknown`, never `0 B`: the free space and
+  the budget of a pool whose filesystem cannot be stat'ed (a mountpoint that
+  went away, a directory this user may not read) would otherwise be
+  indistinguishable from a pool that is genuinely full, which is the state an
+  operator runs this command to find. The cache budget is a share of the
+  filesystem holding the cache root, so it says `unknown` for the same
+  reason. A budget under `VOLUME_RETENTION=reap` is a real zero and prints
+  as one.
 - `storage list [--reclaimable]`: hash, pool, size, reason, age. The reason
   is the marker's for a reclaimable directory; an unmarked directory reads
   `live` when the registry knows its hash and `unmarked` otherwise (an
   orphan no pass has reached yet is not a live VM). Read-only, registry
   live set only.
+
+  Read-only here is literal, and it took work to make it so, because three
+  writes were hiding under a listing. `settings.setup()` makes every
+  configured directory, so the two verbs skip it entirely and refuse a
+  missing database before it would have run (an operator who mistyped the
+  execution root used to get the refusal and a tree of empty directories at
+  the typo; nothing these verbs read needs `setup()`, since every path is
+  derived when the settings object is built). `setup_pools()` adopts a pool
+  on first sight, writing the in-pool marker and the adoption registry, so
+  they call it with `read_only=True`: it still validates and classifies, and
+  still refuses a pool whose marker vanished after adoption, but it adopts
+  nothing (on a node whose second disk is not mounted, adopting that path is
+  precisely the write the guard exists to prevent). And a `.reclaimable`
+  marker that does not parse is read with `repair=False`: removing it is the
+  reconciler's repair, a listing that unlinks a file is not read-only, and
+  the unlink raises for an operator without the agent's privileges, which
+  cost the whole command rather than that one row. The one write they do
+  make is the schema migration of a database that is already there, without
+  which the registry cannot be read at all.
 - `storage reclaim <hash> [--trust-registry]`: purge one reclaimable
   directory now. Checks the name and the `.reclaimable` marker first, purely
   locally, so a typo or an unrelated hash fails instantly rather than
@@ -608,12 +639,16 @@ in its `--help` epilog) needs no running *agent process*:
   retained directories by clearing their markers, and one that started
   while the supervisor was being asked is in no answer this process holds,
   so the second read is what keeps the purge off the disks a create is at
-  that moment building on. Finally, if the purge itself leaves the
-  directory behind (a device-mapper target still holds one of its volumes,
-  the same guard `purge_vm_storage` always applies), reclaim reports that
-  and exits non-zero rather than claiming success. `reclaim` never tears
-  devices down itself: `storage reconcile` is the CLI path that does, for
-  every VM nothing owns, so the refusal points the operator there.
+  that moment building on. Finally, if the purge itself leaves a directory
+  behind, reclaim names each one with the reason `purge_vm_storage` gives
+  for it and exits non-zero rather than claiming success. There are two
+  such reasons and they need different answers: a live device-mapper target
+  holding the volumes (the guard `purge_vm_storage` always applies), which
+  is freed by tearing that target down, and the removal itself failing (a
+  read-only filesystem, an immutable file, a directory this user may not
+  write), which no teardown fixes. Only the first sends the operator to
+  `storage reconcile`, which is the CLI path that tears devices down, for
+  every VM nothing owns; `reclaim` never does it itself.
 - `storage reconcile [--dry-run] [--trust-registry]`: run one
   `reconcile_storage()` pass. Two processes decide what it may do, and they
   are not the same one. The **agent** is this Python service
@@ -714,7 +749,10 @@ anything:
   `.env` in the working directory. The CLI therefore loads that file itself
   (`--env-file`, else `$ALEPH_VM_ENV_FILE`, else the packaged path) and
   rebuilds the settings singleton from it, logging which file it used or
-  that there was none. Values already in the environment win, so a one-off
+  that there was none. The file is read without `${}` expansion, the way
+  systemd's `EnvironmentFile=` reads it, so the CLI sees exactly the value
+  the daemon sees and a secret containing a dollar sign is not silently
+  truncated. Values already in the environment win, so a one-off
   override on the command line still works, and a `--env-file` that does
   not exist is an error rather than a silent fall back to the defaults: a
   pass run with `VOLUME_RETENTION` at its `reap` default on a node
@@ -730,7 +768,10 @@ anything:
   with a raw sqlite error. `status` and `list` are the exception; being
   read-only, they refuse a database that does not exist and exit `1` rather
   than create an empty one, so an operator pointed at the wrong execution
-  root sees the mistake instead of an empty listing.
+  root sees the mistake instead of an empty listing. That refusal is the
+  first thing they do, before the configuration is turned into directories
+  and before the pools are set up, so the wrong execution root is reported
+  rather than created.
 
 `reconcile` and `reclaim` can purge, so they apply the same fail-closed rule
 `reconciler._startup_refusal` applies to the daemon's own startup pass: a

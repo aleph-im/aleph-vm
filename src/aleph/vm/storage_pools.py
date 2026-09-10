@@ -193,13 +193,19 @@ def _record_adopted(path: Path) -> None:
     os.replace(tmp_path, registry)
 
 
-def _adopt_pool(path: Path, media_class: MediaClass) -> None:
+def _adopt_pool(path: Path, media_class: MediaClass, *, read_only: bool = False) -> None:
     """Write the in-pool marker on first use; refuse a pool whose marker
     vanished after adoption (the disk is very likely not mounted and writes
-    would silently land on the filesystem below the mountpoint)."""
+    would silently land on the filesystem below the mountpoint).
+
+    Under ``read_only`` the checks still run (a pool whose marker vanished is
+    still refused) but nothing is written: adopting a pool is a decision the
+    agent makes when it starts, not something a command that only reports on
+    a node should make on its behalf."""
     marker = path / POOL_MARKER_NAME
     if marker.is_file():
-        _record_adopted(path)  # heal the registry after e.g. a restore
+        if not read_only:
+            _record_adopted(path)  # heal the registry after e.g. a restore
         return
     if _canonical(path) in _load_adopted():
         msg = (
@@ -207,16 +213,22 @@ def _adopt_pool(path: Path, media_class: MediaClass) -> None:
             "Most likely the disk is not mounted; refusing to write to whatever is at that path."
         )
         raise StoragePoolConfigError(msg)
+    if read_only:
+        logger.info("Not adopting %s: this pass may not write", path)
+        return
     marker.write_text(json.dumps({"version": POOL_MARKER_VERSION, "media_class": media_class.value}) + "\n")
     _record_adopted(path)
     logger.info("Adopted %s as a %s volume pool", path, media_class.value)
 
 
-def setup_pools(sys_root: Path = Path("/sys")) -> list[StoragePool]:
+def setup_pools(sys_root: Path = Path("/sys"), *, read_only: bool = False) -> list[StoragePool]:
     """Validate, classify and adopt the configured pools.
 
     Call once at agent startup, after ``settings.setup()``. Raises
     StoragePoolConfigError on any misconfiguration: never degrade silently.
+
+    ``read_only`` validates and classifies without adopting anything, for a
+    command that reports on the pools rather than running VMs on them.
     """
     global _pools  # noqa: PLW0603
     pools: list[StoragePool] = []
@@ -247,7 +259,7 @@ def setup_pools(sys_root: Path = Path("/sys")) -> list[StoragePool]:
                 "Point CACHE_ROOT or BACKUP_DIRECTORY at it instead."
             )
             raise StoragePoolConfigError(msg)
-        _adopt_pool(path, media_class)
+        _adopt_pool(path, media_class, read_only=read_only)
         pools.append(StoragePool(path=path, media_class=media_class, index=position))
 
     orphaned = _load_adopted() - {_canonical(pool.path) for pool in pools}
