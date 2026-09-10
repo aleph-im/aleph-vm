@@ -2126,6 +2126,15 @@ fn snp_config_slice_with(
     // world write lock with creation serialized, so no guest can own the
     // card before this VM does. Any other answer, including a card that
     // cannot be read, fails closed. The cache learns the answer either way.
+    //
+    // That write lock is what the read costs: an idle card is usually
+    // runtime-suspended, and pinning it awake takes up to the probe's
+    // 200 ms resume budget, so a spec with several suspended cards holds
+    // the world write lock for that many times 200 ms and every reader
+    // behind it (GetHostInfo, ListVms, Health) waits. It is bounded, it is
+    // once per creation rather than once per request, and the alternative
+    // is trusting a cached mode for hardware about to be handed to a
+    // guest, so the wait stays here.
     for gpu in &spec.gpus {
         // The inventory-membership check runs FIRST and is what makes
         // `gpu.pci_host` safe to interpolate into the vfio-pci argv and into
