@@ -566,6 +566,10 @@ async def operate_reboot(request: web.Request, authenticated_sender: str) -> web
                         supervisor=supervisor,
                         registry=request.app["vm_registry"],
                         capacity=request.app["capacity"],
+                        # A reboot is the same VM again: the record and its
+                        # commitment never went away, so admission judges only
+                        # the disk this rebuild still has to find room for.
+                        recreate=True,
                     )
                 return web.Response(status=200, body=f"Rebooted VM with ref {vm_hash}")
         except VmNotFoundError:
@@ -815,6 +819,11 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
                     supervisor=supervisor,
                     registry=request.app["vm_registry"],
                     capacity=request.app["capacity"],
+                    # The record was kept just above for this rebuild, so its
+                    # memory and vCPUs are still committed to this VM. The
+                    # purge did take the volumes, and those the message still
+                    # declares have to fit again, which the disk check asks.
+                    recreate=True,
                 )
         except VmNotFoundError:
             raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
