@@ -301,9 +301,18 @@ Blackwell, `0x1182cc` on Hopper, bits `[1:0]`), through the card's sysfs
 runs only against cards no VM's world-view entry currently attaches, reads
 the attached set fresh on the blocking task immediately before probing (a
 stale snapshot could otherwise race a concurrent `CreateVm`), and caches
-each card's mode until its attachment state changes; a card a guest owns is
-never read. A probe error or an unrecognized device id leaves the card's
-mode unknown, which advertises nothing.
+each card's answer; a card a guest owns is never read. A probe error or an
+unrecognized device id leaves the card's mode unknown, which advertises
+nothing. The cache is dropped for a card when its attachment state changes
+(a stop or a delete forgets it), and otherwise ages out on two windows: an
+hour for an answer that decoded to a mode, `ALEPH_VM_GPU_CC_MODE_TTL`
+seconds where an operator wants it shorter, and a fixed minute for an
+answer that carries none, so a card read while it was being reset (all
+ones, cached as unreadable) comes back within the minute rather than
+staying hidden for the hour. Reading the register wakes an idle card out
+of runtime suspend, so the windows are also what keeps the unauthenticated
+`/about` path from driving register reads at the request rate; the create
+and start gates never trust the cache and read the card themselves.
 
 **Gate.** `snp_config_slice` (`rust/crates/supervisor-daemon/src/lifecycle.rs`)
 admits a GPU onto an SEV-SNP spec only when the probed mode is exactly `On`
