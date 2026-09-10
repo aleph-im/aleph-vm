@@ -49,8 +49,10 @@ the pushed list, as `vms[3]`: it names no VM here, and echoing back whatever
 string the push sent would be unbounded text off the request.
 
 `retained` reasons name why an allocation may not stop the VM:
-`non_persistent`, `payment_stream`, `payment_credit`, `gpu` or
-`confidential`. A V-PROGRAM is never retained: the scheduler is its single
+`non_persistent`, `payment_stream`, `payment_credit`, `gpu`,
+`confidential`, or `refused` (the push named the VM and this node turned it
+down, so the VM already running here stays as it is). A V-PROGRAM is never
+retained: the scheduler is its single
 source of truth, so a plan that drops one stops it even though it is
 credit-paid and confidential.
 

@@ -76,7 +76,7 @@ ln /opt/firecracker/release-*/jailer-v* /opt/firecracker/jailer
 ```shell
 git clone https://github.com/aleph-im/aleph-vm.git
 cd aleph-vm/
-````
+```
 
 ### 2.e. Install the Python dependencies
 
