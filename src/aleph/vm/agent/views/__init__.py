@@ -598,9 +598,33 @@ async def update_allocations(request: web.Request):
     See :mod:`aleph.vm.agent.views.allocation_auth` for the verifier.
     Receive a list of vm and instance that should be present and then match
     that state by stopping and launching VMs.
+
+    One mode per node: a node is driven by this route or by allocation plans,
+    never by both. A plan is total, so the reconciler deletes every VM the plan
+    does not list, and a push here names only the VMs one scheduler knows
+    about. Mixing the two on one node has each push swept within the reconcile
+    interval, after which the push and the loop undo each other for as long as
+    the scheduler keeps pushing. So once a plan has reached this node, this
+    route answers 409 and does nothing. The owner-signed single-VM
+    notification is not a scheduler push and stays available either way.
     """
     if not await authenticate_api_request(request):
         return web.HTTPUnauthorized(text="Authentication token received is invalid")
+
+    reconciler: AllocationReconciler = request.app["allocation_reconciler"]
+    if reconciler.has_plan():
+        # Before the stop loop, not only before the starts: that loop retires
+        # every running VM this body leaves out, which under a plan is most of
+        # them.
+        return web.json_response(
+            data={
+                "success": False,
+                "code": "governed_by_v2_plan",
+                "message": "This node is governed by an allocation plan; push plans instead.",
+                "endpoint": "/v2/control/allocations",
+            },
+            status=http.HTTPStatus.CONFLICT,
+        )
 
     global allocation_lock
     if allocation_lock is None:

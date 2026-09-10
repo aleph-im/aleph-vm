@@ -27,6 +27,7 @@ from aleph.vm.supervisor_interface.types import ConfidentialMode, HostInfo, VmSt
 
 HASH_C = ItemHash("c" * 64)
 PLAN = "/v2/control/allocations"
+LEGACY_PLAN = "/control/allocations"
 CHECK = "/v2/control/capacity/check"
 DEVICE_ID = "10de:2504"
 
@@ -42,7 +43,12 @@ def _app(*, host_info=None, real_reconciler=False):
     app = setup_webapp(supervisor=supervisor)
     app["pubsub"] = None
     if not real_reconciler:
-        app["allocation_reconciler"] = MagicMock(submit=MagicMock(), run=AsyncMock(), notify_vm_down=MagicMock())
+        app["allocation_reconciler"] = MagicMock(
+            submit=MagicMock(),
+            run=AsyncMock(),
+            notify_vm_down=MagicMock(),
+            has_plan=MagicMock(return_value=False),
+        )
     return app
 
 
@@ -362,7 +368,7 @@ async def test_a_legacy_route_answers_too_large_to_a_plan_sized_body(aiohttp_cli
     client = await aiohttp_client(_app())
     body, headers = scheduler_auth({"persistent_vms": [], "padding": "x" * (MAX_SIGNED_REQUEST_BODY_BYTES + 1)})
 
-    response = await client.post("/control/allocations", data=body, headers=headers)
+    response = await client.post(LEGACY_PLAN, data=body, headers=headers)
 
     assert response.status == 413
 
@@ -429,9 +435,70 @@ async def test_the_capacity_check_refuses_what_a_create_would_refuse(
 async def test_the_legacy_endpoint_is_untouched(aiohttp_client, scheduler_auth):
     """The compatibility guarantee: an old scheduler keeps working."""
     client = await aiohttp_client(_app())
-    body, headers = scheduler_auth({"persistent_vms": []}, path="/control/allocations")
+    body, headers = scheduler_auth({"persistent_vms": []}, path=LEGACY_PLAN)
 
-    response = await client.post("/control/allocations", data=body, headers=headers)
+    response = await client.post(LEGACY_PLAN, data=body, headers=headers)
 
     assert response.status == 200
     assert (await response.json())["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_v1_push_still_starts_vms_before_any_v2_plan(aiohttp_client, scheduler_auth, mocker):
+    """The compatibility half of one mode per node: a node no plan has
+    reached is a v1 node, and the legacy route starts what it is given."""
+    start = mocker.patch("aleph.vm.agent.views.start_persistent_vm", new_callable=AsyncMock)
+    client = await aiohttp_client(_app(real_reconciler=True))
+    body, headers = scheduler_auth({"persistent_vms": [str(HASH_C)]}, path=LEGACY_PLAN)
+
+    response = await client.post(LEGACY_PLAN, data=body, headers=headers)
+
+    assert response.status == 200
+    assert (await response.json())["successful"] == [str(HASH_C)]
+    assert start.await_args.args[0] == HASH_C
+
+
+@pytest.mark.asyncio
+async def test_a_v1_push_is_refused_once_a_v2_plan_governs_the_node(aiohttp_client, scheduler_auth, mocker):
+    """One mode per node. A plan is total, so the loop deletes every VM the
+    plan does not list: a scheduler mixing the two modes on one CRN would
+    have each v1 push swept within the reconcile interval, and the push and
+    the loop would then undo each other for as long as it kept pushing. The
+    legacy route says so rather than starting VMs it knows will be deleted."""
+    start = mocker.patch("aleph.vm.agent.views.start_persistent_vm", new_callable=AsyncMock)
+    client = await aiohttp_client(_app(real_reconciler=True))
+    plan_body, plan_headers = scheduler_auth({"vms": []}, path=PLAN)
+    assert (await client.post(PLAN, data=plan_body, headers=plan_headers)).status == 202
+    body, headers = scheduler_auth({"persistent_vms": [str(HASH_C)]}, path=LEGACY_PLAN)
+
+    response = await client.post(LEGACY_PLAN, data=body, headers=headers)
+
+    assert response.status == 409
+    payload = await response.json()
+    assert payload["code"] == "governed_by_v2_plan"
+    assert payload["endpoint"] == PLAN
+    start.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_v1_push_refused_by_the_plan_tears_nothing_down(aiohttp_client, scheduler_auth, mocker, monkeypatch):
+    """The refusal has to come before the stop loop, not only before the
+    starts: that loop retires every running VM the body leaves out, so a v1
+    push honoured halfway would reap the VMs the plan wants kept."""
+    mocker.patch("aleph.vm.agent.views.start_persistent_vm", new_callable=AsyncMock)
+    teardown = AsyncMock()
+    monkeypatch.setattr("aleph.vm.agent.views.teardown_vm", teardown)
+    vm_hash = ItemHash("d" * 64)
+    app = _app(real_reconciler=True)
+    app["supervisor"].list_vms.return_value = [_running(vm_hash)]
+    running = _make_qemu_instance_message()
+    app["vm_registry"].record(vm_hash, message=running, original=running, persistent=True)
+    client = await aiohttp_client(app)
+    plan_body, plan_headers = scheduler_auth({"vms": [{"item_hash": str(vm_hash)}]}, path=PLAN)
+    assert (await client.post(PLAN, data=plan_body, headers=plan_headers)).status == 202
+    body, headers = scheduler_auth({"persistent_vms": []}, path=LEGACY_PLAN)
+
+    response = await client.post(LEGACY_PLAN, data=body, headers=headers)
+
+    assert response.status == 409
+    teardown.assert_not_awaited()

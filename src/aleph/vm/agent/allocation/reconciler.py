@@ -147,6 +147,23 @@ class AllocationReconciler:
         if vm_hash in self._desired.entries:
             self._wakeup.set()
 
+    def has_plan(self) -> bool:
+        """Whether a plan governs this node, however few VMs it names.
+
+        Not the same question as "does the plan list anything": the empty plan
+        is the instruction to run nothing here, and a node under it is still
+        under it. Read by the legacy allocation route, which cannot be honoured
+        alongside a plan.
+
+        In memory only, like the plan itself, so an agent restart answers no
+        here until the next plan push lands: a plan-governed node briefly
+        accepts the legacy route again, and reverts as soon as a plan arrives.
+        The same reasoning as the loop's post-restart silence, where a plan the
+        agent no longer holds is not a plan it may act on, and an operator who
+        restarts the agent should expect that window.
+        """
+        return self._desired is not None
+
     def planned_hashes(self) -> set[ItemHash]:
         return set(self._desired.entries) if self._desired else set()
 
