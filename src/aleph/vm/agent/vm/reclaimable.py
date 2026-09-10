@@ -16,8 +16,8 @@ import json
 import logging
 import os
 import time
-from collections.abc import Iterator
-from dataclasses import asdict, dataclass
+from collections.abc import Iterator, Mapping
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -307,15 +307,54 @@ def mark_reclaimable(
     return written
 
 
-def adopt(namespace: str) -> int:
-    """A create for this hash takes its retained directories back."""
+def adopt(namespace: str) -> dict[Path, ReclaimableMarker]:
+    """A create for this hash takes its retained directories back.
+
+    Returns the markers it removed, keyed by directory, so a create that
+    does not commit can put them back (``restore_markers``). A directory
+    whose marker was unreadable or corrupt is adopted like any other and
+    simply has nothing to give back.
+    """
     namespace = _checked_namespace(namespace)
-    cleared = 0
+    adopted: dict[Path, ReclaimableMarker] = {}
     for directory in iter_namespace_dirs(namespace):
+        marker = read_marker(directory)
         if clear_marker(directory):
             logger.info("Adopted retained volumes in %s", directory)
-            cleared += 1
-    return cleared
+            if marker is not None:
+                adopted[directory] = marker
+    return adopted
+
+
+def restore_markers(adopted: Mapping[Path, ReclaimableMarker]) -> int:
+    """Put back the markers an adopt cleared, for a create that then failed.
+
+    Adoption happens before the create is known to succeed, and a failed
+    create must leave the directory as it found it. Left unmarked it is only
+    an orphan to the next pass, which re-marks it with no owner (so the
+    owner can no longer have their own retained data erased) and no
+    depends_on (so the cache may evict the parent image the retained volumes
+    are built on), and with a fresh timestamp that moves it to the back of
+    the eviction queue on every retry.
+
+    Restored exclusively: a marker written while the create ran is a newer
+    record of the same directory (a retire of this very hash) and stays. A
+    directory the failed create's own teardown purged is skipped rather than
+    recreated.
+    """
+    restored = 0
+    for directory, marker in adopted.items():
+        if not directory.is_dir():
+            continue
+        # size_bytes is a measurement of what the directory holds, and a
+        # create that failed part way may have left more or less than it
+        # found. The rest of the marker (since when, whose, what it is built
+        # on) is the record that has to survive unchanged.
+        current = replace(marker, size_bytes=directory_size_bytes(directory))
+        if write_marker(directory, current, exclusive=True):
+            logger.info("Restored the reclaimable marker in %s after a create that did not commit", directory)
+            restored += 1
+    return restored
 
 
 def retained_marker(namespace: str) -> ReclaimableMarker | None:
