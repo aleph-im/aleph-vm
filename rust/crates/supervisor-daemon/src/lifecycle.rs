@@ -26,7 +26,7 @@ use crate::controller_config::{
 use crate::firecracker::{ProgramBootError, ProgramBootRequest};
 use crate::service::DaemonState;
 use crate::tap::TapAssignment;
-use crate::units::{self, UnitsError, controller_unit_name};
+use crate::units::{self, UnitLiveness, UnitsError, controller_unit_name};
 use crate::world::{self, AttachedGpu, ProgramEntry, VmEntry, VmTimes, VmType, now_ns};
 use crate::{checks, cloudinit, dhcp, nft, ports};
 
@@ -542,11 +542,39 @@ pub(crate) fn entry_running(state: &DaemonState, entry: &VmEntry) -> bool {
     }
 }
 
+/// The live state of one entry's controller unit, one batched lookup. A bus
+/// failure degrades to `Unknown` rather than `Dead`: "the guest died" is a
+/// claim only an answering bus can support (ledger entry 13). An ephemeral
+/// program runs under no unit and has nothing to ask about.
+fn entry_liveness(state: &DaemonState, entry: &VmEntry) -> UnitLiveness {
+    if entry.is_program {
+        return UnitLiveness::Unknown;
+    }
+    let unit = entry.unit_name();
+    match state.units.unit_states(std::slice::from_ref(&unit)) {
+        Ok(states) => states.get(&unit).copied().unwrap_or(UnitLiveness::Unknown),
+        Err(error) => {
+            tracing::error!(%error, "Failed to get services active states");
+            UnitLiveness::Unknown
+        }
+    }
+}
+
 /// Python `_status_snapshot`: the wire status of an entry right now, with a
 /// live unit query for the running flag. Every mutation snapshots it before
 /// acting so the emitted event carries the pre-mutation status.
 fn status_snapshot(state: &DaemonState, entry: &VmEntry) -> pb::VmStatus {
-    crate::service::vm_status(&entry.times, entry_running(state, entry))
+    let unit = entry_liveness(state, entry);
+    let running = if entry.is_program {
+        entry.times.starting_at_ns != 0 && entry.times.stopping_at_ns == 0
+    } else {
+        unit.is_active()
+    };
+    crate::service::vm_status(
+        &entry.times,
+        running,
+        crate::service::guest_liveness(entry, unit),
+    )
 }
 
 fn chain_prefix(state: &DaemonState) -> &str {
@@ -800,9 +828,21 @@ fn stop_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
         return Ok(());
     }
     let unit = entry.unit_name();
-    units::stop_and_disable(&*state.units, &unit)?;
-    wait_for_controller_stopped(state, &unit);
+    // Stamped before the stop is issued, not after the guest is gone. The
+    // graceful ACPI shutdown below waits up to 75 seconds, ListVms takes no
+    // per-VM lock, and a poll landing in that window would otherwise find a
+    // unit on its way down under a VM with no stop recorded and read it as
+    // a guest that died. Put back on a stop that never started, so a VM
+    // whose unit systemd refused to touch does not sit in STOPPING for ever.
+    let stopping_before = entry.times.stopping_at_ns;
     with_entry_mut(state, vm_id, |entry| entry.times.stopping_at_ns = now_ns());
+    if let Err(error) = units::stop_and_disable(&*state.units, &unit) {
+        with_entry_mut(state, vm_id, |entry| {
+            entry.times.stopping_at_ns = stopping_before
+        });
+        return Err(error.into());
+    }
+    wait_for_controller_stopped(state, &unit);
 
     // removed_all_ports_redirection. Protocol order is Python's
     // SUPPORTED_PROTOCOL_FOR_REDIRECT = ["udp", "tcp"].
@@ -1062,12 +1102,42 @@ fn recreate_port_redirect_rules(state: &DaemonState, vm_id: &str) -> Result<(), 
 /// port mappings.
 fn start_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
+    // The start opens the same window a reboot does, and it is longer: the
+    // stop stamps go the moment this begins, while the unit stays down
+    // through the tap, the nftables rules, the DHCP server, RestartUnit and
+    // the readiness wait, and `started_at` still holds the value it had
+    // before the stop. A status read takes no per-VM lock, so a poll landing
+    // in there finds a VM the daemon has seen alive, no stop recorded and a
+    // dead unit, which is the dead-unit arm's exact shape: it would report
+    // FAILED where it used to report BOOTING, and the hub would announce a
+    // death that wakes the agent's reconciler against a VM that is coming up
+    // as asked. Mark the window like the reboot does, with a fresh
+    // `starting_at` so the VM reports BOOTING, and clear it below on the
+    // way out, success or failure. A start that fails really is a VM that is
+    // down and should say so.
     with_entry_mut(state, vm_id, |entry| {
         entry.times.stopping_at_ns = 0;
         entry.times.stopped_at_ns = 0;
+        entry.restarting = true;
+        entry.times.starting_at_ns = now_ns();
     });
+    let started = start_vm_execution_marked(state, vm_id, &entry);
+    // A reboot that died between marking the window and clearing it would
+    // otherwise leave the VM permanently exempt from the dead-unit arm; this
+    // clear settles the question either way.
+    with_entry_mut(state, vm_id, |entry| entry.restarting = false);
+    started
+}
 
-    if networking_enabled(state, &entry) {
+/// The body of [`start_vm_execution`], run with the restarting marker set.
+/// Every exit from here, including the error ones, goes back through the
+/// caller so the marker is cleared exactly once.
+fn start_vm_execution_marked(
+    state: &DaemonState,
+    vm_id: &str,
+    entry: &VmEntry,
+) -> Result<(), RpcError> {
+    if networking_enabled(state, entry) {
         let tap = tap_assignment(state, vm_id)?;
         let _net = net_lock(state);
         if !state.taps.interface_exists(&tap.device_name) {
@@ -1147,16 +1217,29 @@ pub fn start_vm(state: &DaemonState, vm_id: &str) -> Result<(VmEntry, bool), Rpc
     }
     if unit_active(state, &entry.unit_name()) {
         // Python start_vm: the already-running short circuit emits nothing.
+        //
+        // It also returns before `start_vm_execution`, so the clear of
+        // `restarting` that call ends with does not run here: a VM left
+        // marked by a reboot that died mid-window keeps the marker. That
+        // costs nothing, because the marker only ever suppresses the
+        // dead-unit arm, and the unit this branch tested is active, so the
+        // status is RUNNING either way. The next stop, start or reboot
+        // clears it.
         return Ok((entry, true));
     }
     let old_status = status_snapshot(state, &entry);
     start_vm_execution(state, vm_id)?;
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
-    let running = unit_active(state, &entry.unit_name());
+    let unit = entry_liveness(state, &entry);
+    let running = unit.is_active();
     state.events.emit(
         vm_id,
         old_status,
-        crate::service::vm_status(&entry.times, running),
+        crate::service::vm_status(
+            &entry.times,
+            running,
+            crate::service::guest_liveness(&entry, unit),
+        ),
     );
     Ok((entry, running))
 }
@@ -1187,7 +1270,9 @@ pub fn reboot_vm(state: &DaemonState, vm_id: &str) -> Result<(VmEntry, bool), Rp
         state.events.emit(
             vm_id,
             pb::VmStatus::Stopped,
-            crate::service::vm_status(&entry.times, running),
+            // The recreate settled the program itself; it runs under no
+            // controller unit to observe in any case.
+            crate::service::vm_status(&entry.times, running, UnitLiveness::Unknown),
         );
         return Ok((entry, running));
     }
@@ -1219,19 +1304,39 @@ pub fn reboot_vm(state: &DaemonState, vm_id: &str) -> Result<(VmEntry, bool), Rp
         state.dhcp.start(&config)?;
     }
     // RestartUnit only queues a job: wait until the unit is confirmed
-    // active so the reported status is truthful.
-    state.units.restart(&unit)?;
-    wait_for_controller_ready(state, &unit)?;
+    // active so the reported status is truthful. The unit leaves `active`
+    // and comes back during that job, and a status read takes no per-VM
+    // lock, so the window is marked: a poll landing in it must see a VM
+    // booting, not a guest that died. `starting_at` is stamped with it so
+    // the VM reports BOOTING rather than falling through to DEFINED, and
+    // the marker is cleared on the failure paths too, where the VM really
+    // is down and should say so.
+    with_entry_mut(state, vm_id, |entry| {
+        entry.restarting = true;
+        entry.times.starting_at_ns = now_ns();
+    });
+    let restarted = state
+        .units
+        .restart(&unit)
+        .map_err(RpcError::from)
+        .and_then(|()| wait_for_controller_ready(state, &unit).map_err(RpcError::from));
+    with_entry_mut(state, vm_id, |entry| entry.restarting = false);
+    restarted?;
     with_entry_mut(state, vm_id, |entry| entry.times.started_at_ns = now_ns());
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
-    let running = unit_active(state, &unit);
+    let liveness = entry_liveness(state, &entry);
+    let running = liveness.is_active();
     // A reboot is a down-then-up pair; watchers that drop per-VM state on
     // "down" must see the down (the Python reboot_vm comment).
     state.events.emit(vm_id, old_status, pb::VmStatus::Stopped);
     state.events.emit(
         vm_id,
         pb::VmStatus::Stopped,
-        crate::service::vm_status(&entry.times, running),
+        crate::service::vm_status(
+            &entry.times,
+            running,
+            crate::service::guest_liveness(&entry, liveness),
+        ),
     );
     Ok((entry, running))
 }
@@ -1346,6 +1451,9 @@ fn delete_tracked_vm(
     state.events.emit(vm_id, old_status, pb::VmStatus::Stopped);
 
     state.world.blocking_write().entries.remove(vm_id);
+    // The hash may be created again; drop the status the hub remembers so
+    // the next life is not diffed against this one.
+    state.events.forget(vm_id);
     // The cards are free again, so the next refresh reads the hardware
     // instead of serving an answer about a card in a different state.
     forget_cc_modes(state, &entry.config.gpus);
@@ -2567,6 +2675,7 @@ fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, 
             ..VmTimes::default()
         },
         adopted_running: true,
+        restarting: false,
         ipv4: None,
         ipv6: None,
         port_forwards,
@@ -2694,7 +2803,10 @@ pub fn create_vm(state: &DaemonState, request: pb::VmSpec) -> Result<(VmEntry, b
     state.events.emit(
         &entry.vm_hash,
         pb::VmStatus::Defined,
-        crate::service::vm_status(&entry.times, running),
+        // The create settled the unit itself: it either waited for the
+        // controller to be ready or deliberately left it down until the
+        // owner uploads the session certificates.
+        crate::service::vm_status(&entry.times, running, UnitLiveness::Unknown),
     );
     Ok((entry, running))
 }
@@ -2907,6 +3019,7 @@ fn create_vm_inner(
                 ..VmTimes::default()
             },
             adopted_running: false,
+            restarting: false,
             ipv4: assignment.as_ref().map(|(ipv4, _)| ipv4.clone()),
             ipv6: assignment.as_ref().map(|(_, ipv6)| ipv6.clone()),
             port_forwards: Vec::new(),
@@ -3265,6 +3378,7 @@ fn create_program_vm(
                 ..VmTimes::default()
             },
             adopted_running: false,
+            restarting: false,
             ipv4: assignment.as_ref().map(|(ipv4, _)| ipv4.clone()),
             ipv6: assignment.as_ref().map(|(_, ipv6)| ipv6.clone()),
             port_forwards: Vec::new(),
@@ -4125,8 +4239,13 @@ mod tests {
         // branch); the reported status is awaiting_confidential_init.
         assert_ne!(entry.times.starting_at_ns, 0);
         assert_ne!(entry.times.started_at_ns, 0);
-        let info = crate::service::vm_info_message(state, &entry, false, now_ns());
+        let liveness = entry_liveness(state, &entry);
+        let info = crate::service::vm_info_message(state, &entry, false, liveness, now_ns());
         assert!(info.awaiting_confidential_init);
+        // Its controller is deliberately down until the owner uploads the
+        // session certificates, so the dead-unit arm must not claim it died.
+        assert_eq!(liveness, UnitLiveness::Dead, "no unit was ever started");
+        assert_eq!(info.status, pb::VmStatus::Booting as i32);
         assert_eq!(info.confidential_mode, pb::ConfidentialMode::SevEs as i32);
 
         // The written controller config carries the four SEV fields.
@@ -4496,7 +4615,13 @@ mod tests {
         );
 
         // Reported as SEV-SNP and NOT awaiting init.
-        let info = crate::service::vm_info_message(state, &entry, running, now_ns());
+        let info = crate::service::vm_info_message(
+            state,
+            &entry,
+            running,
+            entry_liveness(state, &entry),
+            now_ns(),
+        );
         assert_eq!(info.confidential_mode, pb::ConfidentialMode::SevSnp as i32);
         assert!(!info.awaiting_confidential_init);
 
@@ -4947,11 +5072,12 @@ mod tests {
         // the cleanup path is observable.
         struct FailingSystemd(Arc<FakeSystemd>);
         impl crate::units::UnitStateSource for FailingSystemd {
-            fn active_states(
+            fn unit_states(
                 &self,
                 units: &[String],
-            ) -> Result<std::collections::HashMap<String, bool>, UnitsError> {
-                self.0.active_states(units)
+            ) -> Result<std::collections::HashMap<String, crate::units::UnitLiveness>, UnitsError>
+            {
+                self.0.unit_states(units)
             }
             fn controller_units(
                 &self,
@@ -5782,11 +5908,12 @@ mod tests {
         // to active normally, so pre-seed a unit that starts "failed".
         struct FailingSystemd(Arc<FakeSystemd>);
         impl crate::units::UnitStateSource for FailingSystemd {
-            fn active_states(
+            fn unit_states(
                 &self,
                 units: &[String],
-            ) -> Result<std::collections::HashMap<String, bool>, UnitsError> {
-                self.0.active_states(units)
+            ) -> Result<std::collections::HashMap<String, crate::units::UnitLiveness>, UnitsError>
+            {
+                self.0.unit_states(units)
             }
             fn controller_units(
                 &self,
@@ -6320,6 +6447,266 @@ mod tests {
         assert!(state.world.blocking_read().is_empty());
     }
 
+    /// A systemd whose stop and restart pause where the real one leaves a
+    /// job in flight, and run a probe from inside that pause. It is the
+    /// window a concurrent ListVms lands in: the read paths take no per-VM
+    /// lock, so nothing keeps them out of it.
+    struct MidJobProbe {
+        inner: Arc<FakeSystemd>,
+        probe: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
+    }
+
+    impl MidJobProbe {
+        fn new(inner: Arc<FakeSystemd>) -> Self {
+            Self {
+                inner,
+                probe: std::sync::OnceLock::new(),
+            }
+        }
+
+        fn on_mid_job(&self, probe: impl Fn() + Send + Sync + 'static) {
+            let _ = self.probe.set(Box::new(probe));
+        }
+
+        fn run_probe(&self) {
+            if let Some(probe) = self.probe.get() {
+                probe();
+            }
+        }
+    }
+
+    impl crate::units::UnitStateSource for MidJobProbe {
+        fn unit_states(
+            &self,
+            units: &[String],
+        ) -> Result<std::collections::HashMap<String, UnitLiveness>, UnitsError> {
+            self.inner.unit_states(units)
+        }
+        fn controller_units(&self) -> Result<std::collections::HashMap<String, bool>, UnitsError> {
+            self.inner.controller_units()
+        }
+        fn get_active_state(&self, unit: &str) -> String {
+            self.inner.get_active_state(unit)
+        }
+        fn start(&self, unit: &str) -> Result<(), UnitsError> {
+            self.inner.start(unit)
+        }
+        fn stop(&self, unit: &str) -> Result<(), UnitsError> {
+            // StopUnit only queues the job; the guest then takes its ACPI
+            // powerdown with the unit sitting in `deactivating`, which is
+            // up to 50 seconds of real time on a real node.
+            self.inner.set_state(unit, "deactivating");
+            self.run_probe();
+            self.inner.stop(unit)
+        }
+        fn restart(&self, unit: &str) -> Result<(), UnitsError> {
+            // A restart takes the unit down before bringing it back, so the
+            // gap reads `inactive`, with no stop stamped anywhere.
+            self.inner.set_state(unit, "inactive");
+            self.run_probe();
+            self.inner.restart(unit)
+        }
+        fn enable(&self, unit: &str) -> Result<(), UnitsError> {
+            self.inner.enable(unit)
+        }
+        fn disable(&self, unit: &str) -> Result<(), UnitsError> {
+            self.inner.disable(unit)
+        }
+        fn is_enabled(&self, unit: &str) -> bool {
+            self.inner.is_enabled(unit)
+        }
+    }
+
+    /// What a status read sees, and announces, from inside the pause.
+    struct MidJobObservation {
+        harness: Harness,
+        state: Arc<DaemonState>,
+        probing: Arc<MidJobProbe>,
+        vm_id: String,
+        seen: Arc<std::sync::Mutex<Vec<pb::VmStatus>>>,
+        events: tokio::sync::mpsc::UnboundedReceiver<pb::VmEvent>,
+    }
+
+    /// A created, running VM whose systemd pauses mid-job, with the probe
+    /// wired to do exactly what ListVms does there: compute the VM's status
+    /// and hand it to the event hub.
+    fn mid_job_observation() -> MidJobObservation {
+        let harness = harness();
+        let probing = Arc::new(MidJobProbe::new(harness.systemd.clone()));
+        let mut state = crate::service::DaemonState::hermetic(
+            harness.state.host.clone(),
+            world::WorldView::default(),
+            probing.clone(),
+            Arc::new(StaticLogSource::default()),
+        );
+        state.nft = Arc::new(nft::StaticRuleset::new(bare_host_ruleset()));
+        state.taps = harness.taps.clone();
+        state.dhcp = harness.dhcp.clone();
+        let state = Arc::new(state);
+
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('e');
+        create_vm(&state, spec(&vm_id, &root)).unwrap();
+
+        let events = state.events.subscribe();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        {
+            let state = state.clone();
+            let seen = seen.clone();
+            let vm_id = vm_id.clone();
+            probing.on_mid_job(move || {
+                let entry = entry_snapshot(&state, &vm_id).expect("still tracked");
+                let status = status_snapshot(&state, &entry);
+                state.events.observe(&vm_id, status);
+                seen.lock().unwrap().push(status);
+            });
+        }
+        MidJobObservation {
+            harness,
+            state,
+            probing,
+            vm_id,
+            seen,
+            events,
+        }
+    }
+
+    impl MidJobObservation {
+        fn seen(&self) -> Vec<pb::VmStatus> {
+            self.seen.lock().unwrap().clone()
+        }
+
+        /// Every status the hub announced since the subscription.
+        fn announced(&mut self) -> Vec<pb::VmStatus> {
+            let mut statuses = Vec::new();
+            while let Ok(event) = self.events.try_recv() {
+                statuses.push(pb::VmStatus::try_from(event.new_status).unwrap());
+            }
+            statuses
+        }
+    }
+
+    #[test]
+    fn a_poll_during_a_stop_sees_stopping_not_a_death() {
+        // The graceful shutdown runs for up to 75 seconds with no per-VM
+        // lock held, so the stop has to be recorded before it is issued:
+        // otherwise a poll finds a unit on its way down under a VM with no
+        // stop stamped and calls it a guest that died.
+        let mut probe = mid_job_observation();
+        stop_vm(&probe.state, &probe.vm_id).unwrap();
+
+        assert_eq!(probe.seen(), vec![pb::VmStatus::Stopping]);
+        let announced = probe.announced();
+        assert!(
+            !announced.contains(&pb::VmStatus::Failed),
+            "a stop in progress is not a death: {announced:?}"
+        );
+        assert_eq!(
+            announced,
+            vec![pb::VmStatus::Stopped],
+            "the stop's own event"
+        );
+    }
+
+    #[test]
+    fn a_poll_during_a_reboot_sees_booting_not_a_death() {
+        // A restart drops the unit out of active and back in, stamping
+        // neither a stop nor a fresh start in between. Without the restart
+        // marker a poll landing in the gap reports FAILED, and the agent
+        // retires and recreates a perfectly healthy VM.
+        let mut probe = mid_job_observation();
+        let (entry, running) = reboot_vm(&probe.state, &probe.vm_id).unwrap();
+        assert!(running);
+        assert!(
+            !entry.restarting,
+            "the marker is cleared once the unit is up"
+        );
+
+        assert_eq!(probe.seen(), vec![pb::VmStatus::Booting]);
+        let announced = probe.announced();
+        assert!(
+            !announced.contains(&pb::VmStatus::Failed),
+            "a reboot in progress is not a death: {announced:?}"
+        );
+    }
+
+    #[test]
+    fn a_poll_during_a_start_sees_booting_not_a_death() {
+        // The start clears the stop stamps at its very first step and then
+        // spends the tap, the nftables rules, the DHCP server, RestartUnit
+        // and the readiness wait with the unit still down, while started_at
+        // keeps the value it had before the stop. That is the dead-unit
+        // arm's exact shape, so without the marker a poll in there reports
+        // FAILED and the hub announces a death against a VM that is coming
+        // up as asked.
+        let mut probe = mid_job_observation();
+        stop_vm(&probe.state, &probe.vm_id).unwrap();
+        probe.seen.lock().unwrap().clear();
+        let _ = probe.announced();
+
+        let (entry, running) = start_vm(&probe.state, &probe.vm_id).unwrap();
+        assert!(running);
+        assert!(
+            !entry.restarting,
+            "the marker is cleared once the unit is up"
+        );
+
+        assert_eq!(
+            probe.seen(),
+            vec![pb::VmStatus::Booting],
+            "a start in progress is a VM booting"
+        );
+        let announced = probe.announced();
+        assert!(
+            !announced.contains(&pb::VmStatus::Failed),
+            "a start in progress is not a death: {announced:?}"
+        );
+    }
+
+    #[test]
+    fn a_start_that_fails_before_the_unit_still_reports_failed() {
+        // The marker is the window, not the VM. This start fails at its
+        // first real step, well before RestartUnit, which is the path most
+        // likely to leak the marker: the stop stamps are already cleared,
+        // so a VM left marked would report BOOTING for ever and the agent
+        // would hold it live and never rebuild it.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('e');
+        create_vm(state, spec(&vm_id, &root)).unwrap();
+        stop_vm(state, &vm_id).unwrap();
+        harness.taps.fail_create(|| TapError::Command {
+            argv: "tuntap add name vmtap4 mode tap".to_string(),
+            stderr: "Operation not permitted".to_string(),
+        });
+
+        start_vm(state, &vm_id).expect_err("the tap cannot be recreated");
+
+        let entry = entry_snapshot(state, &vm_id).unwrap();
+        assert!(
+            !entry.restarting,
+            "a failed start must not leave the VM exempt from the dead-unit arm"
+        );
+        assert_eq!(status_snapshot(state, &entry), pb::VmStatus::Failed);
+    }
+
+    #[test]
+    fn a_unit_that_fails_after_a_reboot_still_reports_failed() {
+        // The exemption is the restart window, not the VM: once the reboot
+        // is done the dead-unit arm has to bite again, or a guest that dies
+        // shortly after a reboot would be held live for ever.
+        let probe = mid_job_observation();
+        reboot_vm(&probe.state, &probe.vm_id).unwrap();
+        let unit = controller_unit_name(&probe.vm_id);
+        probe.harness.systemd.set_state(&unit, "failed");
+
+        let entry = entry_snapshot(&probe.state, &probe.vm_id).unwrap();
+        assert!(!entry.restarting);
+        assert_eq!(status_snapshot(&probe.state, &entry), pb::VmStatus::Failed);
+        drop(probe.probing);
+    }
+
     #[test]
     fn reboot_of_a_stopped_vm_keeps_the_stop_stamps_and_empty_forwards() {
         // C14: Python's reboot_vm restarts the unit and stamps started_at
@@ -6353,7 +6740,13 @@ mod tests {
             "mapped_ports are not reloaded on this path"
         );
         // _status_of checks stopped_at first: still STOPPED on the wire.
-        let info = crate::service::vm_info_message(state, &entry, running, now_ns());
+        let info = crate::service::vm_info_message(
+            state,
+            &entry,
+            running,
+            entry_liveness(state, &entry),
+            now_ns(),
+        );
         assert_eq!(info.status, pb::VmStatus::Stopped as i32);
         // The tap was NOT recreated (restart-without-network, both daemons).
         assert!(!harness.taps.interface_exists("vmtap4"));
@@ -7699,6 +8092,7 @@ mod tests {
                 ..VmTimes::default()
             },
             adopted_running: true,
+            restarting: false,
             ipv4: None,
             ipv6: None,
             port_forwards: Vec::new(),
@@ -7725,7 +8119,13 @@ mod tests {
         assert_eq!(entry.numa_node, Some(0));
 
         // VmInfo carries the effective placement.
-        let info = crate::service::vm_info_message(state, &entry, running, now_ns());
+        let info = crate::service::vm_info_message(
+            state,
+            &entry,
+            running,
+            entry_liveness(state, &entry),
+            now_ns(),
+        );
         assert_eq!(info.numa_node, Some(0));
 
         // The AllowedCPUs drop-in was written with node 0's cpuset.
@@ -8011,11 +8411,12 @@ mod tests {
         host.settings.numa_hugepages = true;
         struct FailingSystemd(Arc<FakeSystemd>);
         impl crate::units::UnitStateSource for FailingSystemd {
-            fn active_states(
+            fn unit_states(
                 &self,
                 units: &[String],
-            ) -> Result<std::collections::HashMap<String, bool>, UnitsError> {
-                self.0.active_states(units)
+            ) -> Result<std::collections::HashMap<String, crate::units::UnitLiveness>, UnitsError>
+            {
+                self.0.unit_states(units)
             }
             fn controller_units(
                 &self,
@@ -8097,6 +8498,7 @@ mod tests {
                 ..VmTimes::default()
             },
             adopted_running: true,
+            restarting: false,
             ipv4: None,
             ipv6: None,
             port_forwards: Vec::new(),
@@ -8294,7 +8696,13 @@ mod tests {
         assert!(running);
         assert_eq!(entry.numa_node, None, "no placement on a single-node host");
 
-        let info = crate::service::vm_info_message(state, &entry, running, now_ns());
+        let info = crate::service::vm_info_message(
+            state,
+            &entry,
+            running,
+            entry_liveness(state, &entry),
+            now_ns(),
+        );
         assert_eq!(info.numa_node, None);
 
         // No AllowedCPUs drop-in, no reservation.
@@ -8407,11 +8815,12 @@ mod tests {
         // action but the state reads back "failed", failing the boot.
         struct FailingSystemd(Arc<FakeSystemd>);
         impl crate::units::UnitStateSource for FailingSystemd {
-            fn active_states(
+            fn unit_states(
                 &self,
                 units: &[String],
-            ) -> Result<std::collections::HashMap<String, bool>, UnitsError> {
-                self.0.active_states(units)
+            ) -> Result<std::collections::HashMap<String, crate::units::UnitLiveness>, UnitsError>
+            {
+                self.0.unit_states(units)
             }
             fn controller_units(
                 &self,

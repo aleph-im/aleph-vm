@@ -254,6 +254,13 @@ pub struct VmEntry {
     /// Status queries use the LIVE unit state; this drives what was
     /// populated at adoption (times, IPs, port forwards).
     pub adopted_running: bool,
+    /// Set while RebootVm has a systemd restart job in flight. The unit
+    /// drops out of `active` and back in during a restart, and a status read
+    /// takes no per-VM lock, so without this marker a poll landing in the
+    /// gap would read a rebooting VM as a guest that died and the agent
+    /// would retire and recreate a healthy VM. No timestamp fits: a reboot
+    /// stamps neither a stop nor a fresh start until the controller is back.
+    pub restarting: bool,
     /// Computed like the Python `TapInterface` the reattach rebuilds; only
     /// for VMs adopted running (a stopped VM's tap was torn down, and the
     /// proto documents empty assignments until the tap exists).
@@ -314,6 +321,7 @@ impl VmEntry {
             settings_slice: controller_config::ControllerSettingsSlice::default(),
             times: VmTimes::default(),
             adopted_running: false,
+            restarting: false,
             ipv4: None,
             ipv6: None,
             port_forwards: Vec::new(),
@@ -745,6 +753,7 @@ pub fn build_world_view(
             settings_slice: config.settings,
             times,
             adopted_running: running == Some(true),
+            restarting: false,
             ipv4,
             ipv6,
             port_forwards,

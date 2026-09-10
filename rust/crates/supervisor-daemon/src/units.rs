@@ -7,8 +7,10 @@
 //! inactive" inside this module: callers need the distinction between "the
 //! bus answered and the unit is inactive" and "the bus did not answer"
 //! (adoption must not stamp a VM stopped on a transient bus outage). The
-//! per-RPC handlers still degrade to all-inactive on error, the Python
-//! parity behavior (ledger entry 13). The seam is a trait so cargo tests
+//! per-RPC handlers still treat an error as "not running", the Python parity
+//! behavior (ledger entry 13), but as an unanswered question rather than a
+//! dead unit: a status of FAILED is a claim only an answering bus can
+//! support. The seam is a trait so cargo tests
 //! stay hermetic: the production implementation talks to the system bus
 //! over zbus, tests use [`StaticUnitStates`] and [`UnreachableBus`].
 //!
@@ -37,6 +39,54 @@ pub fn controller_unit_name(vm_hash: &str) -> String {
     format!("{CONTROLLER_UNIT_PREFIX}{vm_hash}.service")
 }
 
+/// What systemd says about one controller unit, reduced to the answers the
+/// status mapping distinguishes.
+///
+/// The plain active flag cannot tell a unit systemd is still working on from
+/// one that has settled, and the daemon needs that distinction: a unit with a
+/// start or stop job in flight is a VM on its way somewhere, while a unit
+/// that has settled at failed or inactive under a VM the daemon has seen
+/// alive, with nobody stopping it, is a guest that exited on its own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UnitLiveness {
+    /// The unit is up: `active`, or `reloading` on its way through a reload.
+    Active,
+    /// systemd has a job in flight: `activating` on the way up,
+    /// `deactivating` on the way down. Either way something asked for the
+    /// change and the outcome is not settled, so neither is a guest that
+    /// died on its own.
+    Transitional,
+    /// The unit has settled down: `failed`, `inactive`, or not loaded at all
+    /// (a template instance never started, or one systemd garbage collected
+    /// after it stopped).
+    Dead,
+    /// Nothing was observed: no unit was queried, or the bus did not answer.
+    /// Never a conclusion about the guest.
+    #[default]
+    Unknown,
+}
+
+impl UnitLiveness {
+    /// One ActiveState string, mapped. An unrecognized state is `Unknown`
+    /// rather than a guess: a systemd that grows a new state must not be
+    /// able to make the daemon declare a live guest dead.
+    pub fn from_active_state(state: &str) -> Self {
+        match state {
+            "active" | "reloading" => Self::Active,
+            "activating" | "deactivating" => Self::Transitional,
+            "failed" | "inactive" | NOT_LOADED => Self::Dead,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn is_active(self) -> bool {
+        self == Self::Active
+    }
+}
+
+/// The synthetic ActiveState for a unit systemd does not have loaded.
+const NOT_LOADED: &str = "not-loaded";
+
 /// Where the daemon learns systemd unit states from.
 ///
 /// Both methods are blocking (one D-Bus round trip); RPC handlers call them
@@ -44,11 +94,21 @@ pub fn controller_unit_name(vm_hash: &str) -> String {
 /// batched ListUnits call off the event loop (`asyncio.to_thread` in
 /// `LocalSupervisor.list_vms`).
 pub trait UnitStateSource: Send + Sync {
-    /// Active flag per requested unit name, one batched query. Units not
-    /// loaded in systemd report `false`. `Err` means the bus did not answer
-    /// (unreachable, timed out, malformed reply): the caller cannot tell
-    /// running from stopped and must not pretend it can.
-    fn active_states(&self, units: &[String]) -> Result<HashMap<String, bool>, UnitsError>;
+    /// Liveness per requested unit name, one batched query. Units not
+    /// loaded in systemd report [`UnitLiveness::Dead`]. `Err` means the bus
+    /// did not answer (unreachable, timed out, malformed reply): the caller
+    /// cannot tell running from stopped and must not pretend it can.
+    fn unit_states(&self, units: &[String]) -> Result<HashMap<String, UnitLiveness>, UnitsError>;
+
+    /// Active flag per requested unit name, the coarse view of
+    /// [`Self::unit_states`] for the callers that only ask "is it up".
+    fn active_states(&self, units: &[String]) -> Result<HashMap<String, bool>, UnitsError> {
+        Ok(self
+            .unit_states(units)?
+            .into_iter()
+            .map(|(unit, state)| (unit, state.is_active()))
+            .collect())
+    }
 
     /// Every loaded `aleph-vm-controller@*.service` unit with its active
     /// flag, for the boot-time "unit without a config file" sweep.
@@ -285,7 +345,7 @@ impl Default for ZbusUnitStates {
 }
 
 impl UnitStateSource for ZbusUnitStates {
-    fn active_states(&self, units: &[String]) -> Result<HashMap<String, bool>, UnitsError> {
+    fn unit_states(&self, units: &[String]) -> Result<HashMap<String, UnitLiveness>, UnitsError> {
         if units.is_empty() {
             return Ok(HashMap::new());
         }
@@ -297,8 +357,11 @@ impl UnitStateSource for ZbusUnitStates {
         Ok(units
             .iter()
             .map(|unit| {
-                let active = by_name.get(unit.as_str()) == Some(&"active");
-                (unit.clone(), active)
+                // ListUnits only reports what systemd has loaded; a unit
+                // missing from the reply is one it never loaded or already
+                // released, which is as down as a unit gets.
+                let state = by_name.get(unit.as_str()).copied().unwrap_or(NOT_LOADED);
+                (unit.clone(), UnitLiveness::from_active_state(state))
             })
             .collect())
     }
@@ -341,7 +404,7 @@ impl UnitStateSource for ZbusUnitStates {
             Ok(state) => state,
             Err(error) if is_no_such_unit(&error) => {
                 tracing::debug!(unit, "unit not loaded");
-                "not-loaded".to_string()
+                NOT_LOADED.to_string()
             }
             Err(error) => {
                 tracing::error!(unit, %error, "D-Bus lookup failed");
@@ -462,14 +525,15 @@ impl StaticUnitStates {
 }
 
 impl UnitStateSource for StaticUnitStates {
-    fn active_states(&self, units: &[String]) -> Result<HashMap<String, bool>, UnitsError> {
+    fn unit_states(&self, units: &[String]) -> Result<HashMap<String, UnitLiveness>, UnitsError> {
         Ok(units
             .iter()
             .map(|unit| {
-                (
-                    unit.clone(),
-                    self.states.get(unit).copied().unwrap_or(false),
-                )
+                let state = match self.states.get(unit) {
+                    Some(true) => UnitLiveness::Active,
+                    Some(false) | None => UnitLiveness::Dead,
+                };
+                (unit.clone(), state)
             })
             .collect())
     }
@@ -487,7 +551,7 @@ impl UnitStateSource for StaticUnitStates {
         match self.states.get(unit) {
             Some(true) => "active".to_string(),
             Some(false) => "inactive".to_string(),
-            None => "not-loaded".to_string(),
+            None => NOT_LOADED.to_string(),
         }
     }
 
@@ -537,7 +601,7 @@ impl UnitStateSource for StaticUnitStates {
 pub struct UnreachableBus;
 
 impl UnitStateSource for UnreachableBus {
-    fn active_states(&self, _units: &[String]) -> Result<HashMap<String, bool>, UnitsError> {
+    fn unit_states(&self, _units: &[String]) -> Result<HashMap<String, UnitLiveness>, UnitsError> {
         Err(UnitsError::Unreachable)
     }
 
@@ -642,13 +706,17 @@ impl FakeSystemd {
 }
 
 impl UnitStateSource for FakeSystemd {
-    fn active_states(&self, units: &[String]) -> Result<HashMap<String, bool>, UnitsError> {
+    fn unit_states(&self, units: &[String]) -> Result<HashMap<String, UnitLiveness>, UnitsError> {
         let inner = self.lock();
         Ok(units
             .iter()
             .map(|unit| {
-                let active = inner.states.get(unit).map(String::as_str) == Some("active");
-                (unit.clone(), active)
+                let state = inner
+                    .states
+                    .get(unit)
+                    .map(String::as_str)
+                    .unwrap_or(NOT_LOADED);
+                (unit.clone(), UnitLiveness::from_active_state(state))
             })
             .collect())
     }
