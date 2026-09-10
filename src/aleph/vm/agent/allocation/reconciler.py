@@ -6,6 +6,22 @@ an empty diff and a plan arriving mid-convergence simply wins at the next step
 boundary. This is the seam pull mode plugs into: replacing "the scheduler
 pushed a plan" with "the agent fetched a plan" is a change to submit()'s
 caller and nothing else.
+
+One asymmetry runs through the loop: a VM that is stopped and a VM that is
+dead are not the same thing. A stop is somebody's decision, the owner's
+through the operator API or the guest's own, and only its owner undoes it:
+the loop never starts a stopped VM, not on a down event, not on its own
+backstop interval, and not because a plan lists it. A VM that failed is
+nobody's decision, so the loop rebuilds it on the event, damped by the
+backoff. Without that split the owner could not keep a planned VM down at
+all, since the plan is level-triggered and re-pushed for as long as the VM is
+allocated here.
+
+What the scheduler is told about a stopped VM is that it is here: the plan
+naming it is answered "unchanged", and the node goes on committing its
+memory, vCPUs and disk for it, because the definition and the volumes are
+still allocated. Unallocating it stays the scheduler's own move, made by
+dropping the hash from the plan, which the loop reads as a teardown.
 """
 
 import asyncio
@@ -18,6 +34,7 @@ from aleph_message.models import ItemHash
 
 from aleph.vm.agent.allocation.plan import (
     LIVE_STATUSES,
+    STOPPED_STATUSES,
     AllocationPlan,
     AllocationState,
     FailureRecord,
@@ -97,9 +114,18 @@ class AllocationReconciler:
                 self._forget(vm_hash)
         self._wakeup.set()
 
-    def notify_vm_down(self, vm_id: str) -> None:
-        """A VM went STOPPED or FAILED. If the plan still wants it, converge."""
+    def notify_vm_down(self, vm_id: str, status: VmStatus | None) -> None:
+        """A VM went down. If the plan still wants it up, converge now.
+
+        `status` is what the supervisor reported, or None when the VM is gone
+        from its list entirely. A stop is not a death: the loop has nothing to
+        do about a VM somebody stopped, so a stop does not wake it, while a VM
+        that failed or vanished is rebuilt at once rather than at the backstop
+        interval.
+        """
         if self._desired is None:
+            return
+        if status in STOPPED_STATUSES:
             return
         try:
             vm_hash = ItemHash(str(vm_id))
@@ -210,6 +236,25 @@ class AllocationReconciler:
         for vm_hash in plan.entries:
             if vm_hash in live:
                 continue
+            info = known.get(vm_hash)
+            if info is not None and info.status in STOPPED_STATUSES:
+                # Somebody stopped this VM, so it stays stopped: the plan
+                # listing it says the scheduler still holds it here, not that
+                # the node should overrule the owner. What the agent still has
+                # to report is whether its last attempt failed: a stop is not
+                # the agent's news to tell, since the supervisor already says
+                # STOPPED, but a start the node was asked to make and could
+                # not is. Only the phase is cleared, and the failure record is
+                # deliberately left standing: it is the attempt history, and a
+                # VM that failed twice, sat stopped a while and then crashed
+                # should climb the ladder from where it was rather than from
+                # the bottom. _forget_settled drops it once the VM has been up
+                # long enough to call healthy.
+                if vm_hash in self._failures:
+                    self._states[vm_hash] = AllocationState.FAILED
+                else:
+                    self._states.pop(vm_hash, None)
+                continue
             if not self._retry_due(vm_hash, now):
                 # Down and waiting out its backoff. Saying so is what lets the
                 # executions list report the wait and the time it ends, rather
@@ -254,10 +299,9 @@ class AllocationReconciler:
 
         `down` is what the supervisor holds for it when it already has one,
         which makes this start a rebuild and charges it on the backoff ladder.
-        Whatever state the supervisor held the VM in is charged, not only the
-        FAILED of a guest that panicked: a guest that halt loops needs the wait
-        as much as one that panics, and a resume being cheaper than a rebuild
-        is no reason to let it loop at boot speed forever.
+        Only a VM the supervisor holds FAILED reaches here with one: a live VM
+        needs nothing done to it, and one that is stopped or stopping is left
+        alone by _start_missing, since nobody but its owner restarts it.
         """
         self._states[vm_hash] = AllocationState.DOWNLOADING
         try:

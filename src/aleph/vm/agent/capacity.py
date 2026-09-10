@@ -734,10 +734,10 @@ class CapacityManager:
         """The disk this candidate still has to find room for on this node.
 
         A candidate can already hold its volumes here: the scheduler re-lists
-        a VM the supervisor is holding stopped, and a VM in that state is
-        sized as a candidate rather than read as unchanged. Charging it the
-        space its own files occupy refuses a VM the create path would have
-        admitted, and a refusal is what takes it out of the plan.
+        a VM the supervisor is holding dead, and a VM in that state is sized
+        as a candidate to be rebuilt rather than read as unchanged. Charging
+        it the space its own files occupy refuses a VM the create path would
+        have admitted, and a refusal is what takes it out of the plan.
 
         Requirements built from a message carry the volumes they were summed
         from; requirements a caller assembled as bare scalars are judged as

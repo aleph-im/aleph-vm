@@ -70,6 +70,38 @@ def test_a_running_vm_still_in_the_plan_is_unchanged():
     assert verdict.accepted == []
 
 
+def test_a_stopped_vm_still_in_the_plan_is_unchanged_and_never_sized():
+    """A VM this node holds stopped is a VM this node holds. The scheduler's
+    belief that it is allocated here is exactly what has not changed, so the
+    answer says so instead of sizing it: sized as a candidate, a node that is
+    tight on room refuses a VM it is already holding, and a refusal is what
+    takes the VM out of the plan the loop converges on."""
+    capacity = _capacity([])
+
+    verdict = compute_verdict(
+        _plan(HASH_A),
+        infos=[_info(HASH_A, status=VmStatus.STOPPED)],
+        registry=_registry({HASH_A: _record()}),
+        capacity=capacity,
+    )
+
+    assert verdict.unchanged == [HASH_A]
+    assert verdict.accepted == []
+    assert capacity.simulate.call_args.args[0] == []
+
+
+def test_a_vm_caught_mid_stop_is_unchanged_too():
+    """STOPPING is a stop in flight, not a VM to rebuild."""
+    verdict = compute_verdict(
+        _plan(HASH_A),
+        infos=[_info(HASH_A, status=VmStatus.STOPPING)],
+        registry=_registry({HASH_A: _record()}),
+        capacity=_capacity([]),
+    )
+
+    assert verdict.unchanged == [HASH_A]
+
+
 def test_a_new_vm_that_fits_is_accepted():
     verdict = compute_verdict(
         _plan(HASH_C), infos=[], registry=_registry({}), capacity=_capacity([AdmissionVerdict(HASH_C, True)])
@@ -422,6 +454,55 @@ def _registry_holding(vm_hash, memory_mib):
     return registry
 
 
+def test_a_stopped_vm_keeps_its_capacity_committed(mocker):
+    """Not restarting a stopped VM is not forgetting it. The definition and
+    the volumes are still allocated, so its memory and vCPUs stay committed
+    and the headroom the node advertises stays reduced by them. Freeing them
+    on a stop is how a node over-provisions: it would promise the same room
+    to somebody else and then have nowhere to put the VM when its owner
+    starts it again."""
+    _tight_host(mocker)
+    registry = _registry_holding(HASH_C, 16384)
+    capacity = _real_capacity(mocker, memory_gib=40, registry=registry)
+
+    verdict = compute_verdict(
+        _plan(HASH_C),
+        infos=[_info(HASH_C, status=VmStatus.STOPPED)],
+        registry=registry,
+        capacity=capacity,
+    )
+
+    assert verdict.unchanged == [HASH_C]
+    # 40 GiB less the two reservations is a 30720 MiB bucket, less the
+    # stopped VM's 16384 MiB.
+    assert capacity.headroom()["instance_memory_mib"] == 30720 - 16384
+
+
+def test_a_newcomer_is_refused_the_room_a_stopped_vm_holds(mocker):
+    """The same guarantee from the other side. A is only admissible if C's
+    memory has been handed back, and it has not been: C is stopped, not gone.
+    The answer has to be no, or the node ends up with two VMs claiming one
+    bucket the moment C's owner starts it again."""
+    _tight_host(mocker)
+    registry = _registry_holding(HASH_C, 16384)
+    capacity = _real_capacity(mocker, memory_gib=40, registry=registry)
+    plan = AllocationPlan(
+        plan_id="sha256:test",
+        received_at=NOW,
+        entries={
+            HASH_C: PlannedVm(vm_hash=HASH_C, verified=_verified(_make_qemu_instance_message(memory=16384))),
+            HASH_A: PlannedVm(vm_hash=HASH_A, verified=_verified(_make_qemu_instance_message(memory=16384))),
+        },
+    )
+
+    verdict = compute_verdict(
+        plan, infos=[_info(HASH_C, status=VmStatus.STOPPED)], registry=registry, capacity=capacity
+    )
+
+    assert verdict.unchanged == [HASH_C]
+    assert verdict.rejected[HASH_A]["code"] == "insufficient_capacity"
+
+
 def test_compute_verdict_drives_the_real_capacity_manager(mocker):
     """Every other test here hands compute_verdict a double, so the shape of
     CapacityManager.simulate is never exercised: when the candidate tuple lost
@@ -447,7 +528,7 @@ def test_a_recreate_is_not_judged_against_its_own_stale_record(mocker):
 
     verdict = compute_verdict(
         _plan(HASH_C, content=_make_qemu_instance_message(memory=16384)),
-        infos=[_info(HASH_C, status=VmStatus.STOPPED)],
+        infos=[_info(HASH_C, status=VmStatus.FAILED)],
         registry=registry,
         capacity=capacity,
     )
@@ -473,9 +554,7 @@ def test_a_recreate_still_waiting_on_its_message_frees_nothing(mocker):
         },
     )
 
-    verdict = compute_verdict(
-        plan, infos=[_info(HASH_C, status=VmStatus.STOPPED)], registry=registry, capacity=capacity
-    )
+    verdict = compute_verdict(plan, infos=[_info(HASH_C, status=VmStatus.FAILED)], registry=registry, capacity=capacity)
 
     assert verdict.pending == [HASH_C]
     assert verdict.rejected[HASH_A]["code"] == "insufficient_capacity"
@@ -554,10 +633,10 @@ def test_narrowing_drops_what_the_answer_refused_and_nothing_else():
     assert narrowed.refused == frozenset({HASH_B})
 
 
-def test_a_stopped_vm_the_answer_refused_is_carried_as_refused():
-    """The chain the reconciler reads. The supervisor holds C stopped, so the
-    answer sizes it as a candidate instead of reading it as unchanged, and a
-    node with no room left refuses it. Narrowing has to keep it out of the
+def test_a_dead_vm_the_answer_refused_is_carried_as_refused():
+    """The chain the reconciler reads. The supervisor holds C dead, so the
+    answer sizes it as a candidate to rebuild instead of reading it as
+    unchanged, and a node with no room left refuses it. Narrowing has to keep it out of the
     entries, or the loop would retry it forever, but dropping it silently is
     what turned "rejected" into "deleted": to the loop a hash the plan does
     not list is one the scheduler took away, and it reaps the disks of every
@@ -567,7 +646,7 @@ def test_a_stopped_vm_the_answer_refused_is_carried_as_refused():
 
     verdict = compute_verdict(
         plan,
-        infos=[_info(HASH_C, status=VmStatus.STOPPED)],
+        infos=[_info(HASH_C, status=VmStatus.FAILED)],
         registry=_registry({HASH_C: _record()}),
         capacity=capacity,
     )
@@ -589,7 +668,7 @@ def test_a_vm_refused_for_an_undiscovered_node_hash_is_carried_as_refused():
 
     verdict = compute_verdict(
         plan,
-        infos=[_info(HASH_C, status=VmStatus.STOPPED)],
+        infos=[_info(HASH_C, status=VmStatus.FAILED)],
         registry=_registry({HASH_C: _record()}),
         capacity=_capacity([]),
         node_hash=None,
