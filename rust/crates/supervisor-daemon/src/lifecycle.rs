@@ -4818,6 +4818,37 @@ mod tests {
     }
 
     #[test]
+    fn stopping_a_vm_forgets_what_the_cache_knew_about_its_cards() {
+        // A stopped VM keeps claiming its cards, so the refresh sweep will
+        // never read them again, and the seed only covers a running VM. If
+        // the stop left the create gate's answer in the cache the card
+        // would keep being advertised CC-on with no guest holding its mode
+        // still, which an operator can change on an idle card.
+        let harness = harness_with_gpus(vec![nvidia_card("06:00.0")]);
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('c');
+        let mut request = spec(&vm_id, &root);
+        request.gpus = vec![pb::GpuConfig {
+            pci_host: "06:00.0".to_string(),
+            supports_x_vga: true,
+        }];
+        create_vm(state, request).unwrap();
+        state.gpu_cc_modes.lock().unwrap().insert(
+            "06:00.0".into(),
+            crate::gpu_cc::ProbedCcMode::now(Some(crate::gpu_cc::CcMode::On)),
+        );
+
+        stop_vm(state, &vm_id).unwrap();
+
+        assert_eq!(
+            crate::service::cc_mode_of(state, "06:00.0"),
+            None,
+            "a stopped VM's card advertises nothing, in the inventory as in VmInfo"
+        );
+    }
+
+    #[test]
     fn discarding_an_untracked_snp_vm_tears_down_the_dhcp_server() {
         // A live SNP VM whose adoption failed (untracked, config still on disk)
         // ran a per-tap DHCP server. The discard_failed_reattach delete path
