@@ -534,6 +534,14 @@ message means the referenced set is incomplete. Before the first pass there is
 no live set, so admission evicts nothing and simply admits or refuses on the
 budget as it stands.
 
+A pass is not the only thing that changes the published set: `retire_vm` drops
+the VM it retires from it, right where it forgets the registry record. The two
+halves have to move together, and under `reap` no pass follows a retire, so a
+hash left behind would read as a live VM with no record until the next periodic
+pass (an hour by default) and stop admission evicting for that whole window. A
+retire never turns an unset live set into an empty one: only a pass may say
+that nothing is live.
+
 ### Settings
 
 | Setting | Default | What it does |
