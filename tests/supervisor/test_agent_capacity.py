@@ -1408,6 +1408,67 @@ def test_a_colliding_stem_never_discounts_one_file_twice(mocker, tmp_path):
     assert "Disk: required 20480 MiB" in str(excinfo.value)
 
 
+# ── simulate: the same discount, for a whole plan ──────────────────────────
+
+
+def test_simulate_discounts_disk_the_candidate_already_holds(mocker, tmp_path):
+    """simulate charged every candidate its declared disk in full, while
+    check_message, the path that actually creates the VM, subtracts what the
+    VM's files already occupy. The advisory answer was the stricter of the
+    two, so a nearly full node refused a VM it was perfectly able to run, and
+    a refusal here is not free: the answer drops the VM from the plan the
+    reconciler converges on."""
+    _patch_host(mocker, memory_bytes=64 * 1024**3, cores=16, disk_bytes=1 * 1024**3)
+    pool = tmp_path / "pool0"
+    directory = _stage_volume_files(mocker, pool, {"rootfs.qcow2": 20 * 1024**3})
+    _patch_namespace_dirs(mocker, directory)
+    _patch_eligible_pools(mocker, (pool, 1 * 1024**3))
+    candidate = (_VM_HASH, requirements_from_message(_instance_content(rootfs_mib=20 * 1024)))
+
+    verdicts = _manager().simulate([candidate])
+
+    assert verdicts[0].accepted is True
+
+
+def test_simulate_still_charges_a_candidate_that_holds_nothing(mocker):
+    """The discount must not switch the disk check off. A VM whose volumes
+    are not on this node is charged them whole, and refused when they do not
+    fit."""
+    _patch_host(mocker, memory_bytes=64 * 1024**3, cores=16, disk_bytes=1 * 1024**3)
+    _patch_pools(mocker, 1 * 1024**3)
+    _hold_nothing(mocker)
+    candidate = (_VM_HASH, requirements_from_message(_instance_content(rootfs_mib=20 * 1024)))
+
+    verdicts = _manager().simulate([candidate])
+
+    assert verdicts[0].accepted is False
+    assert verdicts[0].code == "insufficient_capacity"
+
+
+def test_a_held_volume_is_not_charged_to_the_rest_of_the_plan(mocker, tmp_path):
+    """The batch accumulator has to charge what a candidate still has to
+    allocate, not what it declares: 20 GiB the first candidate already holds
+    is not 20 GiB the second one cannot have."""
+    _patch_host(mocker, memory_bytes=64 * 1024**3, cores=16, disk_bytes=20 * 1024**3)
+    pool = tmp_path / "pool0"
+    directory = _stage_volume_files(mocker, pool, {"rootfs.qcow2": 20 * 1024**3})
+    # Keyed on the namespace, unlike _patch_namespace_dirs: the second
+    # candidate must not find the first one's directory and be credited it.
+    mocker.patch(
+        "aleph.vm.agent.capacity.storage_pools.iter_namespace_dirs",
+        side_effect=lambda namespace: [directory] if namespace == str(_VM_HASH) else [],
+    )
+    _patch_eligible_pools(mocker, (pool, 20 * 1024**3))
+    candidates = [
+        (_VM_HASH, requirements_from_message(_instance_content(rootfs_mib=20 * 1024))),
+        (_HASH_B, requirements_from_message(_instance_content(rootfs_mib=None, volumes=(_volume("data", 15 * 1024),)))),
+    ]
+
+    verdicts = _manager().simulate(candidates)
+
+    assert [verdict.accepted for verdict in verdicts] == [True, True]
+
+
 # ── existing_volume_files ───────────────────────────────────────────────────
 
 

@@ -86,9 +86,33 @@ class PlannedVm:
 
 @dataclass(frozen=True)
 class AllocationPlan:
+    """What the push asked for, once the answer has had its say.
+
+    ``refused`` are the hashes the push listed and this node turned down,
+    over a message it would not verify or for want of room. They are out of
+    ``entries`` because nothing is to start them, and they are named here
+    because the convergence loop reads a hash the plan does not hold as one
+    the scheduler took away, and deleting a VM means reaping its disks.
+    "Rejected" is not "deleted": the scheduler still believes the VM exists.
+    Most of the shapes that produce a refusal pass on their own (a full host,
+    a node that has not read its own hash back since it restarted, a corrupt
+    message from a buggy scheduler or a bad CCN read), and one does not: a VM
+    allocated to another node stays allocated to it. The set holds every
+    refusal all the same, transient or permanent, because waiting for the push
+    to stop naming the VM is the safe reading of both.
+
+    A hash the push sent in a form we could not parse is absent from both:
+    it names no VM on this node, so there is nothing for it to protect.
+    """
+
     plan_id: str
     received_at: datetime
     entries: dict[ItemHash, PlannedVm]
+    refused: frozenset[ItemHash] = frozenset()
+
+    def lists(self, vm_hash: ItemHash) -> bool:
+        """Whether the push this plan came from named this VM at all."""
+        return vm_hash in self.entries or vm_hash in self.refused
 
 
 @dataclass

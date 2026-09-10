@@ -61,6 +61,12 @@ class ResourceRequirements:
     # Whose VM this is, for the GPU ledger: a hold this address took is
     # available to it, the way resolve_gpus consumes an owner's own hold.
     owner: str | None = None
+    # The volumes the two disk figures above were summed from, when they came
+    # from a message. Kept so a caller that knows which VM this is can look up
+    # what it already holds and charge it only the difference; the figures
+    # themselves stay the declared ones, since a caller with no VM to name
+    # (the reserve endpoint) has nothing to discount against.
+    volumes: tuple[DeclaredVolume, ...] = ()
 
 
 # The filename suffixes a volume's file carries in ``{pool}/{vm_hash}/``. A
@@ -193,7 +199,8 @@ def requirements_from_message(
     ``volumes`` is ``declared_volumes(content)``, which a caller that already
     has that list (``check_message``) passes in rather than deriving it twice.
     """
-    volume_sizes_mib = [volume.size_mib for volume in (declared_volumes(content) if volumes is None else volumes)]
+    declared = declared_volumes(content) if volumes is None else volumes
+    volume_sizes_mib = [volume.size_mib for volume in declared]
     return ResourceRequirements(
         vcpus=content.resources.vcpus,
         memory_mib=content.resources.memory,
@@ -202,6 +209,7 @@ def requirements_from_message(
         is_instance=is_instance_bucket(content),
         gpu_device_ids=requested_gpu_ids(content),
         owner=str(address) if (address := getattr(content, "address", None)) else None,
+        volumes=tuple(declared),
     )
 
 
@@ -273,6 +281,41 @@ def held_volumes(vm_hash: ItemHash | str, volumes: list[DeclaredVolume]) -> list
         size_bytes = min(file_size_bytes(path), volume.size_mib * 1024 * 1024)
         held.append(HeldVolume(path=path, size_bytes=size_bytes))
     return held
+
+
+@dataclass(frozen=True)
+class DiskRequest:
+    """The disk figures admission judges, once the discount is applied."""
+
+    disk_mib: int
+    max_volume_mib: int
+    max_volume_credit: HeldVolume | None
+
+
+def discounted_disk(vm_hash: ItemHash | str | None, volumes: list[DeclaredVolume]) -> DiskRequest:
+    """What these volumes still need, less what that VM already holds.
+
+    One implementation for every path that judges disk, so an advisory answer
+    can never be stricter than the enforced one. ``vm_hash`` is None for a
+    caller with no VM to look up (the reserve endpoint admits a message no VM
+    owns yet), and then nothing is discounted and nothing is looked for.
+
+    The largest declared volume decides the per-pool check, and it is judged
+    at its declared size: shrinking that figure by what is held elsewhere
+    would let a discount from one volume excuse the placement of another.
+    What the VM already holds *for that volume* is instead credited to the
+    pool its file sits on, which is the only pool that would have to find
+    room for it again.
+    """
+    held = held_volumes(vm_hash, volumes) if vm_hash is not None else [None] * len(volumes)
+    declared_mib = sum(volume.size_mib for volume in volumes)
+    held_mib = sum(hit.size_bytes for hit in held if hit is not None) // (1024 * 1024)
+    largest = max(range(len(volumes)), key=lambda index: volumes[index].size_mib, default=None)
+    return DiskRequest(
+        disk_mib=max(declared_mib - held_mib, 0),
+        max_volume_mib=volumes[largest].size_mib if largest is not None else 0,
+        max_volume_credit=held[largest] if largest is not None else None,
+    )
 
 
 def requested_gpu_ids(content: ExecutableContent) -> list[str]:
@@ -366,23 +409,14 @@ class CapacityManager:
         one declared volume must not pay for a second one too.
         """
         volumes = declared_volumes(content)
-        held = held_volumes(exclude_vm_hash, volumes) if exclude_vm_hash is not None else [None] * len(volumes)
-        declared_mib = sum(volume.size_mib for volume in volumes)
-        held_mib = sum(hit.size_bytes for hit in held if hit is not None) // (1024 * 1024)
-        # The largest declared volume decides the per-pool check, and it is
-        # judged at its declared size: shrinking that figure by what is held
-        # elsewhere would let a discount from one volume excuse the placement
-        # of another. What the VM already holds *for that volume* is instead
-        # credited to the pool its file sits on, which is the only pool that
-        # would have to find room for it again.
-        largest = max(range(len(volumes)), key=lambda index: volumes[index].size_mib, default=None)
+        disk = discounted_disk(exclude_vm_hash, volumes)
         requirements = requirements_from_message(content, volumes)
         self.check_capacity(
             memory_mib=requirements.memory_mib,
             vcpus=requirements.vcpus,
-            disk_mib=max(declared_mib - held_mib, 0),
-            max_volume_mib=volumes[largest].size_mib if largest is not None else 0,
-            max_volume_credit=held[largest] if largest is not None else None,
+            disk_mib=disk.disk_mib,
+            max_volume_mib=disk.max_volume_mib,
+            max_volume_credit=disk.max_volume_credit,
             is_instance=requirements.is_instance,
             exclude_vm_hash=exclude_vm_hash,
         )
@@ -576,6 +610,11 @@ class CapacityManager:
         whether the roomiest pool could hold the largest volume, and which pool
         a volume lands on is a placement decision nothing models here.
 
+        A candidate is charged what it still has to allocate, not what it
+        declares: the volumes it already holds on this node are discounted the
+        way check_message discounts them, so a VM the plan re-lists is never
+        refused for space its own files occupy.
+
         A candidate's own registry record never counts against it. A hash can
         already be recorded here and still be a candidate: a recreate, or an
         owner record left by a create that failed part way. Counting both the
@@ -611,6 +650,12 @@ class CapacityManager:
         allocate C onto B's card" is answered no even though doing it in that
         order would work.
 
+        Not free of blocking, though it is free of awaits: judging a candidate
+        walks the storage pools synchronously, once per candidate, so a large
+        plan holds the event loop for that many directory walks. check_message
+        does the same walk per create. Worth knowing here because the caller
+        must not yield while it holds this answer, which makes the window easy
+        to overlook.
         """
         candidate_hashes = {vm_hash for vm_hash, _ in candidates}
         committed_instance, committed_program, committed_vcpus = self._committed_resources(candidate_hashes)
@@ -637,12 +682,14 @@ class CapacityManager:
         committed_disk = 0
         for vm_hash, requirements in candidates:
             refusal: tuple[str, str] | None = None
+            disk = self._candidate_disk(vm_hash, requirements)
             try:
                 self._check_against(
                     memory_mib=requirements.memory_mib,
                     vcpus=requirements.vcpus,
-                    disk_mib=requirements.disk_mib,
-                    max_volume_mib=requirements.max_volume_mib,
+                    disk_mib=disk.disk_mib,
+                    max_volume_mib=disk.max_volume_mib,
+                    max_volume_credit=disk.max_volume_credit,
                     is_instance=requirements.is_instance,
                     committed_instance_memory_mib=committed_instance,
                     committed_program_memory_mib=committed_program,
@@ -678,9 +725,27 @@ class CapacityManager:
             else:
                 committed_program += requirements.memory_mib
             committed_vcpus += requirements.vcpus
-            committed_disk += requirements.disk_mib
+            committed_disk += disk.disk_mib
             verdicts.append(AdmissionVerdict(vm_hash, True))
         return verdicts
+
+    @staticmethod
+    def _candidate_disk(vm_hash: ItemHash, requirements: ResourceRequirements) -> DiskRequest:
+        """The disk this candidate still has to find room for on this node.
+
+        A candidate can already hold its volumes here: the scheduler re-lists
+        a VM the supervisor is holding stopped, and a VM in that state is
+        sized as a candidate rather than read as unchanged. Charging it the
+        space its own files occupy refuses a VM the create path would have
+        admitted, and a refusal is what takes it out of the plan.
+
+        Requirements built from a message carry the volumes they were summed
+        from; requirements a caller assembled as bare scalars are judged as
+        given, since there is nothing to match a file against.
+        """
+        if not requirements.volumes:
+            return DiskRequest(requirements.disk_mib, requirements.max_volume_mib, None)
+        return discounted_disk(vm_hash, list(requirements.volumes))
 
     def _record_commitment(self, vm_hash: ItemHash) -> tuple[int, int, int] | None:
         """What this VM's registry record adds to (instance, program, vcpus).
