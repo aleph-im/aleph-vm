@@ -182,6 +182,53 @@ def test_implausible_dir_names_are_skipped(pools, registry, monkeypatch):  # noq
     assert weird.exists()
 
 
+@pytest.mark.parametrize("name", ["backupsfromjanuary", "deadbeefdeadbeef", "CAFE" * 16])
+def test_a_directory_an_operator_named_is_never_reaped(pools, registry, monkeypatch, name):  # noqa: F811
+    """Alphanumeric is not a VM hash.
+
+    An operator who drops his own directory on a volume pool keeps it: the
+    pass only owns directories named after a VM, and a name that merely
+    looks like one (letters and digits, right length) is not one.
+    """
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    theirs = pools["pool0"] / name
+    theirs.mkdir()
+    kept = theirs / "january.tar.gz"
+    kept.write_bytes(b"x")
+    _age(theirs, 10_000)
+
+    report = reconcile_storage(registry, now=NOW)
+
+    assert kept.exists()
+    assert report.purged_orphans == []
+
+
+@pytest.mark.parametrize("name", ["backupsfromjanuary", "deadbeefdeadbeef"])
+def test_a_directory_an_operator_named_is_never_marked_reclaimable(pools, registry, monkeypatch, name):  # noqa: F811
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    theirs = pools["pool0"] / name
+    theirs.mkdir()
+    _age(theirs, 10_000)
+
+    report = reconcile_storage(registry, now=NOW)
+
+    assert read_marker(theirs) is None
+    assert report.marked_orphans == []
+
+
+@pytest.mark.parametrize("name", ["beef" * 16, "QmXoypizjW3WknFiJnKLwHCnL72vedxjQkDDP1mXWo6uco"])
+def test_every_shape_of_item_hash_still_reconciles(pools, registry, monkeypatch, name):  # noqa: F811
+    """A storage hash and an IPFS CID are both VM namespaces."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    old = volume(pools["pool0"], name, "rootfs.qcow2")
+    _age(old.parent, 10_000)
+
+    report = reconcile_storage(registry, now=NOW)
+
+    assert not old.parent.exists()
+    assert report.purged_orphans == [name]
+
+
 def test_dry_run_changes_nothing(pools, registry, monkeypatch):  # noqa: F811
     monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
     old = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")

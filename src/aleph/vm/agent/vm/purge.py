@@ -22,7 +22,6 @@ not merely spared by a check -- it is unreachable from this code.
 from __future__ import annotations
 
 import logging
-import re
 import shutil
 from collections.abc import Iterator
 from pathlib import Path
@@ -32,7 +31,7 @@ from aleph_message.models import ItemHash
 from aleph.vm.agent.snp_instance_launch import remove_snp_instance_staging
 from aleph.vm.agent.vprogram_launch import remove_vprogram_staging
 from aleph.vm.conf import settings
-from aleph.vm.storage import DEVICE_MAPPER_DIRECTORY
+from aleph.vm.storage import DEVICE_MAPPER_DIRECTORY, vm_namespace
 from aleph.vm.storage_pools import iter_namespace_dirs
 
 logger = logging.getLogger(__name__)
@@ -43,16 +42,18 @@ logger = logging.getLogger(__name__)
 # downloader._make_writable_volume).
 ROOTFS_STEM = "rootfs"
 
-# A namespace is an item hash. Anything else must never reach a path join in
-# a delete path: defence in depth behind ItemHash's own validation, since the
-# cost of being wrong here is deleting an unrelated directory tree.
-_ITEM_HASH_PATTERN = re.compile(r"^[0-9a-zA-Z]{16,128}$")
 
+def _checked_namespace(vm_hash: ItemHash | str) -> ItemHash:
+    """The item hash to purge, or a refusal before any filesystem access.
 
-def _checked_namespace(vm_hash: ItemHash | str) -> str:
-    namespace = str(vm_hash)
-    if not _ITEM_HASH_PATTERN.match(namespace):
-        msg = f"Refusing to purge storage for an implausible VM hash: {namespace!r}"
+    A namespace is an item hash and nothing else, so the check is ItemHash's
+    own: the cost of being wrong here is deleting an unrelated directory
+    tree, and a name that is merely alphanumeric is not a VM.
+    """
+    name = str(vm_hash)
+    namespace = vm_namespace(name)
+    if namespace is None:
+        msg = f"Refusing to purge storage for an implausible VM hash: {name!r}"
         raise ValueError(msg)
     return namespace
 
@@ -162,8 +163,7 @@ def purge_vm_staging(vm_hash: ItemHash | str) -> None:
     Covers both the V-PROGRAM and the confidential-instance staging
     directories; each is a no-op for a VM of the other type.
     """
-    namespace = _checked_namespace(vm_hash)
-    item_hash = vm_hash if isinstance(vm_hash, ItemHash) else ItemHash(namespace)
+    item_hash = _checked_namespace(vm_hash)
     remove_vprogram_staging(item_hash)
     remove_snp_instance_staging(item_hash)
 

@@ -42,7 +42,7 @@ from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from aleph.vm.agent.vm.purge import _ITEM_HASH_PATTERN, purge_vm_storage
+from aleph.vm.agent.vm.purge import purge_vm_storage
 from aleph.vm.agent.vm.reclaimable import (
     MANIFEST_REF_KINDS,
     ReclaimableMarker,
@@ -57,6 +57,7 @@ from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.storage import (
     DEVICE_MAPPER_DIRECTORY,
     DEVICE_NAME_MAX_BYTES,
+    is_vm_namespace,
     reserve_download,
     reserved_downloads,
 )
@@ -260,13 +261,9 @@ def _is_creating(namespace: str) -> bool:
 def _markers() -> list[tuple[Path, ReclaimableMarker]]:
     """The reclaimable directories, oldest marker first, implausibly named
     ones dropped (they can never be handed to ``purge_vm_storage``)."""
-    entries = [(directory, marker) for directory, marker in iter_reclaimable() if _plausible(directory.name)]
+    entries = [(directory, marker) for directory, marker in iter_reclaimable() if is_vm_namespace(directory.name)]
     entries.sort(key=lambda item: item[1].reclaimable_since)
     return entries
-
-
-def _plausible(name: str) -> bool:
-    return bool(_ITEM_HASH_PATTERN.match(name))
 
 
 def _marker_refs(markers: Iterable[tuple[Path, ReclaimableMarker]]) -> set[str]:

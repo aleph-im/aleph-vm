@@ -143,11 +143,41 @@ def test_purge_is_idempotent(pools):
     assert purge_vm_storage(VM_HASH) == 0
 
 
-@pytest.mark.parametrize("namespace", ["..", "../../etc", "", "a/b", "short"])
+@pytest.mark.parametrize(
+    "namespace",
+    ["..", "../../etc", "", "a/b", "short", "backupsfromjanuary", "deadbeefdeadbeef", "CAFE" * 16],
+)
 def test_purge_refuses_an_implausible_namespace(pools, namespace):
     """A delete path must never join an unvalidated string onto a pool path."""
     with pytest.raises(ValueError):
         purge_vm_volumes(namespace)
+
+
+@pytest.mark.parametrize("namespace", ["backupsfromjanuary", "deadbeefdeadbeef"])
+def test_purge_storage_refuses_an_operator_directory_before_touching_it(pools, namespace):
+    """A directory an operator named himself keeps its contents.
+
+    The refusal has to come before the first unlink, not after the volumes
+    are gone: a name that is alphanumeric but is not an item hash used to
+    pass the guard, get every file unlinked and the directory removed, and
+    only then raise out of the staging step.
+    """
+    kept = _volume(pools["pool0"], namespace, "january.tar.gz")
+
+    with pytest.raises(ValueError):
+        purge_vm_storage(namespace)
+
+    assert kept.exists()
+    assert kept.parent.exists()
+
+
+@pytest.mark.parametrize("namespace", ["cafe" * 16, "QmXoypizjW3WknFiJnKLwHCnL72vedxjQkDDP1mXWo6uco"])
+def test_purge_storage_accepts_every_shape_of_item_hash(pools, namespace):
+    """A storage hash and an IPFS CID are both VM namespaces."""
+    _volume(pools["pool0"], namespace, "rootfs.qcow2")
+
+    assert purge_vm_storage(namespace) == 1
+    assert not (pools["pool0"] / namespace).exists()
 
 
 def test_only_regular_files_directly_in_the_directory_are_volumes(pools):
