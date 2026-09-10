@@ -16,10 +16,12 @@ from reclaim_fixtures import OTHER_HASH, VM_HASH, pools, volume  # noqa: F401
 from aleph.vm.agent.vm.reclaimable import (
     MARKER_NAME,
     ReclaimableMarker,
+    UnsupportedMarkerVersionError,
     adopt,
     clear_marker,
     depends_on_from_content,
     directory_size_bytes,
+    file_size_bytes,
     iter_reclaimable,
     mark_reclaimable,
     read_marker,
@@ -69,6 +71,65 @@ def test_a_marker_written_before_the_owner_field_still_parses():
     assert marker.reason == "orphan" and marker.size_bytes == 7
 
 
+def test_a_marker_with_an_unknown_reason_does_not_parse():
+    """The reason drives policy (an orphan marker is written exclusively, a
+    gone one carries the owner), so a value this agent never writes is not a
+    marker it may act on."""
+    text = json.dumps(
+        {
+            "version": 1,
+            "reclaimable_since": "2026-08-24T12:00:00+00:00",
+            "reason": "whatever",
+            "size_bytes": 7,
+            "depends_on": [],
+        }
+    )
+
+    with pytest.raises(ValueError, match="reason"):
+        ReclaimableMarker.from_json(text)
+
+
+def test_a_marker_from_a_newer_schema_does_not_parse():
+    text = json.dumps(
+        {
+            "version": 2,
+            "reclaimable_since": "2026-08-24T12:00:00+00:00",
+            "reason": "gone",
+            "size_bytes": 7,
+            "depends_on": [],
+        }
+    )
+
+    with pytest.raises(UnsupportedMarkerVersionError, match="version 2"):
+        ReclaimableMarker.from_json(text)
+
+
+def test_a_marker_with_an_unknown_reason_is_removed_as_corrupt(pools):  # noqa: F811
+    directory = pools["pool0"] / VM_HASH
+    directory.mkdir()
+    (directory / MARKER_NAME).write_text(
+        json.dumps({"version": 1, "reclaimable_since": NOW.isoformat(), "reason": "whatever", "size_bytes": 7})
+    )
+
+    assert read_marker(directory) is None
+    assert not (directory / MARKER_NAME).exists()
+
+
+def test_a_marker_from_a_newer_schema_is_kept_rather_than_removed(pools, caplog):  # noqa: F811
+    """A version this agent does not know is not corruption: a newer agent
+    wrote it, and unlinking it would hand its directory to the orphan flow,
+    which re-marks it without the owner it carried."""
+    directory = pools["pool0"] / VM_HASH
+    directory.mkdir()
+    (directory / MARKER_NAME).write_text(
+        json.dumps({"version": 2, "reclaimable_since": NOW.isoformat(), "reason": "gone", "size_bytes": 7})
+    )
+
+    assert read_marker(directory) is None
+    assert (directory / MARKER_NAME).exists()
+    assert "does not know" in caplog.text
+
+
 def test_read_marker_is_none_without_file(pools):  # noqa: F811
     directory = pools["pool0"] / VM_HASH
     directory.mkdir()
@@ -113,6 +174,26 @@ def test_mark_reclaimable_writes_one_marker_per_pool_dir(pools):  # noqa: F811
 def test_mark_reclaimable_refuses_an_implausible_namespace(pools):  # noqa: F811, ARG001
     with pytest.raises(ValueError):
         mark_reclaimable("../etc", "gone")
+
+
+def test_file_size_counts_regular_files_and_nothing_else(pools, tmp_path):  # noqa: F811, ARG001
+    """A symlink counts 0 whatever it points at: what it points at is not
+    this directory's space, and counting it would let one link inflate every
+    figure derived from here."""
+    real = tmp_path / "rootfs.qcow2"
+    real.write_bytes(b"x" * 8192)
+    link = tmp_path / "link.qcow2"
+    link.symlink_to(real)
+    dangling = tmp_path / "dangling.qcow2"
+    dangling.symlink_to(tmp_path / "never-existed")
+    directory = tmp_path / "sub"
+    directory.mkdir()
+
+    assert file_size_bytes(real) >= 8192
+    assert file_size_bytes(link) == 0
+    assert file_size_bytes(dangling) == 0
+    assert file_size_bytes(directory) == 0
+    assert file_size_bytes(tmp_path / "not-there") == 0
 
 
 def test_directory_size_counts_only_regular_files_directly_inside(pools):  # noqa: F811

@@ -14,9 +14,9 @@ A live set the supervisor could not confirm also stops the cache pass (see
 ``_enforce_cache_budget``) and the device teardown below.
 
 Two parts of a pass run on the event loop rather than in the walk's worker
-thread, because both shell out to dmsetup: ``_teardown_orphan_devices``
+thread, because both shell out to dmsetup: ``teardown_orphan_devices``
 before it (a volume a dm target still holds cannot be reclaimed, so the
-devices go first) and ``_release_cache_devices`` after it (the devices of
+devices go first) and ``release_cache_devices`` after it (the devices of
 the parent images the cache pass evicted).
 
 Loop-triggered passes are serialized, not coalesced: a sweep that retires N
@@ -44,6 +44,7 @@ from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from pathlib import Path
 
 from aiohttp import web
@@ -60,13 +61,15 @@ from aleph.vm.agent.vm.cache import (
 )
 from aleph.vm.agent.vm.purge import purge_vm_storage
 from aleph.vm.agent.vm.reclaimable import (
+    MARKER_NAME,
     ReclaimableMarker,
     adopt,
     clear_marker,
     directory_size_bytes,
-    iter_reclaimable,
     mark_reclaimable,
+    namespace_size_bytes,
     read_marker,
+    reclaimable_entries,
     restore_markers,
 )
 from aleph.vm.agent.vm.retire import teardown_namespace_devices
@@ -79,6 +82,7 @@ from aleph.vm.storage_budget import parse_budget
 from aleph.vm.storage_pools import (
     StoragePool,
     get_pools,
+    has_namespace_dirs,
     iter_namespace_dirs,
     pool_usage_bytes,
 )
@@ -89,11 +93,29 @@ logger = logging.getLogger(__name__)
 
 STAGING_KINDS = ("vprogram", "snp-instance")
 
-# Namespace to the number of creates in flight for it. A count rather than
-# a set: a scheduler push and an operator reinstall take no common per-hash
-# lock, so two creating() spans for one hash can overlap, and the first to
-# exit must not unguard the second.
-_creating: dict[str, int] = {}
+
+@dataclass
+class _CreateState:
+    """What the creates in flight for one namespace share.
+
+    A count rather than a set of creates: a scheduler push and an operator
+    reinstall take no common per-hash lock, so two ``creating()`` spans for
+    one hash can overlap, and the first to exit must not unguard the second.
+
+    The adopted markers are shared for the same reason. Only the first create
+    in finds a marker to adopt, so a per-create record of it would be lost the
+    moment that create failed while a later one was still running: the later
+    one adopted nothing and would have nothing to put back. Held here, the
+    markers belong to the namespace, and the last create to leave without
+    committing restores whatever any of them adopted.
+    """
+
+    creates: int = 0
+    adopted: dict[Path, ReclaimableMarker] = field(default_factory=dict)
+
+
+# Namespace to the creates in flight for it.
+_creating: dict[str, _CreateState] = {}
 
 
 @dataclass
@@ -135,6 +157,15 @@ def creating(namespace: str) -> Iterator[None]:
     erased), the parent images its volumes depend on, and its place in the
     eviction queue. That matters because a failing create is retried: the
     allocation reconciler pushes it again on every cycle.
+
+    Overlapping creates of one hash share what was adopted, and the last one
+    out answers for it. While any create is still running nothing is put back,
+    because a marker on a directory a create is writing says its disks are
+    reclaimable capacity, which the node would then sell to somebody else. A
+    create that returns normally commits, and then the markers are dropped for
+    good: the directory belongs to a live VM. Only when the last create leaves
+    and none of them committed do the markers go back, whichever create had
+    adopted them.
     """
     # Register before adopting: between clear_marker and the add there would
     # otherwise be an instant where the directory is protected by neither
@@ -142,32 +173,37 @@ def creating(namespace: str) -> Iterator[None]:
     # unmarked, not-creating orphan. Registered first, a pass that read
     # is_creating as False must have read it before this line, and then
     # still sees the marker adopt() has yet to clear.
-    _creating[namespace] = _creating.get(namespace, 0) + 1
-    adopted: dict[Path, ReclaimableMarker] = {}
+    state = _creating.setdefault(namespace, _CreateState())
+    state.creates += 1
+    committed = False
     try:
         # Inside the try: an adopt that raises (a marker that cannot be
         # unlinked) must not leave the guard up for good, which would exempt
         # the namespace from every future pass.
-        adopted = adopt(namespace)
+        state.adopted.update(adopt(namespace))
         yield
-    except BaseException:
-        # Any way out other than a normal return means the create did not
-        # commit: an exception, and a cancellation of the task running it.
-        # The restore runs before the guard comes down below, so no pass can
-        # see the directory unmarked and unguarded in between.
-        try:
-            restore_markers(adopted)
-        except Exception:
-            # Deliberately swallowed: the create's own failure is what the
-            # caller has to see. A directory left unmarked is picked up as an
-            # orphan by the next pass, which is what used to happen anyway.
-            logger.exception("Could not restore the reclaimable markers of %s", namespace)
-        raise
+        # Reached on a normal return only, so not on an exception and not on a
+        # cancellation of the task running the create.
+        committed = True
     finally:
-        remaining = _creating[namespace] - 1
-        if remaining:
-            _creating[namespace] = remaining
+        state.creates -= 1
+        if committed:
+            state.adopted.clear()
+        if state.creates:
+            if not committed:
+                logger.info("Not restoring the markers of %s yet: another create still holds it", namespace)
         else:
+            if state.adopted:
+                try:
+                    restore_markers(state.adopted)
+                except Exception:
+                    # Deliberately swallowed: the create's own failure is what
+                    # the caller has to see. A directory left unmarked is
+                    # picked up as an orphan by the next pass, which is what
+                    # used to happen anyway.
+                    logger.exception("Could not restore the reclaimable markers of %s", namespace)
+            # The guard comes down last, after the restore, so no pass can see
+            # the directory unmarked and unguarded in between.
             del _creating[namespace]
 
 
@@ -175,34 +211,8 @@ def is_creating(namespace: str) -> bool:
     return namespace in _creating
 
 
-def _plausible(name: str) -> bool:
-    """Whether a directory or device name is a VM namespace at all.
-
-    The same question the purge guard asks, so the passes that walk the
-    pools skip what the guard would refuse instead of raising on it.
-    """
-    return is_vm_namespace(name)
-
-
 def _mtime(path: Path) -> datetime:
     return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
-
-
-def _dir_bytes(namespace: str) -> int:
-    """Allocated bytes of a VM's volumes, on every pool it spans."""
-    return sum(directory_size_bytes(directory) for directory in iter_namespace_dirs(namespace))
-
-
-def _still_on_disk(namespace: str) -> bool:
-    """False when the namespace's directories vanished between being listed
-    and being acted on.
-
-    Passes can overlap (a GONE fires one while the periodic pass runs, and
-    ``make_room`` evicts from the create path), so losing a race is normal.
-    It is not an error, and it is not space this pass may claim to have
-    freed.
-    """
-    return any(True for _ in iter_namespace_dirs(namespace))
 
 
 def live_hashes(registry: AgentVmRegistry) -> set[str]:
@@ -274,6 +284,18 @@ async def _live_set(app: web.Application) -> tuple[set[str], int | None]:
 # What the supervisor listed at the last pass, for the one caller that cannot
 # ask it: the room maker runs synchronously on the placement path.
 _last_supervisor_hashes: set[str] = set()
+
+
+def forget_supervisor_hash(namespace: str) -> None:
+    """Drop a VM the agent has just retired from the last listing it heard.
+
+    ``known_live_hashes`` protects everything in that listing, and the room
+    maker asks it on the placement path, where nothing can ask the supervisor
+    again. A retired hash left here protects the disks of a VM that is gone,
+    against the create that is trying to make room for itself, until the next
+    pass replaces the listing an hour later.
+    """
+    _last_supervisor_hashes.discard(namespace)
 
 
 def known_live_hashes(registry: AgentVmRegistry) -> set[str]:
@@ -409,7 +431,7 @@ def _reconcile_namespaces(
     seen: set[str] = set()
     for directory in list(iter_namespace_dirs()):
         namespace = directory.name
-        if not _plausible(namespace):
+        if not is_vm_namespace(namespace):
             # A pool is usually a mountpoint, so lost+found is expected here:
             # debug, not a warning repeated every VOLUME_RECONCILE_INTERVAL.
             logger.debug("Ignoring %s: not a VM directory", directory)
@@ -444,26 +466,33 @@ def _reconcile_namespace(
     namespace = directory.name
     if not _is_orphan(directory, is_live, now, guard, dry_run=dry_run):
         return False
-    if is_live(namespace) or is_creating(namespace):
-        # A create that committed, or entered creating(), between the
-        # live snapshot and this walk.
-        logger.info("Skipping %s: a VM claimed it while this pass was walking", namespace)
-        return True
-    if not dry_run and not _still_on_disk(namespace):
+    if not dry_run and not has_namespace_dirs(namespace):
         logger.debug("Skipping %s: another pass got there first", namespace)
         return True
-    if settings.VOLUME_RETENTION == "keep":
+    keep = settings.VOLUME_RETENTION == "keep"
+    # Measured before the last liveness check rather than after it: this walks
+    # every pool the VM is on, and the answer that decides whether the disks
+    # go has to be the one taken after the longest pause, not before it.
+    freed = 0 if keep else namespace_size_bytes(namespace)
+    if is_live(namespace) or is_creating(namespace):
+        # A create that committed, or entered creating(), between the live
+        # snapshot and this walk. Asked here and not where _is_orphan has
+        # just asked it: a pass runs in a worker thread while creates land on
+        # the event loop, so what counts is the last answer before the
+        # directory is marked or removed.
+        logger.info("Skipping %s: a VM claimed it while this pass was walking", namespace)
+        return True
+    if keep:
         if not dry_run:
             mark_reclaimable(namespace, "orphan", now=now)
         report.marked_orphans.append(namespace)
         return True
-    freed = _dir_bytes(namespace)
     if dry_run:
         report.purged_orphans.append(namespace)
         report.bytes_freed += freed
         return True
     purge_vm_storage(namespace)
-    if _still_on_disk(namespace):
+    if has_namespace_dirs(namespace):
         # purge_vm_storage refuses a directory a device-mapper target
         # still holds. Nothing was freed, so nothing may be reported
         # as freed; the next pass tries again.
@@ -524,16 +553,30 @@ def _sweep_parts(now: datetime, guard: timedelta, report: ReconcileReport, *, dr
                 logger.warning("Failed to remove %s", part, exc_info=True)
 
 
-def _side_dir_roots() -> Iterator[tuple[Path, str]]:
+class SideDirNaming(Enum):
+    """How a side directory's name yields the VM hash that owns it."""
+
+    # The directory is the hash: {root}/{namespace}
+    EXACT = "exact"
+    # The hash is the first field of the name: /mnt/{namespace}_{volume name}
+    PREFIX = "prefix"
+
+    def namespace_of(self, child: Path) -> str:
+        return child.name if self is SideDirNaming.EXACT else child.name.split("_", 1)[0]
+
+
+def _side_dir_roots() -> Iterator[tuple[Path, SideDirNaming]]:
     """(root, how the hash is derived from the child name)."""
     if settings.CONFIDENTIAL_SESSION_DIRECTORY:
-        yield Path(settings.CONFIDENTIAL_SESSION_DIRECTORY), "exact"
+        yield Path(settings.CONFIDENTIAL_SESSION_DIRECTORY), SideDirNaming.EXACT
     for kind in STAGING_KINDS:
-        yield Path(settings.EXECUTION_ROOT) / kind, "exact"
-    yield MOUNT_ROOT, "prefix"  # /mnt/{namespace}_{volume name}
+        yield Path(settings.EXECUTION_ROOT) / kind, SideDirNaming.EXACT
+    yield MOUNT_ROOT, SideDirNaming.PREFIX
 
 
-def _is_stale_side_dir(child: Path, mode: str, live: Collection[str], now: datetime, guard: timedelta) -> bool:
+def _is_stale_side_dir(
+    child: Path, naming: SideDirNaming, live: Collection[str], now: datetime, guard: timedelta
+) -> bool:
     """True when this side directory belongs to a VM that is not here any more.
 
     Same three questions as the namespace pass, in the same order: is the
@@ -543,23 +586,23 @@ def _is_stale_side_dir(child: Path, mode: str, live: Collection[str], now: datet
     """
     if not child.is_dir():
         return False
-    namespace = child.name if mode == "exact" else child.name.split("_", 1)[0]
-    if not _plausible(namespace) or namespace in live or is_creating(namespace):
+    namespace = naming.namespace_of(child)
+    if not is_vm_namespace(namespace) or namespace in live or is_creating(namespace):
         return False
     try:
         if now - _mtime(child) < guard:
             return False
     except OSError:
         return False
-    return _side_dir_is_removable(child, mode)
+    return _side_dir_is_removable(child, naming)
 
 
-def _side_dir_is_removable(child: Path, mode: str) -> bool:
+def _side_dir_is_removable(child: Path, naming: SideDirNaming) -> bool:
     """The last two questions, about the directory rather than its owner."""
     if os.path.ismount(child):
         logger.warning("Not removing %s: it is a mount point", child)
         return False
-    if mode == "prefix" and not _is_empty(child):
+    if naming is SideDirNaming.PREFIX and not _is_empty(child):
         # /mnt belongs to the operator, not to the agent: the only thing the
         # agent puts there is a mount point (storage.create_devmapper mkdirs
         # it and unmounts after the resize), which is empty by construction
@@ -587,20 +630,20 @@ def _sweep_side_dirs(
     dry_run: bool,
     is_live: Callable[[str], bool],
 ) -> None:
-    for root, mode in _side_dir_roots():
+    for root, naming in _side_dir_roots():
         if not root.is_dir():
             continue
         for child in list(root.iterdir()):
-            if not _is_stale_side_dir(child, mode, live, now, guard):
+            if not _is_stale_side_dir(child, naming, live, now, guard):
                 continue
-            namespace = child.name if mode == "exact" else child.name.split("_", 1)[0]
+            namespace = naming.namespace_of(child)
             if is_live(namespace) or is_creating(namespace):
                 # Claimed since the listing: the same re-check the namespace
                 # pass and the evictor make immediately before removing.
                 continue
             if not dry_run:
                 try:
-                    if mode == "exact":
+                    if naming is SideDirNaming.EXACT:
                         shutil.rmtree(child)
                     else:
                         # Never an rmtree here: see _is_stale_side_dir.
@@ -625,22 +668,6 @@ def _retention_budget(pool: StoragePool) -> int | None:
     if usage is None:
         return None
     return parse_budget(settings.VOLUME_RETENTION_BUDGET, usage.total)
-
-
-def _reclaimable_on(pool: StoragePool) -> list[tuple[Path, ReclaimableMarker]]:
-    """The pool's reclaimable directories, oldest marker first.
-
-    Implausibly named directories are dropped here rather than left to fail
-    the ``_checked_namespace`` guard mid-pass: a hand-made marker under a
-    directory nobody named after a VM must not abort a reconcile.
-    """
-    entries = [
-        (directory, marker)
-        for directory, marker in iter_reclaimable()
-        if directory.parent == pool.path and _plausible(directory.name)
-    ]
-    entries.sort(key=lambda item: item[1].reclaimable_since)
-    return entries
 
 
 def _evict(
@@ -669,13 +696,13 @@ def _evict(
     # open; the window is a few instructions wide and needs the pool to be
     # over budget at that instant. The room maker's evictions run on the
     # event loop itself, where creating() cannot interleave at all.
-    if not _still_on_disk(namespace):
+    if not has_namespace_dirs(namespace):
         logger.debug("Not evicting %s: its directories are already gone", namespace)
         return 0
-    size = _dir_bytes(namespace)
+    size = namespace_size_bytes(namespace)
     if not dry_run:
         purge_vm_storage(namespace)
-        if _still_on_disk(namespace):
+        if has_namespace_dirs(namespace):
             # Same rule as the namespace pass: a directory the purge refuses
             # (a device-mapper target still holds its volumes) is not space
             # anyone got back, so make_room must not count it towards the
@@ -695,7 +722,7 @@ def _enforce_retention_budget(
 ) -> None:
     reap = settings.VOLUME_RETENTION == "reap"
     for pool in get_pools():
-        entries = _reclaimable_on(pool)
+        entries = reclaimable_entries(pool.path)
         if not entries:
             continue
         budget = _retention_budget(pool)
@@ -720,7 +747,7 @@ def _enforce_retention_budget(
                 total -= marker.size_bytes
                 continue
             evicted = _evict(directory.name, report, dry_run=dry_run, is_live=is_live)
-            if evicted or not _still_on_disk(directory.name):
+            if evicted or not has_namespace_dirs(directory.name):
                 # Only bytes that actually left the disk count against the
                 # excess. A declined eviction (a live or in-flight re-create,
                 # a dm-held purge refusal) keeps its bytes: spending them
@@ -771,7 +798,16 @@ def _enforce_cache_budget(
             ", ".join(unknown[:3]),
         )
         return
-    report.cache_evicted = evict_caches(registry, dry_run=dry_run, is_live=is_live)
+    reclaimed_bytes: dict[str, int] = {}
+    report.cache_evicted = evict_caches(registry, dry_run=dry_run, is_live=is_live, reclaimed_bytes=reclaimed_bytes)
+    for namespace, size in reclaimed_bytes.items():
+        # The retained VMs the cache pass gave back to free the parent images
+        # they pinned. They are evictions of the same kind the retention
+        # budget makes, and the pass's own figures have to include them.
+        if namespace in report.evicted:
+            continue
+        report.evicted.append(namespace)
+        report.bytes_freed += size
 
 
 def make_room(pool: StoragePool, needed_bytes: int, *, live: Collection[str] | None = None) -> int:
@@ -811,7 +847,7 @@ def make_room(pool: StoragePool, needed_bytes: int, *, live: Collection[str] | N
     free = usage.free
     if free >= needed_bytes:
         return 0
-    entries = _reclaimable_on(pool)
+    entries = reclaimable_entries(pool.path)
     reclaimable = sum(directory_size_bytes(directory) for directory, _marker in entries)
     if free + reclaimable < needed_bytes:
         logger.info(
@@ -874,9 +910,9 @@ async def reconcile_now(app: web.Application, *, dry_run: bool = False) -> Recon
     async with _pass_lock(app):
         live, running = await _live_set(app)
         if not dry_run and running is not None:
-            await _teardown_orphan_devices(live)
+            await teardown_orphan_devices(live)
         report = await _pass(registry, live, dry_run=dry_run, live_known=running is not None)
-    await _release_cache_devices(report, dry_run=dry_run)
+    await release_cache_devices(report, dry_run=dry_run)
     return report
 
 
@@ -907,7 +943,7 @@ def orphan_device_namespaces(live: Collection[str]) -> list[str]:
         return []
     for device in devices:
         namespace = device.name.split("_", 1)[0]
-        if not _plausible(namespace) or namespace in live or is_creating(namespace):
+        if not is_vm_namespace(namespace) or namespace in live or is_creating(namespace):
             continue
         if _within_create_guard(namespace, now, guard):
             continue
@@ -920,6 +956,15 @@ def _within_create_guard(namespace: str, now: datetime, guard: timedelta) -> boo
     in flight. A namespace with no directory at all is not: its devices are
     what a create left behind, not what one is building on."""
     for directory in iter_namespace_dirs(namespace):
+        if (directory / MARKER_NAME).exists():
+            # A reclaimable directory is not one a create is building:
+            # creating() adopts a namespace, which clears its markers, before
+            # the create writes anything. Reading its mtime instead would put
+            # every retired VM inside the guard, because writing the marker
+            # is itself a write to the directory and moves that mtime. Its
+            # devices would then stand for a whole VOLUME_CREATE_GUARD, and
+            # they are what stops its volumes being reclaimed at all.
+            continue
         try:
             if now - _mtime(directory) < guard:
                 return True
@@ -928,7 +973,7 @@ def _within_create_guard(namespace: str, now: datetime, guard: timedelta) -> boo
     return False
 
 
-async def _teardown_orphan_devices(live: Collection[str]) -> list[str]:
+async def teardown_orphan_devices(live: Collection[str]) -> list[str]:
     """Tear down the devices of the VMs the walk is about to find unowned.
 
     ``retire_vm`` is the normal inverse of ``create_devmapper``, and it reads
@@ -953,7 +998,7 @@ async def _teardown_orphan_devices(live: Collection[str]) -> list[str]:
     return namespaces
 
 
-async def _release_cache_devices(report: ReconcileReport, *, dry_run: bool) -> None:
+async def release_cache_devices(report: ReconcileReport, *, dry_run: bool) -> None:
     """Tear down the devices of the parent images the pass evicted, then sweep
     the ones an earlier teardown left behind.
 
@@ -1058,9 +1103,9 @@ async def reconcile_at_startup(app: web.Application) -> None:
             _log_startup_preview(await _pass(registry, live, dry_run=True, live_known=live_known), refusal=refusal)
             if refusal is not None:
                 return
-            await _teardown_orphan_devices(live)
+            await teardown_orphan_devices(live)
             report = await _pass(registry, live, dry_run=False, live_known=live_known)
-        await _release_cache_devices(report, dry_run=False)
+        await release_cache_devices(report, dry_run=False)
     except Exception:
         # Housekeeping never blocks the boot: an on_startup hook that raises
         # stops the agent, and a full or read-only pool is exactly what this
@@ -1096,3 +1141,13 @@ async def stop_storage_reconcile_task(app: web.Application) -> None:
         await task
     except asyncio.CancelledError:
         logger.debug("Task storage_reconcile is cancelled now")
+
+
+# The storage CLI runs the same pass out of process and imports four of the
+# names above. They carried an underscore while the reconciler was their only
+# caller, which they have not been for some time; these aliases keep that
+# module importing while it is pointed at the names themselves.
+_plausible = is_vm_namespace
+_still_on_disk = has_namespace_dirs
+_teardown_orphan_devices = teardown_orphan_devices
+_release_cache_devices = release_cache_devices

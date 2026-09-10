@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import time
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
@@ -29,6 +30,11 @@ from aleph.vm.storage import DownloadReservation
 
 NOW = datetime(2026, 8, 24, tzinfo=timezone.utc)
 OLDER = datetime(2026, 8, 23, tzinfo=timezone.utc)
+
+
+def _unreadable_disk(path):
+    """``shutil.disk_usage`` on a cache root whose filesystem will not answer."""
+    raise OSError(13, "Permission denied", str(path))
 
 
 @pytest.fixture(autouse=True)
@@ -549,7 +555,7 @@ def test_a_retained_dir_a_create_is_using_is_not_reclaimed_for_its_parent(pools,
     parent = _entry(pools["runtime"], "parent", size=4096)
     adopted = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
     mark_reclaimable(VM_HASH, "gone", ("parent",), now=NOW)
-    monkeypatch.setattr(reconciler_module, "_creating", {VM_HASH: 1})
+    monkeypatch.setattr(reconciler_module, "_creating", {VM_HASH: reconciler_module._CreateState(creates=1)})
 
     assert evict_caches(registry) == []
     assert parent.exists() and adopted.exists()
@@ -689,34 +695,45 @@ def test_two_unknown_length_downloads_are_both_charged_the_capped_figure(pools, 
         admit_download(registry, pools["runtime"] / "c.part", None, 4096)
 
 
-def test_an_unreadable_cache_disk_still_charges_only_the_reserve(pools, monkeypatch, caplog):
-    """The fallback must not be the bug it replaces: a disk whose total cannot
-    be read leaves an absolute reserve holding, never the whole budget."""
-    monkeypatch.setattr(settings, "UNKNOWN_LENGTH_RESERVE", "4096")
+def test_an_unreadable_cache_disk_admits_a_measured_download(pools, monkeypatch, caplog):
+    """The disk is read once, and a read that fails ends the admission there:
+    the download goes through on its own figure, and nothing on the root is
+    evicted for a budget nobody could compute."""
+    registry = AgentVmRegistry()
+    cache_module.record_live_snapshot(set())
+    old = _entry(pools["runtime"], "old", size=4096, age=1000)
+    part = pools["runtime"] / "new.part"
 
-    def unreadable(path):
-        raise OSError(13, "Permission denied")
-
-    monkeypatch.setattr(cache_module.shutil, "disk_usage", unreadable)
+    monkeypatch.setattr(cache_module.shutil, "disk_usage", _unreadable_disk)
 
     with caplog.at_level(logging.WARNING):
-        charge = cache_module._unknown_length_charge(pools["runtime"], 1024**3, None)
+        admit_download(registry, part, 4096)
 
-    assert charge == 4096
+    assert old.exists()
+    assert storage_module.reserved_downloads() == {part: DownloadReservation(4096, measured=True)}
     assert "not accessible" in caplog.text
 
 
-def test_an_unreadable_cache_disk_holds_nothing_for_a_percentage_reserve(pools, monkeypatch):
-    """A percentage of a disk nobody could measure resolves to nothing, which
-    is still better than holding the root against every other download."""
+def test_an_unreadable_cache_disk_holds_nothing_for_an_unmeasured_download(pools, monkeypatch):
+    """The whole budget must not come back through the back door: the budget
+    is a share of a disk size nobody could read, so there is no figure to
+    hold, and one chunked response does not get the root to itself."""
+    registry = AgentVmRegistry()
+    cache_module.record_live_snapshot(set())
+
+    monkeypatch.setattr(cache_module.shutil, "disk_usage", _unreadable_disk)
+
+    admit_download(registry, pools["runtime"] / "new.part", None, 100 * 1024**3)
+
+    assert storage_module.reserved_downloads() == {}
+
+
+def test_the_reserve_is_a_share_of_the_total_the_caller_read(pools, monkeypatch):
+    """A percentage reserve is resolved against the disk size the admission
+    already measured, not against a reading of its own."""
     monkeypatch.setattr(settings, "UNKNOWN_LENGTH_RESERVE", "10%")
 
-    def unreadable(path):
-        raise OSError(13, "Permission denied")
-
-    monkeypatch.setattr(cache_module.shutil, "disk_usage", unreadable)
-
-    assert cache_module._unknown_length_charge(pools["runtime"], 1024**3, None) == 0
+    assert cache_module._unknown_length_charge(80_000, 1024**3, None) == 8000
 
 
 def test_a_measured_download_still_evicts_to_make_room(pools, monkeypatch):
@@ -730,6 +747,79 @@ def test_a_measured_download_still_evicts_to_make_room(pools, monkeypatch):
     admit_download(registry, pools["code"] / "new.part", 8000)
 
     assert not old.exists()
+
+
+def test_a_body_bigger_than_its_reserve_is_recovered_by_the_next_pass(pools, monkeypatch):
+    """The reserve is a guess, so a chunked body can outgrow it. The root is
+    over its budget while the extra bytes land, and nothing may unlink the
+    .part under the download writing it; what the pass does instead is count
+    those bytes (they are a measurement, unlike the reserve) and evict least
+    recently used for them, and once the download finishes its own entry is
+    evictable like any other."""
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "8192")
+    monkeypatch.setattr(settings, "UNKNOWN_LENGTH_RESERVE", "4096")
+    registry = AgentVmRegistry()
+    cache_module.record_live_snapshot(set())
+    root = pools["code"]
+    old = _entry(root, "old", size=4096, age=1000)
+    chunked = root / "chunked.part"
+
+    admit_download(registry, chunked, None, 100 * 1024**3)
+    chunked.write_bytes(b"x" * 8192)
+
+    assert cache_module._root_usage(root, cache_entries(root)) > 8192
+    assert evict_caches(registry) == [old]
+
+    storage_module.release_download(chunked)
+    chunked.rename(root / "chunked")
+
+    assert cache_module._root_usage(root, cache_entries(root)) <= 8192
+
+
+def test_the_cache_disk_is_read_once_per_admission(pools, monkeypatch):
+    """Both the budget and the reserve held for an unmeasured body are shares
+    of the cache disk's size. Reading it twice gave the second read its own
+    failure path, which could not be reached (the first had just succeeded)
+    and held the entire budget when it was."""
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "50%")
+    monkeypatch.setattr(settings, "UNKNOWN_LENGTH_RESERVE", "10%")
+    registry = AgentVmRegistry()
+    cache_module.record_live_snapshot(set())
+    root = pools["runtime"]
+    reads: list[str] = []
+    real_usage = shutil.disk_usage
+
+    def counting_usage(path):
+        reads.append(str(path))
+        return real_usage(path)
+
+    monkeypatch.setattr(cache_module.shutil, "disk_usage", counting_usage)
+
+    admit_download(registry, root / "chunked.part", None, 100 * 1024**3)
+
+    assert reads.count(str(root)) == 1
+    total = real_usage(root).total
+    assert storage_module.reserved_downloads()[root / "chunked.part"] == DownloadReservation(
+        total // 10, measured=False
+    )
+
+
+def test_a_refused_download_evicts_nothing(pools, monkeypatch):
+    """Admission evicted against one measure and refused against another: it
+    stopped evicting once the bytes really on disk fitted, then refused on a
+    total that counts the room an unmeasured download is holding. The entry
+    was gone and the download failed anyway, which is the worst of both."""
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "8192")
+    monkeypatch.setattr(settings, "UNKNOWN_LENGTH_RESERVE", "8192")
+    registry = AgentVmRegistry()
+    cache_module.record_live_snapshot(set())
+    old = _entry(pools["code"], "old", size=8192, age=1000)
+    admit_download(registry, pools["code"] / "chunked.part", None, 100 * 1024**3)
+
+    with pytest.raises(InsufficientResourcesError):
+        admit_download(registry, pools["code"] / "measured.part", 4096)
+
+    assert old.exists()
 
 
 def test_a_measured_download_fits_beside_an_unknown_length_one(pools, monkeypatch):

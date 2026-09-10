@@ -353,6 +353,12 @@ turn retained disks into an owner-less orphan directory with no parent-image
 pins and a timestamp that resets on every attempt. A directory the failed
 create's own teardown purged is not re-marked, and a marker written while
 the create ran (a retire of the same hash) is the newer record and stays.
+Two creates of one hash can overlap (a scheduler push beside an operator
+reinstall), and only the first of them finds a marker to adopt, so what was
+adopted is held per namespace rather than per create: while any create is
+still running nothing goes back, a create that returns drops the markers for
+good (the directory is a live VM's now), and the last create to leave with
+none of them committed restores whatever any of them adopted.
 
 ### The reconciler
 
@@ -414,7 +420,7 @@ Everything a pass touches is under a directory the agent created and is
 keyed by a hash that `storage.vm_namespace` accepted: the name has to parse
 as an `ItemHash` (64 lowercase hex characters, or an IPFS CID), so a
 directory an operator dropped on a volume pool is never a VM. The delete
-paths go through `purge._checked_namespace`, which refuses on the same rule
+paths go through `purge.checked_namespace`, which refuses on the same rule
 before any filesystem access; the passes that walk the pools ask
 `is_vm_namespace` first and skip what the guard would refuse.
 
@@ -545,7 +551,12 @@ truth as the body lands, since the bytes on disk are counted the moment they
 are written. A ceiling never sets the eviction target either: a root's usage
 counts a guessed reservation only at the bytes it has actually written when
 the question is how much to evict, and at the full figure when the question
-is whether the next download fits. What is admitted is then charged to
+is whether the next download fits. A body bigger than its reserve therefore
+takes its root over the budget while the extra bytes land: a `.part` is not an
+entry and nothing may unlink it under the download writing it. The overshoot
+is transient rather than permitted. Those bytes are a measurement, so the next
+pass counts them and evicts least recently used for them, and once the
+download finishes its entry is evictable like any other. What is admitted is then charged to
 the download's `.part` path (`reserve_download`) until `download_file`
 releases it, so a second create arriving while the first is still writing
 sees the room the first was promised rather than only the bytes it has
@@ -680,7 +691,7 @@ in its `--help` epilog) needs no running *agent process*:
   - **The agent is down and the supervisor answers.** The full pass runs.
     Nothing is being created, so the age of the directory is a sound guard
     again, and the live set is a known one (registry union `list_vms`), so
-    `_teardown_orphan_devices` removes the dm devices of every namespace no
+    `teardown_orphan_devices` removes the dm devices of every namespace no
     live VM owns before the walk, or the purge that follows would be refused
     on a volume file a target still holds.
   - **The supervisor does not answer.** The live set is the registry alone,

@@ -15,16 +15,18 @@ from __future__ import annotations
 import json
 import logging
 import os
+import stat
 import time
 from collections.abc import Iterator, Mapping
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 from aleph_message.models import ExecutableContent
 
-from aleph.vm.agent.vm.purge import _checked_namespace
+from aleph.vm.agent.vm.purge import checked_namespace
+from aleph.vm.storage import is_vm_namespace
 from aleph.vm.storage_pools import get_pools, iter_namespace_dirs
 
 logger = logging.getLogger(__name__)
@@ -33,6 +35,16 @@ MARKER_NAME = ".reclaimable"
 MARKER_VERSION = 1
 
 ReclaimReason = Literal["gone", "orphan"]
+RECLAIM_REASONS: frozenset[str] = frozenset(get_args(ReclaimReason))
+
+
+class UnsupportedMarkerVersionError(ValueError):
+    """A marker written to a schema this agent does not know.
+
+    Distinct from a corrupt marker: the file is intact, a newer agent wrote
+    it, and the fields it holds may not mean what this version thinks they
+    do. The reader keeps such a file rather than removing it.
+    """
 
 
 @dataclass(frozen=True)
@@ -58,9 +70,25 @@ class ReclaimableMarker:
 
     @classmethod
     def from_json(cls, text: str) -> ReclaimableMarker:
+        """Parse a marker, refusing anything this agent did not write.
+
+        The reason and the version are checked rather than taken on trust:
+        both decide what happens to the directory (an orphan marker is
+        claimed exclusively and carries no owner, a gone one authorizes the
+        owner's erase), and a value from outside the set this agent knows
+        would be carried into those decisions unread.
+        """
         data = json.loads(text)
         if not isinstance(data, dict):
             msg = f"marker is not a JSON object: {type(data).__name__}"
+            raise ValueError(msg)
+        version = int(data.get("version", MARKER_VERSION))
+        if version != MARKER_VERSION:
+            msg = f"marker version {version} is not the version {MARKER_VERSION} this agent writes"
+            raise UnsupportedMarkerVersionError(msg)
+        reason = data["reason"]
+        if reason not in RECLAIM_REASONS:
+            msg = f"marker reason {reason!r} is not one of {', '.join(sorted(RECLAIM_REASONS))}"
             raise ValueError(msg)
         owner = data.get("owner")
         since = datetime.fromisoformat(data["reclaimable_since"])
@@ -74,11 +102,11 @@ class ReclaimableMarker:
             since = since.replace(tzinfo=timezone.utc)
         return cls(
             reclaimable_since=since,
-            reason=data["reason"],
+            reason=reason,
             size_bytes=int(data["size_bytes"]),
             depends_on=tuple(data.get("depends_on", ())),
             owner=str(owner) if owner else None,
-            version=int(data.get("version", MARKER_VERSION)),
+            version=version,
         )
 
 
@@ -92,12 +120,17 @@ def file_size_bytes(path: Path) -> int:
 
     The single definition of "how much disk does this file actually hold" for
     the agent: everything that measures a VM's storage goes through here or
-    through ``directory_size_bytes``."""
+    through ``directory_size_bytes``.
+
+    One lstat answers all of it, which matters because the callers run this
+    over every file of every cache and every pool: the mode says whether it
+    is a regular file (a symlink is not, so it is refused without following
+    it) and the same result carries the blocks."""
     try:
         st = path.lstat()
     except OSError:
         return 0
-    if path.is_symlink() or not path.is_file():
+    if not stat.S_ISREG(st.st_mode):
         return 0
     return st.st_blocks * 512
 
@@ -112,6 +145,11 @@ def directory_size_bytes(directory: Path) -> int:
     except OSError:
         return 0
     return sum(file_size_bytes(entry) for entry in entries if entry.name != MARKER_NAME)
+
+
+def namespace_size_bytes(namespace: str) -> int:
+    """Allocated bytes of a VM's volumes, on every pool it spans."""
+    return sum(directory_size_bytes(directory) for directory in iter_namespace_dirs(namespace))
 
 
 def read_marker(namespace_dir: Path, *, repair: bool = True) -> ReclaimableMarker | None:
@@ -129,6 +167,12 @@ def read_marker(namespace_dir: Path, *, repair: bool = True) -> ReclaimableMarke
     cannot unlink it at all, and an operator inspecting a node has not asked
     for anything on disk to change). The reconciler keeps the repair, since
     it is the pass that has to be able to move the directory on.
+
+    A marker whose schema version this agent does not know is the exception:
+    it is intact, a newer agent wrote it, and removing it would hand a
+    retained directory to the orphan flow, which re-marks it without the
+    owner and the parent-image pins it was carrying. It is kept and reported
+    instead, and the operator is told which agent has to look at it.
     """
     path = namespace_dir / MARKER_NAME
     if not path.is_file():
@@ -137,6 +181,9 @@ def read_marker(namespace_dir: Path, *, repair: bool = True) -> ReclaimableMarke
         return ReclaimableMarker.from_json(path.read_text())
     except OSError:
         logger.warning("Unreadable reclaimable marker at %s, ignoring it", path)
+        return None
+    except UnsupportedMarkerVersionError as error:
+        logger.error("Reclaimable marker at %s is in a schema this agent does not know (%s); keeping it", path, error)
         return None
     except (ValueError, KeyError, TypeError, AttributeError):
         if not repair:
@@ -307,7 +354,7 @@ def mark_reclaimable(
     owner: str | None = None,
 ) -> list[Path]:
     """Write one marker per namespace directory (one per pool the VM spans)."""
-    namespace = _checked_namespace(namespace)
+    namespace = checked_namespace(namespace)
     since = now or datetime.now(tz=timezone.utc)
     written: list[Path] = []
     for directory in iter_namespace_dirs(namespace):
@@ -339,7 +386,7 @@ def adopt(namespace: str) -> dict[Path, ReclaimableMarker]:
     whose marker was unreadable or corrupt is adopted like any other and
     simply has nothing to give back.
     """
-    namespace = _checked_namespace(namespace)
+    namespace = checked_namespace(namespace)
     adopted: dict[Path, ReclaimableMarker] = {}
     for directory in iter_namespace_dirs(namespace):
         marker = read_marker(directory)
@@ -390,7 +437,7 @@ def retained_marker(namespace: str) -> ReclaimableMarker | None:
     still holds anything for a hash it otherwise knows nothing about, and
     who it belongs to.
     """
-    namespace = _checked_namespace(namespace)
+    namespace = checked_namespace(namespace)
     for directory in iter_namespace_dirs(namespace):
         marker = read_marker(directory)
         if marker is not None:
@@ -405,6 +452,27 @@ def iter_reclaimable(*, repair: bool = True) -> Iterator[tuple[Path, Reclaimable
         marker = read_marker(directory, repair=repair)
         if marker is not None:
             yield directory, marker
+
+
+def reclaimable_entries(pool_path: Path | None = None) -> list[tuple[Path, ReclaimableMarker]]:
+    """The marked directories, oldest marker first, or one pool's alone.
+
+    The eviction order every reclaiming pass uses, in one place: the
+    retention budget takes a pool at a time, the cache pass takes them all,
+    and both have to agree on which directory goes first.
+
+    Implausibly named directories are dropped here rather than left to fail
+    the purge guard mid-pass: a hand-made marker under a directory nobody
+    named after a VM must not abort a reconcile, and could never be handed
+    to ``purge_vm_storage`` anyway.
+    """
+    entries = [
+        (directory, marker)
+        for directory, marker in iter_reclaimable()
+        if is_vm_namespace(directory.name) and (pool_path is None or directory.parent == pool_path)
+    ]
+    entries.sort(key=lambda item: item[1].reclaimable_since)
+    return entries
 
 
 # reclaimable_bytes runs on every admission check and every capacity report,

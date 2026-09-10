@@ -137,6 +137,30 @@ def test_in_flight_create_is_never_an_orphan(pools, registry, monkeypatch):  # n
     assert not is_creating(VM_HASH)
 
 
+def test_a_create_that_lands_mid_walk_keeps_its_directory(pools, registry, monkeypatch):  # noqa: F811
+    """The pass runs in a worker thread while creates land on the event loop,
+    so the liveness question has to be asked again immediately before the
+    purge and not only when the directory was judged an orphan: the walk
+    that measures it takes as long as the directories are big."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    old = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    _age(old.parent, 10_000)
+    measured = reconciler_module.namespace_size_bytes
+
+    def measure_then_create(namespace: str) -> int:
+        size = measured(namespace)
+        reconciler_module._creating[namespace] = reconciler_module._CreateState(creates=1)
+        return size
+
+    monkeypatch.setattr(reconciler_module, "namespace_size_bytes", measure_then_create)
+
+    report = reconcile_storage(registry, now=NOW)
+
+    assert old.exists()
+    assert report.purged_orphans == []
+    reconciler_module._creating.clear()
+
+
 def test_creating_adopts_retained_dirs(pools, monkeypatch):  # noqa: F811
     monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
     volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
@@ -294,6 +318,73 @@ def test_a_failed_inner_create_does_not_re_mark_a_directory_the_outer_holds(pool
         with pytest.raises(RuntimeError), creating(VM_HASH):
             raise RuntimeError("the second create failed")
         assert read_marker(pools["pool0"] / VM_HASH) is None
+
+
+def test_a_failed_create_leaves_the_marker_to_the_create_still_running(pools, monkeypatch):  # noqa: F811
+    """The same overlap, with something for the inner create to adopt: a GONE
+    retire of this hash lands while the outer create runs. The inner failure
+    must still not put the marker back, because the directory now belongs to
+    the create that is still writing it, and a marker on it counts its disks
+    as reclaimable capacity the node would sell twice. The create that holds
+    it restores what it adopted if it fails in its turn."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+
+    with creating(VM_HASH):
+        mark_reclaimable(VM_HASH, "gone", now=NOW, owner=OWNER)
+        with pytest.raises(RuntimeError), creating(VM_HASH):
+            raise RuntimeError("the inner create failed")
+        assert read_marker(pools["pool0"] / VM_HASH) is None
+    assert read_marker(pools["pool0"] / VM_HASH) is None
+
+
+@pytest.mark.asyncio
+async def test_the_last_of_two_overlapping_creates_restores_what_either_adopted(pools, monkeypatch):  # noqa: F811
+    """The overlap that is not nested: two creates of one hash in two tasks,
+    as a scheduler push and an operator reinstall arrive together.
+
+    The first adopted the marker and fails while the second still runs, so it
+    leaves the restore to the second, and the second adopted nothing because
+    the first had already cleared it. Unless the two share what was adopted,
+    nobody puts the marker back: the next pass then re-marks the directory as
+    an orphan with no owner and no depends_on, which is exactly the loss the
+    restore exists to prevent."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    mark_reclaimable(VM_HASH, "gone", (OTHER_HASH,), now=NOW, owner=OWNER)
+    first_adopted = asyncio.Event()
+    second_started = asyncio.Event()
+    first_finished = asyncio.Event()
+
+    async def push():
+        with creating(VM_HASH):
+            first_adopted.set()
+            await second_started.wait()
+            raise RuntimeError("the first create failed")
+
+    async def reinstall():
+        await first_adopted.wait()
+        with creating(VM_HASH):
+            second_started.set()
+            await first_finished.wait()
+            raise RuntimeError("the second create failed too")
+
+    first = asyncio.create_task(push())
+    second = asyncio.create_task(reinstall())
+    with pytest.raises(RuntimeError, match="the first create failed"):
+        await first
+    # The second create is still writing the directory, so nothing is back yet.
+    assert read_marker(pools["pool0"] / VM_HASH) is None
+    first_finished.set()
+    with pytest.raises(RuntimeError, match="the second create failed too"):
+        await second
+
+    restored = read_marker(pools["pool0"] / VM_HASH)
+    assert restored is not None
+    assert restored.owner == OWNER
+    assert restored.depends_on == (OTHER_HASH,)
+    assert restored.reclaimable_since == NOW
+    assert not is_creating(VM_HASH)
 
 
 def test_old_orphan_is_purged_under_reap(pools, registry, monkeypatch):  # noqa: F811
@@ -500,7 +591,7 @@ def test_a_hash_entering_creating_mid_pass_is_not_purged(pools, registry, monkey
     def orphan_then_claim(directory, is_live, now, guard, *, dry_run):
         result = real_is_orphan(directory, is_live, now, guard, dry_run=dry_run)
         if result:
-            reconciler_module._creating[directory.name] = 1
+            reconciler_module._creating[directory.name] = reconciler_module._CreateState(creates=1)
         return result
 
     monkeypatch.setattr(reconciler_module, "_is_orphan", orphan_then_claim)
@@ -1040,6 +1131,27 @@ def test_reconcile_runs_the_cache_pass(pools, registry, monkeypatch):  # noqa: F
     assert not stale.exists()
 
 
+def test_a_vm_the_cache_pass_reclaims_is_counted_in_the_report(pools, registry, monkeypatch):  # noqa: F811
+    """The cache pass gives back retained volumes to free the parent images
+    they pin, which is an eviction like any other: it has to reach the pass's
+    own figures, or the log says the pass freed a few kilobytes of cache
+    entries on a run that also deleted a VM's disks."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    monkeypatch.setattr(settings, "CACHE_BUDGET", "1024")
+    _fake_disk_usage(monkeypatch, 8 * GIB)
+    parent = pools["runtime"] / "parent"
+    parent.write_bytes(b"x" * 4096)
+    retained = volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=8192)
+    mark_reclaimable(VM_HASH, "gone", ("parent",), now=NOW)
+
+    report = reconcile_storage(registry, now=NOW)
+
+    assert not retained.exists()
+    assert report.cache_evicted == [parent]
+    assert report.evicted == [VM_HASH]
+    assert report.bytes_freed >= 8192
+
+
 def test_the_cache_pass_is_skipped_when_a_live_vm_has_no_record(pools, registry, monkeypatch, caplog):  # noqa: F811
     """Cache references are read from the registry's messages alone, so a VM
     the supervisor runs but the registry does not know makes the referenced
@@ -1214,6 +1326,30 @@ async def test_a_young_directory_keeps_its_devices_without_the_in_process_guard(
 
 
 @pytest.mark.asyncio
+async def test_a_marker_write_does_not_re_age_a_directory(pools, registry, monkeypatch, tmp_path):  # noqa: F811
+    """Writing a marker into a directory bumps that directory's mtime, so a
+    VM retired minutes ago read as a create in flight and kept its
+    device-mapper devices for a whole VOLUME_CREATE_GUARD, which is the one
+    thing that stops its volumes being reclaimed. A directory carrying a
+    marker is not one a create is building, whatever its mtime says: a
+    create adopts the namespace, which clears the marker, first."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    old = volume(pools["pool0"], VM_HASH, "rootfs.btrfs")
+    stamp = time.time() - 10_000
+    os.utime(old.parent, (stamp, stamp))
+    _fake_mapper(monkeypatch, tmp_path, f"{VM_HASH}_rootfs")
+    torn: list[str] = []
+    monkeypatch.setattr(reconciler_module, "teardown_namespace_devices", AsyncMock(side_effect=torn.append))
+
+    mark_reclaimable(VM_HASH, "gone", now=NOW)
+    assert old.parent.stat().st_mtime > stamp  # the marker moved the directory
+
+    await reconcile_now(_app(registry, _supervisor()))
+
+    assert torn == [VM_HASH]
+
+
+@pytest.mark.asyncio
 async def test_no_device_is_torn_down_when_the_supervisor_cannot_be_listed(pools, registry, monkeypatch, tmp_path):  # noqa: F811
     """A VM the supervisor would have listed is live; removing its dm device
     takes its disk with it."""
@@ -1257,7 +1393,7 @@ def test_make_room_never_evicts_a_directory_a_create_is_using(pools, monkeypatch
     monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
     retained = volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=8192)
     mark_reclaimable(VM_HASH, "gone", now=NOW - timedelta(days=2))
-    monkeypatch.setattr(reconciler_module, "_creating", {VM_HASH: 1})
+    monkeypatch.setattr(reconciler_module, "_creating", {VM_HASH: reconciler_module._CreateState(creates=1)})
     _fake_disk_usage(monkeypatch, 0)
 
     freed = make_room(get_pools()[0], needed_bytes=8192)
