@@ -774,14 +774,15 @@ async def test_gpu_vprogram_spec_leaves_gpus_for_run_to_resolve(tmp_path, storag
 
 
 @pytest.mark.asyncio
-async def test_gpu_vprogram_rejects_a_second_gpu(tmp_path, storage_files, snp_vcpu_types):
-    # One card per VM: the measured cmdline reserves a single swiotlb window
-    # and the guest verifies one device. The schema allows up to eight, so a
-    # count of two is a message this CRN must refuse on its own.
-    _stage_bundle(tmp_path, storage_files, gpu=GPU_BLOCK)
+async def test_gpu_vprogram_accepts_a_multi_card_count(tmp_path, storage_files, snp_vcpu_types):
+    # The count is resolved against the inventory later, by the capacity
+    # resolver; the launch checks only concern the runtime and the memory,
+    # which do not change with the number of cards.
+    _stage_bundle(tmp_path, storage_files, gpu=GPU_BLOCK, **{"boot.cmdline_template": VOLUME_SLOT_TEMPLATE})
     message = _with_gpu(load_vprogram_message(), count=2)
-    with pytest.raises(VmSetupError, match="one confidential GPU"):
-        await build_vprogram_spec(message.item_hash, message.content)
+    spec, _ = await build_vprogram_spec(message.item_hash, message.content)
+    assert spec.gpus == []  # two cards, resolved against the host in run.py
+    assert spec.memory_mib == 4096
 
 
 @pytest.mark.asyncio
