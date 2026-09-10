@@ -348,6 +348,14 @@ class AllocationReconciler:
         Only a VM the supervisor holds FAILED reaches here with one: a live VM
         needs nothing done to it, and one that is stopped or stopping is left
         alone by _start_missing, since nobody but its owner restarts it.
+
+        The start is marked as a rebuild for admission, which skips the memory
+        and vCPU checks when this node already holds a record for the hash.
+        Those resources were reserved when the VM was first admitted and the
+        record has held them ever since, so charging the rebuild for them
+        again strands the VM on a node that is over its caps. The backoff
+        ladder above is what bounds a rebuild the node cannot really run: it
+        dies again and the next attempt waits longer.
         """
         self._states[vm_hash] = AllocationState.DOWNLOADING
         try:
@@ -359,6 +367,7 @@ class AllocationReconciler:
                 capacity=self.capacity,
                 expiry=self.expiry,
                 update_watcher=self.update_watcher,
+                recreate=True,
             )
         except Exception as error:
             if self._desired is None or vm_hash not in self._desired.entries:

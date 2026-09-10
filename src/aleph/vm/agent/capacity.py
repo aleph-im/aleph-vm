@@ -459,6 +459,48 @@ class CapacityManager(PlanAdmission):
             exclude_vm_hash=exclude_vm_hash,
         )
 
+    def check_recreate(self, content: ExecutableContent, *, vm_hash: ItemHash) -> None:
+        """Admission for building again a VM this node already holds a record for.
+
+        Memory and vCPUs are not judged. The record is still in the registry,
+        so they are still committed: the reservation was made when the VM was
+        first admitted and nothing gave it back when the guest died. Judging
+        the rebuild against the headroom that record is already subtracted
+        from charges the same VM twice, and on a node that sits over its caps
+        for historical reasons it refuses every rebuild, stranding a VM for
+        good after a single crash. A rebuild is not new load; it is a
+        reservation the node is already holding being used again.
+
+        Disk is judged, and by exactly the rule ``check_message`` uses: what
+        the VM already holds for each declared volume is discounted, and
+        whatever is genuinely new (a volume the message grew, one it added,
+        one whose files a reinstall purged) still has to fit.
+
+        What bounds a rebuild that cannot work is the reconciler's crash-loop
+        backoff and not this: a VM rebuilt into a node that cannot really run
+        it dies again and climbs the retry ladder, so it is retried at a
+        widening interval rather than at boot speed.
+
+        Never reached by a first create or by an unrecorded hash: the caller
+        picks this path only for a hash the registry already held before it
+        recorded anything of its own.
+        """
+        volumes = declared_volumes(content)
+        disk = discounted_disk(vm_hash, volumes)
+        errors, available_disk_mib = self._disk_errors(
+            disk_mib=disk.disk_mib,
+            max_volume_mib=disk.max_volume_mib,
+            max_volume_credit=disk.max_volume_credit,
+        )
+        if not errors:
+            return
+        detail = "Insufficient capacity to rebuild VM. " + "; ".join(errors)
+        raise InsufficientResourcesError(
+            detail,
+            required={"disk_mib": disk.disk_mib},
+            available={"disk_mib": available_disk_mib},
+        )
+
     def check_capacity(
         self,
         *,
@@ -550,9 +592,12 @@ class CapacityManager(PlanAdmission):
             committed_memory_mib = committed_program_memory_mib
             memory_cap_mib = program_memory_cap_mib
 
-        # Free space is a live figure, not a committed sum, so a batch caller
-        # passes what it has already promised to the candidates before this one.
-        available_disk_mib = max(self._available_disk_bytes() // (1024 * 1024) - committed_disk_mib, 0)
+        disk_errors, available_disk_mib = self._disk_errors(
+            disk_mib=required_disk_mib,
+            max_volume_mib=max_volume_mib,
+            max_volume_credit=max_volume_credit,
+            committed_disk_mib=committed_disk_mib,
+        )
 
         errors: list[str] = []
 
@@ -575,12 +620,7 @@ class CapacityManager(PlanAdmission):
                 f"(physical {physical_cores} x factor {settings.VCPU_OVERCOMMIT_FACTOR})"
             )
 
-        if required_disk_mib > 0 and required_disk_mib > available_disk_mib:
-            errors.append(f"Disk: required {required_disk_mib} MiB, " f"available {available_disk_mib} MiB")
-
-        max_volume_error = self._check_max_volume(max_volume_mib, max_volume_credit)
-        if max_volume_error:
-            errors.append(max_volume_error)
+        errors.extend(disk_errors)
 
         if errors:
             detail = "Insufficient capacity to create VM. " + "; ".join(errors)
@@ -599,6 +639,31 @@ class CapacityManager(PlanAdmission):
                     "disk_mib": available_disk_mib,
                 },
             )
+
+    def _disk_errors(
+        self,
+        *,
+        disk_mib: int,
+        max_volume_mib: int,
+        max_volume_credit: HeldVolume | None,
+        committed_disk_mib: int = 0,
+    ) -> tuple[list[str], int]:
+        """The disk half of admission: what is wrong with it, and what is free.
+
+        Shared with the recreate path, which judges disk and nothing else, so
+        the two can never come to different answers about the same volumes.
+
+        Free space is a live figure, not a committed sum, so a batch caller
+        passes what it has already promised to the candidates before this one.
+        """
+        available_disk_mib = max(self._available_disk_bytes() // (1024 * 1024) - committed_disk_mib, 0)
+        errors: list[str] = []
+        if disk_mib > 0 and disk_mib > available_disk_mib:
+            errors.append(f"Disk: required {disk_mib} MiB, available {available_disk_mib} MiB")
+        max_volume_error = self._check_max_volume(max_volume_mib, max_volume_credit)
+        if max_volume_error:
+            errors.append(max_volume_error)
+        return errors, available_disk_mib
 
     def _caps(self) -> HostCaps:
         return HostCaps.read()
