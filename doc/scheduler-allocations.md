@@ -34,7 +34,7 @@ The answer is `202 Accepted` and sorts every hash in the push into a bucket:
 | `plan_id` | The plan this answer is about |
 | `accepted` | Admitted; the node will create or start it |
 | `pending` | Admitted in principle, but the push carried no message to size it by, so the node will fetch it first |
-| `unchanged` | Already running here, nothing to do |
+| `unchanged` | Already here, in whatever state, and staying: nothing to do |
 | `removing` | Running here, dropped by this plan, teardown started |
 | `rejected` | Refused, as a map of hash to `{code, message}`. An entry whose hash the node could not read is keyed by its position in the push instead, as `vms[<i>]` |
 | `retained` | Listed for teardown but not removable by an allocation, as a map of hash to reason |
@@ -54,27 +54,40 @@ string the push sent would be unbounded text off the request.
 source of truth, so a plan that drops one stops it even though it is
 credit-paid and confidential.
 
-Four rules matter when reading that answer:
+Five rules matter when reading that answer:
 
 - **A refused hash is never torn down by its own push.** A rejection says
   the node will not run the VM, not that the VM should be destroyed. A hash
   the push listed in any form, including one whose message would not verify,
   is protected from the teardown pass that follows. Only a hash the plan
   never named at all is treated as taken away.
-- **A crash loop backs off.** A guest that dies shortly after it reached
-  RUNNING is rebuilt, but each death after the first waits longer, from
-  `ALLOCATION_RETRY_BASE_INTERVAL` up to `ALLOCATION_RETRY_MAX_INTERVAL`.
-  The VM is reported failed with its attempt count and the time the next
-  rebuild is due, rather than being rebuilt at boot speed for as long as the
-  plan lists it. The record is dropped once the VM has stayed up longer than
-  the longest wait the backoff can impose.
-- **A stopped VM restarts only on a push.** A VM stopped through the
-  operator API, or by the guest shutting itself down, stays stopped. The
-  convergence loop does not start it on a supervisor event or on its
-  backstop pass. The next plan naming the VM starts it, on the pass that
-  push arrives on and whatever backoff an earlier failure left, and each
-  push buys exactly one start, so a guest that shuts itself down again is
-  not looped on.
+- **Only a hash new to the node is sized.** A listed VM this node already
+  holds is answered `unchanged` whatever state it is in: running, stopped or
+  crashed. The node reserved its memory, vCPUs and disk when it first admitted
+  the VM and has never given them back, so judging it against today's headroom
+  would charge it twice, and on a node with no room left it would refuse a VM
+  the node is already holding. A hash the node holds nothing for is the only
+  kind sized against headroom, and so the only kind that can come back
+  `insufficient_capacity`.
+- **A stopped VM stays stopped.** A VM stopped through the operator API, or
+  by the guest shutting itself down, is not started again by the node. The
+  convergence loop leaves it alone on a supervisor event, on its backstop
+  pass, and on a plan that names it; whoever stopped it is who starts it
+  again, through the same operator API. It goes on counting against the
+  node's capacity while it sits there, so the headroom advertised stays
+  reduced by it. This is a deliberate change from the legacy interface, where
+  the next push restarted it. The scheduler unallocates it the usual way, by
+  no longer naming it in a plan, which tears it down.
+- **A crashed VM is rebuilt, and the crash loop backs off.** A guest that
+  dies shortly after it reached RUNNING is rebuilt out of its own
+  reservation, not re-admitted against the node's headroom, so a node that is
+  tight on room still repairs what it holds. Each death after the first waits
+  longer, from `ALLOCATION_RETRY_BASE_INTERVAL` up to
+  `ALLOCATION_RETRY_MAX_INTERVAL`: the backoff, not admission, is what bounds
+  a guest the node cannot keep up. The VM is reported failed with its attempt
+  count and the time the next rebuild is due, rather than being rebuilt at
+  boot speed for as long as the plan lists it. The record is dropped once the
+  VM has stayed up longer than the longest wait the backoff can impose.
 - **One create at a time per VM.** Every start path takes a per-hash lock
   around the whole read, record, download and create sequence, so two pushes
   landing at once cannot both build the same VM and have the second's
