@@ -575,32 +575,114 @@ in its `--help` epilog) needs no running *agent process*:
 - `storage reclaim <hash> [--trust-registry]`: purge one reclaimable
   directory now. Checks the name and the `.reclaimable` marker first, purely
   locally, so a typo or an unrelated hash fails instantly rather than
-  waiting on a supervisor dial that could only ever confirm what those
+  waiting on a probe or a dial that could only ever confirm what those
   checks already know; a name that is not a VM hash (a hand-made marker
   under `backup_old`) and a directory with no marker (it may belong to a
-  live VM) are refused the same way. Then refuses a hash the agent registry
-  or the supervisor considers live (see below), and refuses outright,
-  without `--trust-registry`, when the supervisor cannot be asked. Finally,
-  if the purge itself leaves the directory behind (a device-mapper target
-  still holds one of its volumes, the same guard `purge_vm_storage` always
-  applies), reclaim reports that and exits non-zero rather than claiming
-  success. `reclaim` never tears devices down itself: `storage reconcile`
-  is the CLI path that does, for every VM nothing owns, so the refusal
-  points the operator there.
+  live VM) are refused the same way. Then refused outright (exit 3) while
+  the agent may be running, for the reason `reconcile` is: a marked
+  directory is not safe to purge merely because it is marked, since a
+  create adopts one by clearing its marker. Then refuses a hash the agent
+  registry or the supervisor considers live, and refuses without
+  `--trust-registry` when the supervisor cannot be asked. The marker is
+  read once more immediately before the purge: a re-create adopts its
+  retained directories by clearing their markers, and one that started
+  while the supervisor was being asked is in no answer this process holds,
+  so the second read is what keeps the purge off the disks a create is at
+  that moment building on. Finally, if the purge itself leaves the
+  directory behind (a device-mapper target still holds one of its volumes,
+  the same guard `purge_vm_storage` always applies), reclaim reports that
+  and exits non-zero rather than claiming success. `reclaim` never tears
+  devices down itself: `storage reconcile` is the CLI path that does, for
+  every VM nothing owns, so the refusal points the operator there.
 - `storage reconcile [--dry-run] [--trust-registry]`: run one
-  `reconcile_storage()` pass with the daemon's two device steps around it,
-  or the CLI would keep refusing what the daemon reclaims. Before the pass,
-  `_teardown_orphan_devices` removes the dm devices of every namespace no
-  live VM owns, so the purge that follows is not refused on a volume file a
-  target still holds; that step needs the supervisor's answer and is skipped
-  under `--dry-run` and when the supervisor is unreachable, `--trust-registry`
-  included (it buys a purge on the registry's word, not a teardown). After
-  the pass, and printing what it removed (or, under `--dry-run`, what it
-  would remove), it tears down the devices of any evicted runtime cache
+  `reconcile_storage()` pass. Two processes decide what it may do, and they
+  are not the same one. The **agent** is this Python service
+  (`aleph-vm-agent`, bound to `SUPERVISOR_HOST`/`SUPERVISOR_PORT`); it owns
+  the reconciler and the creates. The **supervisor** is the Rust daemon that
+  runs the VMs and answers `list_vms`. Either can be up without the other,
+  and the state an operator needs this command for is exactly the awkward
+  one: VMs running under a healthy supervisor while the agent is down or
+  will not start. Hence three states:
+  - **The agent is running, or cannot be ruled out as running.** A real pass
+    is refused (exit 3, the reason on stderr, nothing written). The set of
+    creates the agent has in flight is in-process state this command cannot
+    see, so a create that outlives `VOLUME_CREATE_GUARD` before its DB
+    record exists (a long migration import routinely does) would read as an
+    orphan here, and a CLI pass holds no lock against the agent's own. The
+    agent runs that pass itself at startup, periodically and after every VM
+    goes away, and it sees the creates too, so there is nothing here for a
+    CLI pass to add. `--dry-run` is still allowed and is how a running node
+    is inspected; it says on stderr that what it lists may include a
+    directory the agent is at that moment creating.
+  - **The agent is down and the supervisor answers.** The full pass runs.
+    Nothing is being created, so the age of the directory is a sound guard
+    again, and the live set is a known one (registry union `list_vms`), so
+    `_teardown_orphan_devices` removes the dm devices of every namespace no
+    live VM owns before the walk, or the purge that follows would be refused
+    on a volume file a target still holds.
+  - **The supervisor does not answer.** The live set is the registry alone,
+    which is not a safe one, so the pass runs dry, warns on stderr and exits
+    3 unless `--trust-registry` says to proceed on the registry's word. No
+    device is torn down on that path, `--trust-registry` included: it buys a
+    purge on the registry's word, not a teardown, and removing the device of
+    a VM that is merely unlisted takes that VM's disk with it.
+  After the pass, and printing what it removed (or, under `--dry-run`, what
+  it would remove), it tears down the devices of any evicted runtime cache
   parent the same way `reconcile_now` / `reconcile_at_startup` do
   (`remove_parent_device` per evicted ref, then `sweep_leaked_cache_loops`),
   so an evicted entry never leaves `/dev/mapper/<ref>` and its loop device
   pinning the deleted inode.
+
+Both purge paths call the daemon's own `_startup_refusal` rather than
+restating its conditions, so a CLI pass and a daemon pass cannot drift
+apart: an empty registry while the supervisor runs VMs means the agent DB
+was lost, and both refuse on that alone (exit 3, not 1: nothing about the
+hash or the node's disks is wrong, the command simply may not run here).
+
+Both "is it running" questions are answered fail-closed, and neither claims
+more than it can back up. The **agent** is called stopped only when nothing
+accepts a connection on its bind address; that is a loopback connect with a
+2 s timeout, it needs no privileges and no unit name, and anything listening
+there counts as the agent. A wildcard bind (`0.0.0.0`, `::`, empty) is
+probed on *both* loopbacks and called stopped only when both refuse, because
+asyncio's `create_server` sets `IPV6_V6ONLY` on an `AF_INET6` socket: an
+agent bound to `::` accepts on `::1` and refuses on `127.0.0.1`, so a probe
+that asked only the IPv4 loopback would call a running agent stopped and
+purge behind it. An address family the kernel cannot reach at all
+(`EAFNOSUPPORT`, `ENETUNREACH` and friends) counts with the refusals, since
+nothing can be serving on a loopback that is not there. A probe that fails
+any other way (a name that does not resolve, a socket this user may not
+open, the timeout) leaves the agent possibly running, and the refusal
+stands: being wrong that way costs an operator one refused command, being
+wrong the other way deletes the disks of a VM mid-create. The **supervisor**
+is called *down* only when *its own socket* is missing (`os.stat`, not
+`Path.exists()`, which turns a stat this user may not make into a plain
+False) or refuses a connection. A refused connection in the dial's exception
+chain counts too, but a missing *file* there does not: the client opens more
+than its socket, and only a stat of the socket path can tell a stopped
+daemon from a running one that tripped over something else. Every other
+failed dial (a socket this user may not open, the 3 s deadline, a reply that
+does not parse) leaves the daemon's state unknown. The difference is what the
+operator is told: the exception class and message always, and the advice to
+pass `--trust-registry` only when the daemon is verified down, since on
+anything else it would invite exactly the purge the supervisor union exists
+to prevent. An explicit `--dry-run` is told its preview is registry-only
+instead, having asked for nothing that could be downgraded.
+
+Every verb writes what it found or achieved (the status table, the listing,
+the reconcile report, the "Purged ..." line) to stdout, and every warning,
+refusal and diagnostic to stderr, `reclaim` included: a wrapper parses one
+stream without filtering the other, and a refusal leaves stdout empty rather
+than mixing a reason into a report that does not exist. The verbs take both
+streams as arguments, so the tests read them apart without capturing the
+process's own.
+
+`--trust-registry` remains the sharpest tool here even so, and the narrow
+advice does not blunt it: a supervisor that is verifiably down has not
+necessarily stopped its VMs (a supervisor process that dies leaves its QEMU
+processes running), so purging on the registry's word can still delete the
+disks under a live VM whose registry record was lost. It is the flag for an
+operator who knows what the node is doing, not a way to get past a warning.
 
 Running with no agent process also means setting the process up the way the
 systemd units set it up for the daemon, which the CLI does before it reads
