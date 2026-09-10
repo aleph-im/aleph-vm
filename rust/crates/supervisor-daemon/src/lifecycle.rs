@@ -3,9 +3,9 @@
 //! RecreateNetwork and the boot-time reconcile (adoption step 5).
 //!
 //! Ported 1:1 from the Python LocalSupervisor + VmPool + VmExecution
-//! composition (src/aleph/vm/supervisor/local.py, src/aleph/vm/pool.py,
-//! src/aleph/vm/models.py), QEMU persistent instances only: ephemeral
-//! Firecracker programs are increment 4, confidential creation increment 6.
+//! composition, QEMU persistent instances only: the ephemeral Firecracker
+//! programs live in firecracker.rs and the confidential mutations in
+//! confidential.rs.
 //!
 //! Every function here is BLOCKING (subprocesses, D-Bus round trips, sqlite,
 //! poll-with-sleep waits); the gRPC handlers hop to the blocking pool, the
@@ -31,8 +31,8 @@ use crate::world::{self, AttachedGpu, ProgramEntry, VmEntry, VmTimes, VmType, no
 use crate::{checks, cloudinit, dhcp, nft, ports};
 
 /// The closed error vocabulary slice these RPCs can produce, mapped in
-/// service.rs onto the same gRPC status codes and ErrorDetail trailers as
-/// src/aleph/vm/supervisor/grpc_server.py.
+/// service.rs onto the same gRPC status codes and ErrorDetail trailers the
+/// Python gRPC server produced.
 ///
 /// Every payload IS the message that reaches the client, so `Display` is
 /// `{0}` verbatim on every variant: `MicroVmInit(String::new())` renders
@@ -284,8 +284,11 @@ fn with_entry_mut<R>(
 
 /// Choose a NUMA node for a new VM and reserve its vCPUs in the ledger.
 ///
-/// Honors a requested `numa_node` when the spec carries one (decision 4),
-/// otherwise packs onto the first node (node 0, then 1, ...) with room.
+/// A spec that names a `numa_node` is honoured on that node or refused;
+/// the daemon never quietly places such a VM elsewhere, because the caller
+/// asked for that node for a reason it does not share (a device on the
+/// node's PCI root, a measurement of the placement). A spec that names
+/// none is packed onto the first node (node 0, then 1, ...) with room.
 /// Returns `Ok(None)` when placement is inert (fewer than two nodes). The
 /// ledger mutation is serialized by the caller's creation lock.
 fn place_vm_numa(
@@ -496,7 +499,7 @@ pub fn reconcile_numa_ledger(state: &DaemonState) {
 }
 
 /// Python `_is_running` for one persistent execution: a batched-state
-/// lookup that degrades to "inactive" on a bus failure (ledger entry 13).
+/// lookup that degrades to "inactive" on a bus failure.
 fn unit_active(state: &DaemonState, unit: &str) -> bool {
     match state
         .units
@@ -544,7 +547,7 @@ pub(crate) fn entry_running(state: &DaemonState, entry: &VmEntry) -> bool {
 
 /// The live state of one entry's controller unit, one batched lookup. A bus
 /// failure degrades to `Unknown` rather than `Dead`: "the guest died" is a
-/// claim only an answering bus can support (ledger entry 13). An ephemeral
+/// claim only an answering bus can support. An ephemeral
 /// program runs under no unit and has nothing to ask about.
 fn entry_liveness(state: &DaemonState, entry: &VmEntry) -> UnitLiveness {
     if entry.is_program {
@@ -871,8 +874,7 @@ fn stop_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
             // SNP measured VMs ran a per-tap DHCP server; tear it down with
             // the tap (idempotent, SNP only). Covers StopVm and
             // delete_tracked_vm, which both route through here. Plain and SEV
-            // VMs never started one, so this is a no-op for them (ledger entry
-            // 77).
+            // VMs never started one, so this is a no-op for them.
             if entry.config.snp().is_some()
                 && let Err(dhcp_error) = state
                     .dhcp
@@ -1151,9 +1153,10 @@ fn start_vm_execution_marked(
         nft_setup_vm(state, entry.vm_index, &tap.device_name)?;
         // Stop tore the SNP per-tap DHCP server down with the tap and nft
         // rules; recreate it with them, or the rebooting measured guest
-        // (whose cmdline has no `ip=`, ledger entry 78) can never lease its
-        // IP and attestation is unreachable. `DhcpBackend::start` replaces a
-        // leftover unit, so a partial stop cannot fail this start.
+        // (whose cmdline has no `ip=`, by measurement design) can never
+        // lease its IP and attestation is unreachable.
+        // `DhcpBackend::start` replaces a leftover unit, so a partial stop
+        // cannot fail this start.
         if entry.config.snp().is_some() {
             let config = dhcp::DhcpConfig::for_snp(
                 vm_id,
@@ -1412,7 +1415,7 @@ pub fn delete_vm(
         }
     }
     // A still-live SNP VM whose adoption failed ran a per-tap DHCP server
-    // (increment D2, ledger 77). The tracked teardown paths stop it, but this
+    // for its guest. The tracked teardown paths stop it, but this
     // discard path did not, orphaning aleph-vm-dhcp-<hash>.service (and leaking
     // its lease file) on every failed-adoption delete of a live SNP VM. Stop it
     // here too, gated on the parsed config being SNP so plain/SEV VMs (which
@@ -1510,7 +1513,8 @@ fn update_port_redirects(
     if entry.is_program && entry.ipv4.is_none() {
         // Python: update_port_redirects dereferences vm.tap_interface,
         // which is None for a program created without internet_access; the
-        // AttributeError aborts INTERNAL (text differs, ledger entry 33).
+        // AttributeError aborts INTERNAL (the message text differs, which
+        // nothing pins).
         return Err(RpcError::Internal(format!(
             "VM {vm_id} has no tap interface; cannot change port redirects"
         )));
@@ -1736,6 +1740,20 @@ fn same_spec_or_conflict(entry: &VmEntry, request: &pb::VmSpec) -> Result<VmEntr
     }
 }
 
+/// The host inventory entry for a pci address, if the host has such a
+/// card. The inventory is the lspci listing collected once at startup, so
+/// this is a lookup over a handful of entries, not a probe.
+fn inventory_gpu<'a>(
+    state: &'a DaemonState,
+    pci_host: &str,
+) -> Option<&'a crate::lspci::GpuDevice> {
+    state
+        .host
+        .gpus
+        .iter()
+        .find(|device| device.pci_host == pci_host)
+}
+
 /// Python `_validate_spec_gpus`: every requested pci_host exists in the
 /// inventory and is attached nowhere (nor claimed twice).
 fn validate_spec_gpus(
@@ -1747,12 +1765,7 @@ fn validate_spec_gpus(
     let mut claimed: std::collections::HashSet<&str> = Default::default();
     for request in requested {
         let pci_host = request.pci_host.as_str();
-        let Some(device) = state
-            .host
-            .gpus
-            .iter()
-            .find(|device| device.pci_host == pci_host)
-        else {
+        let Some(device) = inventory_gpu(state, pci_host) else {
             return Err(RpcError::InsufficientResources(format!(
                 "No GPU at pci_host '{pci_host}' in the host inventory"
             )));
@@ -2191,7 +2204,7 @@ fn snp_config_slice_with(
     state: &DaemonState,
     spec: &pb::VmSpec,
     probe: impl Fn(&str, &str) -> Result<Option<crate::gpu_cc::CcMode>, crate::error::DaemonError>,
-    mmio_window: impl Fn(&[String]) -> Result<u64, crate::error::DaemonError>,
+    mmio_window: impl Fn(&[&str]) -> Result<u64, crate::error::DaemonError>,
 ) -> Result<Option<SnpSlice>, RpcError> {
     let Some(tee) = &spec.tee else {
         return Ok(None);
@@ -2268,12 +2281,7 @@ fn snp_config_slice_with(
         // the sysfs path `gpu_bar.rs` reads: only an address the host scan
         // itself produced gets past here, so a spec-supplied string never
         // reaches either. Keep this order.
-        let Some(device) = state
-            .host
-            .gpus
-            .iter()
-            .find(|device| device.pci_host == gpu.pci_host)
-        else {
+        let Some(device) = inventory_gpu(state, &gpu.pci_host) else {
             return Err(RpcError::InvalidBackend(format!(
                 "GPU at pci_host '{}' is not in the host inventory",
                 gpu.pci_host
@@ -2304,7 +2312,7 @@ fn snp_config_slice_with(
     let pci_mmio64_mb = if spec.gpus.is_empty() {
         None
     } else {
-        let hosts: Vec<String> = spec.gpus.iter().map(|g| g.pci_host.clone()).collect();
+        let hosts: Vec<&str> = spec.gpus.iter().map(|g| g.pci_host.as_str()).collect();
         let window_mb = mmio_window(&hosts).map_err(|e| {
             RpcError::InvalidBackend(format!("cannot size the GPU MMIO window: {e}"))
         })?;
@@ -2366,7 +2374,9 @@ fn snp_config_slice_with(
     // (`rootfs.ext4.roothash` / `rootfs.ext4.verity`) and the aleph-cvm donor's
     // `ensure_verity` uses. With no agent cmdline, the measured cmdline is
     // DERIVED here from the roothash, exactly as the donor's
-    // `build_kernel_cmdline` does. See divergence 68.
+    // `build_kernel_cmdline` does. There is no Python oracle for SNP: its
+    // controller never emitted an SNP guest object, so the donor and the
+    // measured image are the reference here.
     // Bound the sidecar read: a real dm-verity roothash is ~64 hex chars, so a
     // 4 KiB cap is generous. A pathological sidecar (the node builds its own
     // image, but defense in depth) cannot then load unbounded into RAM; an
@@ -2509,8 +2519,8 @@ fn snp_config_slice_with(
 /// Python's int is signed and arbitrary precision; a SEV policy is a small
 /// unsigned bitfield (`sev_policy: u32`). A syntactically valid but negative
 /// (`"-5"`) or `> u32::MAX` value, which Python would accept, cannot be
-/// represented and is rejected INTERNAL rather than silently truncated
-/// (ledger entry 49); such a policy is not reachable from a real agent.
+/// represented and is rejected INTERNAL rather than silently truncated;
+/// such a policy is not reachable from a real agent.
 fn parse_sev_policy(policy: &str) -> Result<u32, RpcError> {
     parse_int_base0(policy)
         .and_then(|value| u32::try_from(value).ok())
@@ -2820,9 +2830,9 @@ fn create_vm_inner(
         pb::Backend::Qemu => {}
         pb::Backend::Firecracker => {
             if request.persistent {
-                // Ephemeral programs landed with increment 4; persistent
-                // programs boot under systemd controller units and follow
-                // with the controller port (ledgered).
+                // Ephemeral programs are launched in-process; persistent
+                // ones boot under systemd controller units and follow with
+                // the controller port.
                 return Err(RpcError::Unimplemented(
                     "CreateVm for persistent Firecracker programs is not implemented yet \
                      by the Rust supervisor daemon"
@@ -3031,8 +3041,8 @@ fn create_vm_inner(
             // Set below once the NUMA placement is chosen (increment C1).
             numa_node: None,
         };
-        // Increment D2 (ledger 77): create starts the per-tap DHCP server on
-        // the request predicate `snp`, while every teardown path keys DHCP
+        // Create starts the per-tap DHCP server on the request predicate
+        // `snp`, while every teardown path keys DHCP
         // cleanup on `config.snp().is_some()`. They must agree, or a started
         // server leaks. The two predicates are derived independently (request
         // TEE backend vs the written-then-parsed config), so assert here that
@@ -3132,10 +3142,11 @@ fn create_vm_inner(
                 nft_setup_vm(state, vm_index, &tap.device_name)?;
                 // SNP measured VMs get their IPv4 via a per-tap DHCP server, not
                 // cloud-init static config: the measured image DHCPs and its
-                // cmdline omits `ip=` for measurement determinism (ledger entry
-                // 77). The tap already carries the gateway address (create_tap
-                // added host_ipv4_cidr), so dnsmasq can bind and route. Plain and
-                // SEV VMs skip this and keep their cloud-init static config.
+                // cmdline omits `ip=` so the launch measurement stays
+                // host-independent. The tap already carries the gateway
+                // address (create_tap added host_ipv4_cidr), so dnsmasq can
+                // bind and route. Plain and SEV VMs skip this and keep their
+                // cloud-init static config.
                 if snp {
                     let config = dhcp::DhcpConfig::for_snp(
                         &vm_id,
@@ -3228,7 +3239,7 @@ fn create_vm_inner(
             let _net = net_lock(state);
             // Tear the per-tap DHCP server down alongside the tap (SNP only,
             // idempotent): a failed SNP boot must not leave a dnsmasq bound to
-            // a tap that is about to be deleted (ledger entry 77).
+            // a tap that is about to be deleted.
             if snp
                 && let Err(dhcp_error) = state.dhcp.stop(
                     &vm_id,
@@ -3525,7 +3536,7 @@ pub fn run_program_code(
     // grpc_server.py:158 msgpack.unpackb-validates the scope BEFORE touching
     // the VM (invalid msgpack aborts INTERNAL even for unknown vm_ids); on
     // success the original bytes are still forwarded untouched (the
-    // pass-through of ledger entry 38 is shape-checked, never re-encoded).
+    // opaque pass-through is shape-checked, never re-encoded).
     crate::firecracker::validate_msgpack(scope_msgpack)?;
     // The vm_lock stands in for the Python `becomes_ready` wait: CreateVm
     // holds it through the whole boot, so acquiring it means the boot
@@ -3595,12 +3606,11 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
                 .map(|unit| (unit.clone(), false))
                 .collect()
         });
-    // Rederive missing IP assignments before filtering (ledger entry 24,
-    // closed): entries adopted during a bus outage carry no derived IPs
-    // (world.rs stamps nothing when unit states are unknown), and without
-    // this an operator could not heal their chains through RecreateNetwork.
-    // tap_assignment derives from vm_index/vm_hash (both known) and stores
-    // the result on the entry.
+    // Rederive missing IP assignments before filtering: entries adopted
+    // during a bus outage carry no derived IPs (world.rs stamps nothing when
+    // unit states are unknown), and without this an operator could not heal
+    // their chains through RecreateNetwork. tap_assignment derives from
+    // vm_index/vm_hash (both known) and stores the result on the entry.
     let mut entries = entries;
     for entry in &mut entries {
         if entry.ipv4.is_some()
@@ -3758,7 +3768,7 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
 /// create-if-absent taps, primed ndppd ranges, per-VM nftables chains and
 /// persisted port redirects. Never flush-and-rebuild (live connections
 /// survive), exactly the `_restore_network` half of the Python reattach. A
-/// per-VM failure hides the VM like a failed Python reattach (ledger 13).
+/// per-VM failure hides the VM like a failed Python reattach.
 pub fn reconcile_boot(state: &DaemonState) {
     if !state.host.settings.allow_vm_networking {
         return;
@@ -4229,8 +4239,8 @@ mod tests {
         );
         // Only the SNP measured image DHCPs; a SEV-ES VM keeps its cloud-init
         // static config, so no per-tap DHCP server is stood up (this guards the
-        // startup predicate against being loosened from `snp` to `confidential`,
-        // ledger 77).
+        // startup predicate against being loosened from `snp` to
+        // `confidential`).
         assert!(
             harness.dhcp.started().is_empty(),
             "a SEV-ES VM uses cloud-init static config, no DHCP server"
@@ -4715,10 +4725,9 @@ mod tests {
     fn create_snp_allocates_the_v_program_ipv6_hextet() {
         // The static IPv6 scheme keys a vm-type hextet into the /124
         // (world::VmType::prefix). SEV-SNP is the V-PROGRAM's exclusive
-        // launch path (docs/plans/2026-07-11-vprogram-scheduler-support-
-        // design.md section 2), so an SNP create must get the 0x4 nibble
-        // (Python VmType.v_program / scheduler VmType::ipv6_value()), not
-        // the plain-instance 0x3 it used to get before VmType::VProgram
+        // launch path, so an SNP create must get the 0x4 nibble (Python
+        // VmType.v_program / scheduler VmType::ipv6_value()), not the
+        // plain-instance 0x3 it used to get before VmType::VProgram
         // existed.
         let harness = harness();
         let state = &harness.state;
@@ -4930,7 +4939,7 @@ mod tests {
         // A plain VM never started a per-tap DHCP server, so its teardown must
         // NOT call dhcp.stop (this guards the `snp().is_some()` teardown gate
         // against being removed, which would spuriously stop a nonexistent
-        // server for every plain VM delete, ledger 77).
+        // server for every plain VM delete).
         let harness = harness();
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -5013,7 +5022,7 @@ mod tests {
         // A live SNP VM whose adoption failed (untracked, config still on disk)
         // ran a per-tap DHCP server. The discard_failed_reattach delete path
         // must stop it too, or aleph-vm-dhcp-<hash>.service (and its lease file)
-        // is orphaned (increment D2, ledger 77).
+        // is orphaned.
         let harness = harness();
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -5289,10 +5298,11 @@ mod tests {
             pci_host: "06:00.0".into(),
             supports_x_vga: true,
         }];
-        let unreadable = |_: &str, _: &str| {
-            Err(crate::error::DaemonError::GpuProbe(
-                "BAR0 went away".to_string(),
-            ))
+        let unreadable = |pci_host: &str, _: &str| {
+            Err(crate::error::DaemonError::GpuRegisterRead {
+                pci_host: pci_host.to_string(),
+                source: std::io::Error::other("BAR0 went away"),
+            })
         };
         match snp_config_slice_with(state, &spec, unreadable, |_| Ok(1024)) {
             Err(RpcError::InvalidBackend(msg)) => {
@@ -6712,7 +6722,8 @@ mod tests {
         // C14: Python's reboot_vm restarts the unit and stamps started_at
         // but never clears stopped_at/stopping_at nor reloads
         // mapped_ports, so a rebooted stopped VM still reports STOPPED
-        // with no forwards (the shared wart is ledgered).
+        // with no forwards (a shared wart: both daemons should either
+        // refuse the reboot or run the full start path).
         let harness = harness();
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -7639,7 +7650,7 @@ mod tests {
         assert!(events.try_recv().is_err());
     }
 
-    // ── Reattach retry loop (ledger entry 23, closed with increment 4) ──
+    // ── Reattach retry loop ──────────────────────────────────────────
 
     /// A hidden VM as adoption leaves it: config on disk, vm_index claim
     /// reserved, queued for background retry.
@@ -7842,7 +7853,7 @@ mod tests {
         assert_eq!(queued.attempts, 1);
     }
 
-    // ── RecreateNetwork IP rederivation (ledger entry 24, closed) ───────
+    // ── RecreateNetwork IP rederivation ─────────────────────────────────
 
     #[test]
     fn recreate_network_rederives_ips_after_a_bus_outage_adoption() {

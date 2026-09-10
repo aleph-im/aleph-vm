@@ -1,10 +1,10 @@
 //! Daemon-level error type.
 //!
-//! Increments 1 and 2 only need two corners of the wire vocabulary:
-//! VM_NOT_FOUND (an unknown vm_id on the read RPCs) and the INTERNAL
-//! catch-all (mirroring the Python `translating_errors()` in
-//! src/aleph/vm/supervisor/error_mapping.py). The full ErrorCode mapping
-//! arrives with the lifecycle RPCs in increment 3.
+//! The failures the daemon itself produces, as opposed to the closed
+//! vocabulary the RPC boundary answers with (`RpcError` in lifecycle.rs,
+//! which carries the wire ErrorCode). Anything here that escapes to a
+//! handler becomes the INTERNAL catch-all, the way the Python
+//! `translating_errors()` wrapper did.
 
 use std::path::PathBuf;
 
@@ -35,11 +35,38 @@ pub enum DaemonError {
     #[error("No IPv4 address found for interface {0}")]
     NoIpv4Address(String),
 
-    #[error("{0}")]
-    Lspci(String),
+    #[error("failed to run lspci {arguments}: {source}")]
+    LspciSpawn {
+        arguments: String,
+        #[source]
+        source: std::io::Error,
+    },
 
-    #[error("GPU probe failed: {0}")]
-    GpuProbe(String),
+    #[error("lspci {arguments} exited with {status}")]
+    LspciStatus {
+        arguments: String,
+        status: std::process::ExitStatus,
+    },
+
+    #[error("unparseable lspci -mmnnn line: {line:?}")]
+    LspciLine { line: String },
+
+    #[error("cannot read the PCI resource file {path}: {source}")]
+    GpuResourceRead {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("PCI resource field {field:?} is not a hexadecimal number: {source}")]
+    GpuResourceField {
+        field: String,
+        #[source]
+        source: std::num::ParseIntError,
+    },
+
+    #[error("PCI resource line {line:?} does not carry a start, an end and a flag word")]
+    GpuResourceLine { line: String },
 
     #[error("cannot read the confidential-computing register of the GPU at {pci_host}: {source}")]
     GpuRegisterRead {
@@ -56,6 +83,9 @@ pub enum DaemonError {
 
     #[error("PCI resource line {line:?} does not describe an addressable region: {reason}")]
     GpuBarRange { line: String, reason: &'static str },
+
+    #[error("the BARs of the GPU at {pci_host} push the total for this VM past 64 bits")]
+    GpuBarTotal { pci_host: String },
 
     #[error(
         "a {window_mb} MiB 64-bit PCI MMIO window next to {guest_ram_mb} MiB of guest RAM reaches \

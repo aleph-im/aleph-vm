@@ -137,8 +137,9 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
         None
     };
 
-    // Adoption steps 1-4 (design doc section 4), before the socket exists,
-    // like the Python daemon's load_persistent_executions before serve_unix.
+    // The world view is rebuilt before the socket exists, like the Python
+    // daemon's load_persistent_executions before serve_unix; the nftables
+    // and ndppd reconcile follows it.
     // Blocking on purpose: no runtime is up yet, and the sources (files,
     // one D-Bus round trip, sqlite) are all local.
     let units = Arc::new(ZbusUnitStates::new());
@@ -173,8 +174,8 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
         );
     }
     let numa_ledger = std::sync::Mutex::new(numa::NumaAllocator::new(numa.clone()));
-    // The ephemeral Firecracker launcher (increment 4): programs are direct
-    // children of this daemon (design doc decision 8).
+    // The ephemeral Firecracker launcher: programs are direct children of
+    // this daemon, with no systemd unit of their own.
     let launcher: Arc<dyn supervisor_daemon::firecracker::ProgramLauncher> = Arc::new(
         supervisor_daemon::firecracker::FirecrackerLauncher::from_settings(&host.settings),
     );
@@ -280,8 +281,8 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
 /// alone; clobbering it to "1" would silently drop the host's accept-RA
 /// behavior. Failures (unreadable, unparseable or unwritable files) are
 /// logged, not fatal: the Python daemon dies here without CAP_NET_ADMIN,
-/// which would break the container/CI boots increment 2 deliberately
-/// supports (ledger entry 20).
+/// which would break the container and CI boots this daemon deliberately
+/// supports. VMs on such a host lack connectivity either way.
 fn enable_forwarding_sysctls(settings: &Settings) {
     enable_forwarding_sysctl(std::path::Path::new("/proc/sys/net/ipv4/ip_forward"));
     if settings.ipv6_forwarding_enabled {
@@ -402,7 +403,7 @@ mod tests {
             );
         }
         // Unparseable values are logged and left alone (the Python int()
-        // would raise and kill the daemon; graceful here, ledger entry 20).
+        // would raise and kill the daemon; graceful here).
         std::fs::write(&sysctl, "garbage").unwrap();
         enable_forwarding_sysctl(&sysctl);
         assert_eq!(std::fs::read_to_string(&sysctl).unwrap(), "garbage");

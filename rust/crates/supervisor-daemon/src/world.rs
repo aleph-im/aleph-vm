@@ -1,7 +1,8 @@
 //! The daemon's world view: every VM the host defines, rebuilt from disk,
-//! systemd and sqlite at boot (adoption steps 1-4 of the design doc,
-//! section 4; step 5, the nftables/ndppd reconcile, runs right after in
-//! lifecycle::reconcile_boot).
+//! systemd and sqlite at boot. This module is the first four adoption
+//! steps (read the controller configs, batch-query systemd, rebuild an
+//! entry per config, derive its addresses); the fifth, the nftables and
+//! ndppd reconcile, runs right after in lifecycle::reconcile_boot.
 //!
 //! Python parity notes. The oracle is the restarted Python daemon
 //! (`VmPool.load_persistent_executions`): it scans
@@ -12,26 +13,31 @@
 //! instant and leaving `starting_at` unset. Like Python's `claimed_vm_ids`
 //! guard, when two active configs claim the same vm_index only the first
 //! (sorted file order) is adopted. This module ports that faithfully for
-//! running VMs, with deliberate, ledgered differences
-//! (docs/plans/rust-port-divergences.md):
+//! running VMs, with the deliberate differences below:
 //!
 //! - A config whose controller unit is NOT active is kept and reported
 //!   STOPPED (with `stopped_at` = the adoption instant), where Python stops
-//!   and disables the unit and deletes the config. A read-only daemon never
-//!   destroys state (ledger entry 11; duplicates covered there too).
+//!   and disables the unit and deletes the config. A daemon that adopts
+//!   must not destroy state: the sweep also destroyed confidential VMs
+//!   still waiting for their owner to upload a session. Duplicate
+//!   vm_index claims get the same treatment, not adopted but never
+//!   deleted.
 //! - An unparseable, oversized or non-regular-file config is logged and
 //!   skipped, where Python's startup aborts (the crash-loop lesson) or, for
-//!   a FIFO, would hang (ledger entry 12).
+//!   a FIFO, would hang. One bad file on disk must not cost the node every
+//!   VM it runs.
 //! - A `hypervisor: firecracker` config is logged and skipped: Python's
 //!   reattach also fails for it (spec_from_controller_configuration is
 //!   QEMU-only), leaving the VM untracked, so both daemons hide it from
 //!   ListVms and queue it for (doomed) background retries.
 //! - When the boot-time ListUnits call FAILS (bus unreachable), no VM is
 //!   stamped stopped: unit states are unknown, and each VM's status defers
-//!   to the live per-RPC unit queries until the bus answers (ledger 13).
+//!   to the live per-RPC unit queries until the bus answers.
 //! - A per-VM IP-derivation failure hides the VM (skipped with a WARN),
 //!   like a failed Python reattach that excludes the VM from ListVms via
-//!   the retry queue (ledger 13; negative vm_index in ledger 17).
+//!   the retry queue. A negative vm_index is one such failure: Python's
+//!   list indexing would silently serve the pool's LAST subnet for it,
+//!   aliasing a valid subnet between two VMs.
 //!
 //! A controller unit without a config file gets a WARN and is left alone.
 //!
@@ -199,10 +205,9 @@ pub enum VmType {
     Microvm,
     Instance,
     /// A V-PROGRAM (`aleph_message.models.VerifiableProgramContent`): the
-    /// QEMU SEV-SNP measured-boot launch path is its exclusive hypervisor
-    /// (design doc docs/plans/2026-07-11-vprogram-scheduler-support-design.md
-    /// section 2), so `QemuVmConfig::snp().is_some()` identifies one on this
-    /// side (see [`VmEntry::vm_type`]).
+    /// QEMU SEV-SNP measured-boot launch path is its exclusive hypervisor,
+    /// unconditionally and by schema, so `QemuVmConfig::snp().is_some()`
+    /// identifies one on this side (see [`VmEntry::vm_type`]).
     VProgram,
 }
 
@@ -271,8 +276,8 @@ pub struct VmEntry {
     /// until StartVm reloads it from the database).
     pub port_forwards: Vec<PortForward>,
     /// The `execution.gpus` attachments `_to_vm_info` reports: rebuilt from
-    /// the inventory for VMs adopted running (post-#1023 Python, ledger
-    /// entry 14) and set from the validated request at create.
+    /// the inventory for VMs adopted running (post-#1023 Python) and set
+    /// from the validated request at create.
     pub gpus: Vec<AttachedGpu>,
     /// The original VmSpec for VMs created through CreateVm on this daemon
     /// instance: the exact idempotency comparand and GetVmSpec payload,
@@ -525,7 +530,7 @@ pub fn build_world_view(
         .collect();
     // None: the bus did not answer, so unit states are UNKNOWN. Adopted
     // entries must not be stamped stopped on a transient bus outage; their
-    // status defers to the live per-RPC unit queries instead (ledger 13).
+    // status defers to the live per-RPC unit queries instead.
     let active_states: Option<std::collections::HashMap<String, bool>> =
         match units.active_states(&unit_names) {
             Ok(states) => Some(states),
@@ -586,8 +591,8 @@ pub fn build_world_view(
 
         // Like Python, the vm_index claim precedes the per-VM rebuild: an
         // active duplicate is never adopted (Python destroys it at startup
-        // and answers NOT_FOUND; the read-only daemon just does not adopt,
-        // ledger entry 11).
+        // and answers NOT_FOUND; this daemon just does not adopt, because a
+        // daemon that adopts must not destroy state).
         if running == Some(true) && !claimed_vm_indices.insert(config.vm_index) {
             tracing::warn!(
                 vm_hash,
@@ -736,10 +741,11 @@ pub fn build_world_view(
             }
         }
 
-        // Post-#1023 Python rebuilds execution.gpus for VMs adopted running
-        // (ledger entry 14, now closed on the Rust side too); stopped
-        // entries keep an empty list until StartVm, like a Python execution
-        // that never reattached.
+        // Post-#1023 Python rebuilds execution.gpus for VMs adopted
+        // running, and so does this daemon: reporting an attached card as
+        // available invites a double attachment after every restart.
+        // Stopped entries keep an empty list until StartVm, like a Python
+        // execution that never reattached.
         let gpus = if running == Some(true) {
             rebuild_attached_gpus(&qemu.gpus, gpu_inventory)
         } else {

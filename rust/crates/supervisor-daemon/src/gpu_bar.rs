@@ -61,15 +61,19 @@ pub fn parse_resource_file(contents: &str) -> Result<u64, DaemonError> {
     let mut total = 0u64;
     for line in contents.lines().filter(|l| !l.trim().is_empty()) {
         let mut fields = line.split_whitespace().map(|f| {
-            u64::from_str_radix(f.trim_start_matches("0x"), 16)
-                .map_err(|e| DaemonError::GpuProbe(format!("bad resource field {f:?}: {e}")))
+            u64::from_str_radix(f.trim_start_matches("0x"), 16).map_err(|source| {
+                DaemonError::GpuResourceField {
+                    field: f.to_string(),
+                    source,
+                }
+            })
         });
         let (start, end, flags) = match (fields.next(), fields.next(), fields.next()) {
             (Some(s), Some(e), Some(f)) => (s?, e?, f?),
             _ => {
-                return Err(DaemonError::GpuProbe(format!(
-                    "malformed resource line {line:?}"
-                )));
+                return Err(DaemonError::GpuResourceLine {
+                    line: line.to_string(),
+                });
             }
         };
         if flags & WANTED_FLAGS != WANTED_FLAGS {
@@ -156,19 +160,29 @@ pub fn mmio64_window_mb(bar_bytes: u64) -> u64 {
 }
 
 /// The window for a set of cards attached to one VM, from their sysfs BARs.
-pub fn gpu_mmio64_mb(pci_hosts: &[String]) -> Result<u64, DaemonError> {
+pub fn gpu_mmio64_mb(pci_hosts: &[&str]) -> Result<u64, DaemonError> {
     gpu_mmio64_mb_under(Path::new(crate::gpu_cc::SYSFS_PCI_DEVICES), pci_hosts)
 }
 
 /// `gpu_mmio64_mb` over an explicit devices directory, so a fixture tree
 /// can stand in for sysfs.
-pub fn gpu_mmio64_mb_under(devices_dir: &Path, pci_hosts: &[String]) -> Result<u64, DaemonError> {
+pub fn gpu_mmio64_mb_under(devices_dir: &Path, pci_hosts: &[&str]) -> Result<u64, DaemonError> {
     let mut total = 0u64;
     for pci_host in pci_hosts {
         let path = crate::gpu_cc::sysfs_device_dir_under(devices_dir, pci_host).join("resource");
-        let contents = std::fs::read_to_string(&path)
-            .map_err(|e| DaemonError::GpuProbe(format!("cannot read {}: {e}", path.display())))?;
-        total = total.saturating_add(parse_resource_file(&contents)?);
+        let contents =
+            std::fs::read_to_string(&path).map_err(|source| DaemonError::GpuResourceRead {
+                path: path.clone(),
+                source,
+            })?;
+        // Saturating here would quietly under-size the window, which is the
+        // failure this module exists to prevent: the guest would enumerate
+        // the card and find its BARs unassigned.
+        total = total
+            .checked_add(parse_resource_file(&contents)?)
+            .ok_or_else(|| DaemonError::GpuBarTotal {
+                pci_host: pci_host.to_string(),
+            })?;
     }
     Ok(mmio64_window_mb(total))
 }
@@ -226,8 +240,8 @@ mod tests {
             std::fs::create_dir(&card).unwrap();
             std::fs::write(card.join("resource"), RESOURCE).unwrap();
         }
-        let one = ["06:00.0".to_string()];
-        let two = ["06:00.0".to_string(), "0000:07:00.0".to_string()];
+        let one = ["06:00.0"];
+        let two = ["06:00.0", "0000:07:00.0"];
         // One card: 128 GiB + 32 MiB rounds to 256 GiB, doubled. Two cards
         // add up before the rounding, so the window doubles again; a
         // domain-less pci_host resolves to the same directory.
@@ -236,16 +250,53 @@ mod tests {
     }
 
     #[test]
+    fn a_bar_total_across_cards_that_overflows_is_an_error() {
+        // Two cards whose BARs each fill half the address space: the per-card
+        // parse succeeds and only the sum overflows, so the guard has to sit
+        // in the loop over the cards, not just inside one resource file.
+        let dir = tempfile::tempdir().unwrap();
+        let half = "0x0000000000000000 0x7fffffffffffffff 0x000000000014220c\n";
+        for name in ["0000:06:00.0", "0000:07:00.0"] {
+            let card = dir.path().join(name);
+            std::fs::create_dir(&card).unwrap();
+            std::fs::write(card.join("resource"), half).unwrap();
+        }
+        let both = ["06:00.0", "07:00.0"];
+        let error = gpu_mmio64_mb_under(dir.path(), &both).unwrap_err();
+        assert!(
+            matches!(&error, DaemonError::GpuBarTotal { pci_host } if pci_host == "07:00.0"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
     fn a_card_without_a_resource_file_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
-        let error = gpu_mmio64_mb_under(dir.path(), &["06:00.0".to_string()]).unwrap_err();
+        let error = gpu_mmio64_mb_under(dir.path(), &["06:00.0"]).unwrap_err();
+        assert!(
+            matches!(&error, DaemonError::GpuResourceRead { path, .. }
+                if path.ends_with("0000:06:00.0/resource")),
+            "{error:?}"
+        );
         assert!(error.to_string().contains("0000:06:00.0"), "{error}");
     }
 
     #[test]
     fn malformed_lines_are_errors() {
-        assert!(parse_resource_file("0x1 0x2\n").is_err());
-        assert!(parse_resource_file("zz 0x2 0x3\n").is_err());
+        // Each failure names what it saw, and carries the offending text in a
+        // field rather than in a pre-formatted string, so a caller can log the
+        // line or the field without re-parsing the message.
+        let short = parse_resource_file("0x1 0x2\n").unwrap_err();
+        assert!(
+            matches!(&short, DaemonError::GpuResourceLine { line } if line == "0x1 0x2"),
+            "{short:?}"
+        );
+        let not_hex = parse_resource_file("zz 0x2 0x3\n").unwrap_err();
+        assert!(
+            matches!(&not_hex, DaemonError::GpuResourceField { field, .. } if field == "zz"),
+            "{not_hex:?}"
+        );
+        assert!(not_hex.to_string().contains("hexadecimal"), "{not_hex}");
     }
 
     #[test]

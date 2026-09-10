@@ -60,8 +60,9 @@ impl SevHostInfo {
     /// extra Rust check on the SEV bit only bites the narrow case of an AMD part
     /// that implements the leaf but reports `has_sev=0` (e.g. an
     /// SME-capable-but-not-SEV SoC): Python would read a nonzero `c_bit_position`
-    /// and launch a bogus VM, whereas Rust fails closed (see divergence 58 in
-    /// `rust-port-divergences.md`).
+    /// and launch a bogus VM, whereas Rust fails closed: a confidential VM
+    /// must never launch on a part that exposes the encrypted-memory leaf
+    /// without supporting SEV.
     #[cfg(target_arch = "x86_64")]
     pub fn read() -> Option<Self> {
         // SAFETY: `__cpuid` is safe to execute on any x86_64 CPU; the leaves

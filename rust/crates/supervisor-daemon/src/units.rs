@@ -1,23 +1,23 @@
 //! systemd unit states, the daemon's view of which controllers are alive.
 //!
-//! Mirrors the Python `SystemDManager.get_services_active_states`
-//! (src/aleph/vm/systemd.py): one batched `ListUnits()` D-Bus call, units
+//! Mirrors the Python `SystemDManager.get_services_active_states`: one
+//! batched `ListUnits()` D-Bus call, units
 //! absent from the reply count as inactive. Unlike the Python method, a bus
 //! failure surfaces as an error instead of degrading to "everything
 //! inactive" inside this module: callers need the distinction between "the
 //! bus answered and the unit is inactive" and "the bus did not answer"
 //! (adoption must not stamp a VM stopped on a transient bus outage). The
 //! per-RPC handlers still treat an error as "not running", the Python parity
-//! behavior (ledger entry 13), but as an unanswered question rather than a
+//! behavior, but as an unanswered question rather than a
 //! dead unit: a status of FAILED is a claim only an answering bus can
 //! support. The seam is a trait so cargo tests
 //! stay hermetic: the production implementation talks to the system bus
 //! over zbus, tests use [`StaticUnitStates`] and [`UnreachableBus`].
 //!
-//! Graceful no-bus degradation is deliberate (and ledgered in
-//! docs/plans/rust-port-divergences.md): the Python daemon cannot construct
-//! its `SystemDManager` without a bus and dies at startup, while this daemon
-//! must still boot in a container.
+//! Graceful no-bus degradation is deliberate: the Python daemon cannot
+//! construct its `SystemDManager` without a bus and dies at startup, while
+//! this daemon must still boot in a container, and a transient bus outage
+//! at boot must not permanently misreport every VM as stopped.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -610,8 +610,8 @@ impl UnitStateSource for UnreachableBus {
     }
 
     fn get_active_state(&self, _unit: &str) -> String {
-        // Ledger entry 13's taxonomy: a dead bus is "unknown", never a
-        // definitive inactive.
+        // A dead bus is "unknown", never a definitive inactive: only an
+        // answering bus can support a claim about a unit.
         "unknown".to_string()
     }
 

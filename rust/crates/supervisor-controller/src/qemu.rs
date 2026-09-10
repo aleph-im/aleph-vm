@@ -1,6 +1,5 @@
 //! The QEMU argv builder, process spawn and graceful-stop escalation, a 1:1
-//! port of the Python `QemuVM` (src/aleph/vm/hypervisors/qemu/qemuvm.py) for
-//! the non-confidential persistent path.
+//! port of the Python `QemuVM`, for the non-confidential persistent path.
 //!
 //! `build_argv` is the parity core: it reproduces `QemuVM.start()`'s argv
 //! byte for byte (the Python controller is the oracle; the conformance
@@ -309,9 +308,8 @@ pub fn build_argv(config: &QemuConfig) -> Vec<String> {
 }
 
 /// Build the QEMU argv for a SEV / SEV-ES confidential persistent VM,
-/// byte-identical to `QemuConfidentialVM.start()`
-/// (src/aleph/vm/hypervisors/qemu_confidential/qemuvm.py). SEV-SNP is a
-/// separate path (increment B1).
+/// byte-identical to the Python `QemuConfidentialVM.start()`. SEV-SNP is a
+/// separate path, see `build_snp_argv`.
 ///
 /// `sev` carries the host-CPUID-derived `cbitpos` / `reduced-phys-bits`,
 /// injected (not read here) so the builder is testable off-SEV. The four
@@ -482,7 +480,7 @@ pub fn build_confidential_argv(config: &QemuConfig, sev: SevHostInfo) -> Vec<Str
 /// the per-vCPU VMSA). The model is carried from the agent, which picks it from
 /// the message's launch measurements intersected with what this host's QEMU
 /// can launch; an absent value means `EPYC-v4`, which is what pre-`cpu_model`
-/// configs imply. See divergence 68.
+/// configs imply.
 ///
 /// `kernel-hashes=on` makes OVMF hash-verify the -kernel/-initrd/-append blobs;
 /// `policy` is rendered `hex()`-style (`0x{:x}`) from the daemon-carried u32,
@@ -696,18 +694,20 @@ pub fn build_snp_argv(config: &QemuConfig, sev: SevHostInfo) -> Vec<String> {
     args
 }
 
-/// Spawn qemu and supervise it: block on the child, and on SIGTERM run the
-/// graceful-stop escalation. The port of `execute_persistent_vm` +
-/// `handle_persistent_vm` for the non-confidential QEMU path.
+/// Build the argv for a non-confidential persistent VM, spawn qemu and
+/// supervise it: block on the child, and on SIGTERM run the graceful-stop
+/// escalation rather than letting systemd's SIGKILL reach a VM with dirty
+/// caches.
 pub async fn run(vm_hash: &str, config: &QemuConfig) -> Result<i32, QemuError> {
     let argv = build_argv(config);
     spawn_and_supervise(vm_hash, config, argv).await
 }
 
-/// Launch an existing SEV / SEV-ES confidential VM, the port of
-/// `QemuConfidentialVM.start()` plus its two pre-launch guards. The VM starts
-/// paused (`-S`); this controller does NOT inject the launch secret or resume
-/// the CPU (that is the supervisor session flow).
+/// Launch an existing SEV / SEV-ES confidential VM, behind two pre-launch
+/// guards (the host is an SEV platform, and the config carries the four
+/// confidential fields). The VM starts paused (`-S`); this controller does
+/// NOT inject the launch secret or resume the CPU, which is the supervisor's
+/// session flow.
 pub async fn run_confidential(vm_hash: &str, config: &QemuConfig) -> Result<i32, QemuError> {
     // Read the host SEV info, then run the two pre-launch guards (factored into
     // `confidential_prelaunch_check` so they are unit-testable off-SEV). The
@@ -830,9 +830,9 @@ async fn spawn_and_supervise(
     Ok(code)
 }
 
-/// Graceful shutdown escalation, the port of `QemuVM.stop()`: ACPI powerdown,
-/// wait up to `GRACEFUL_SHUTDOWN_TIMEOUT`, then QMP `quit` and wait the
-/// remaining budget. QEMU flushing its caches on `quit` avoids the qcow2
+/// Graceful shutdown escalation: ACPI powerdown, wait up to
+/// `GRACEFUL_SHUTDOWN_TIMEOUT`, then QMP `quit` and wait the remaining
+/// budget. QEMU flushing its caches on `quit` avoids the qcow2
 /// corruption a SIGKILL would cause.
 async fn stop(vm_hash: &str, config: &QemuConfig, child: &mut Child) {
     let qmp_socket_path = config.qmp_socket_path.clone();
@@ -1216,11 +1216,12 @@ mod tests {
         );
     }
 
-    /// The rootfs `-drive` token has no `aleph-tee` oracle (see
-    /// docs/architecture/divergences.md entry 82: the generator never emits a
-    /// disk line, `encrypted` or not), so these two shapes are asserted as
-    /// this repo's own documented contract instead of a cross-crate parity
-    /// check. Default (both keys absent) stays the read-only raw verity token.
+    /// The rootfs `-drive` token has no `aleph-tee` oracle: that crate's
+    /// launch-argv generator emits the CPU, machine, TEE objects and
+    /// firmware and never a disk line at all, `encrypted` field or not. So
+    /// these two shapes are asserted as this repo's own documented contract
+    /// instead of a cross-crate parity check. Default (both keys absent)
+    /// stays the read-only raw verity token.
     #[test]
     fn snp_rootfs_drive_defaults_to_the_readonly_raw_verity_token_when_the_override_is_absent() {
         let argv = build_snp_argv(&snp_config_with_rootfs_override(None), epyc_sev_host_info());

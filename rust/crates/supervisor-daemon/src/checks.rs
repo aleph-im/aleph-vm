@@ -1,13 +1,14 @@
 //! Startup preconditions, the daemon slice of the Python `settings.check()`
-//! (src/aleph/vm/conf.py), run once before serving like `daemon.py main()`.
+//! (src/aleph/vm/conf.py), run once before serving, as the Python daemon's
+//! startup did.
 //! A failed check aborts startup with the same message as the Python
 //! assert.
 //!
-//! Deliberately NOT ported (ledgered): with host networking disabled
+//! Deliberately NOT ported: with host networking disabled
 //! (ALLOW_VM_NETWORKING=false) the NETWORK_INTERFACE and ndppd checks are
 //! skipped, where Python asserts them unconditionally; a daemon that
 //! cannot create taps has no use for either, and requiring them would
-//! break the container/CI boots that increment 2 deliberately supports.
+//! break the container and CI boots this daemon deliberately supports.
 //! Agent-side settings the daemon does not model (CONNECTOR_URL, the
 //! FAKE_DATA_* fixtures) are out of scope. The confidential-computing gates
 //! (SEV_CTL_PATH, the SEV/SEV-ES kernel modules) are ported, gated on
