@@ -530,9 +530,17 @@ fn refresh_cc_modes_with(
     // it here again, on the gate's reading plus the guest's own attestation
     // of the card at every boot) or the VM is deleted and the card is read
     // as free.
+    //
+    // "Live" is a start with no stop after it, not just the absence of a
+    // stop: an entry that was never started (a Defined one, or one adopted
+    // while the systemd bus was unreachable, where no stage timestamp but
+    // defined_at is set) has no guest holding its card either, and the
+    // adopted case is precisely where the daemon cannot tell whether the
+    // guest is alive. Both would otherwise read as live and be seeded.
     let mut known_cc_on: HashSet<String> = HashSet::new();
     for entry in world.entries.values() {
-        let confidential = entry.config.snp().is_some() && entry.times.stopped_at_ns == 0;
+        let live = entry.times.started_at_ns != 0 && entry.times.stopped_at_ns == 0;
+        let confidential = entry.config.snp().is_some() && live;
         for gpu in &entry.config.gpus {
             attached.insert(gpu.pci_host.clone());
             if confidential {
@@ -2045,6 +2053,49 @@ mod tests {
             cc_mode_of(&state, "06:00.0"),
             None,
             "a stopped confidential VM's card advertises nothing"
+        );
+    }
+
+    #[test]
+    fn a_never_started_snp_vms_card_is_not_seeded_cc_on() {
+        // An entry adopted while the systemd bus was unreachable carries no
+        // stop stamp, but no start either, and the daemon does not know
+        // whether its guest is alive. A never-started Defined entry looks
+        // the same. Neither is proof that a guest is holding the card's
+        // mode still, so neither gets the seed.
+        let mut snp_entry = adopted_entry_holding(test_fixtures::QEMU_HASH, "06:00.0", true);
+        snp_entry.times = crate::world::VmTimes {
+            defined_at_ns: snp_entry.times.defined_at_ns,
+            ..Default::default()
+        };
+        let host = HostState {
+            settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
+            host_ipv4: String::new(),
+            network_interface: None,
+            gpus: vec![nvidia_card("06:00.0")],
+            dns_nameservers: None,
+        };
+        let mut world = WorldView::default();
+        world.insert_entry(snp_entry);
+        let state = DaemonState::hermetic(
+            host,
+            world,
+            Arc::new(crate::units::StaticUnitStates::default()),
+            Arc::new(crate::logs::StaticLogSource::new(Vec::new())),
+        );
+
+        refresh_cc_modes_with(
+            &state,
+            |pci_host: &str, _device_id: &str| {
+                panic!("a card an entry still claims must never be probed: {pci_host}")
+            },
+            crate::gpu_cc::CC_MODE_TTL,
+        );
+
+        assert_eq!(
+            cc_mode_of(&state, "06:00.0"),
+            None,
+            "a card whose guest may never have run advertises nothing"
         );
     }
 
