@@ -151,7 +151,7 @@ def cache_entries(root: Path) -> list[CacheEntry]:
     return entries
 
 
-def in_flight_bytes(root: Path) -> int:
+def in_flight_bytes(root: Path, *, count_ceilings: bool = True) -> int:
     """What ``root`` owes to downloads that have not finished.
 
     Two overlapping things, counted once. A ``.part`` or ``.tmp`` file holds
@@ -161,14 +161,23 @@ def in_flight_bytes(root: Path) -> int:
     disk yet: without it two creates arriving together are both told there is
     space only one of them can have. For a reservation still being written the
     bigger of the two is the honest figure, never their sum.
+
+    ``count_ceilings`` separates a reservation made from a ``Content-Length``
+    from one made from a cap. Both hold room against the next admission, since
+    a body nobody measured still has to be paid for if it turns out to be that
+    big. Only a measured one may cost an entry its place: a caller deciding
+    how much to evict passes ``count_ceilings=False``, and a ceiling then
+    counts only the bytes it has actually written, which is the part of it
+    that is a measurement.
     """
     reserved = reserved_downloads()
     total = 0
     counted: set[Path] = set()
-    for path, size_bytes in reserved.items():
+    for path, reservation in reserved.items():
         if path.parent != root:
             continue
-        total += max(size_bytes, file_size_bytes(path))
+        written = file_size_bytes(path)
+        total += max(reservation.size_bytes, written) if reservation.measured or count_ceilings else written
         counted.add(path)
     try:
         children = list(root.iterdir())
@@ -181,8 +190,8 @@ def in_flight_bytes(root: Path) -> int:
     return total
 
 
-def _root_usage(root: Path, entries: list[CacheEntry]) -> int:
-    return sum(entry.size_bytes for entry in entries) + in_flight_bytes(root)
+def _root_usage(root: Path, entries: list[CacheEntry], *, count_ceilings: bool = True) -> int:
+    return sum(entry.size_bytes for entry in entries) + in_flight_bytes(root, count_ceilings=count_ceilings)
 
 
 def _entry_refs(path: Path) -> set[str]:
@@ -509,7 +518,12 @@ def evict_caches(
         state = _RootBudget(
             root=root,
             budget=budget,
-            usage=_root_usage(root, entries) + needed.get(root, 0),
+            # A download whose size nobody stated holds room, but the figure it
+            # holds is a guess: unlinking a real entry to honour it would trade
+            # something the node has for something it may never need. Only the
+            # bytes such a download has actually written count here, so the
+            # eviction it does cause is the one its own body earned.
+            usage=_root_usage(root, entries, count_ceilings=False) + needed.get(root, 0),
             evicted=evicted,
             live_only=live_only,
             is_live=is_live,
@@ -723,7 +737,7 @@ def admit_download(
     except OSError:
         logger.warning("Cache directory %s is not accessible; admitting the download", root, exc_info=True)
         if content_length is not None:
-            reserve_download(tmp_path, content_length)
+            reserve_download(tmp_path, content_length, measured=True)
         return
     if content_length is None:
         _admit_unknown_length(tmp_path, root, budget, max_bytes)
@@ -734,7 +748,7 @@ def admit_download(
         )
     usage = _root_usage(root, cache_entries(root)) + content_length
     if usage <= budget:
-        reserve_download(tmp_path, content_length)
+        reserve_download(tmp_path, content_length, measured=True)
         return
     free = max(budget - (usage - content_length), 0)
     msg = f"Cache {root} cannot hold a {content_length} byte download within CACHE_BUDGET"
@@ -757,10 +771,18 @@ def _admit_unknown_length(tmp_path: Path, root: Path, budget: int, max_bytes: in
     download anyway.
 
     So: never evict for a figure that is only a ceiling, and refuse only what
-    a root that is already over its budget cannot start at all. What is
-    charged is ``min(cap, budget)``, enough that a handful of concurrent
-    unknown-length downloads still run the root over its budget and the next
-    one is refused, and never more than the budget itself.
+    a root that is already over its budget cannot start at all.
+
+    What is charged is a modest, deliberately arbitrary figure,
+    ``UNKNOWN_LENGTH_RESERVE`` (2 GiB by default), and never more than this
+    download's own cap nor than the whole budget. Charging the budget itself,
+    as this used to, made one chunked response hold the entire root: every
+    other download on it was refused for as long as that one ran, whatever
+    its real size turned out to be. A reserve leaves room beside it, is still
+    charged against the next admission so a stream of unknown-length
+    downloads ends in a refusal, and is reconciled against the truth as the
+    body lands, since the bytes on disk are counted the moment they are
+    written and outgrow the reserve when the body is bigger than it.
     """
     usage = _root_usage(root, cache_entries(root))
     if usage > budget:
@@ -770,8 +792,24 @@ def _admit_unknown_length(tmp_path: Path, root: Path, budget: int, max_bytes: in
             required={"disk_mib": (usage - budget) // MIB},
             available={"disk_mib": 0},
         )
-    charge = min(max_bytes, budget) if max_bytes is not None else budget
-    reserve_download(tmp_path, charge)
+    reserve_download(tmp_path, _unknown_length_charge(root, budget, max_bytes), measured=False)
+
+
+def _unknown_length_charge(root: Path, budget: int, max_bytes: int | None) -> int:
+    """The room to hold for a body nobody measured: the smallest of the
+    reserve, this download's own cap and the budget."""
+    try:
+        total = shutil.disk_usage(str(root)).total
+    except OSError:
+        # A disk nobody can measure must not resurrect the whole-budget hold:
+        # resolve the reserve against a zero total instead, which yields the
+        # configured size when it is written as an absolute one and nothing
+        # when it is a percentage of the disk that just failed to answer.
+        logger.warning("Cache directory %s is not accessible; holding only the reserve", root, exc_info=True)
+        total = 0
+    reserve = parse_budget(settings.UNKNOWN_LENGTH_RESERVE, total)
+    figures = [reserve, budget] if max_bytes is None else [reserve, budget, max_bytes]
+    return min(figures)
 
 
 def _deleted_cache_backings() -> list[tuple[str, Path]]:

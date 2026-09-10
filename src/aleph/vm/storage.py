@@ -12,6 +12,7 @@ import os
 import re
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from shutil import make_archive
 from subprocess import CalledProcessError
@@ -116,13 +117,29 @@ async def file_downloaded_by_another_task(final_path: Path) -> None:
 CacheAdmission = Callable[[Path, int | None, int | None], None]
 _cache_admission: CacheAdmission | None = None
 
+
+@dataclass(frozen=True)
+class DownloadReservation:
+    """Room charged to an in-flight download, and what the figure is worth.
+
+    ``measured`` says the size came from a ``Content-Length``: it is this
+    body's size, so a cache may evict entries to make room for it. Anything
+    else is a ceiling, a guess bounded by the caller's cap and by the budget,
+    and a guess must never cost another entry its place. The bytes such a
+    download actually writes are a measurement again, and those do count.
+    """
+
+    size_bytes: int
+    measured: bool
+
+
 # Downloads that have been admitted and are still being written, by ``.part``
 # path. Nothing on disk says how big one is going to be, so an in-flight
 # download would otherwise be invisible to the next admission, and two
 # concurrent creates would both be told there is room only one of them can
 # have. Kept here rather than in the agent's cache module because this is
 # where the download ends, in ``download_file``'s finally.
-_reserved_downloads: dict[Path, int] = {}
+_reserved_downloads: dict[Path, DownloadReservation] = {}
 
 
 def set_cache_admission(fn: CacheAdmission | None) -> None:
@@ -130,16 +147,16 @@ def set_cache_admission(fn: CacheAdmission | None) -> None:
     _cache_admission = fn
 
 
-def reserve_download(tmp_path: Path, size_bytes: int) -> None:
+def reserve_download(tmp_path: Path, size_bytes: int, *, measured: bool) -> None:
     """Charge ``size_bytes`` to ``tmp_path`` until the download ends."""
-    _reserved_downloads[Path(tmp_path)] = size_bytes
+    _reserved_downloads[Path(tmp_path)] = DownloadReservation(size_bytes=size_bytes, measured=measured)
 
 
 def release_download(tmp_path: Path) -> None:
     _reserved_downloads.pop(Path(tmp_path), None)
 
 
-def reserved_downloads() -> dict[Path, int]:
+def reserved_downloads() -> dict[Path, DownloadReservation]:
     """What admission has charged for and not yet seen written."""
     return dict(_reserved_downloads)
 
