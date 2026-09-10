@@ -177,7 +177,7 @@ must not drive a purge.
 |------|---------|
 | 0 | Success. An explicit `--dry-run` is a success: the caller asked for a preview and got one |
 | 1 | The command ran and refused, or could not finish: the hash is not reclaimable, it is a live VM, an env file named by `--env-file` or `$ALEPH_VM_ENV_FILE` does not exist, `status`/`list` found no agent database, or the purge left files behind |
-| 2 | Usage error (argparse) |
+| 2 | Usage error (argparse), or an invalid node configuration: a value in the env file the settings refuse, named on stderr as `Invalid node configuration for <field>` |
 | 3 | The pass did not run: refused because the agent may be running or its database was lost, or silently downgraded to a dry run because the supervisor could not be asked and `--trust-registry` was not given |
 
 Exit 3 exists so a wrapper can tell "the node refused to run this" from
