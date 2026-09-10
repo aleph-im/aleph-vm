@@ -270,9 +270,9 @@ impl Drop for RuntimePowerHold {
 /// Pin a runtime-suspended card awake for a probe. vfio-pci lets a device
 /// nobody has opened runtime-suspend, and MMIO reads to a function in
 /// D3hot come back as all ones, which the register decoder cannot tell
-/// from a real answer. Returns `None`, having written nothing, when the
-/// device exposes no runtime PM or is already active. Waits up to
-/// `timeout` for the kernel to report it active.
+/// from a real answer. Returns `None`, having written nothing, unless the
+/// kernel reports the device on its way into or out of runtime suspend.
+/// Waits up to `timeout` for the kernel to report it active.
 ///
 /// Never fails the probe: a device whose runtime-PM files cannot be read
 /// or written is read as it is, exactly as it was before there was a
@@ -289,7 +289,15 @@ fn hold_runtime_power_on(device_dir: &Path, timeout: Duration) -> Option<Runtime
             return None;
         }
     };
-    if status.trim() == "active" {
+    // Only a device on its way into or out of D3 is worth holding. An
+    // "active" one is already awake, and a device with no runtime PM says
+    // "unsupported" (some drivers report other words still): it is powered,
+    // it will never report "active", so writing "on" would change the
+    // host's setting for nothing and then burn the whole resume budget
+    // waiting for a transition that cannot come. "resuming" stays in: a
+    // device mid-resume is exactly what the budget is there to wait for.
+    let status = status.trim();
+    if !matches!(status, "suspended" | "suspending" | "resuming") {
         return None;
     }
     let control_path = device_dir.join("power/control");
@@ -533,6 +541,36 @@ mod tests {
                 .unwrap()
                 .trim(),
             "auto"
+        );
+    }
+
+    #[test]
+    fn a_card_whose_runtime_pm_is_unsupported_is_neither_written_to_nor_waited_for() {
+        // A device the kernel does not runtime-manage is powered and stays
+        // powered, and its status will never turn "active". Writing "on"
+        // there would change the host's setting for nothing and then wait
+        // out the whole resume budget, once per probe.
+        let dir = tempfile::tempdir().unwrap();
+        let device_dir = fake_card(dir.path(), Some("unsupported"), 0x0000_0001);
+        let started = Instant::now();
+        assert!(
+            hold_runtime_power_on(&device_dir, Duration::from_secs(3)).is_none(),
+            "a device without runtime PM needs no hold"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "and must not wait for a resume that cannot happen"
+        );
+        assert_eq!(
+            std::fs::read_to_string(device_dir.join("power/control"))
+                .unwrap()
+                .trim(),
+            "auto"
+        );
+        assert_eq!(
+            probe_cc_mode_in(&device_dir, "06:00.0", "10de:2b85", Duration::from_secs(3)).unwrap(),
+            Some(CcMode::On),
+            "the register is read straight away"
         );
     }
 
