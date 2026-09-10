@@ -554,8 +554,8 @@ pub fn refresh_cc_modes(state: &DaemonState) {
 /// and reading device memory once per request is both a needless cost and
 /// a lever an outsider gets to pull; both windows bound that the same way,
 /// and the mode itself only changes when an operator runs NVIDIA's tool
-/// against an idle card, which no request can do. The create gate does not
-/// come through here: it always reads the card.
+/// against an idle card, which no request can do. Neither the create gate
+/// nor the start comes through here: both always read the card.
 fn refresh_cc_modes_with(
     state: &DaemonState,
     probe: impl Fn(&str, &str) -> Result<Option<crate::gpu_cc::CcMode>, DaemonError>,
@@ -569,8 +569,9 @@ fn refresh_cc_modes_with(
     let mut attached: HashSet<String> = HashSet::new();
     // The subset a live confidential guest owns. Those cards have a known
     // mode without any read: a card enters an SEV-SNP VM only after the
-    // create gate has read CC-on from it, and the mode cannot change while
-    // the guest holds the card (switching it takes a reset of a free card).
+    // create gate or the start has read CC-on from it, and the mode cannot
+    // change while the guest holds the card (switching it takes a reset of a
+    // free card).
     // A daemon that adopts such a VM at boot has an empty cache and will
     // never probe the card, so without this its mode would stay empty for
     // the VM's whole life. Plain passthrough VMs went through no gate and
@@ -581,10 +582,11 @@ fn refresh_cc_modes_with(
     // gate's word about it has expired. The card stays out of the sweep
     // (it is still in `attached`, the config still claims it), and the
     // stop itself dropped whatever the cache held about it, so a stopped
-    // VM's card advertises nothing until it is started again (which seeds
-    // it here again, on the gate's reading plus the guest's own attestation
-    // of the card at every boot) or the VM is deleted and the card is read
-    // as free.
+    // VM's card advertises nothing until it is started again or the VM is
+    // deleted and the card is read as free. The start is what re-reads the
+    // hardware and seeds the cache, under the same rule the create gate
+    // applies; the seed below only ever restates an answer the start
+    // already took from the card, for as long as the guest holds it.
     //
     // What counts as live is `attached_gpus`'s rule: a start with no stop
     // after it, so a never-started or bus-unreachable adopted entry is not
