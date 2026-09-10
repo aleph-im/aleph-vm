@@ -207,7 +207,9 @@ async def _reconcile_after_event_gap(app: web.Application) -> None:
             await _drop_vm_state(app, vm_id)
             # Same nudge the live stream gives: a VM that died during the gap
             # is still planned, and should not wait out the backstop interval.
-            app["allocation_reconciler"].notify_vm_down(vm_id)
+            # The status goes with it, since the reconciler leaves a VM that
+            # was stopped alone and rebuilds one that failed or vanished.
+            app["allocation_reconciler"].notify_vm_down(vm_id, status)
 
 
 async def watch_supervisor_events(app: web.Application) -> None:
@@ -236,9 +238,11 @@ async def watch_supervisor_events(app: web.Application) -> None:
             async for event in supervisor.watch_events():
                 if event.new_status in (VmStatus.STOPPED, VmStatus.FAILED):
                     await _drop_vm_state(app, event.vm_id)
-                    # If the plan still wants this VM, converge now rather than
-                    # waiting out the reconciler's backstop interval.
-                    app["allocation_reconciler"].notify_vm_down(event.vm_id)
+                    # If the plan still wants this VM up, converge now rather
+                    # than waiting out the reconciler's backstop interval. The
+                    # new status decides whether it does: a VM somebody
+                    # stopped waits for its owner to start it again.
+                    app["allocation_reconciler"].notify_vm_down(event.vm_id, event.new_status)
         except NotImplementedSupervisorError:
             logger.info("Supervisor does not implement WatchEvents; agent state relies on its own reaps only")
             return

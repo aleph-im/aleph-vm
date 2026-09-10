@@ -474,6 +474,149 @@ async def test_a_rebuild_the_plan_dropped_mid_flight_is_not_remembered(reconcile
     assert reconciler.state_for(HASH_C) == (None, None)
 
 
+# ── A VM the owner stopped ─────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_an_owner_stopped_vm_is_left_alone_even_when_the_plan_lists_it(reconciler, monkeypatch):
+    """Stop means stop. The operator API leaves a persistent VM STOPPED and
+    still defined, and the loop used to read that as a VM it owed a start: the
+    down event woke it and the next pass started the VM again. A push does not
+    override it either, which is the whole of the rule: the plan is
+    level-triggered and re-pushed for as long as the VM is allocated here, so
+    a push that restarted it would leave the owner unable to keep the VM down
+    at all. Whoever stopped it is who starts it again."""
+    listed = _boots_then(reconciler, monkeypatch, status=VmStatus.RUNNING)
+    reconciler.submit(_plan(HASH_C))
+    await reconciler._converge_once()
+    assert reconciler.started == [HASH_C]
+
+    listed[:] = [_info(HASH_C, status=VmStatus.STOPPED)]
+    await reconciler._converge_once()
+    reconciler.submit(_plan(HASH_C))
+    await reconciler._converge_once()
+
+    assert reconciler.started == [HASH_C]
+
+
+@pytest.mark.asyncio
+async def test_a_stop_does_not_wake_the_loop_but_a_failure_does(reconciler):
+    """The watcher reports both, and the loop has work to do for one of them:
+    a stopped VM is left where its owner put it, a failed one is rebuilt now."""
+    reconciler.submit(_plan(HASH_C))
+    reconciler._wakeup.clear()
+
+    reconciler.notify_vm_down(str(HASH_C), VmStatus.STOPPED)
+    assert reconciler._wakeup.is_set() is False
+
+    reconciler.notify_vm_down(str(HASH_C), VmStatus.FAILED)
+    assert reconciler._wakeup.is_set() is True
+
+
+@pytest.mark.asyncio
+async def test_a_vm_that_died_is_still_rebuilt_on_a_nudge(reconciler, monkeypatch):
+    """The complement: only a stop is somebody's decision. A guest that
+    crashed is rebuilt on the event, without waiting for anything."""
+    listed = _boots_then(reconciler, monkeypatch, status=VmStatus.RUNNING)
+    reconciler.submit(_plan(HASH_C))
+    await reconciler._converge_once()
+    reconciler._wakeup.clear()
+
+    listed[:] = [_info(HASH_C, status=VmStatus.FAILED)]
+    reconciler.notify_vm_down(str(HASH_C), VmStatus.FAILED)
+    assert reconciler._wakeup.is_set() is True
+
+    await reconciler._converge_once()
+
+    assert reconciler.started == [HASH_C, HASH_C]
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_vm_reports_nothing_of_its_own(reconciler, monkeypatch):
+    """What the executions list renders for a stopped VM. The supervisor
+    already says STOPPED, and the agent has no plan of its own for it, so an
+    allocation block would have to claim the VM is failing or being worked on,
+    and neither is true."""
+    listed = _boots_then(reconciler, monkeypatch, status=VmStatus.RUNNING)
+    reconciler.submit(_plan(HASH_C))
+    await reconciler._converge_once()
+
+    listed[:] = [_info(HASH_C, status=VmStatus.STOPPED)]
+    await reconciler._converge_once()
+
+    assert reconciler.state_for(HASH_C) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_a_vm_caught_mid_stop_is_left_alone_too(reconciler, monkeypatch):
+    """A stop caught in flight is still a stop. Read as work to do, STOPPING
+    sends the loop down start_persistent_vm's wait-until-gone path, so it
+    would wait the VM out and recreate from scratch the one the owner is only
+    stopping."""
+    listed = _boots_then(reconciler, monkeypatch, status=VmStatus.RUNNING)
+    reconciler.submit(_plan(HASH_C))
+    await reconciler._converge_once()
+    assert reconciler.started == [HASH_C]
+
+    listed[:] = [_info(HASH_C, status=VmStatus.STOPPING)]
+    await reconciler._converge_once()
+    reconciler.submit(_plan(HASH_C))
+    await reconciler._converge_once()
+
+    assert reconciler.started == [HASH_C]
+    assert reconciler.state_for(HASH_C) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_a_vm_this_node_already_holds_stopped_is_not_started_by_a_plan(reconciler, monkeypatch):
+    """The rule does not rest on the loop remembering that it started the VM.
+    After an agent restart the loop knows nothing about who stopped what, and
+    a plan listing a VM this node holds stopped says the VM is allocated here,
+    not that the node should boot it."""
+    _record_starts(reconciler, monkeypatch)
+    reconciler.supervisor.list_vms.return_value = [_info(HASH_C, status=VmStatus.STOPPED)]
+    reconciler.submit(_plan(HASH_C))
+
+    await reconciler._converge_once()
+
+    assert reconciler.started == []
+    assert reconciler.state_for(HASH_C) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_vm_whose_last_start_failed_still_says_why(reconciler, monkeypatch):
+    """A start the node was asked to make and could not is its own news, and
+    it survives the VM turning up stopped: the create got as far as defining
+    the VM and then raised. An owner's stop is nothing for the agent to
+    report, since the supervisor already says STOPPED, but the failure and the
+    attempt count behind it are."""
+    _record_starts(reconciler, monkeypatch, fail=True)
+    reconciler.submit(_plan(HASH_C))
+    await reconciler._converge_once()
+
+    reconciler.supervisor.list_vms.return_value = [_info(HASH_C, status=VmStatus.STOPPED)]
+    await reconciler._converge_once()
+
+    state, failure = reconciler.state_for(HASH_C)
+    assert state is AllocationState.FAILED
+    assert failure.code == "RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_vm_the_plan_stops_naming_is_still_torn_down(reconciler, monkeypatch):
+    """The scheduler's own move, and the only one that ends a stop. Refusing
+    to restart a stopped VM is not holding on to it forever: dropping the hash
+    unallocates it, and the sweep reaps a stopped VM the way it reaps a
+    running one."""
+    _record_starts(reconciler, monkeypatch)
+    reconciler.supervisor.list_vms.return_value = [_info(HASH_B, status=VmStatus.STOPPED)]
+    reconciler.submit(_plan())
+
+    await reconciler._converge_once()
+
+    assert reconciler_module.teardown_vm.await_args.args[0] == HASH_B
+
+
 def test_pending_hashes_are_the_entries_the_push_carried_no_message_for(reconciler):
     reconciler.submit(
         AllocationPlan(
@@ -540,7 +683,9 @@ async def test_the_event_watcher_nudges_the_reconciler_when_a_vm_goes_down():
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
 
-    app["allocation_reconciler"].notify_vm_down.assert_called_once_with(vm_id)
+    # The status travels with the nudge: what the reconciler owes a VM that
+    # went down depends on whether somebody stopped it or it died.
+    app["allocation_reconciler"].notify_vm_down.assert_called_once_with(vm_id, VmStatus.STOPPED)
 
 
 @pytest.mark.asyncio
@@ -550,10 +695,10 @@ async def test_notify_vm_down_wakes_the_loop_only_for_a_planned_vm(reconciler):
     reconciler.submit(_plan(HASH_C))
     reconciler._wakeup.clear()
 
-    reconciler.notify_vm_down(str(HASH_B))
+    reconciler.notify_vm_down(str(HASH_B), VmStatus.FAILED)
     assert reconciler._wakeup.is_set() is False
 
-    reconciler.notify_vm_down(str(HASH_C))
+    reconciler.notify_vm_down(str(HASH_C), VmStatus.FAILED)
     assert reconciler._wakeup.is_set() is True
 
 

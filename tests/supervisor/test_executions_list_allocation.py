@@ -162,6 +162,21 @@ async def test_a_vm_the_supervisor_holds_dead_still_carries_the_agents_failure(a
 
 
 @pytest.mark.asyncio
+async def test_a_planned_vm_the_owner_stopped_reports_only_the_supervisors_word(aiohttp_client):
+    """A VM waiting for the next push to be started again is not failing and
+    is not being worked on, so the agent has nothing to add: the reconciler
+    keeps no state for it and the listing renders no allocation block. Saying
+    "failed" here would report an owner's stop as a fault of the node."""
+    reconciler = _reconciler(planned=[HASH_A])
+
+    body = await _listing(aiohttp_client, _app(infos=[_info(HASH_A, VmStatus.STOPPED)], reconciler=reconciler))
+
+    assert body[str(HASH_A)]["state"] == "stopped"
+    assert body[str(HASH_A)]["allocation"] is None
+    assert body[str(HASH_A)]["running"] is False
+
+
+@pytest.mark.asyncio
 async def test_a_vm_the_supervisor_holds_dead_shows_the_recreate_in_flight(aiohttp_client):
     """The other half of the same claim: the loop is downloading for a VM
     the supervisor still lists as dead, so both words are out at once."""
