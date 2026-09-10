@@ -327,6 +327,153 @@ async def test_a_successful_start_clears_a_previous_failure(reconciler, monkeypa
     assert reconciler.state_for(HASH_C) == (None, None)
 
 
+# ── A guest that dies after it started ─────────────────────────────────────
+
+
+def _boots_then(reconciler, monkeypatch, status=VmStatus.FAILED):
+    """A start that works, after which the supervisor holds the VM in `status`.
+
+    With FAILED that is a guest which boots and dies, the crash loop; with
+    RUNNING it is a VM that stays up. Returns the list the fake supervisor
+    answers with, so a test can change what the VM is doing afterwards.
+    """
+    listed: list = []
+
+    async def fake_start(vm_hash, _pubsub, **_kwargs):
+        reconciler.started.append(vm_hash)
+        listed[:] = [_info(vm_hash, status=status)]
+
+    async def list_vms():
+        return list(listed)
+
+    monkeypatch.setattr(reconciler_module, "start_persistent_vm", fake_start)
+    reconciler.supervisor.list_vms = list_vms
+    return listed
+
+
+@pytest.mark.asyncio
+async def test_a_guest_that_dies_after_it_started_is_rebuilt_on_the_backoff(reconciler, monkeypatch, clock):
+    """Rebuilding a VM the supervisor already holds dead is a retry like any
+    other, and used to be free: the successful start erased the failure
+    record, the FAILED event woke the loop, and the next pass found nothing to
+    gate it. A guest that panics on boot was rebuilt from scratch at boot
+    speed, disks and all, for as long as the plan listed it."""
+    _boots_then(reconciler, monkeypatch)
+    reconciler.submit(_plan(HASH_C))
+
+    await reconciler._converge_once()  # the first create
+    await reconciler._converge_once()  # it died: rebuilt at once, and counted
+
+    assert reconciler.started == [HASH_C, HASH_C]
+    _, failure = reconciler.state_for(HASH_C)
+    assert failure.attempts == 1
+    assert failure.next_retry_at == NOW + timedelta(seconds=settings.ALLOCATION_RETRY_BASE_INTERVAL)
+
+    await reconciler._converge_once()  # still dead, but not due yet
+    assert reconciler.started == [HASH_C, HASH_C]
+
+    clock.now = failure.next_retry_at
+    await reconciler._converge_once()
+
+    assert reconciler.started == [HASH_C, HASH_C, HASH_C]
+    _, failure = reconciler.state_for(HASH_C)
+    assert failure.attempts == 2
+    assert failure.next_retry_at == clock.now + timedelta(seconds=settings.ALLOCATION_RETRY_BASE_INTERVAL * 2)
+
+
+@pytest.mark.asyncio
+async def test_the_rebuild_backoff_doubles_and_is_capped(reconciler, monkeypatch, clock):
+    """The same ladder a failed create climbs, on the same two settings."""
+    _boots_then(reconciler, monkeypatch)
+    reconciler.submit(_plan(HASH_C))
+    await reconciler._converge_once()  # the first create
+    delays = []
+
+    for _ in range(8):
+        await reconciler._converge_once()
+        _, failure = reconciler.state_for(HASH_C)
+        delays.append((failure.next_retry_at - clock.now).total_seconds())
+        clock.now = failure.next_retry_at
+
+    assert delays[0] == settings.ALLOCATION_RETRY_BASE_INTERVAL
+    assert delays[1] == settings.ALLOCATION_RETRY_BASE_INTERVAL * 2
+    assert max(delays) == settings.ALLOCATION_RETRY_MAX_INTERVAL
+
+
+@pytest.mark.asyncio
+async def test_a_vm_that_stays_up_accumulates_no_attempts(reconciler, monkeypatch, clock):
+    """The rebuild count is charged for a death, not for existing."""
+    _boots_then(reconciler, monkeypatch, status=VmStatus.RUNNING)
+    reconciler.submit(_plan(HASH_C))
+
+    for _ in range(3):
+        await reconciler._converge_once()
+        clock.now += timedelta(seconds=settings.ALLOCATION_RECONCILE_INTERVAL)
+
+    assert reconciler.started == [HASH_C]
+    assert reconciler.state_for(HASH_C) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_a_rebuilt_vm_that_stays_up_loses_its_crash_record(reconciler, monkeypatch, clock):
+    """The count must not be immortal, or a VM that crashed once a month ago
+    would take the capped wait for a rebuild it deserves at once. It is
+    dropped once the VM has been up longer than the longest wait the backoff
+    can impose, past which the next death is a new problem rather than the
+    tail of the old one."""
+    listed = _boots_then(reconciler, monkeypatch)
+    reconciler.submit(_plan(HASH_C))
+    await reconciler._converge_once()
+    await reconciler._converge_once()
+    assert reconciler.state_for(HASH_C)[1].attempts == 1
+
+    listed[:] = [_info(HASH_C, status=VmStatus.RUNNING)]
+    clock.now = NOW + timedelta(seconds=settings.ALLOCATION_RETRY_MAX_INTERVAL - 1)
+    await reconciler._converge_once()
+    assert reconciler.state_for(HASH_C)[1].attempts == 1
+
+    clock.now = NOW + timedelta(seconds=settings.ALLOCATION_RETRY_MAX_INTERVAL)
+    await reconciler._converge_once()
+
+    assert reconciler.state_for(HASH_C) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_a_vm_waiting_out_its_rebuild_backoff_says_so(reconciler, monkeypatch):
+    """What the executions list has to report while a rebuild is held back:
+    the attempts and when it will happen, rather than a dead VM the agent
+    looks to have no opinion about."""
+    _boots_then(reconciler, monkeypatch)
+    reconciler.submit(_plan(HASH_C))
+    await reconciler._converge_once()
+    await reconciler._converge_once()
+
+    await reconciler._converge_once()
+
+    state, failure = reconciler.state_for(HASH_C)
+    assert state is AllocationState.FAILED
+    assert failure.attempts == 1
+    assert failure.next_retry_at == NOW + timedelta(seconds=settings.ALLOCATION_RETRY_BASE_INTERVAL)
+
+
+@pytest.mark.asyncio
+async def test_a_rebuild_the_plan_dropped_mid_flight_is_not_remembered(reconciler, monkeypatch):
+    """The same rule the failing create follows: submit() prunes the state of
+    a VM it drops, and a rebuild that lands afterwards must not put it back
+    for a VM nothing will retry."""
+
+    async def fake_start(vm_hash, _pubsub, **_kwargs):
+        reconciler.submit(_plan())
+
+    monkeypatch.setattr(reconciler_module, "start_persistent_vm", fake_start)
+    reconciler.supervisor.list_vms.return_value = [_info(HASH_C, status=VmStatus.FAILED)]
+    reconciler.submit(_plan(HASH_C))
+
+    await reconciler._converge_once()
+
+    assert reconciler.state_for(HASH_C) == (None, None)
+
+
 def test_pending_hashes_are_the_entries_the_push_carried_no_message_for(reconciler):
     reconciler.submit(
         AllocationPlan(
