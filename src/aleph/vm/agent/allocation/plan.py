@@ -22,6 +22,14 @@ logger = logging.getLogger(__name__)
 # again would be a second VM under the same hash.
 LIVE_STATUSES = (VmStatus.RUNNING, VmStatus.BOOTING, VmStatus.DEFINED)
 
+# States a VM only reaches because it was told to: the owner's stop through the
+# operator API, or a guest shutting itself down. The definition and the disks
+# survive, so the VM is down rather than lost, and starting it again is the
+# owner's call and nobody else's. STOPPING is here too because a stop caught
+# mid-flight is still a stop: a caller that read it as work to do would wait
+# the VM out and then recreate it from scratch.
+STOPPED_STATUSES = (VmStatus.STOPPING, VmStatus.STOPPED)
+
 
 def by_hash(infos: list[VmInfo]) -> dict[ItemHash, VmInfo]:
     """The supervisor's VMs, keyed by item hash.

@@ -253,6 +253,37 @@ have to restart. `StopVm` and `StartVm` on an ephemeral program are flatly
 "stopped but still defined" state for a program (no on-disk config, no
 systemd unit to restart), so the daemon refuses rather than faking one.
 
+The agent's allocation loop respects that stop, and respects it for good.
+The loop converges the node onto the scheduler's plan, and a planned VM that
+is down is normally started again on the next pass, but a VM that was stopped
+is a decision somebody made: the owner's through
+`/control/machine/{ref}/stop`, or the guest's own shutdown. The loop
+therefore treats STOPPED and STOPPING as terminal, full stop. A stop event
+does not wake it, its backstop pass leaves the VM alone, and a plan naming
+the VM does not restart it either: the owner stopped it, and the owner is who
+starts it again, through the same operator API. The executions list carries
+no allocation block for it, since the supervisor already reports STOPPED and
+the agent has nothing to add. It does keep reporting a start it was asked to
+make and could not: a VM left stopped because its create failed still carries
+the failure and the attempt count, which is the node's news rather than the
+owner's. FAILED is the opposite case, nobody's decision, so the loop rebuilds
+it on the event, damped by the retry backoff. Without the split an owner
+could not keep a planned VM stopped at all, since the plan is level-triggered
+and re-pushed for as long as the VM is allocated here.
+
+What the scheduler is told is that the VM is here. A plan entry for a stopped
+VM is answered `unchanged`, the same answer a running one gets, because the
+scheduler's belief that the VM is allocated to this node is exactly what has
+not changed. The node keeps committing its memory, vCPUs and disk for it too:
+the definition and the volumes are still allocated, and forgetting them would
+let the node promise the same room twice. Unallocating a stopped VM stays the
+scheduler's own move, made by dropping the hash from the plan, which the loop
+reads as a teardown like any other.
+
+This diverges from v1, where an allocation push restarted a stopped VM. The
+node answered every push by starting whatever it held down, so an owner's
+stop lasted until the next push and no longer.
+
 ### Idle expiry
 
 Idle teardown is agent policy, not something the supervisor knows about: the

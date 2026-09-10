@@ -14,6 +14,7 @@ from aleph_message.models import ExecutableContent, ItemHash
 
 from aleph.vm.agent.allocation.plan import (
     LIVE_STATUSES,
+    STOPPED_STATUSES,
     AllocationPlan,
     PlannedVm,
     PlanVerdict,
@@ -176,7 +177,15 @@ def compute_verdict(
 
     for vm_hash, info in known.items():
         if vm_hash in plan.entries:
-            if info.status in LIVE_STATUSES or info.awaiting_confidential_init:
+            # A VM this node already holds, up or stopped, is acknowledged
+            # rather than sized: what the answer reports is that the
+            # scheduler's belief the VM is allocated here still holds. A
+            # stopped VM stays that way until its owner starts it, and its
+            # registry record goes on committing its memory and vCPUs, so
+            # sizing it as a candidate would let a node that is tight on room
+            # refuse a VM it is already holding, and a refusal is what takes
+            # the VM out of the plan the loop converges on.
+            if info.status in LIVE_STATUSES or info.status in STOPPED_STATUSES or info.awaiting_confidential_init:
                 unchanged.add(vm_hash)
                 verdict.unchanged.append(vm_hash)
             # A planned VM the supervisor holds dead is about to be created
