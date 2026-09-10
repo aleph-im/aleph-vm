@@ -11,8 +11,7 @@ import logging
 import os
 import re
 import sys
-from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from shutil import make_archive
 from subprocess import CalledProcessError
@@ -36,6 +35,7 @@ from aleph_message.models.execution.volume import (
 )
 
 from aleph.vm.conf import settings
+from aleph.vm.hooks import CacheAdmission, current_hooks, install_hooks
 from aleph.vm.storage_pools import find_existing_volume, volume_path_for
 from aleph.vm.supervisor_interface.errors import FileTooLargeError
 from aleph.vm.utils import fix_message_validation, run_in_subprocess
@@ -100,24 +100,6 @@ async def file_downloaded_by_another_task(final_path: Path) -> None:
         await asyncio.sleep(0.1)
 
 
-# What the caches admit, set by the agent (agent.vm.cache.admit_download):
-# the download caches are budgeted, and a download that cannot fit is refused
-# before a byte is written rather than after the disk is full. A module hook
-# because storage.py knows nothing of the VM registry the budget is computed
-# against, and the agent cannot make the downloader import it. It is handed
-# the ``.part`` path, not its directory: the room a download was admitted for
-# is charged to that path until the download ends.
-#
-# ``(tmp_path, content_length, max_bytes)``, and the middle one is None when
-# the server did not say. The two are not interchangeable: a Content-Length
-# is a measurement of this download, a cap is a ceiling on every download of
-# that kind, and admission has to treat them differently (see
-# ``cache.admit_download``). Deciding that here, by handing over one number,
-# is what made a chunked-encoding response ask for the whole runtime cap.
-CacheAdmission = Callable[[Path, int | None, int | None], None]
-_cache_admission: CacheAdmission | None = None
-
-
 @dataclass(frozen=True)
 class DownloadReservation:
     """Room charged to an in-flight download, and what the figure is worth.
@@ -143,8 +125,10 @@ _reserved_downloads: dict[Path, DownloadReservation] = {}
 
 
 def set_cache_admission(fn: CacheAdmission | None) -> None:
-    global _cache_admission
-    _cache_admission = fn
+    """Set the cache admission slot on its own, leaving the other hooks
+    alone. The agent installs all three as one object at startup; this is the
+    single-slot form, used by the tests that drive a download directly."""
+    install_hooks(replace(current_hooks(), cache_admission=fn))
 
 
 def reserve_download(tmp_path: Path, size_bytes: int, *, measured: bool) -> None:
@@ -177,14 +161,15 @@ async def download_file_in_chunks(url: str, tmp_path: Path, *, max_bytes: int | 
             msg = f"{url} is {resp.content_length} bytes, above the {max_bytes} byte limit"
             raise FileTooLargeError(msg)
 
-        if _cache_admission is not None:
+        cache_admission = current_hooks().cache_admission
+        if cache_admission is not None:
             # Before the open: a refused download must leave nothing behind,
             # and it may evict, so the room it is admitted against is the
             # room it will actually find. What it was admitted for stays
             # charged to the .part until download_file releases it. Both
             # figures go over, whether the server measured the body or only
             # this call's cap bounds it.
-            _cache_admission(tmp_path, resp.content_length, max_bytes)
+            cache_admission(tmp_path, resp.content_length, max_bytes)
 
         with open(tmp_path, "wb") as cache_file:
             counter = 0
@@ -476,7 +461,7 @@ async def create_volume_file(
     volume_name = volume.name if isinstance(volume, PersistentVolume) else "rootfs"
     # Assume that the main filesystem format is BTRFS
     # Off the loop: placement reads every pool's free space and can call the
-    # reclaimer's evictor (storage_pools.set_room_maker), which walks pools and
+    # reclaimer's evictor (the agent's room_maker hook), which walks pools and
     # removes directories.
     path = await asyncio.to_thread(
         volume_path_for, namespace, f"{volume_name}.btrfs", volume.size_mib, pool0_only=pool0_only

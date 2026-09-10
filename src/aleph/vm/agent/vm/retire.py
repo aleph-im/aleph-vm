@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from enum import Enum
 from pathlib import Path
 
@@ -40,6 +40,7 @@ from aleph.vm.agent.vm.purge import (
 from aleph.vm.agent.vm.reclaimable import depends_on_from_content, mark_reclaimable
 from aleph.vm.agent.vm_registry import AgentVmRecord, AgentVmRegistry
 from aleph.vm.conf import settings
+from aleph.vm.hooks import AfterGoneHook, current_hooks, install_hooks
 from aleph.vm.storage import (
     DEVICE_MAPPER_DIRECTORY,
     remove_base_device,
@@ -59,21 +60,17 @@ class RetireReason(Enum):
     FAILED_CREATE = "failed_create"  # a create that never committed and allocated nothing pre-existing
 
 
-AfterGoneHook = Callable[[], Awaitable[None]]
-_after_gone: AfterGoneHook | None = None
-
-
 def set_after_gone_hook(hook: AfterGoneHook | None) -> None:
-    """The app registers a reconcile pass here; it runs after every GONE
-    under VOLUME_RETENTION=keep so the budget is enforced right away.
+    """Set the after-GONE slot on its own, leaving the other hooks alone.
 
-    This module cannot import the reconciler (the reconciler purges through
-    the same helpers and the agent wires both at startup), and a retention
-    budget that is only enforced once an hour is a budget an attacker can
-    burst through: create, forget, repeat.
+    The app registers a reconcile pass there; it runs after every GONE under
+    VOLUME_RETENTION=keep so the budget is enforced right away. This module
+    cannot import the reconciler (the reconciler purges through the same
+    helpers and the agent wires both at startup), and a retention budget that
+    is only enforced once an hour is a budget an attacker can burst through:
+    create, forget, repeat.
     """
-    global _after_gone  # noqa: PLW0603
-    _after_gone = hook
+    install_hooks(replace(current_hooks(), after_gone=hook))
 
 
 async def teardown_namespace_devices(namespace: str) -> None:
@@ -223,7 +220,8 @@ async def retire_vm(
         logger.exception("Storage release of %s (%s) failed; the reconciler will retry", vm_hash, reason.value)
     await asyncio.to_thread(purge_vm_backups, str(vm_hash))
     logger.info("Retired %s (%s)", vm_hash, reason.value)
-    if reason is RetireReason.GONE and settings.VOLUME_RETENTION == "keep" and _after_gone is not None:
+    after_gone = current_hooks().after_gone
+    if reason is RetireReason.GONE and settings.VOLUME_RETENTION == "keep" and after_gone is not None:
         # This VM's volumes just became reclaimable: bring the pool back under
         # its retention budget now rather than at the next periodic pass.
         # Best effort: the GONE call sites sweep in a loop (terminal messages,
@@ -231,7 +229,7 @@ async def retire_vm(
         # failing pass must not take the rest of the sweep down with it. The
         # periodic pass will retry.
         try:
-            await _after_gone()
+            await after_gone()
         except Exception:
             logger.exception("Storage reconcile after retiring %s failed", vm_hash)
 

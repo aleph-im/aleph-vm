@@ -118,7 +118,7 @@ failing raises `InsufficientResourcesError`.
 Admission counts retained (reclaimable) bytes as free:
 `_available_disk_bytes` adds `reclaimable_bytes()` to the pooled free sum,
 and `select_pool`, before refusing a placement, calls the room maker the
-agent registered at startup (`storage_pools.set_room_maker`, wired to
+agent installed at startup (`hooks.AgentHooks.room_maker`, wired to
 `reconciler.make_room`) so the retained directories on the target pool are
 evicted oldest-first until the create fits. A pool whose free space cannot
 be read is left alone there too: free space is the whole measure of "does
@@ -432,9 +432,9 @@ first pass on a node is the one acting on the biggest backlog.
 
 Passes run at startup, every `VOLUME_RECONCILE_INTERVAL` (jittered, so a
 fleet of nodes does not sweep in lockstep), after every `GONE` under `keep`
-(`retire.set_after_gone_hook`, best effort: a failing pass never breaks the
+(`AgentHooks.after_gone`, best effort: a failing pass never breaks the
 sweep that retired the VM), and on admission pressure (`make_room`, through
-`storage_pools.set_room_maker`). A pass runs in a worker thread, so the
+`AgentHooks.room_maker`). A pass runs in a worker thread, so the
 live-VM set is snapshotted on the event loop first (`live_hashes`) and handed
 over; `make_room` never evicts a hash in it, even if a stale marker says it
 could. Loop-triggered passes serialize on a lock (`reconcile_now`); they are
@@ -443,6 +443,13 @@ passes. And
 placement runs `make_room` through `asyncio.to_thread`, so it can still
 overlap a pass: every removal therefore tolerates a directory that another
 pass took first, and counts only what it actually removed.
+
+Those two callbacks and the cache admission one all point from the storage
+modules back into the reconciler, which imports them, so the agent app is
+what wires the three together. They are the fields of one frozen
+`AgentHooks` (`aleph.vm.hooks`), built and installed in a single assignment
+by the agent's startup: a node is wired for all three or for none, never
+for a subset a failed startup happened to reach.
 
 The create guard covers more than the create paths in `run.py`: a migration
 import stages multi-GB disks into `{pool}/{vm_hash}/` for a namespace the
@@ -529,7 +536,7 @@ loop devices are found through sysfs, which keeps the backing path with a
 left alone: its devices belong to that create now.
 
 Admission is the same question one download ahead: `storage`'s cache
-admission hook (registered by the agent on `set_cache_admission`) runs inside
+admission hook (`AgentHooks.cache_admission`) runs inside
 `download_file_in_chunks` once the size is known and before the file is
 opened. It evicts what it can, and raises `InsufficientResourcesError`
 (mapped to 503 on the create path) when the download still would not fit,
