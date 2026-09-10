@@ -24,6 +24,7 @@ from multidict import CIMultiDict
 
 from aleph.vm.agent.aggregate import get_user_settings
 from aleph.vm.agent.capacity import CapacityManager, requested_gpu_ids
+from aleph.vm.agent.create_lock import vm_create_lock
 from aleph.vm.agent.expiry import ExpiryManager
 from aleph.vm.agent.snp_instance_launch import (
     build_snp_instance_spec,
@@ -48,6 +49,7 @@ from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.errors import (
     FileTooLargeError,
     ResourceDownloadError,
+    VmAlreadyExistsError,
     VmNotFoundError,
     VmSetupError,
 )
@@ -463,6 +465,19 @@ async def _retire_after_create_failure(
         logger.exception("Teardown of half-started %s %s failed", what, vm_hash)
 
 
+def _log_lost_create_race(vm_hash: ItemHash, what: str) -> None:
+    """Say that this create found the VM already there.
+
+    The supervisor refuses a create for an id it already holds, which means
+    another start path built this VM while this one was downloading. That VM
+    is the live one: this create has nothing left to do, and must not treat
+    the refusal as its own failure. The teardown that would follow deletes
+    the VM the other caller just brought up, drops its record and, when the
+    disks were fresh, purges its volumes.
+    """
+    logger.info("%s %s already exists: another start built it, leaving it alone", what, vm_hash)
+
+
 async def create_vm_execution(
     vm_hash: ItemHash,
     *,
@@ -515,6 +530,9 @@ async def create_vm_execution(
                 spec, _resources = await build_program_create_vm_spec(vm_hash, content)
                 info = await supervisor.create_vm(spec)
                 await _wait_until_running(supervisor, info.vm_id)
+            except VmAlreadyExistsError:
+                _log_lost_create_race(vm_hash, "Program VM")
+                return None
             except Exception:
                 # Admission, build, create or readiness failed: retire the
                 # record and whatever was started, but never let a teardown
@@ -579,6 +597,9 @@ async def create_vm_execution(
                         resolved_gpus = await capacity.resolve_gpus(requested_gpus, owner=content.address)
                         spec = replace(spec, gpus=resolved_gpus)
                 info = await supervisor.create_vm(spec)
+            except VmAlreadyExistsError:
+                _log_lost_create_race(vm_hash, "Instance")
+                return None
             except Exception:
                 # build or create failed: retire the early record so a failed
                 # create never leaves a dangling owner-identity entry behind (a
@@ -652,6 +673,9 @@ async def create_vm_execution(
                     )
                     spec = replace(spec, gpus=resolved)
                 info = await supervisor.create_vm(spec)
+            except VmAlreadyExistsError:
+                _log_lost_create_race(vm_hash, "V-PROGRAM")
+                return None
             except Exception:
                 # build, GPU resolution or create failed: retire the early
                 # record, and drop any bundle build_vprogram_spec may have
@@ -1092,73 +1116,84 @@ async def start_persistent_vm(
     expiry: ExpiryManager,
     update_watcher: UpdateWatcher,
 ) -> None:
-    vm_id = VmId(str(vm_hash))
-    try:
-        info: VmInfo | None = await supervisor.get_vm(vm_id)
-    except VmNotFoundError:
-        info = None
+    """Bring a scheduled VM up, whatever state this node holds it in.
 
-    if info is not None:
-        if info.awaiting_confidential_init:
-            # Only the owner can start it, by uploading the session certificates
-            # via /confidential/initialize. Waiting for RUNNING or recreating it
-            # would loop forever, so leave it untouched.
-            logger.info(f"{vm_hash} is waiting for its owner to initialize the confidential session")
-        elif info.status == VmStatus.RUNNING:
-            logger.info(f"{vm_hash} is already running")
-        elif info.status in (VmStatus.DEFINED, VmStatus.BOOTING):
-            logger.info(f"{vm_hash} is already starting")
-            await _wait_until_running(supervisor, vm_id)
-        elif info.status == VmStatus.STOPPING:
-            logger.info(f"{vm_hash} is stopping, waiting before restart")
-            await _wait_until_gone(supervisor, vm_id)
-            info = None
-        elif info.status == VmStatus.STOPPED:
-            # A cleanly stopped VM is resumed in place: stop/start is a
-            # pause/resume that preserves the definition and disks, not a
-            # delete + recreate.
-            logger.info(f"{vm_hash} is stopped, starting it")
-            await supervisor.start_vm(vm_id)
-            await _wait_until_running(supervisor, vm_id)
-        else:  # FAILED
-            logger.info(f"{vm_hash} in terminal state {info.status}, recreating")
-            # Crash recovery is a delete+recreate cycle, not a dealloc:
-            # RECREATE keeps the persisted host-port forwards (the owner's
-            # SSH forward among them) and the disks.
-            await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
-            info = None
-        if info is not None and not info.awaiting_confidential_init:
-            # Every branch that kept `info` ends with a RUNNING VM this agent
-            # did not create in its own lifetime. Only the create path applies
-            # forwards, so heal them here: a previous life crashing between
-            # RUNNING and the forward setup leaves the VM up but unreachable
-            # forever otherwise. Best-effort; never fails the allocation.
-            # The recreate branches (info = None) reconcile in the create path.
-            await reconcile_adopted_port_forwards(supervisor, registry, vm_hash)
-
-    if info is None:
-        logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
-        await create_vm_execution(
-            vm_hash=vm_hash, supervisor=supervisor, registry=registry, capacity=capacity, persistent=True
-        )
-        # A confidential VM is created but left awaiting its owner's session
-        # (only the owner can start it via /confidential/initialize). Waiting
-        # for RUNNING would block forever, so re-read the status and skip the
-        # readiness barrier when it is awaiting init.
+    Serialised per hash. Every start path runs the same read, record,
+    download, create sequence, and the download between the read and the
+    create lasts seconds: two of them running at once both read "this node
+    does not have it" and both built it. The second create was then refused
+    by the supervisor, and the teardown that followed deleted the VM the
+    first one had just brought up. Taking the lock here rather than at the
+    call sites means a new caller cannot forget it.
+    """
+    async with vm_create_lock(str(vm_hash)):
+        vm_id = VmId(str(vm_hash))
         try:
-            info = await supervisor.get_vm(vm_id)
+            info: VmInfo | None = await supervisor.get_vm(vm_id)
         except VmNotFoundError:
             info = None
-        if info is not None and info.awaiting_confidential_init:
-            logger.info(f"{vm_hash} is waiting for its owner to initialize the confidential session")
-        else:
-            # create_vm_execution blocks until RUNNING in-process today; this
-            # re-poll is the explicit readiness barrier (and stays correct if a
-            # future out-of-process create returns before the VM is RUNNING).
-            await _wait_until_running(supervisor, vm_id)
 
-    # Scheduled long-running: it must not idle-expire.
-    expiry.cancel(vm_id)
+        if info is not None:
+            if info.awaiting_confidential_init:
+                # Only the owner can start it, by uploading the session certificates
+                # via /confidential/initialize. Waiting for RUNNING or recreating it
+                # would loop forever, so leave it untouched.
+                logger.info(f"{vm_hash} is waiting for its owner to initialize the confidential session")
+            elif info.status == VmStatus.RUNNING:
+                logger.info(f"{vm_hash} is already running")
+            elif info.status in (VmStatus.DEFINED, VmStatus.BOOTING):
+                logger.info(f"{vm_hash} is already starting")
+                await _wait_until_running(supervisor, vm_id)
+            elif info.status == VmStatus.STOPPING:
+                logger.info(f"{vm_hash} is stopping, waiting before restart")
+                await _wait_until_gone(supervisor, vm_id)
+                info = None
+            elif info.status == VmStatus.STOPPED:
+                # A cleanly stopped VM is resumed in place: stop/start is a
+                # pause/resume that preserves the definition and disks, not a
+                # delete + recreate.
+                logger.info(f"{vm_hash} is stopped, starting it")
+                await supervisor.start_vm(vm_id)
+                await _wait_until_running(supervisor, vm_id)
+            else:  # FAILED
+                logger.info(f"{vm_hash} in terminal state {info.status}, recreating")
+                # Crash recovery is a delete+recreate cycle, not a dealloc:
+                # RECREATE keeps the persisted host-port forwards (the owner's
+                # SSH forward among them) and the disks.
+                await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
+                info = None
+            if info is not None and not info.awaiting_confidential_init:
+                # Every branch that kept `info` ends with a RUNNING VM this agent
+                # did not create in its own lifetime. Only the create path applies
+                # forwards, so heal them here: a previous life crashing between
+                # RUNNING and the forward setup leaves the VM up but unreachable
+                # forever otherwise. Best-effort; never fails the allocation.
+                # The recreate branches (info = None) reconcile in the create path.
+                await reconcile_adopted_port_forwards(supervisor, registry, vm_hash)
 
-    if pubsub and settings.WATCH_FOR_UPDATES:
-        update_watcher.watch(vm_id, vm_hash, pubsub)
+        if info is None:
+            logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
+            await create_vm_execution(
+                vm_hash=vm_hash, supervisor=supervisor, registry=registry, capacity=capacity, persistent=True
+            )
+            # A confidential VM is created but left awaiting its owner's session
+            # (only the owner can start it via /confidential/initialize). Waiting
+            # for RUNNING would block forever, so re-read the status and skip the
+            # readiness barrier when it is awaiting init.
+            try:
+                info = await supervisor.get_vm(vm_id)
+            except VmNotFoundError:
+                info = None
+            if info is not None and info.awaiting_confidential_init:
+                logger.info(f"{vm_hash} is waiting for its owner to initialize the confidential session")
+            else:
+                # create_vm_execution blocks until RUNNING in-process today; this
+                # re-poll is the explicit readiness barrier (and stays correct if a
+                # future out-of-process create returns before the VM is RUNNING).
+                await _wait_until_running(supervisor, vm_id)
+
+        # Scheduled long-running: it must not idle-expire.
+        expiry.cancel(vm_id)
+
+        if pubsub and settings.WATCH_FOR_UPDATES:
+            update_watcher.watch(vm_id, vm_hash, pubsub)
