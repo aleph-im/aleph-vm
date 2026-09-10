@@ -35,7 +35,7 @@ install-system-deps:
     sudo apt-get install -y \
         python3 python3-pip python3-aiohttp python3-msgpack python3-aiodns \
         python3-alembic python3-sqlalchemy python3-setproctitle python3-psutil \
-        python3-packaging python3-cpuinfo python3-nftables python3-jsonschema \
+        python3-packaging \
         python3-jwcrypto nftables redis acl curl systemd-container squashfs-tools \
         debootstrap libsystemd-dev cmake libdbus-1-dev libglib2.0-dev lshw
 
