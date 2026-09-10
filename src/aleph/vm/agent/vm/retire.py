@@ -31,6 +31,7 @@ from aleph_message.models import ItemHash
 
 from aleph.vm.agent.metrics import delete_records_for_vm
 from aleph.vm.agent.vm.backup import purge_vm_backups
+from aleph.vm.agent.vm.cache import forget_live
 from aleph.vm.agent.vm.purge import (
     _checked_namespace,
     purge_vm_side_dirs,
@@ -192,6 +193,12 @@ async def retire_vm(
     item_hash = vm_hash if isinstance(vm_hash, ItemHash) else ItemHash(str(vm_hash))
     record = registry.get(item_hash)
     registry.forget(item_hash)
+    # The cache's live set is the other half of what admission checks a record
+    # against, and it is only refreshed by a storage pass: leaving a retired
+    # hash in it makes every download until the next pass look like it is
+    # racing a live VM the agent has no message for, so nothing is evicted and
+    # a download that needs room is refused.
+    forget_live(str(vm_hash))
     await delete_records_for_vm(str(vm_hash))
     # Before the storage pass: a volume file held by a live dm target cannot
     # be unlinked usefully, and the marker written for a kept volume would

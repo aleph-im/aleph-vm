@@ -96,6 +96,28 @@ def record_live_snapshot(live: Collection[str]) -> None:
     _live_snapshot = frozenset(str(namespace) for namespace in live)
 
 
+def forget_live(namespace: str) -> None:
+    """Drop a VM the agent has just retired from the live set.
+
+    A retire quiesces the VM in the supervisor and forgets its registry
+    record, so the two halves the pass reconciles both stop naming it. Until
+    the next pass republishes the set, a hash left here reads to admission as
+    a live VM with no record, which is precisely the doubt that stops it
+    evicting anything: every download then logs an error and one that does
+    not fit is refused with the cache full of evictable entries. Retiring
+    under the retention that keeps volumes runs a pass straight after, but
+    reaping does not, and the periodic pass can be an hour away.
+
+    An unset snapshot stays unset: "no pass has run yet" is a different
+    answer from "nothing is live", and only the pass may turn one into the
+    other.
+    """
+    global _live_snapshot  # noqa: PLW0603
+    if _live_snapshot is None:
+        return
+    _live_snapshot = _live_snapshot - {str(namespace)}
+
+
 def live_snapshot() -> frozenset[str] | None:
     return _live_snapshot
 
