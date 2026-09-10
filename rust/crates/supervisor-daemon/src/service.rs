@@ -1879,6 +1879,72 @@ mod tests {
         }
     }
 
+    /// A cached answer of `mode` that a probe gave `age` ago.
+    fn aged_answer(
+        mode: Option<crate::gpu_cc::CcMode>,
+        age: std::time::Duration,
+    ) -> crate::gpu_cc::ProbedCcMode {
+        crate::gpu_cc::ProbedCcMode {
+            mode,
+            probed_at: std::time::Instant::now()
+                .checked_sub(age)
+                .expect("the process started after the ages used here"),
+        }
+    }
+
+    #[test]
+    fn a_pass_rereads_the_unreadable_card_and_leaves_the_known_one_alone() {
+        // The point of the two tiers. Both cards were last read a minute
+        // and a second ago: the one that answered with a mode is still
+        // good for the rest of the long window, while the one that could
+        // not be read (a card being reset reads all ones) has aged out of
+        // the short one and must be tried again, rather than staying
+        // hidden until the long window passes. The pass gate has to let
+        // this sweep through for that to be reachable, which is why it
+        // runs on the shortest window.
+        let state = two_free_cards();
+        let age = std::time::Duration::from_secs(61);
+        {
+            let mut cache = state.gpu_cc_modes.lock().unwrap();
+            cache.insert(
+                "06:00.0".to_string(),
+                aged_answer(Some(crate::gpu_cc::CcMode::On), age),
+            );
+            cache.insert("07:00.0".to_string(), aged_answer(None, age));
+        }
+        state.gpu_cc_sweep.lock().unwrap().at = Some(
+            std::time::Instant::now()
+                .checked_sub(age)
+                .expect("the process started after the ages used here"),
+        );
+
+        let probed: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        refresh_cc_modes_with(
+            &state,
+            |pci_host, _device_id| {
+                probed.lock().unwrap().push(pci_host.to_string());
+                Ok(Some(crate::gpu_cc::CcMode::Off))
+            },
+            default_windows(),
+        );
+
+        assert_eq!(
+            probed.into_inner().unwrap(),
+            vec!["07:00.0".to_string()],
+            "only the card that could not be read is tried again"
+        );
+        assert_eq!(
+            cc_mode_of(&state, "07:00.0"),
+            Some(crate::gpu_cc::CcMode::Off),
+            "the retry replaces the empty answer"
+        );
+        assert_eq!(
+            cc_mode_of(&state, "06:00.0"),
+            Some(crate::gpu_cc::CcMode::On),
+            "the card with a known mode keeps the answer it had"
+        );
+    }
+
     /// An adopted VM holding one card: SNP (measured-boot slice present)
     /// or plain QEMU passthrough, which is the distinction the seeding
     /// turns on.

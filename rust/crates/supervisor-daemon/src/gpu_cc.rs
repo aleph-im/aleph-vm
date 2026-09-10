@@ -691,19 +691,44 @@ mod tests {
         );
     }
 
+    /// An answer of `mode` that a probe gave `age` ago.
+    fn aged(mode: Option<CcMode>, age: Duration) -> ProbedCcMode {
+        ProbedCcMode {
+            mode,
+            probed_at: Instant::now()
+                .checked_sub(age)
+                .expect("the process started after the ages used here"),
+        }
+    }
+
     #[test]
-    fn a_probe_answer_is_fresh_only_inside_its_window() {
+    fn a_decoded_mode_outlives_an_answer_that_carries_none() {
+        // The two tiers, at the ages that separate them: a mode is still
+        // served a minute in and only expires at the long window, while an
+        // answer with no mode (a card read during its reset, say) is read
+        // again after the short one, so a blink hides a card for a minute
+        // and not for an hour.
+        let windows = CcCacheWindows::with_mode_ttl(Duration::from_secs(3600));
+        assert_eq!(windows.unreadable, UNREADABLE_CC_MODE_TTL);
+        assert_eq!(windows.shortest(), UNREADABLE_CC_MODE_TTL);
+
         let answer = ProbedCcMode::now(Some(CcMode::On));
-        assert!(
-            answer.is_fresh(CcCacheWindows::with_mode_ttl(Duration::from_secs(
-                DEFAULT_CC_MODE_TTL_SECS
-            )))
-        );
-        assert!(!answer.is_fresh(CcCacheWindows {
+        assert_eq!(answer.mode, Some(CcMode::On));
+        assert!(answer.is_fresh(windows));
+
+        assert!(aged(Some(CcMode::On), Duration::from_secs(61)).is_fresh(windows));
+        assert!(!aged(Some(CcMode::On), Duration::from_secs(3601)).is_fresh(windows));
+        assert!(aged(None, Duration::from_secs(30)).is_fresh(windows));
+        assert!(!aged(None, Duration::from_secs(61)).is_fresh(windows));
+
+        // A zero-length pair expires everything, which is how the refresh
+        // tests force a read.
+        let expired = CcCacheWindows {
             mode: Duration::ZERO,
             unreadable: Duration::ZERO,
-        }));
-        assert_eq!(answer.mode, Some(CcMode::On));
+        };
+        assert!(!ProbedCcMode::now(Some(CcMode::On)).is_fresh(expired));
+        assert!(!ProbedCcMode::now(None).is_fresh(expired));
     }
 
     #[test]

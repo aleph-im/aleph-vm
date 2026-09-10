@@ -657,6 +657,27 @@ mod tests {
     }
 
     #[test]
+    fn the_gpu_cc_mode_ttl_defaults_to_an_hour_and_is_tunable() {
+        // The long tier is the only one an operator sets: a node whose
+        // cards are re-moded often can shorten it, and the short tier for
+        // an answer with no mode is fixed in the probe module.
+        assert_eq!(
+            Settings::from_vars(vars(&[])).unwrap().gpu_cc_mode_ttl,
+            crate::gpu_cc::DEFAULT_CC_MODE_TTL_SECS
+        );
+        assert_eq!(
+            Settings::from_vars(vars(&[("ALEPH_VM_GPU_CC_MODE_TTL", "120")]))
+                .unwrap()
+                .gpu_cc_mode_ttl,
+            120
+        );
+        // A non-integer (or negative) value is a hard error, like the
+        // other int settings.
+        assert!(Settings::from_vars(vars(&[("ALEPH_VM_GPU_CC_MODE_TTL", "often")])).is_err());
+        assert!(Settings::from_vars(vars(&[("ALEPH_VM_GPU_CC_MODE_TTL", "-1")])).is_err());
+    }
+
+    #[test]
     fn defaults_mirror_conf_py() {
         let settings = Settings::from_vars(vars(&[])).unwrap();
         assert_eq!(settings.execution_root, PathBuf::from("/var/lib/aleph/vm"));
