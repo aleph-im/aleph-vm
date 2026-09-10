@@ -94,6 +94,45 @@ def test_a_stopped_vm_still_in_the_plan_is_unchanged_and_never_sized():
     assert capacity.simulate.call_args.args[0] == []
 
 
+def test_a_dead_vm_this_node_holds_a_record_for_is_unchanged():
+    """A crashed VM is rebuilt out of a reservation this node never gave back:
+    its record is still in the registry and its memory still committed. Sized
+    as a candidate it can be refused for want of room, and a refusal takes it
+    out of the plan the loop converges on, so a node that is over its caps
+    keeps the VM and never rebuilds it. Acknowledging it is the answer that
+    matches what the node will actually do."""
+    capacity = _capacity([])
+
+    verdict = compute_verdict(
+        _plan(HASH_A),
+        infos=[_info(HASH_A, status=VmStatus.FAILED)],
+        registry=_registry({HASH_A: _record()}),
+        capacity=capacity,
+    )
+
+    assert verdict.unchanged == [HASH_A]
+    assert verdict.rejected == {}
+    assert capacity.simulate.call_args.args[0] == []
+
+
+def test_a_dead_vm_this_node_holds_no_record_for_is_still_sized():
+    """The boundary of the rule. With no record there is no reservation to
+    build out of, so this is new load and goes through admission the way a
+    hash the node has never seen does."""
+    capacity = _capacity([AdmissionVerdict(HASH_A)])
+
+    verdict = compute_verdict(
+        _plan(HASH_A),
+        infos=[_info(HASH_A, status=VmStatus.FAILED)],
+        registry=_registry({}),
+        capacity=capacity,
+    )
+
+    assert verdict.unchanged == []
+    assert verdict.accepted == [HASH_A]
+    assert [vm_hash for vm_hash, _ in capacity.simulate.call_args.args[0]] == [HASH_A]
+
+
 def test_a_vm_caught_mid_stop_is_unchanged_too():
     """STOPPING is a stop in flight, not a VM to rebuild."""
     verdict = compute_verdict(
@@ -625,9 +664,9 @@ def test_compute_verdict_drives_the_real_capacity_manager(mocker):
 
 def test_a_recreate_is_not_judged_against_its_own_stale_record(mocker):
     """The supervisor holds C dead and the registry still has its record, so
-    the memory it asks for is counted twice unless the record is discounted.
-    simulate does that for every candidate, which is why compute_verdict no
-    longer lists a recreate as released.
+    the memory it asks for would be counted twice if the rebuild were sized at
+    all. Against the real capacity manager, on a host with room for one such
+    VM and not two, the answer is that nothing about C has changed.
     """
     _tight_host(mocker)
     registry = _registry_holding(HASH_C, 16384)
@@ -640,14 +679,16 @@ def test_a_recreate_is_not_judged_against_its_own_stale_record(mocker):
         capacity=capacity,
     )
 
-    assert verdict.accepted == [HASH_C]
+    assert verdict.unchanged == [HASH_C]
+    assert verdict.rejected == {}
 
 
 def test_a_recreate_still_waiting_on_its_message_frees_nothing(mocker):
-    """C is planned but carries no message, so it is pending a CCN fetch and
-    nothing is stopping it. Releasing it would hand its 16384 MiB to A and
-    answer yes where the enforced path, which still sees C's record, answers
-    no: an advisory verdict must never be the stronger of the two.
+    """C is planned, carries no message and is held dead, and nothing is
+    stopping it. Releasing it would hand its 16384 MiB to A and answer yes
+    where the enforced path, which still sees C's record, answers no: an
+    advisory verdict must never be the stronger of the two. C itself is
+    acknowledged rather than judged, since this node holds its record.
     """
     _tight_host(mocker)
     registry = _registry_holding(HASH_C, 16384)
@@ -663,7 +704,8 @@ def test_a_recreate_still_waiting_on_its_message_frees_nothing(mocker):
 
     verdict = compute_verdict(plan, infos=[_info(HASH_C, status=VmStatus.FAILED)], registry=registry, capacity=capacity)
 
-    assert verdict.pending == [HASH_C]
+    assert verdict.unchanged == [HASH_C]
+    assert verdict.pending == []
     assert verdict.rejected[HASH_A].code is AllocationFailureCode.INSUFFICIENT_CAPACITY
 
 
@@ -745,20 +787,20 @@ def test_narrowing_drops_what_the_answer_refused_and_nothing_else():
 
 
 def test_a_dead_vm_the_answer_refused_is_carried_as_refused():
-    """The chain the reconciler reads. The supervisor holds C dead, so the
-    answer sizes it as a candidate to rebuild instead of reading it as
-    unchanged, and a node with no room left refuses it. Narrowing has to keep it out of the
-    entries, or the loop would retry it forever, but dropping it silently is
-    what turned "rejected" into "deleted": to the loop a hash the plan does
-    not list is one the scheduler took away, and it reaps the disks of every
-    VM it takes away."""
+    """The chain the reconciler reads. The supervisor lists C dead and this
+    node holds no record for it, so the answer sizes it as a candidate rather
+    than acknowledging it, and a node with no room left refuses it. Narrowing
+    has to keep it out of the entries, or the loop would retry it forever, but
+    dropping it silently is what turned "rejected" into "deleted": to the loop
+    a hash the plan does not list is one the scheduler took away, and it reaps
+    the disks of every VM it takes away."""
     plan = _plan(HASH_C)
     capacity = _capacity([AdmissionVerdict(HASH_C, Refusal.for_code(AllocationFailureCode.INSUFFICIENT_CAPACITY))])
 
     verdict = compute_verdict(
         plan,
         infos=[_info(HASH_C, status=VmStatus.FAILED)],
-        registry=_registry({HASH_C: _record()}),
+        registry=_registry({}),
         capacity=capacity,
     )
     narrowed = narrow_plan(plan, verdict)
@@ -780,7 +822,7 @@ def test_a_vm_refused_for_an_undiscovered_node_hash_is_carried_as_refused():
     verdict = compute_verdict(
         plan,
         infos=[_info(HASH_C, status=VmStatus.FAILED)],
-        registry=_registry({HASH_C: _record()}),
+        registry=_registry({}),
         capacity=_capacity([]),
         node_hash=None,
     )

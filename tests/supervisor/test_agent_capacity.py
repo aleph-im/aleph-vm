@@ -1602,3 +1602,68 @@ async def test_available_gpus_reads_the_supervisors_unattached_cards():
     gpu = _gpu_device()
 
     assert await _manager([gpu]).available_gpus() == [gpu]
+
+
+# ── check_recreate: building again a VM the node already holds ─────────────
+
+
+def _registry_over_its_caps() -> AgentVmRegistry:
+    """Two instances of 54 GiB apiece, on a host whose bucket fits one.
+
+    The shape a node lands in for historical reasons: records made when the
+    caps were larger, or a host that shrank under them.
+    """
+    registry = AgentVmRegistry()
+    for vm_hash in (_HASH_A, _HASH_B):
+        content = _make_qemu_instance_message(memory=54_000)
+        registry.record(vm_hash, message=content, original=content, persistent=True)
+    return registry
+
+
+def test_check_recreate_does_not_judge_memory_or_vcpus(mocker, tmp_path):
+    """A crashed VM must be rebuildable on a node that is over its caps. Its
+    memory was reserved when it was first admitted and its record has held
+    that reservation ever since, so charging the rebuild for it again refuses
+    every rebuild and strands the VM for good after one crash. The same
+    message going through the full check is refused, which is the point: the
+    rule for a newcomer does not move."""
+    mocker.patch.object(settings, "HOST_MEMORY_RESERVED_MIB", 2048)
+    mocker.patch.object(settings, "PROGRAM_MEMORY_RESERVED_MIB", 8192)
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
+    _patch_eligible_pools(mocker, (tmp_path / "pool0", 100 * 1024 * 1024 * 1024))
+    _hold_nothing(mocker)
+    manager = _manager(registry=_registry_over_its_caps())
+    content = _instance_content(rootfs_mib=1)
+
+    with pytest.raises(InsufficientResourcesError):
+        manager.check_message(content, exclude_vm_hash=_HASH_A)
+
+    assert manager.check_recreate(content, vm_hash=_HASH_A) is None
+
+
+def test_check_recreate_still_judges_the_disk(mocker, tmp_path):
+    """Memory is the only thing the record already holds. A message that grew
+    a volume, or one whose files a reinstall purged, still has to find room
+    for what is genuinely new."""
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16, disk_bytes=1024 * 1024 * 1024)
+    _patch_eligible_pools(mocker, (tmp_path / "pool0", 1024 * 1024 * 1024))
+    _hold_nothing(mocker)
+    content = _instance_content(rootfs_mib=20_000)
+
+    with pytest.raises(InsufficientResourcesError) as error:
+        _manager().check_recreate(content, vm_hash=_VM_HASH)
+
+    assert "rebuild" in str(error.value)
+
+
+def test_check_recreate_discounts_the_volumes_the_vm_already_holds(mocker, tmp_path):
+    """The same discount the create path applies: a VM is never refused for
+    the space its own files already occupy, which on a rebuild is usually all
+    of it."""
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16, disk_bytes=1024 * 1024 * 1024)
+    _patch_eligible_pools(mocker, (tmp_path / "pool0", 1024 * 1024 * 1024))
+    directory = _stage_volume_files(mocker, tmp_path / "pool0", {"rootfs.qcow2": 20_000 * 1024 * 1024})
+    _patch_namespace_dirs(mocker, directory)
+    content = _instance_content(rootfs_mib=20_000)
+
+    assert _manager().check_recreate(content, vm_hash=_VM_HASH) is None
