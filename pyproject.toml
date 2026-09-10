@@ -76,8 +76,9 @@ allow-direct-references = true
 platforms = [ "linux" ]
 
 [tool.hatch.envs.default.scripts]
-# The aleph-vm console script (aleph.vm.agent.cli:main) is a flat argparse
-# CLI, no subcommands; the supervisor daemon is the Rust binary under rust/.
+# The aleph-vm console script (aleph.vm.agent.cli:main) runs the agent with
+# no subcommand; `aleph-vm storage <verb>` is its one subcommand. The
+# supervisor daemon is the Rust binary under rust/.
 agent = "aleph-vm {args:--help}"
 config = "aleph-vm --print-settings --do-not-run {args}"
 

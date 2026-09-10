@@ -21,6 +21,12 @@ from .custom_logs import setup_handlers
 logger = logging.getLogger(__name__)
 
 
+# Validated against --loglevel, here and on the storage subcommand: an
+# unknown name must be a clean argparse usage error (exit 2), not a raw
+# ValueError traceback out of logging.Logger.setLevel further down.
+LOG_LEVEL_NAMES = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
+
 def parse_args(args):
     parser = argparse.ArgumentParser(
         prog="aleph-vm",
@@ -123,6 +129,23 @@ def parse_args(args):
         default=False,
         help="Authorize the developer's SSH keys to connect instead of those specified in the message",
     )
+    parser.add_argument(
+        "--loglevel",
+        dest="loglevel",
+        type=str.upper,
+        choices=LOG_LEVEL_NAMES,
+        # -v/--verbose is registered first and already supplies the default,
+        # so this one must not offer a second one: argparse would keep the
+        # first anyway, and SUPPRESS says so out loud.
+        default=argparse.SUPPRESS,
+        help="Log level by name (DEBUG, INFO, WARNING, ERROR, CRITICAL)",
+    )
+    subparsers = parser.add_subparsers(dest="command")
+    # Imported here rather than at module scope: storage_cli imports this
+    # module for the shared database setup below.
+    from aleph.vm.agent import storage_cli
+
+    storage_cli.add_subparser(subparsers)
     return parser.parse_args(args)
 
 
@@ -154,13 +177,29 @@ async def run_async_db_migrations():
         await conn.run_sync(run_db_migrations)
 
 
+def initialise_database() -> None:
+    """Create the agent database and bring it to the latest schema.
+
+    The tables come first, since a fresh install has no file at all, then
+    the migrations bring an older database forward. Every process that
+    reads the agent database has to do this, not only the daemon: reading
+    an unmigrated database fails with a raw sqlite error and leaves an
+    empty file behind.
+    """
+    logger.debug("Initialising the DB...")
+    engine = metrics.setup_engine()
+    asyncio.run(metrics.create_tables(engine))
+    asyncio.run(run_async_db_migrations())
+    logger.debug("DB up to date.")
+
+
 def main():
-    if len(sys.argv) > 1 and sys.argv[1] == "storage":
+    args = parse_args(sys.argv[1:])
+
+    if getattr(args, "command", None) == "storage":
         from aleph.vm.agent import storage_cli
 
-        sys.exit(storage_cli.main(sys.argv[2:]))
-
-    args = parse_args(sys.argv[1:])
+        sys.exit(storage_cli.run_parsed(args))
 
     log_format = (
         "%(relativeCreated)4f | %(levelname)s | %(message)s"
@@ -234,13 +273,7 @@ def main():
     storage_pools.setup_pools()
 
     if not args.do_not_run:
-        logger.debug("Initialising the DB...")
-        # Check and create execution database
-        engine = metrics.setup_engine()
-        asyncio.run(metrics.create_tables(engine))
-        # After creating it run the DB migrations
-        asyncio.run(run_async_db_migrations())
-        logger.debug("DB up to date.")
+        initialise_database()
 
     if args.do_not_run:
         logger.info("Option --do-not-run, exiting")

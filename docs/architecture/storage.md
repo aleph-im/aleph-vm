@@ -543,10 +543,9 @@ goes first", which is the only promise a node can honestly sell.
 ### CLI
 
 Storage is agent-side and readable from the filesystem plus the agent DB, so
-`aleph-vm storage ...` (`src/aleph/vm/agent/storage_cli.py`, dispatched by
-`agent/cli.py` before its own argument parser, which points at
-`storage --help` in its own `--help` epilog) needs no running *agent
-process*:
+`aleph-vm storage ...` (`src/aleph/vm/agent/storage_cli.py`, registered as a
+subparser on `agent/cli.py`'s own parser, which points at `storage --help`
+in its `--help` epilog) needs no running *agent process*:
 
 - `storage status`: per pool, live / reclaimable / cache / free bytes
   against the budgets. Read-only, registry live set only.
@@ -584,6 +583,34 @@ process*:
   (`remove_parent_device` per evicted ref, then `sweep_leaked_cache_loops`),
   so an evicted entry never leaves `/dev/mapper/<ref>` and its loop device
   pinning the deleted inode.
+
+Running with no agent process also means setting the process up the way the
+systemd units set it up for the daemon, which the CLI does before it reads
+anything:
+
+- **Configuration.** `EnvironmentFile=/etc/aleph-vm/supervisor.env` in the
+  units is what gives the daemon its settings; nothing gives them to an
+  operator's shell, and pydantic reads only the process environment and a
+  `.env` in the working directory. The CLI therefore loads that file itself
+  (`--env-file`, else `$ALEPH_VM_ENV_FILE`, else the packaged path) and
+  rebuilds the settings singleton from it, logging which file it used or
+  that there was none. Values already in the environment win, so a one-off
+  override on the command line still works, and a `--env-file` that does
+  not exist is an error rather than a silent fall back to the defaults: a
+  pass run with `VOLUME_RETENTION` at its `reap` default on a node
+  configured to keep would evict every retained directory.
+- **Logging.** Most of what a pass has to report it reports through the
+  logger the reconciler, the purge and the marker already write to, so the
+  CLI configures a stderr handler at `INFO` (`--loglevel`, or the agent
+  CLI's own `-v` / `-vv` / `--loglevel` placed before the verb). Without it
+  those lines are dropped and warnings arrive as bare last-resort lines.
+- **Database.** `cli.initialise_database()` (the tables, then the alembic
+  migrations) is shared with the daemon's startup and runs before the
+  registry is rehydrated: an unmigrated or absent database otherwise fails
+  with a raw sqlite error. `status` and `list` are the exception; being
+  read-only, they refuse a database that does not exist and exit `1` rather
+  than create an empty one, so an operator pointed at the wrong execution
+  root sees the mistake instead of an empty listing.
 
 `reconcile` and `reclaim` can purge, so they apply the same fail-closed rule
 `reconciler._startup_refusal` applies to the daemon's own startup pass: a
