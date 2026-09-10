@@ -759,9 +759,10 @@ mod tests {
 
     #[test]
     fn outdated_platform_is_below_every_level() {
-        // The outdated sample's PCK reports a component SVN below every TCB
-        // level, so the walk finds no match. Whatever the exact cause, it
-        // must not be accepted by the default policy.
+        // The outdated sample's PCK reports SGX component 7 at SVN 3 while
+        // every level of its TCB Info demands 5, so the walk finds no match
+        // and the quote is refused before any status is decided. It never
+        // reaches an OutOfDate verdict, despite the fixture's name.
         let quote = parse_tdx_quote(QUOTE_OUTDATED).unwrap();
         let collateral = TdxCollateral::from_json(COLLATERAL_OUTDATED).unwrap();
         let err = format!(
@@ -778,6 +779,103 @@ mod tests {
         assert!(err.contains("below every level"), "got: {err}");
         // The failure names the vector that tripped, not just the walk.
         assert!(err.contains("tee_tcb_svn)"), "got: {err}");
+    }
+
+    #[test]
+    fn outdated_collateral_carries_the_published_advisories() {
+        // `advisoryIDs` reaches the appraisal through a serde-renamed field
+        // (`advisory_i_ds` under camelCase) that also carries a default, so
+        // a rename typo would not fail the parse: every level would come
+        // back with an empty advisory list and `denied_advisories` would
+        // quietly stop matching anything. Pin the real lists from a
+        // signature-verified Intel document.
+        let collateral = TdxCollateral::from_json(COLLATERAL_OUTDATED).unwrap();
+        let tcb_info = verify_tcb_info(&collateral, now_outdated()).expect("TCB Info verifies");
+        let levels = canonical_levels(&tcb_info);
+        assert_eq!(levels.len(), 3, "the fixture publishes three TCB levels");
+
+        // Highest first: the current level, then the two OutOfDate rungs.
+        assert_eq!(levels[0].tcb_status, "UpToDate");
+        assert!(levels[0].advisory_i_ds.is_empty());
+        assert_eq!(levels[1].tcb_status, "OutOfDate");
+        assert_eq!(
+            levels[1].advisory_i_ds,
+            [
+                "INTEL-SA-01036",
+                "INTEL-SA-01079",
+                "INTEL-SA-01099",
+                "INTEL-SA-01103",
+                "INTEL-SA-01111",
+            ]
+        );
+
+        // The lowest rung accumulates every advisory Intel has published for
+        // this platform family.
+        assert_eq!(levels[2].tcb_status, "OutOfDate");
+        assert_eq!(levels[2].advisory_i_ds.len(), 19);
+        for expected in ["INTEL-SA-00106", "INTEL-SA-00837", "INTEL-SA-01111"] {
+            assert!(
+                levels[2].advisory_i_ds.iter().any(|a| a == expected),
+                "{expected} missing from {:?}",
+                levels[2].advisory_i_ds
+            );
+        }
+    }
+
+    #[test]
+    fn out_of_date_level_is_refused_by_the_acceptance_policy() {
+        // The policy's "not accepted by policy" arm is what stands between a
+        // caller and an out-of-date platform, and no fixture reaches it on
+        // its own. Take the outdated sample's genuine, signature-verified
+        // TCB Info and its real PCK platform, and move two SGX components so
+        // the walk lands on a published OutOfDate level: raise component 7
+        // (3 in the fixture) to the 5 every level demands, and drop
+        // component 4 from 4 to 3, which the top level rules out and the
+        // OutOfDate rung allows. The report's own TDX SVN vectors, both of
+        // them, are the fixture's.
+        let quote = parse_tdx_quote(QUOTE_OUTDATED).unwrap();
+        let collateral = TdxCollateral::from_json(COLLATERAL_OUTDATED).unwrap();
+        let tcb_info = verify_tcb_info(&collateral, now_outdated()).expect("TCB Info verifies");
+        let mut platform = parse_pck_platform(&pck_leaf(QUOTE_OUTDATED)).unwrap();
+        platform.cpusvn[7] = 5;
+        platform.cpusvn[4] = 3;
+
+        let (status, advisories) = appraise_platform_tcb(&tcb_info, &platform, &quote.body)
+            .expect("the raised platform matches a level");
+        assert_eq!(status, TcbStatus::OutOfDate);
+        assert_eq!(
+            advisories,
+            [
+                "INTEL-SA-01036",
+                "INTEL-SA-01079",
+                "INTEL-SA-01099",
+                "INTEL-SA-01103",
+                "INTEL-SA-01111",
+            ]
+        );
+
+        let err = check_policy(status, &advisories, &TdxTcbPolicy::default())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("OutOfDate"), "got: {err}");
+        assert!(err.contains("not accepted by policy"), "got: {err}");
+
+        // A caller who deliberately admits OutOfDate gets it through.
+        let mut accepting = TdxTcbPolicy::default();
+        accepting.accepted_statuses.insert(TcbStatus::OutOfDate);
+        check_policy(status, &advisories, &accepting).expect("admitted once the policy says so");
+
+        // Unless one of the advisories that level carries is denied, which
+        // is the point of parsing them at all.
+        let mut denying = accepting.clone();
+        denying
+            .denied_advisories
+            .insert("INTEL-SA-01099".to_string());
+        let err = check_policy(status, &advisories, &denying)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("denied advisory"), "got: {err}");
+        assert!(err.contains("INTEL-SA-01099"), "got: {err}");
     }
 
     #[test]
