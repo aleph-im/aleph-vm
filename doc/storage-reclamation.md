@@ -115,12 +115,12 @@ reads any setting, so a pass on a node configured with
 `VOLUME_RETENTION=keep` is not run against the built-in `reap` default. The
 file it uses is `--env-file`, else `$ALEPH_VM_ENV_FILE`, else
 `/etc/aleph-vm/supervisor.env`. Values already in the environment win, so a
-one-off override on the command line still works. A `--env-file` that does
-not exist is an error (exit 1) rather than a silent fall back to the
-defaults, since running on the defaults an operator was trying to override
-is worse than refusing; a missing file at the default path, or at
-`$ALEPH_VM_ENV_FILE`, is logged and the command continues on the process
-environment alone. It logs which file it used either way.
+one-off override on the command line still works. A file the operator
+named, by `--env-file` or by `$ALEPH_VM_ENV_FILE`, that does not exist is an
+error (exit 1) rather than a silent fall back to the defaults, since running
+on the defaults an operator was trying to override is worse than refusing;
+only a missing file at the default path is logged and the command continues
+on the process environment alone. It logs which file it used either way.
 
 Everything a verb found or achieved goes to stdout, and every warning,
 refusal and diagnostic goes to stderr, so a wrapper script can parse one
@@ -176,7 +176,7 @@ must not drive a purge.
 | Code | Meaning |
 |------|---------|
 | 0 | Success. An explicit `--dry-run` is a success: the caller asked for a preview and got one |
-| 1 | The command ran and refused, or could not finish: the hash is not reclaimable, it is a live VM, a `--env-file` was named and does not exist, `status`/`list` found no agent database, or the purge left files behind |
+| 1 | The command ran and refused, or could not finish: the hash is not reclaimable, it is a live VM, an env file named by `--env-file` or `$ALEPH_VM_ENV_FILE` does not exist, `status`/`list` found no agent database, or the purge left files behind |
 | 2 | Usage error (argparse) |
 | 3 | The pass did not run: refused because the agent may be running or its database was lost, or silently downgraded to a dry run because the supervisor could not be asked and `--trust-registry` was not given |
 
