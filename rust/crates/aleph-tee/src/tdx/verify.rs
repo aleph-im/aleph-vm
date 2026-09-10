@@ -21,11 +21,12 @@ use std::time::SystemTime;
 use anyhow::{Context, Result, bail};
 use openssl::bn::BigNum;
 use openssl::ec::{EcGroup, EcKey};
-use openssl::ecdsa::EcdsaSig;
 use openssl::hash::MessageDigest;
 use openssl::nid::Nid;
 use openssl::x509::X509;
 use sha2::{Digest, Sha256};
+
+use crate::pki::ecdsa_from_raw;
 
 use super::certs::verify_pck_chain;
 use super::collateral::TdxCollateral;
@@ -34,13 +35,6 @@ use super::tcb::{TdxTcbOutcome, TdxTcbPolicy, evaluate_tcb};
 
 /// Offset of `report_data` inside an SGX enclave report (the QE report).
 const QE_REPORT_DATA_OFFSET: usize = 320;
-
-/// Build an ECDSA signature object from a raw `r || s` pair.
-fn ecdsa_from_raw(sig: &[u8; 64]) -> Result<EcdsaSig> {
-    let r = BigNum::from_slice(&sig[..32]).context("failed to load the signature r component")?;
-    let s = BigNum::from_slice(&sig[32..]).context("failed to load the signature s component")?;
-    EcdsaSig::from_private_components(r, s).context("failed to assemble the ECDSA signature")
-}
 
 /// Verify the QE report signature under the PCK leaf key.
 fn verify_qe_report_signature(quote: &TdxQuote, pck_leaf: &X509) -> Result<()> {
@@ -103,7 +97,10 @@ fn verify_quote_signature(quote: &TdxQuote) -> Result<()> {
 /// On success the quote is genuinely Intel-attested, and the returned PCK
 /// leaf certificate carries the platform identity (FMSPC, SVNs) the TCB
 /// walk consumes. See the module docs for what this does NOT establish.
-pub fn verify_tdx_quote_chain(
+///
+/// Crate-private because it hands back an openssl certificate: outside
+/// callers go through [`verify_tdx_quote`], which returns owned data.
+pub(crate) fn verify_tdx_quote_chain(
     quote: &TdxQuote,
     collateral: &TdxCollateral,
     now: SystemTime,

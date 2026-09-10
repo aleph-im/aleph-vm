@@ -4,8 +4,10 @@
 //! per-boot TLS key: `aleph-snp-inject-secret-v1|sha384(server public key)|
 //! sha256(canonical secrets JSON)`, all hex lowercase. Binding to the per-boot
 //! key gives channel binding and replay protection in one: a captured signed
-//! request is only valid for that key, i.e. that boot of that VM. See
-//! docs/plans/2026-08-18-snp-confidential-instances-design.md section 4.2.
+//! request is only valid for that key, i.e. that boot of that VM. The guest
+//! generates a fresh TLS key on every boot, so a signature harvested from one
+//! boot cannot be replayed into the next, and one harvested from a genuine
+//! guest cannot be replayed at an impostor serving a different key.
 
 use std::collections::BTreeMap;
 

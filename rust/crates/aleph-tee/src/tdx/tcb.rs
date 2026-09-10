@@ -17,6 +17,8 @@ use openssl::hash::MessageDigest;
 use openssl::x509::X509;
 use serde::Deserialize;
 
+use crate::pki::ecdsa_from_raw;
+
 use super::certs::verify_signer_chain;
 use super::collateral::TdxCollateral;
 use super::pck_extension::{PckPlatform, parse_pck_platform};
@@ -262,9 +264,8 @@ fn verify_signed_document(
     if sig_raw.len() != 64 {
         bail!("{what} signature is {} bytes, expected 64", sig_raw.len());
     }
-    let r = openssl::bn::BigNum::from_slice(&sig_raw[..32])?;
-    let s = openssl::bn::BigNum::from_slice(&sig_raw[32..])?;
-    let sig = openssl::ecdsa::EcdsaSig::from_private_components(r, s)?;
+    let sig =
+        ecdsa_from_raw(&sig_raw).with_context(|| format!("failed to read the {what} signature"))?;
     let digest = openssl::hash::hash(MessageDigest::sha256(), body.as_bytes())
         .with_context(|| format!("failed to hash the {what} body"))?;
     if !sig
@@ -675,7 +676,10 @@ fn check_platform_gates(quote: &TdxQuote) -> Result<()> {
 ///
 /// Assumes the caller has already verified the quote's chain and signatures
 /// (`certs`/`verify`); this decides the acceptable-TCB question on top.
-pub fn evaluate_tcb(
+///
+/// Crate-private because it takes an openssl certificate: outside callers
+/// go through `verify_tdx_quote`, which owns the whole sequence.
+pub(crate) fn evaluate_tcb(
     quote: &TdxQuote,
     collateral: &TdxCollateral,
     pck_leaf: &X509,
@@ -942,7 +946,8 @@ mod tests {
         // Intel root: same subject names, fresh keys. verify_signer_chain
         // is what gives the document signatures their meaning, so it needs
         // its own adversarial case, mirroring the PCK chain's foreign-root
-        // test in verify.rs.
+        // test in verify.rs. The chain carries the root itself, so the pin
+        // on that certificate is what refuses it.
         use openssl::asn1::Asn1Time;
         use openssl::ec::{EcGroup, EcKey};
         use openssl::nid::Nid;
@@ -1004,7 +1009,7 @@ mod tests {
             .unwrap_err()
         );
         assert!(
-            err.contains("not signed by the pinned Intel root"),
+            err.contains("is not the pinned Intel SGX Root CA"),
             "got: {err}"
         );
     }
