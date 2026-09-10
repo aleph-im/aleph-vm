@@ -4062,13 +4062,19 @@ mod tests {
         ruleset: Vec<Value>,
         ipv6_allocation_policy: crate::config::Ipv6AllocationPolicy,
     ) -> Harness {
-        harness_full(ruleset, ipv6_allocation_policy, Vec::new())
+        harness_full(
+            ruleset,
+            ipv6_allocation_policy,
+            Vec::new(),
+            crate::gpu_cc::no_probe,
+        )
     }
 
     fn harness_full(
         ruleset: Vec<Value>,
         ipv6_allocation_policy: crate::config::Ipv6AllocationPolicy,
         gpus: Vec<crate::lspci::GpuDevice>,
+        gpu_cc_probe: crate::gpu_cc::CcProbe,
     ) -> Harness {
         let tmp = tempfile::tempdir().unwrap();
         let mut settings = Settings::from_vars(
@@ -4106,6 +4112,7 @@ mod tests {
         state.taps = taps.clone();
         state.dhcp = dhcp.clone();
         state.programs = programs.clone();
+        state.gpu_cc_probe = gpu_cc_probe;
         Harness {
             state: Arc::new(state),
             systemd,
@@ -4122,7 +4129,44 @@ mod tests {
             bare_host_ruleset(),
             crate::config::Ipv6AllocationPolicy::Static,
             gpus,
+            crate::gpu_cc::no_probe,
         )
+    }
+
+    /// A GPU harness whose daemon state carries `probe` where the real
+    /// daemon carries the sysfs reader. Only the paths that read the card
+    /// through the state (the start gate) need this; the create gate takes
+    /// its probe as an argument and is driven through `snp_config_slice_with`.
+    fn harness_with_gpu_probe(
+        gpus: Vec<crate::lspci::GpuDevice>,
+        probe: crate::gpu_cc::CcProbe,
+    ) -> Harness {
+        harness_full(
+            bare_host_ruleset(),
+            crate::config::Ipv6AllocationPolicy::Static,
+            gpus,
+            probe,
+        )
+    }
+
+    thread_local! {
+        /// What [`switchable_probe`] answers next. A `CcProbe` is a plain fn
+        /// pointer, and the daemon state that holds it is behind an `Arc` by
+        /// the time a test runs, so the prober cannot be replaced between two
+        /// calls; it reads this cell instead. Thread-local rather than global
+        /// so parallel tests do not answer each other's probes, which holds
+        /// because a test drives the daemon synchronously on its own thread.
+        static PROBED_CC_MODE: std::cell::Cell<Option<crate::gpu_cc::CcMode>> =
+            const { std::cell::Cell::new(None) };
+    }
+
+    /// A prober whose answer the test switches through [`PROBED_CC_MODE`],
+    /// standing in for an operator re-moding an idle card.
+    fn switchable_probe(
+        _pci_host: &str,
+        _device_id: &str,
+    ) -> Result<Option<crate::gpu_cc::CcMode>, crate::error::DaemonError> {
+        Ok(PROBED_CC_MODE.with(|mode| mode.get()))
     }
 
     fn nvidia_card(pci_host: &str) -> crate::lspci::GpuDevice {
@@ -5056,6 +5100,130 @@ mod tests {
             crate::service::cc_mode_of(state, "06:00.0"),
             None,
             "a stopped VM's card advertises nothing, in the inventory as in VmInfo"
+        );
+    }
+
+    /// A running SEV-SNP VM whose config claims `pci_host`, the shape a
+    /// create with a confidential card leaves behind. The card is attached
+    /// to the entry after the create rather than requested in the spec: the
+    /// create's MMIO window sizing reads the card's BARs out of the host's
+    /// real sysfs, which a hermetic harness has no way to provide, and it is
+    /// the start path these tests are about.
+    fn snp_vm_holding_a_card(state: &DaemonState, vm_id: &str, pci_host: &str) {
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let request = snp_spec(vm_id, &root, &firmware.to_string_lossy());
+        create_vm(state, request).unwrap();
+        with_entry_mut(state, vm_id, |entry| {
+            entry.config.gpus.push(crate::controller_config::QemuGpu {
+                pci_host: pci_host.to_string(),
+                supports_x_vga: true,
+            });
+        })
+        .expect("the VM just created is in the world");
+        // The reading the create gate would have taken on the way in, so the
+        // cache starts out holding the create's answer about the card.
+        require_gpu_cc_mode(state, pci_host, state.gpu_cc_probe)
+            .expect("the card answers CC-on while the VM is being created");
+    }
+
+    #[test]
+    fn starting_a_confidential_vm_refuses_a_card_re_moded_while_it_was_down() {
+        // The create gate read the card CC-on, the stop dropped that answer
+        // with the guest, and an operator switched the idle card off in
+        // between. The start has to read the hardware again and refuse,
+        // exactly as the create gate would: booting here would hand the
+        // owner a confidential guest on a card the host cannot vouch for.
+        let harness = harness_with_gpu_probe(vec![nvidia_card("06:00.0")], switchable_probe);
+        let state = &harness.state;
+        let vm_id = hash('c');
+        PROBED_CC_MODE.with(|mode| mode.set(Some(crate::gpu_cc::CcMode::On)));
+        snp_vm_holding_a_card(state, &vm_id, "06:00.0");
+        stop_vm(state, &vm_id).unwrap();
+
+        PROBED_CC_MODE.with(|mode| mode.set(Some(crate::gpu_cc::CcMode::Off)));
+        match start_vm(state, &vm_id) {
+            Err(RpcError::InvalidBackend(msg)) => {
+                assert!(msg.contains("confidential-computing mode"), "{msg}");
+                assert!(
+                    msg.contains("06:00.0"),
+                    "the refusal must name the card: {msg}"
+                );
+            }
+            other => panic!("a re-moded card must refuse the start, got {other:?}"),
+        }
+        assert_eq!(
+            crate::service::cc_mode_of(state, "06:00.0"),
+            Some(crate::gpu_cc::CcMode::Off),
+            "the inventory carries what the card just answered, not the gate's older reading"
+        );
+        let entry = entry_snapshot(state, &vm_id).expect("the refused start keeps the entry");
+        assert_eq!(
+            status_snapshot(state, &entry),
+            pb::VmStatus::Stopped,
+            "a refused start leaves the VM as stopped as it was, never BOOTING"
+        );
+        assert!(
+            !harness.dhcp.is_running(&vm_id),
+            "the refusal comes before anything is stood back up"
+        );
+    }
+
+    #[test]
+    fn starting_a_confidential_vm_seeds_its_card_from_the_fresh_reading() {
+        // The counterpart: the card still answers CC-on, so the start goes
+        // through and the inventory says "on" at once, on the start's own
+        // reading rather than on a refresh sweep seeding it later from the
+        // fact that a live SNP VM holds the card.
+        let harness = harness_with_gpu_probe(vec![nvidia_card("06:00.0")], switchable_probe);
+        let state = &harness.state;
+        let vm_id = hash('c');
+        PROBED_CC_MODE.with(|mode| mode.set(Some(crate::gpu_cc::CcMode::On)));
+        snp_vm_holding_a_card(state, &vm_id, "06:00.0");
+        stop_vm(state, &vm_id).unwrap();
+        assert_eq!(
+            crate::service::cc_mode_of(state, "06:00.0"),
+            None,
+            "the stop forgot what was known about the card"
+        );
+
+        start_vm(state, &vm_id).unwrap();
+        assert_eq!(
+            crate::service::cc_mode_of(state, "06:00.0"),
+            Some(crate::gpu_cc::CcMode::On),
+            "the start's own reading seeds the inventory"
+        );
+        assert!(
+            harness.dhcp.is_running(&vm_id),
+            "a card still in CC mode lets the start proceed"
+        );
+    }
+
+    #[test]
+    fn starting_a_plain_vm_holding_a_card_reads_nothing() {
+        // The CC gate is an SNP rule on both paths. A plain passthrough VM
+        // holding the same card never went through the create gate, so the
+        // start must not read the card either, and must not start refusing
+        // VMs that have always been allowed to run on an off-mode card.
+        let harness = harness_with_gpu_probe(vec![nvidia_card("06:00.0")], switchable_probe);
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('c');
+        let mut request = spec(&vm_id, &root);
+        request.gpus = vec![pb::GpuConfig {
+            pci_host: "06:00.0".to_string(),
+            supports_x_vga: true,
+        }];
+        create_vm(state, request).unwrap();
+        stop_vm(state, &vm_id).unwrap();
+
+        PROBED_CC_MODE.with(|mode| mode.set(Some(crate::gpu_cc::CcMode::Off)));
+        start_vm(state, &vm_id).expect("a plain VM's card carries no CC requirement");
+        assert_eq!(
+            crate::service::cc_mode_of(state, "06:00.0"),
+            None,
+            "the start of a plain VM reads no card and caches nothing"
         );
     }
 
