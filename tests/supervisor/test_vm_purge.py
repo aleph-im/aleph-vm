@@ -176,7 +176,10 @@ def test_purge_storage_accepts_every_shape_of_item_hash(pools, namespace):
     """A storage hash and an IPFS CID are both VM namespaces."""
     _volume(pools["pool0"], namespace, "rootfs.qcow2")
 
-    assert purge_vm_storage(namespace) == 1
+    result = purge_vm_storage(namespace)
+
+    assert result.deleted == 1
+    assert result.kept == ()
     assert not (pools["pool0"] / namespace).exists()
 
 
