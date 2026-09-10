@@ -1,6 +1,6 @@
 # Storage
 
-> Verified against: b2b31381 (2026-08-14)
+> Verified against: 06c30936 (2026-09-09)
 
 ## What this covers
 
@@ -108,12 +108,12 @@ same filesystem are counted once; this is what backs both
 `CapacityManager._available_disk_bytes` (`src/aleph/vm/agent/capacity.py`).
 Admission checks two things, not one: the aggregate free bytes against the
 requested `disk_mib`, and (via `_check_max_volume`, when a max single-volume
-size is known) that the largest requested volume alone fits
-`roomiest_pool_free_bytes()`, the emptiest eligible pool. The second check
-exists because a volume never spans pools: an aggregate-only check would
-happily admit, say, a 900 GiB volume onto two half-full 500 GiB disks and
-then fail at creation time. Either check failing raises
-`InsufficientResourcesError`.
+size is known) that the largest requested volume alone fits the emptiest
+eligible pool, `max()` over `eligible_pool_free_bytes()` plus each pool's own
+reclaimable bytes. The second check exists because a volume never spans
+pools: an aggregate-only check would happily admit, say, a 900 GiB volume
+onto two half-full 500 GiB disks and then fail at creation time. Either check
+failing raises `InsufficientResourcesError`.
 
 Admission counts retained (reclaimable) bytes as free:
 `_available_disk_bytes` adds `reclaimable_bytes()` to the pooled free sum,
@@ -131,9 +131,12 @@ space) and the advertised capacity (`about_system_usage` /
 is a node the scheduler stops sending work to.
 
 The Rust supervisor daemon does none of this pool selection or admission
-work. It parses `VOLUME_POOLS` (`config.rs`) with the same validation rules
-purely so a configuration the agent would refuse to boot on also fails
-daemon startup, and it exposes `available_disk_bytes_pooled`
+work. It parses `VOLUME_POOLS` (`config.rs`) for its own purpose, the
+statvfs targets for available-disk reporting, and its validation is looser
+than the agent's: `parse_pool_entry` accepts an `hdd` class entry and never
+checks that the path exists, both of which fail `setup_pools()` on the
+agent side. A pool config the daemon boots on can still fail the agent, so
+they are not one gate. It exposes `available_disk_bytes_pooled`
 (`rust/crates/supervisor-daemon/src/host.rs`, the same st_dev-deduplicated
 sum, unreachable pools contributing zero) for `GetHostInfo`. It never writes
 a marker, never touches `volume-pools.json`, and never picks a pool for a
@@ -188,8 +191,9 @@ block device for a `PersistentVolume` or `RootfsVolume` that declares a
    (`{namespace}_base`'s image half).
 3. The same target extended with a `zero` segment out to the volume's full
    requested size, giving a device the parent's data followed by zeros.
-4. A writable, pool-placed btrfs-formatted volume file
-   (`create_volume_file`, `.btrfs` suffix, sized via `fallocate`), loop-mounted.
+4. A writable, pool-placed volume file (`create_volume_file`, `.btrfs`
+   suffix, sized via `fallocate` alone, no filesystem of its own), loop-mounted
+   as the copy-on-write store the next step builds on.
 5. A persistent dm-snapshot (`snapshot ... P 8`) combining the extended base
    device with the writable loop device as its copy-on-write store; this
    final device is what the VM boots from.
@@ -209,16 +213,19 @@ configuration from a NoCloud cloud-init seed image
 (`cloud-localds`), built fresh on every create at
 `EXECUTION_ROOT/cloud-init-{vm_hash}.img`. The Rust daemon's
 `CloudInitDrive` (`rust/crates/supervisor-daemon/src/cloudinit.rs`) is a
-byte-for-byte-equivalent port of the Python builder
-(`src/aleph/vm/supervisor/controllers/qemu/cloudinit.py` plus the
-`build_cloud_init_drive` half of the legacy `qemu_build.py`): both write a
-`#cloud-config` user-data document (network addresses derived from the VM's
-tap assignment, see [`networking.md`](networking.md)), a netplan v2 network
-config keyed on the `virtio_net` driver, and a JSON instance-id/hostname
-metadata document, then shell out to `cloud-localds` to assemble the seed
-ISO. The Rust port emits JSON instead of YAML for the user-data body (JSON
-is a YAML subset, so `cloud-init` parses both into the same structure); a
-conformance suite asserts the parsed result matches, not the raw bytes.
+byte-for-byte-equivalent port of the deleted Python builder
+(`supervisor/controllers/qemu/cloudinit.py` plus the `build_cloud_init_drive`
+half of the legacy `qemu_build.py`): it writes a `#cloud-config` user-data
+document (network addresses derived from the VM's tap assignment, see
+[`networking.md`](networking.md)), a netplan v2 network config keyed on the
+`virtio_net` driver, and a JSON instance-id/hostname metadata document, then
+shells out to `cloud-localds` to assemble the seed ISO. The Rust port emits
+JSON instead of YAML for the user-data body (JSON is a YAML subset, so
+`cloud-init` parses both into the same structure); the parity claim is now
+pinned by committed fixtures under `rust/crates/supervisor-daemon/tests/fixtures/cloudinit/`, byte-compared
+against what the builder produces (`cloudinit.rs` tests,
+`UPDATE_CLOUDINIT_FIXTURES=1` to regenerate them), since the Python side they
+were generated against is gone.
 Confidential (LUKS-encrypted) instances get extra `bootcmd` entries
 (`growpart` + `cryptsetup resize` + `resize2fs`) ahead of cloud-init's own
 resize modules, since cloud-init's `growpart` alone cannot resize a LUKS
@@ -428,11 +435,17 @@ anything from them. Two things now bound them
 (`src/aleph/vm/agent/vm/cache.py`).
 
 In the stream: `download_file_in_chunks` refuses a `Content-Length` above the
-cache's `MAX_*_ARCHIVE_SIZE` before it opens the file, and aborts the moment
-the bytes written pass it, so a lying `Content-Length` cannot fill a disk.
+cache's `MAX_*_ARCHIVE_SIZE` before it opens the file, and independently
+aborts as soon as the bytes actually written exceed that same cap. The
+second check is a hard ceiling on the written body, not a comparison against
+the header, so it stops a disk-filling body whether `Content-Length` lied,
+was absent, or was honest.
 
 Per root: each cache gets `CACHE_BUDGET` (20% of the filesystem it sits on by
-default), the message cache included. The spec suggested a smaller budget for
+default, `shutil.disk_usage` called separately per root), the message cache
+included. Unlike the storage pools' aggregate figure, this is not
+deduplicated by `st_dev`: four caches that happen to share one filesystem
+each get their own 20% of it. The spec suggested a smaller budget for
 it; it does not have one, and does not need one: its entries are a few
 kilobytes of JSON each, so it never approaches a budget sized for runtime
 images, and one setting is one thing for an operator to reason about. A root's
@@ -820,7 +833,7 @@ pass against an empty registry would call every running VM an orphan.
 - `src/aleph/vm/storage_pools.py`: pool parsing, media-class detection,
   adoption marker/registry, placement (`select_pool`, `find_existing_volume`,
   `volume_path_for`), and capacity helpers (`pools_disk_usage`,
-  `roomiest_pool_free_bytes`).
+  `eligible_pool_free_bytes`).
 - `src/aleph/vm/conf.py`: `VOLUME_POOLS`, `PERSISTENT_VOLUMES_DIR`,
   `CACHE_ROOT`, `BACKUP_DIRECTORY` settings.
 - `src/aleph/vm/storage.py`: rootfs/runtime/code/data download and cache
@@ -851,9 +864,9 @@ pass against an empty registry would call every running VM an orphan.
   parsing on the daemon side (validation only, no placement).
 - `rust/crates/supervisor-daemon/src/host.rs`: `available_disk_bytes_pooled`
   for `GetHostInfo`.
-- `rust/crates/supervisor-daemon/src/cloudinit.rs` and
-  `src/aleph/vm/supervisor/controllers/qemu/cloudinit.py`: the cloud-init
-  seed image builders (Rust and Python).
+- `rust/crates/supervisor-daemon/src/cloudinit.rs`: the cloud-init seed image
+  builder, and the byte-compared fixtures under `rust/crates/supervisor-daemon/tests/fixtures/cloudinit/`
+  that pin its parity with the deleted Python builder.
 - `src/aleph/vm/agent/migration/runner.py`,
   `src/aleph/vm/agent/migration/helpers.py`,
   `src/aleph/vm/agent/migration/reaper.py`: cold-migration export/import and

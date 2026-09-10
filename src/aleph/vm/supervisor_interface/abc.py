@@ -1,7 +1,7 @@
 """The Supervisor abstraction: capability ABCs aggregated into one interface.
 
 Eight capability ABCs, all async (bar the streaming iterators). A concrete
-supervisor (in-process today, gRPC client in 0.D) implements all 29 methods.
+supervisor (in-process today, gRPC client in 0.D) implements all 23 methods.
 Migration carries no method of its own: it rides the standard lifecycle RPCs.
 """
 

@@ -14,7 +14,7 @@ of the same file in the aleph-cvm repo).
 python scripts/generate_proto.py
 ```
 
-This (re)writes `src/aleph/vm/supervisor/_pb/`:
+This (re)writes `src/aleph/vm/supervisor_interface/wire/_pb/`:
 
 - `supervisor_pb2.py`: message classes
 - `supervisor_pb2_grpc.py`: `SupervisorStub`, `SupervisorServicer`,

@@ -1,6 +1,6 @@
 # Testing
 
-> Verified against: b2b31381 (2026-08-14)
+> Verified against: 06c30936 (2026-09-09)
 
 ## What this covers
 
@@ -63,20 +63,22 @@ test gate).
    (`SupervisorContractTests`) that any `Supervisor` implementation
    (in-process, gRPC client, ...) can subclass to assert the ABC surface is
    fully implemented; `tests/supervisor/` otherwise holds the large,
-   Python-only in-process unit suite (firewall, storage pools, DNS,
-   authentication, vprogram, and so on).
+   Python-only in-process unit suite (storage pools, capacity admission,
+   DNS, authentication, vprogram, and so on; no networking/firewall tests
+   remain there, since that machinery moved to the Rust daemon and is
+   covered by the Rust unit tests and the integration suite instead).
 
 4. **Droplet CI**
    (`.github/workflows/build-deb-package-and-integration-tests.yml`). This
    is the packaging-and-platform-compatibility gate, distinct from both
-   layers above: it builds the `.deb` for debian-12, debian-13,
-   ubuntu-22.04 and ubuntu-24.04, and builds two squashfs volumes (the
-   Firecracker rootfs and an example venv volume). It then provisions an
-   ephemeral DigitalOcean droplet per OS and installs the built package for
-   real (not the checked-out source tree); the droplet leg itself only
-   covers three of the four built OSes (debian-12 is skipped there: a
-   workflow comment notes DigitalOcean removed the debian-12-x64 image
-   after Debian 12 reached end of standard support). It waits for
+   layers above: it builds the `.deb` for five OSes (debian-12, debian-13,
+   ubuntu-22.04, ubuntu-24.04 and ubuntu-26.04), and builds two squashfs
+   volumes (the Firecracker rootfs and an example venv volume). It then
+   provisions an ephemeral DigitalOcean droplet per OS and installs the
+   built package for real (not the checked-out source tree); the droplet
+   leg itself only covers four of the five built OSes (debian-12 is skipped
+   there: a workflow comment notes DigitalOcean removed the debian-12-x64
+   image after Debian 12 reached end of standard support). It waits for
    `systemctl is-active --quiet aleph-vm-supervisor` plus
    port 4020 to be listening, then curls the `/about/usage/system` HTTP
    endpoint (served by the agent, per the workflow's own comment) as an
@@ -87,10 +89,11 @@ test gate).
 5. **CodeQL and shellcheck.** `.github/workflows/codeql-analysis.yml` runs
    security scanning on Python on push/PR to `main`/`dev` plus a weekly
    schedule. `code-quality-shell` (inside
-   `.github/workflows/test-using-pytest.yml`) shellchecks every `*.sh`,
-   every extensionless `*-launcher` script, and every `*.script` file
-   (the measured-guest boot scripts that run PID-1-adjacent inside SEV-SNP
-   VMs).
+   `.github/workflows/test-using-pytest.yml`) shellchecks every `*.sh` and
+   every `*.script` file (the measured-guest boot scripts that run
+   PID-1-adjacent inside SEV-SNP VMs); the packaging-cutover
+   implementation-dispatch launcher scripts this job once also matched are
+   gone with the Python supervisor.
 
 ### Which workflow runs what
 
@@ -121,6 +124,15 @@ test gate).
   the pip-install example flow.
 - `.github/workflows/codeql-analysis.yml` and the `code-quality-shell` job
   are the static-analysis and shell-lint gates described above.
+- `.github/workflows/golden-measurements.yml` rebuilds the measured SEV-SNP
+  boot chain (OVMF, kernel, initrd, cmdline) from `nix/flake.nix` and checks
+  the launch measurements against the committed
+  `nix/golden-measurements.json`. Deliberately not wired into every build
+  (a cold compile of the whole chain is real minutes even on the trimmed,
+  whitelist-config kernel): it triggers on PRs and `main`/`dev*` pushes that
+  touch the measured inputs (`nix/**`, the attest-agent's measured input
+  set under `rust/`), a weekly cron that catches reproducibility drift with
+  unchanged inputs, and manual dispatch.
 
 Both `test-using-pytest.yml` and `test-rust.yml` trigger on `od/**` branches
 in addition to `main`/`dev`, because stacked PRs (`od/errors-*`,
@@ -246,6 +258,8 @@ tests.
 - `.github/workflows/test-build-examples.yml`: project build plus the
   example-pip squashfs volume build check.
 - `.github/workflows/codeql-analysis.yml`: CodeQL security scanning.
+- `.github/workflows/golden-measurements.yml`: the measured-boot
+  reproducibility check against `nix/golden-measurements.json`.
 - `Justfile`: the supported local Python dev/test workflow.
 
 See `wire-contract.md` for the proto contract and error-model conventions

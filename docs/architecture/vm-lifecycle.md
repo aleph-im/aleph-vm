@@ -1,6 +1,6 @@
 # VM lifecycle
 
-> Verified against: b2b31381 (2026-08-14)
+> Verified against: 06c30936 (2026-09-09)
 
 ## What this covers
 
@@ -147,6 +147,13 @@ Admission happens in two layers that never overlap in what they check:
   `check_capacity` remains underneath as the scalar seam that `simulate`
   (batch placement advice) uses; it cannot apply the held-volume discount,
   so an advisory answer is at most more conservative than the enforced one.
+  `simulate` is what the v2 allocation surface calls: `POST
+  /v2/control/capacity/check` answers the same admission question with no
+  side effects so a scheduler can ask several CRNs before committing to one,
+  and `POST /v2/control/allocations` (`update_allocations_v2` in
+  `src/aleph/vm/agent/views/allocations_v2.py`) runs it per candidate to
+  compute the verdict it returns before the reconciler converges the node
+  onto the plan in the background.
 - **Supervisor mechanism backstops** (`check_memory_backstop`,
   `validate_spec_gpus` in `lifecycle.rs`) run under `creation_lock` inside
   `create_vm_inner` itself: committed memory (summed from every tracked
@@ -261,10 +268,12 @@ handler that is about to serve a VM cancels its pending timer first
 re-arms a fresh one in the request's `finally` block, so a timer only ever
 fires after a VM has sat idle for the full window with no intervening
 request. When it fires, `_expire` reaps the VM through
-`self.supervisor.delete_vm(vm_id)`: an idle reap tears the VM down and
-releases its definition, and leaves the VM's volumes on disk (`DeleteVm`
+`retire_vm(vm_hash, RetireReason.RECREATE, supervisor=self.supervisor)`
+(`src/aleph/vm/agent/vm/retire.py`): RECREATE keeps the registry record,
+port mappings and volumes, and only calls `supervisor.delete_vm(vm_id,
+keep_port_mappings=True)` underneath for its quiescence effect (`DeleteVm`
 never touches storage, see "Storage ownership" below), so the program is
-recreated against them on its next request. Each timer task removes only its own dict
+recreated against the same volumes on its next request. Each timer task removes only its own dict
 entry on exit (a current-task identity check in the `finally`), so a
 concurrent re-schedule that already replaced the entry is never clobbered,
 and `VmNotFoundError` during the reap is treated as success (the VM is
@@ -525,7 +534,7 @@ it would steal capacity from a co-located VM that legitimately holds it.
   admission, the GPU reservation ledger).
 - `src/aleph/vm/agent/expiry.py`, `src/aleph/vm/agent/update_watcher.py`:
   agent-owned idle-teardown timers and update-triggered redeploys, both
-  reaping through `supervisor.delete_vm`.
+  reaping through `retire_vm(..., RetireReason.RECREATE, ...)`.
 - `src/aleph/vm/agent/run.py`: `_ensure_program_vm`, `run_code_on_request`,
   `run_code_on_event`, `start_persistent_vm`: where capacity admission,
   `REUSE_TIMEOUT` expiry scheduling and update-watching are wired around the
