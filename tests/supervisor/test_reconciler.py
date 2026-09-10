@@ -37,13 +37,19 @@ NOW = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
 GIB = 1024**3
 
 
-def _fake_disk_usage(monkeypatch, free_bytes):
-    """Pin the free space every pool reports. ``free_bytes`` is either a
-    number or a callable, so a test can let evictions give space back."""
+def _fake_disk_usage(monkeypatch, free_bytes, *, total: int = 10 * GIB, unreadable: tuple[Path, ...] = ()):
+    """Pin the disk usage every pool reports. ``free_bytes`` is either a
+    number or a callable, so a test can let evictions give space back.
+    A path at or under one of ``unreadable`` raises instead, the way a pool
+    whose filesystem cannot be interrogated does."""
 
     def usage(path):
-        free = free_bytes(Path(path)) if callable(free_bytes) else free_bytes
-        return SimpleNamespace(total=10 * GIB, used=10 * GIB - free, free=free)
+        path = Path(path)
+        for gone in unreadable:
+            if path == gone or gone in path.parents:
+                raise OSError(5, "Input/output error", str(path))
+        free = free_bytes(path) if callable(free_bytes) else free_bytes
+        return SimpleNamespace(total=total, used=total - free, free=free)
 
     monkeypatch.setattr(reconciler_module.shutil, "disk_usage", usage)
 
@@ -593,6 +599,39 @@ def test_switching_to_reap_evicts_everything_marked(pools, registry, monkeypatch
     assert not kept.exists()
 
 
+def test_a_pool_whose_size_cannot_be_read_keeps_what_it_retains(pools, registry, monkeypatch):  # noqa: F811
+    """The budget is a share of the pool's size, so a size nobody can read
+    makes it zero, and a zero budget evicts every marked directory on the
+    pool. The pool is skipped instead, and the other pools still enforced."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    monkeypatch.setattr(settings, "VOLUME_RETENTION_BUDGET", "10%")
+    unmeasurable = volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=8192)
+    over_budget = volume(pools["pool1"], OTHER_HASH, "rootfs.qcow2", size=8192)
+    mark_reclaimable(VM_HASH, "gone", now=NOW - timedelta(days=2))
+    mark_reclaimable(OTHER_HASH, "gone", now=NOW - timedelta(days=1))
+    # 10% of 64 KiB is well under the 8 KiB each pool holds for the reclaimer.
+    _fake_disk_usage(monkeypatch, 0, total=64 * 1024, unreadable=(pools["pool0"],))
+
+    report = reconcile_storage(registry, now=NOW)
+
+    assert unmeasurable.exists()
+    assert not over_budget.exists()
+    assert report.evicted == [OTHER_HASH]
+
+
+def test_reap_still_reclaims_on_a_pool_whose_size_cannot_be_read(pools, registry, monkeypatch):  # noqa: F811
+    """Reap retains nothing whatever the pool's size, so an unreadable pool
+    must not turn into one that holds on to its marked directories."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    marked = volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    mark_reclaimable(VM_HASH, "gone", now=NOW)
+    _fake_disk_usage(monkeypatch, 0, unreadable=(pools["pool0"],))
+
+    reconcile_storage(registry, now=NOW)
+
+    assert not marked.exists()
+
+
 def test_make_room_evicts_oldest_first_until_the_create_fits(pools, monkeypatch):  # noqa: F811
     monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
     oldest = volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=8192)
@@ -652,6 +691,45 @@ def test_make_room_evicts_nothing_when_the_create_could_never_fit(pools, monkeyp
 
     assert freed == 0
     assert retained.exists() and other.exists()
+
+
+def test_make_room_evicts_nothing_on_a_pool_it_cannot_measure(pools, monkeypatch):  # noqa: F811
+    """Free space is what has to reach needed_bytes, so a pool that cannot be
+    measured cannot be told apart from one that already fits the create."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    retained = volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=8192)
+    mark_reclaimable(VM_HASH, "gone", now=NOW - timedelta(days=2))
+    _fake_disk_usage(monkeypatch, 0, unreadable=(pools["pool0"],))
+
+    freed = make_room(get_pools()[0], needed_bytes=8192)
+
+    assert freed == 0
+    assert retained.exists()
+
+
+def test_make_room_stops_when_the_pool_stops_answering(pools, monkeypatch):  # noqa: F811
+    """The re-check between two evictions is the same measurement as the
+    entry one, and gets the same answer when it fails: stop deleting."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    oldest = volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=8192)
+    newest = volume(pools["pool0"], OTHER_HASH, "rootfs.qcow2", size=8192)
+    mark_reclaimable(VM_HASH, "gone", now=NOW - timedelta(days=2))
+    mark_reclaimable(OTHER_HASH, "gone", now=NOW - timedelta(days=1))
+
+    def free(path):
+        if not (path / VM_HASH).is_dir():
+            # The pool goes away once the first eviction has run.
+            msg = "Input/output error"
+            raise OSError(5, msg, str(path))
+        return 0
+
+    _fake_disk_usage(monkeypatch, free)
+
+    freed = make_room(get_pools()[0], needed_bytes=16384)
+
+    assert freed == 8192
+    assert not oldest.exists()
+    assert newest.exists()
 
 
 def test_make_room_never_evicts_a_live_namespace(pools, monkeypatch):  # noqa: F811

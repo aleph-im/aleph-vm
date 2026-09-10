@@ -120,7 +120,10 @@ Admission counts retained (reclaimable) bytes as free:
 and `select_pool`, before refusing a placement, calls the room maker the
 agent registered at startup (`storage_pools.set_room_maker`, wired to
 `reconciler.make_room`) so the retained directories on the target pool are
-evicted oldest-first until the create fits. See "Reclamation" below: a
+evicted oldest-first until the create fits. A pool whose free space cannot
+be read is left alone there too: free space is the whole measure of "does
+this create fit", so without it there is no telling a pool that already fits
+the create from one that never will. See "Reclamation" below: a
 retained disk is a cache entry, not usage, so counting it as used would sell
 less capacity than the node actually has. The rule holds for all three disk
 figures the agent produces, and they have to agree: the aggregate
@@ -388,7 +391,12 @@ message. One pass does, in order:
 4. Enforce the retention budget per pool: sum the markers' `size_bytes` and
    evict oldest-first (by `reclaimable_since`) until under
    `VOLUME_RETENTION_BUDGET`. Under `reap` everything marked is given back,
-   which is how a node switched from `keep` to `reap` drains.
+   which is how a node switched from `keep` to `reap` drains. A pool whose
+   size cannot be read is skipped with a warning under `keep`: the budget is
+   a share of that size, so an unreadable pool would come out as zero bytes
+   allowed and evict everything it retains. Staying over budget until the
+   next pass costs a pass; guessing costs the data. `reap` needs no size and
+   still drains such a pool.
 5. Bring the four download caches under `CACHE_BUDGET` (see below). Skipped
    entirely, with an ERROR, when the supervisor could not be listed: what a
    cache holds for a live VM is read from that VM's message, so a live set
