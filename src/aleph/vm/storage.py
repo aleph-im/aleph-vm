@@ -17,6 +17,7 @@ from shutil import make_archive
 from subprocess import CalledProcessError
 
 import aiohttp
+from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import (
     InstanceMessage,
     ItemHash,
@@ -42,11 +43,6 @@ logger = logging.getLogger(__name__)
 DEVICE_MAPPER_DIRECTORY = "/dev/mapper"
 # Where create_devmapper mounts a volume to resize its filesystem.
 MOUNT_ROOT = Path("/mnt")
-# A namespace is an item hash, validated here too (agent.vm.purge does the
-# same for its delete paths) because the cost of being wrong is removing
-# another VM's device. ASCII only: a device name is bytes, and \w would match
-# letters that are not.
-NAMESPACE_PATTERN = re.compile(r"^[0-9a-zA-Z]{16,128}$", re.ASCII)
 # DM_NAME_LEN is 128 bytes including the terminating NUL.
 DEVICE_NAME_MAX_BYTES = 127
 
@@ -59,6 +55,28 @@ DOWNLOAD_SOCKET_READ_TIMEOUT_SECONDS = 120
 
 class CorruptedFilesystemError(Exception):
     """Raised when a file containing a filesystem is corrupted."""
+
+
+def vm_namespace(name: str) -> ItemHash | None:
+    """The item hash ``name`` names, or None when it is not one.
+
+    The single answer to "is this string a VM namespace", asked by every
+    path that acts on a directory or a device named after a VM: the purge
+    guard, the reconciler's orphan passes, and device teardown. The rule is
+    ItemHash's own (64 lowercase hex characters, or an IPFS CID), because
+    that is the only string a VM can ever be called; anything looser lets a
+    directory an operator dropped on a volume pool pass for a VM, and these
+    are the paths that delete what passes.
+    """
+    try:
+        return ItemHash(name)
+    except UnknownHashError:
+        return None
+
+
+def is_vm_namespace(name: str) -> bool:
+    """Whether ``name`` is a VM namespace, for the callers that only ask."""
+    return vm_namespace(name) is not None
 
 
 async def chown_to_jailman(path: Path) -> None:
@@ -607,7 +625,7 @@ def device_name_for(namespace: str, volume_name: str) -> str | None:
     would strand its loop device and, through ``purge._held_by_device_mapper``,
     its disk.
     """
-    if not NAMESPACE_PATTERN.match(namespace):
+    if not is_vm_namespace(namespace):
         return None
     if volume_name in ("", ".", "..") or "/" in volume_name:
         return None
@@ -631,7 +649,7 @@ async def remove_devmapper(namespace: str, volume_name: str) -> None:
     ``create_devmapper`` returns early while the dm device exists (which is
     what ``purge._held_by_device_mapper`` guards against).
     """
-    if not NAMESPACE_PATTERN.match(namespace):
+    if not is_vm_namespace(namespace):
         logger.error("Refusing device teardown for an implausible VM hash: %r", namespace)
         return
     mapped_name = device_name_for(namespace, volume_name)
@@ -694,7 +712,7 @@ async def remove_base_device(namespace: str) -> None:
     runtime cache entry, for good (``cache.parent_device_is_free`` sees a
     holder and keeps the image).
     """
-    if not NAMESPACE_PATTERN.match(namespace):
+    if not is_vm_namespace(namespace):
         logger.error("Refusing to remove an implausible device-mapper base: %r", namespace)
         return
     mapper = Path(DEVICE_MAPPER_DIRECTORY)
