@@ -205,7 +205,18 @@ class AllocationReconciler:
             if info.status in LIVE_STATUSES or info.awaiting_confidential_init
         }
         now = self._now()
-        todo = [vm_hash for vm_hash in plan.entries if vm_hash not in live and self._retry_due(vm_hash, now)]
+        self._forget_settled(live, now)
+        todo: list[ItemHash] = []
+        for vm_hash in plan.entries:
+            if vm_hash in live:
+                continue
+            if not self._retry_due(vm_hash, now):
+                # Down and waiting out its backoff. Saying so is what lets the
+                # executions list report the wait and the time it ends, rather
+                # than a dead VM the agent appears to have no opinion about.
+                self._states[vm_hash] = AllocationState.FAILED
+                continue
+            todo.append(vm_hash)
         if not todo:
             return
 
@@ -213,7 +224,9 @@ class AllocationReconciler:
 
         async def start(vm_hash: ItemHash) -> None:
             async with semaphore:
-                await self._start_one(vm_hash)
+                # A VM the supervisor lists that is not live is one it holds
+                # dead: the loop started it before, so this start is a rebuild.
+                await self._start_one(vm_hash, known.get(vm_hash))
 
         await asyncio.gather(*(start(vm_hash) for vm_hash in todo), return_exceptions=True)
 
@@ -221,7 +234,31 @@ class AllocationReconciler:
         failure = self._failures.get(vm_hash)
         return failure is None or failure.next_retry_at <= now
 
-    async def _start_one(self, vm_hash: ItemHash) -> None:
+    def _forget_settled(self, live: set[ItemHash], now: datetime) -> None:
+        """Drop the record of a VM that has been up long enough to call healthy.
+
+        A rebuild after a death counts as an attempt, so the record has to
+        outlive the successful start that follows it, or nothing would gate
+        the next rebuild. It cannot be immortal either: a VM that crashed once
+        a month ago deserves its rebuild at once, not at the capped wait. The
+        longest wait the backoff can impose is the threshold, past which the
+        next death is a new problem rather than the tail of the old one.
+        """
+        settled = timedelta(seconds=settings.ALLOCATION_RETRY_MAX_INTERVAL)
+        for vm_hash, failure in list(self._failures.items()):
+            if vm_hash in live and now - failure.last_failed_at >= settled:
+                self._forget(vm_hash)
+
+    async def _start_one(self, vm_hash: ItemHash, down: VmInfo | None = None) -> None:
+        """Start a planned VM.
+
+        `down` is what the supervisor holds for it when it already has one,
+        which makes this start a rebuild and charges it on the backoff ladder.
+        Whatever state the supervisor held the VM in is charged, not only the
+        FAILED of a guest that panicked: a guest that halt loops needs the wait
+        as much as one that panics, and a resume being cheaper than a rebuild
+        is no reason to let it loop at boot speed forever.
+        """
         self._states[vm_hash] = AllocationState.DOWNLOADING
         try:
             await start_persistent_vm(
@@ -244,13 +281,47 @@ class AllocationReconciler:
                 return
             self._record_failure(vm_hash, error)
             return
-        self._forget(vm_hash)
+        if down is None or self._desired is None or vm_hash not in self._desired.entries:
+            # A first create, or one the plan dropped while it was in flight:
+            # submit() has already pruned that VM's records, and putting one
+            # back would leave state_for reporting on something nothing will
+            # retry until the next push clears it again.
+            self._forget(vm_hash)
+            return
+        # The rebuild of a VM the supervisor held dead counts as a failed
+        # attempt, on the same backoff a failing create climbs. Otherwise a
+        # guest that panics seconds after boot is rebuilt from scratch, disks
+        # and all, at boot speed: the successful start erases the record, the
+        # down event wakes the loop, and nothing gates the next pass. The
+        # record deliberately outlives this successful start, and is dropped
+        # once the VM has stayed up (see _forget_settled).
+        record = self._note_attempt(
+            vm_hash,
+            code=f"vm_{down.status.value}",
+            message=f"rebuilt after the supervisor reported it {down.status.value}",
+        )
+        logger.warning(
+            "Rebuilt %s after the supervisor reported it %s (attempt %d, next rebuild not before %s)",
+            vm_hash,
+            down.status.value,
+            record.attempts,
+            record.next_retry_at,
+        )
+        # The supervisor knows the VM again, so the agent has no phase of its
+        # own to report; only the count of what it took to get here.
+        self._states.pop(vm_hash, None)
 
     def _forget(self, vm_hash: ItemHash) -> None:
         self._failures.pop(vm_hash, None)
         self._states.pop(vm_hash, None)
 
     def _record_failure(self, vm_hash: ItemHash, error: Exception) -> None:
+        code = getattr(getattr(error, "code", None), "value", "") or type(error).__name__
+        record = self._note_attempt(vm_hash, code=code, message=str(error))
+        logger.warning("Starting %s failed (attempt %d): %s", vm_hash, record.attempts, error)
+        self._states[vm_hash] = AllocationState.FAILED
+
+    def _note_attempt(self, vm_hash: ItemHash, *, code: str, message: str) -> FailureRecord:
         # There is no terminal failure, on purpose. The plan is the authority
         # on what should run here, so a VM it still lists is still owed an
         # attempt, at the capped interval; giving up would leave a listed VM
@@ -264,14 +335,13 @@ class AllocationReconciler:
             settings.ALLOCATION_RETRY_BASE_INTERVAL * (2 ** (attempts - 1)),
             settings.ALLOCATION_RETRY_MAX_INTERVAL,
         )
-        code = getattr(getattr(error, "code", None), "value", "") or type(error).__name__
-        logger.warning("Starting %s failed (attempt %d): %s", vm_hash, attempts, error)
-        self._failures[vm_hash] = FailureRecord(
+        record = FailureRecord(
             code=code,
-            message=str(error)[:200],
+            message=message[:200],
             attempts=attempts,
             first_failed_at=previous.first_failed_at if previous else now,
             last_failed_at=now,
             next_retry_at=now + timedelta(seconds=delay),
         )
-        self._states[vm_hash] = AllocationState.FAILED
+        self._failures[vm_hash] = record
+        return record
