@@ -9,9 +9,10 @@ import pytest
 from aiohttp import ClientResponseError
 from aiohttp.web_exceptions import HTTPBadRequest, HTTPNotFound, HTTPServiceUnavailable
 
-from aleph.vm.agent.allocation.failures import (
+from aleph.vm.agent.allocation.failures import classify_start_failure
+from aleph.vm.agent.allocation.refusal import (
     AllocationFailureCode,
-    classify_start_failure,
+    Refusal,
     public_failure_message,
 )
 from aleph.vm.agent.run import VmStartupError
@@ -53,7 +54,12 @@ def _no_room() -> InsufficientResourcesError:
         (HTTPNotFound(reason="Hash not found"), AllocationFailureCode.MESSAGE_UNAVAILABLE),
         (HTTPServiceUnavailable(reason="Aleph Connector unavailable"), AllocationFailureCode.MESSAGE_UNAVAILABLE),
         (supervisor_errors.PortUnavailableError("busy"), AllocationFailureCode.SUPERVISOR_ERROR),
-        (supervisor_errors.InternalSupervisorError("boom"), AllocationFailureCode.SUPERVISOR_ERROR),
+        # The boundary codes that mean this node is confused rather than the
+        # hypervisor declining to run the VM.
+        (supervisor_errors.InternalSupervisorError("boom"), AllocationFailureCode.INTERNAL),
+        (supervisor_errors.VmNotFoundError("gone"), AllocationFailureCode.INTERNAL),
+        (supervisor_errors.VmAlreadyExistsError("already here"), AllocationFailureCode.INTERNAL),
+        (SupervisorError("no such host", code=ErrorCode.HOST_NOT_FOUND), AllocationFailureCode.INTERNAL),
         (RuntimeError("could not open /var/lib/aleph/vm/private.img"), AllocationFailureCode.INTERNAL),
         (OSError("errno 28"), AllocationFailureCode.INTERNAL),
     ],
@@ -84,3 +90,20 @@ def test_an_unclassified_failure_says_only_that_it_was_unhandled():
     """The fixed sentence a reader gets whatever the start raised, which is
     what keeps an unforeseen exception's text off the public listing."""
     assert public_failure_message(AllocationFailureCode.INTERNAL) == "Unhandled error"
+
+
+def test_a_refusal_serializes_the_same_way_wherever_it_is_answered():
+    """One wire shape for every "no" this node gives, and one code behind it.
+
+    The refusal a full host answers a push with and the one it publishes for a
+    start it could not make used to be two vocabularies: a literal dict in the
+    verdict and this enum in the record, with nothing holding the two spellings
+    of "no room" together.
+    """
+    refusal = Refusal.for_code(AllocationFailureCode.INSUFFICIENT_CAPACITY)
+
+    assert refusal.as_dict() == {
+        "code": "insufficient_capacity",
+        "message": public_failure_message(AllocationFailureCode.INSUFFICIENT_CAPACITY),
+    }
+    assert classify_start_failure(_no_room()) is refusal.code

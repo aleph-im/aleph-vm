@@ -17,6 +17,7 @@ from aleph_message.models import ItemHash
 from aleph_message.models.execution.instance import InstanceContent
 from test_supervisor_translate import _make_qemu_instance_message
 
+from aleph.vm.agent.allocation.refusal import AllocationFailureCode
 from aleph.vm.agent.capacity import (
     RESERVATION_TTL_SECONDS,
     CapacityManager,
@@ -24,6 +25,7 @@ from aleph.vm.agent.capacity import (
     ResourceRequirements,
     requirements_from_message,
 )
+from aleph.vm.agent.vm.reclaimable import MARKER_NAME
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
 from aleph.vm.resources import GpuDevice, GpuDeviceClass, InsufficientResourcesError
@@ -631,7 +633,7 @@ def test_simulate_is_cumulative(mocker):
     verdicts = _manager().simulate(candidates)
 
     assert [v.accepted for v in verdicts] == [True, True, False]
-    assert verdicts[2].code == "insufficient_capacity"
+    assert verdicts[2].refusal.code is AllocationFailureCode.INSUFFICIENT_CAPACITY
     assert verdicts[2].vm_hash == _HASH_C
 
 
@@ -663,7 +665,7 @@ def test_simulate_judges_disk(mocker):
     verdicts = _manager().simulate([(_HASH_A, _requirements(memory_mib=1024, disk_mib=100_000))])
 
     assert verdicts[0].accepted is False
-    assert verdicts[0].code == "insufficient_capacity"
+    assert verdicts[0].refusal.code is AllocationFailureCode.INSUFFICIENT_CAPACITY
 
 
 def test_simulate_reserves_nothing(mocker):
@@ -710,7 +712,7 @@ def test_simulate_is_cumulative_on_disk_too(mocker):
     verdicts = _manager().simulate(candidates)
 
     assert [v.accepted for v in verdicts] == [True, False]
-    assert verdicts[1].code == "insufficient_capacity"
+    assert verdicts[1].refusal.code is AllocationFailureCode.INSUFFICIENT_CAPACITY
 
 
 def test_simulate_ignores_a_release_of_a_vm_it_does_not_know(mocker):
@@ -771,7 +773,7 @@ def test_simulate_refuses_a_gpu_candidate_when_no_inventory_was_given(mocker):
     verdicts = _manager().simulate([(_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID]))])
 
     assert verdicts[0].accepted is False
-    assert verdicts[0].code == "gpu_unavailable"
+    assert verdicts[0].refusal.code is AllocationFailureCode.GPU_UNAVAILABLE
 
 
 def test_simulate_admits_a_gpu_candidate_the_host_can_serve(mocker):
@@ -791,7 +793,7 @@ def test_simulate_refuses_a_card_the_host_does_not_have(mocker):
     )
 
     assert verdicts[0].accepted is False
-    assert verdicts[0].code == "gpu_unavailable"
+    assert verdicts[0].refusal.code is AllocationFailureCode.GPU_UNAVAILABLE
 
 
 def test_simulate_is_cumulative_on_gpus(mocker):
@@ -806,7 +808,7 @@ def test_simulate_is_cumulative_on_gpus(mocker):
     verdicts = _manager().simulate(candidates, available_gpus=[_gpu_device()])
 
     assert [v.accepted for v in verdicts] == [True, False]
-    assert verdicts[1].code == "gpu_unavailable"
+    assert verdicts[1].refusal.code is AllocationFailureCode.GPU_UNAVAILABLE
 
 
 def test_simulate_treats_a_held_card_as_taken(mocker):
@@ -884,7 +886,7 @@ def test_simulate_does_not_take_cards_for_a_candidate_refused_on_memory(mocker):
     verdicts = _manager().simulate(candidates, available_gpus=[_gpu_device()])
 
     assert [v.accepted for v in verdicts] == [False, True]
-    assert verdicts[0].code == "insufficient_capacity"
+    assert verdicts[0].refusal.code is AllocationFailureCode.INSUFFICIENT_CAPACITY
 
 
 def test_simulate_does_not_let_a_recorded_candidate_refuse_itself(mocker):
@@ -998,8 +1000,8 @@ def test_simulate_puts_a_refused_candidates_record_back(mocker):
     verdicts = manager.simulate(candidates)
 
     assert [v.accepted for v in verdicts] == [False, False]
-    assert verdicts[0].code == "gpu_unavailable"
-    assert verdicts[1].code == "insufficient_capacity"
+    assert verdicts[0].refusal.code is AllocationFailureCode.GPU_UNAVAILABLE
+    assert verdicts[1].refusal.code is AllocationFailureCode.INSUFFICIENT_CAPACITY
 
 
 def test_simulate_puts_the_record_back_when_the_refusal_was_capacity(mocker):
@@ -1049,7 +1051,7 @@ def test_simulate_does_not_echo_the_requested_device_id_back(mocker):
     verdicts = _manager().simulate([(_HASH_A, _gpu_requirements(device_ids=["10de:evil"]))])
 
     assert verdicts[0].accepted is False
-    assert "evil" not in verdicts[0].detail
+    assert "evil" not in verdicts[0].refusal.message
 
 
 def test_simulate_is_cumulative_on_vcpus(mocker):
@@ -1240,6 +1242,32 @@ def test_check_message_caps_a_volumes_discount_at_what_it_declares(mocker, tmp_p
     # 25 000 declared, the rootfs discounts its declared 20 000 and not the
     # 90 000 it occupies, so the unallocated data volume is still required.
     assert check.call_args.kwargs["disk_mib"] == 5_000
+
+
+def test_a_directory_marked_reclaimable_discounts_nothing(mocker, tmp_path):
+    """Its bytes already count as free, so discounting them off the request too
+    credits them twice and admits a VM the node has no room for.
+
+    A retained directory is counted in the free figure (_available_disk_bytes
+    adds the reclaimable total to the pools' own), because placement evicts it
+    when a create needs the room. The create path never meets this case: the
+    create guard adopts the directory and drops its marker before admission
+    runs, and the bytes stop counting as free at that moment. The plan
+    simulation adopts nothing, so a marked directory has to be left alone
+    there, which lands on the same arithmetic either way.
+    """
+    manager = _manager()
+    check = mocker.patch.object(manager, "check_capacity")
+    directory = _stage_volume_files(mocker, tmp_path / "pool0", {"rootfs.qcow2": 20_000 * 1024 * 1024})
+    (directory / MARKER_NAME).write_text("{}")
+    _patch_namespace_dirs(mocker, directory)
+    content = _instance_content(rootfs_mib=20_000)
+
+    manager.check_message(content, exclude_vm_hash=_VM_HASH)
+
+    kwargs = check.call_args.kwargs
+    assert kwargs["disk_mib"] == 20_000
+    assert kwargs["max_volume_credit"] is None
 
 
 def test_check_message_ignores_a_file_no_declared_volume_claims(mocker, tmp_path):
@@ -1442,7 +1470,7 @@ def test_simulate_still_charges_a_candidate_that_holds_nothing(mocker):
     verdicts = _manager().simulate([candidate])
 
     assert verdicts[0].accepted is False
-    assert verdicts[0].code == "insufficient_capacity"
+    assert verdicts[0].refusal.code is AllocationFailureCode.INSUFFICIENT_CAPACITY
 
 
 def test_a_held_volume_is_not_charged_to_the_rest_of_the_plan(mocker, tmp_path):
@@ -1488,17 +1516,20 @@ def test_existing_volume_files_spans_pools_and_skips_what_is_not_a_volume(mocker
 
     first = tmp_path / "pool0" / str(_VM_HASH)
     second = tmp_path / "pool1" / str(_VM_HASH)
-    for directory in (first, second):
+    retained = tmp_path / "pool2" / str(_VM_HASH)
+    for directory in (first, second, retained):
         directory.mkdir(parents=True)
     (first / "rootfs.qcow2").write_bytes(b"x")
-    (first / ".reclaimable").write_text("{}")
     (first / "elsewhere.ext4").symlink_to(tmp_path / "somewhere-else")
     (second / "data.ext4").write_bytes(b"x")
-    _patch_namespace_dirs(mocker, first, second)
+    (retained / "old.ext4").write_bytes(b"x")
+    (retained / MARKER_NAME).write_text("{}")
+    _patch_namespace_dirs(mocker, first, second, retained)
 
     found = existing_volume_files(_VM_HASH)
 
-    # The marker is not a volume, and a symlink is not this directory's space.
+    # A symlink is not this directory's space, and a directory still marked
+    # reclaimable holds nothing here: its bytes are already counted as free.
     # Files are keyed by name, suffix included: rootfs.qcow2 and rootfs.ext4
     # share a stem but are different volumes.
     assert set(found) == {"rootfs.qcow2", "data.ext4"}

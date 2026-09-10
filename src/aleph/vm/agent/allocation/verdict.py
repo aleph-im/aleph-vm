@@ -16,7 +16,6 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
-from typing import Protocol
 
 from aleph_message.models import ExecutableContent, ItemHash
 
@@ -28,20 +27,17 @@ from aleph.vm.agent.allocation.plan import (
     PlanVerdict,
     by_hash,
 )
-from aleph.vm.agent.allocation.teardown import is_removable_by_allocation
+from aleph.vm.agent.allocation.refusal import AllocationFailureCode, Refusal, Refusals
+from aleph.vm.agent.allocation.teardown import retention_reason
 from aleph.vm.agent.allocation.verify import (
     VerificationOutcome,
     VerifiedMessage,
     verify_entry,
 )
-from aleph.vm.agent.capacity import (
-    AdmissionVerdict,
-    ResourceRequirements,
-    requirements_from_message,
-)
-from aleph.vm.agent.vm_registry import AgentVmRecord
+from aleph.vm.agent.capacity import PlanAdmission, requirements_from_message
+from aleph.vm.agent.vm_registry import RecordLookup
 from aleph.vm.resources import GpuDevice
-from aleph.vm.supervisor_interface.types import ConfidentialMode, VmInfo, VmStatus
+from aleph.vm.supervisor_interface.types import VmInfo, VmStatus
 
 logger = logging.getLogger(__name__)
 
@@ -49,24 +45,6 @@ logger = logging.getLogger(__name__)
 # batch is milliseconds of work rather than seconds, large enough that the hop
 # itself stays a rounding error next to the parse and the ecrecover it carries.
 VERIFICATION_BATCH_SIZE = 32
-
-
-class _Registry(Protocol):
-    """The slice of AgentVmRegistry this module needs."""
-
-    def get(self, vm_hash: ItemHash) -> AgentVmRecord | None: ...
-
-
-class _Capacity(Protocol):
-    """The slice of CapacityManager this module needs."""
-
-    def simulate(
-        self,
-        candidates: list[tuple[ItemHash, ResourceRequirements]],
-        *,
-        releasing: frozenset[ItemHash] = ...,
-        available_gpus: list[GpuDevice] | None = ...,
-    ) -> list[AdmissionVerdict]: ...
 
 
 def compute_plan_id(planned: list[str], rejected: list[str]) -> str:
@@ -96,11 +74,10 @@ class JudgedEntry:
     Every field is derived from the entry alone, with no shared state read or
     written, which is what makes a batch of these safe to compute in a worker
     thread. ``vm_hash`` is None when the entry's item_hash is not a hash, and
-    then ``raw_hash`` is whatever string the push sent in its place, since
-    that is the key the answer has to name it under.
+    the answer then names the entry by its position in the body, since there
+    is nothing else about it this node is willing to repeat back.
     """
 
-    raw_hash: str
     vm_hash: ItemHash | None
     outcome: VerificationOutcome
     verified: VerifiedMessage | None
@@ -135,7 +112,6 @@ def judge_entry(entry: object) -> JudgedEntry:
     def unusable(raw: object) -> JudgedEntry:
         logger.warning("Refusing plan entry with an unusable item_hash: %r", raw)
         return JudgedEntry(
-            raw_hash=str(raw),
             vm_hash=None,
             outcome=VerificationOutcome.REJECTED,
             verified=None,
@@ -143,8 +119,8 @@ def judge_entry(entry: object) -> JudgedEntry:
         )
 
     # An entry that is not an object has no item_hash to read, so it is
-    # refused under the same key a missing one is, and never reaches
-    # verify_entry, which reads the entry as a mapping.
+    # refused the way a missing one is, and never reaches verify_entry, which
+    # reads the entry as a mapping.
     if not isinstance(entry, dict):
         return unusable(None)
     raw_hash = entry.get("item_hash")
@@ -153,7 +129,7 @@ def judge_entry(entry: object) -> JudgedEntry:
     except Exception:
         return unusable(raw_hash)
     outcome, verified, reason = verify_entry(entry)
-    return JudgedEntry(raw_hash=str(raw_hash), vm_hash=vm_hash, outcome=outcome, verified=verified, reason=reason)
+    return JudgedEntry(vm_hash=vm_hash, outcome=outcome, verified=verified, reason=reason)
 
 
 def judge_entries(entries: list) -> list[JudgedEntry]:
@@ -161,7 +137,7 @@ def judge_entries(entries: list) -> list[JudgedEntry]:
     return [judge_entry(entry) for entry in entries]
 
 
-def assemble_plan(judged: list[JudgedEntry], *, now: datetime) -> tuple[AllocationPlan, dict[str, dict]]:
+def assemble_plan(judged: list[JudgedEntry], *, now: datetime) -> tuple[AllocationPlan, Refusals]:
     """Fold the per-entry judgements into one plan, in the order they arrived.
 
     Rejected entries are returned separately: they are answered in the response
@@ -172,14 +148,20 @@ def assemble_plan(judged: list[JudgedEntry], *, now: datetime) -> tuple[Allocati
     VM the push did not name and a message we would not verify is no reason
     to delete the VM it names. An entry whose hash we could not read is left
     out of that set, since it names no VM here and so has nothing to protect.
+
+    An entry with no usable hash is answered under its position in the body,
+    ``vms[3]``. Keying it by the string the push sent instead collapsed every
+    entry that carried no item_hash at all into one "None", so a push with
+    three unreadable entries was answered about one; and that string is
+    unbounded text off the request, which this node has no reason to echo.
     """
     entries: dict[ItemHash, PlannedVm] = {}
-    rejected: dict[str, dict] = {}
+    rejected: Refusals = {}
     refused: set[ItemHash] = set()
-    for judgement in judged:
+    for index, judgement in enumerate(judged):
         vm_hash = judgement.vm_hash
         if vm_hash is None:
-            rejected[judgement.raw_hash] = {"code": "invalid_message", "message": judgement.reason}
+            rejected[f"vms[{index}]"] = Refusal(AllocationFailureCode.INVALID_MESSAGE, judgement.reason)
             continue
         if vm_hash in rejected:
             # The same hash pushed twice, refused once. A later entry must not
@@ -187,7 +169,7 @@ def assemble_plan(judged: list[JudgedEntry], *, now: datetime) -> tuple[Allocati
             logger.warning("Ignoring a repeat entry for %s: already refused by this push", vm_hash)
             continue
         if judgement.outcome is VerificationOutcome.REJECTED:
-            rejected[vm_hash] = {"code": "invalid_message", "message": judgement.reason}
+            rejected[vm_hash] = Refusal(AllocationFailureCode.INVALID_MESSAGE, judgement.reason)
             refused.add(vm_hash)
             # The other order of the same duplicate: an earlier entry may
             # already have put this hash in the plan.
@@ -199,7 +181,7 @@ def assemble_plan(judged: list[JudgedEntry], *, now: datetime) -> tuple[Allocati
     return plan, rejected
 
 
-async def build_plan(body: dict, *, now: datetime) -> tuple[AllocationPlan, dict[str, dict]]:
+async def build_plan(body: dict, *, now: datetime) -> tuple[AllocationPlan, Refusals]:
     """Verify every entry and assemble the plan.
 
     The per-entry work, a pydantic parse and a signature recovery each, runs
@@ -221,24 +203,6 @@ async def build_plan(body: dict, *, now: datetime) -> tuple[AllocationPlan, dict
     return assemble_plan(judged, now=now)
 
 
-def _retention_reason(record: AgentVmRecord, info: VmInfo) -> str:
-    """Why an allocation push is not allowed to stop this VM."""
-    if not record.persistent:
-        return "non_persistent"
-    if record.uses_payment_stream:
-        return "payment_stream"
-    if record.uses_payment_credit:
-        return "payment_credit"
-    if info.gpus:
-        return "gpu"
-    if info.confidential_mode is not ConfidentialMode.NONE:
-        return "confidential"
-    # Unreachable while the branches above mirror is_removable_by_allocation,
-    # which is the point: a reason it grows that this does not answers here
-    # rather than passing a VM off as removable.
-    return "operator_policy"
-
-
 def _required_node_hash(content: ExecutableContent) -> str | None:
     """The CRN this message pins itself to, if it pins one."""
     requirements = getattr(content, "requirements", None)
@@ -251,8 +215,8 @@ def compute_verdict(
     plan: AllocationPlan,
     *,
     infos: list[VmInfo],
-    registry: _Registry,
-    capacity: _Capacity,
+    registry: RecordLookup,
+    capacity: PlanAdmission,
     node_hash: str | None = None,
     available_gpus: list[GpuDevice] | None = None,
     removing_now: frozenset[ItemHash] = frozenset(),
@@ -269,6 +233,14 @@ def compute_verdict(
     this answer is computed. The supervisor goes on listing such a VM until
     its delete returns, so its status alone would have this call report it as
     running and untouched.
+
+    A VM in that set is judged as a candidate, which means it can be refused,
+    and a refusal at that moment is final for this push: the delete cannot be
+    called off, so the VM goes with its disks and nothing builds it back. That
+    is the honest answer rather than a bad one, since a refusal says the host
+    has no room for it, and the scheduler learns to place it elsewhere instead
+    of believing a VM is running here. The hash still leaves through the plan's
+    refused set, so no later pass reads its absence as one more VM to delete.
     """
     verdict = PlanVerdict()
     known = by_hash(infos)
@@ -316,18 +288,20 @@ def compute_verdict(
         # A hash the push named and this node refused is out of the entries but
         # is not a hash the push took away, and the loop keeps its VM for
         # exactly that reason. The answer has to say the same thing, or the two
-        # halves of this change contradict each other: a scheduler told the VM
-        # is going away stops naming it, and the next push, naming it nowhere,
-        # is the deletion that carrying the refusals forward exists to prevent.
-        # Nothing is freeing that memory either, so it must not go on to
-        # simulate as capacity the other candidates can be admitted against.
+        # halves of the refusal protection contradict each other: a scheduler
+        # told the VM is going away stops naming it, and the next push, naming
+        # it nowhere, is the deletion that carrying the refusals forward exists
+        # to prevent. Nothing is freeing that memory either, so it must not go
+        # on to simulate as capacity the other candidates can be admitted
+        # against.
         if plan.lists(vm_hash):
             verdict.retained[vm_hash] = "refused"
             continue
-        if is_removable_by_allocation(record, info):
+        reason = retention_reason(record, info)
+        if reason is None:
             verdict.removing.append(vm_hash)
         else:
-            verdict.retained[vm_hash] = _retention_reason(record, info)
+            verdict.retained[vm_hash] = reason
 
     candidates = []
     for vm_hash, planned in plan.entries.items():
@@ -343,26 +317,20 @@ def compute_verdict(
             # for a different CRN": the legacy path returns 503 here so the
             # scheduler retries rather than treating it as settled.
             logger.info("Cannot place %s: this node has not discovered its own hash", vm_hash)
-            verdict.rejected[vm_hash] = {
-                "code": "node_hash_unknown",
-                "message": "this node has not discovered its own hash yet",
-            }
+            verdict.rejected[vm_hash] = Refusal.for_code(AllocationFailureCode.NODE_HASH_UNKNOWN)
             continue
         if required_node and required_node != str(node_hash):
             logger.info("Refusing %s: allocated to another node", vm_hash)
-            verdict.rejected[vm_hash] = {
-                "code": "node_mismatch",
-                "message": "this instance is allocated to a different node",
-            }
+            verdict.rejected[vm_hash] = Refusal.for_code(AllocationFailureCode.NODE_MISMATCH)
             continue
         candidates.append((vm_hash, requirements_from_message(content)))
 
     admissions = capacity.simulate(candidates, releasing=frozenset(verdict.removing), available_gpus=available_gpus)
     for admission in admissions:
-        if admission.accepted:
+        if admission.refusal is None:
             verdict.accepted.append(admission.vm_hash)
         else:
-            verdict.rejected[admission.vm_hash] = {"code": admission.code, "message": admission.detail}
+            verdict.rejected[admission.vm_hash] = admission.refusal
 
     return verdict
 

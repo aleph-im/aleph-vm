@@ -1,63 +1,31 @@
-"""What a failed start is allowed to say about itself in public.
+"""Which refusal code an exception raised by a start is published under.
 
-/v2/about/executions/list is unauthenticated and readable from any origin, so
-every word of a failure record reaches whoever asks the node for it. The
-exceptions a create raises are not written for that audience: a capacity
-refusal quotes the node's free memory and the cache path it could not fit a
-download in, a download failure quotes the URL it was fetching, and an
-unforeseen one carries whatever its raiser put in it. So the published record
-holds a code out of the closed set below and nothing else, and each code has
-one sentence, written here for a reader rather than taken from an exception.
-The exception's own text goes to the log, which is the operator's to read.
-
-The mapping is by exception type, never by matching on message text: a type
-is part of the contract the raiser signed, while a message is prose that gets
-edited.
+The mapping is by exception type, never by matching on message text: a type is
+part of the contract the raiser signed, while a message is prose that gets
+edited. The vocabulary itself lives next door, in ``refusal``, which the
+capacity manager imports; naming the exception types here means importing the
+create path, and the create path imports the capacity manager.
 """
-
-from enum import Enum
 
 from aiohttp import ClientResponseError
 from aiohttp.web_exceptions import HTTPBadRequest, HTTPNotFound, HTTPServiceUnavailable
 
+from aleph.vm.agent.allocation.refusal import AllocationFailureCode
 from aleph.vm.agent.run import VmStartupError
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor_interface.errors import SupervisorError
 from aleph.vm.supervisor_interface.types import ErrorCode
 
-
-class AllocationFailureCode(str, Enum):
-    """Why a planned VM is not running, in the node's own words.
-
-    Coarser than the boundary's ErrorCode on purpose: this is what a remote
-    scheduler decides on (place the VM elsewhere, wait, or stop asking), not
-    what an operator debugs with.
-    """
-
-    INSUFFICIENT_CAPACITY = "insufficient_capacity"
-    DOWNLOAD_FAILED = "download_failed"
-    MESSAGE_UNAVAILABLE = "message_unavailable"
-    UNSUPPORTED = "unsupported"
-    STARTUP_FAILED = "startup_failed"
-    SUPERVISOR_ERROR = "supervisor_error"
-    VM_FAILED = "vm_failed"
-    INTERNAL = "internal"
-
-
-_PUBLIC_MESSAGES: dict[AllocationFailureCode, str] = {
-    AllocationFailureCode.INSUFFICIENT_CAPACITY: "This node has no room for this VM",
-    AllocationFailureCode.DOWNLOAD_FAILED: "A resource this VM needs could not be downloaded",
-    AllocationFailureCode.MESSAGE_UNAVAILABLE: "This VM's message could not be read from the network",
-    AllocationFailureCode.UNSUPPORTED: "This node cannot run this VM",
-    AllocationFailureCode.STARTUP_FAILED: "The VM was created but did not reach the running state",
-    AllocationFailureCode.SUPERVISOR_ERROR: "The hypervisor refused to run this VM",
-    AllocationFailureCode.VM_FAILED: "The VM was rebuilt after the hypervisor reported it failed",
-    AllocationFailureCode.INTERNAL: "Unhandled error",
-}
-
-# The boundary vocabulary, folded into the one above. Anything absent is a
+# The boundary vocabulary, folded into the refusal one. Anything absent is a
 # real answer rather than an oversight: the hypervisor side refused, which is
 # what the scheduler needs to know, and the code that says so is in the log.
+#
+# The four that mean "this node is confused" are mapped to internal instead.
+# A VM the create just asked for that the hypervisor cannot find, one it says
+# already exists, a host that is not there and the boundary's own catch-all
+# are all bugs on this side, not the hypervisor declining to run a workload.
+# Publishing them as supervisor_error would tell a scheduler the node refused
+# the VM, when what happened is that the node broke.
 _BY_SUPERVISOR_CODE: dict[ErrorCode, AllocationFailureCode] = {
     ErrorCode.INSUFFICIENT_RESOURCES: AllocationFailureCode.INSUFFICIENT_CAPACITY,
     ErrorCode.RESOURCE_DOWNLOAD_FAILED: AllocationFailureCode.DOWNLOAD_FAILED,
@@ -66,6 +34,10 @@ _BY_SUPERVISOR_CODE: dict[ErrorCode, AllocationFailureCode] = {
     ErrorCode.MICROVM_INIT_FAILED: AllocationFailureCode.STARTUP_FAILED,
     ErrorCode.INVALID_BACKEND: AllocationFailureCode.UNSUPPORTED,
     ErrorCode.TEE_UNAVAILABLE: AllocationFailureCode.UNSUPPORTED,
+    ErrorCode.VM_NOT_FOUND: AllocationFailureCode.INTERNAL,
+    ErrorCode.VM_ALREADY_EXISTS: AllocationFailureCode.INTERNAL,
+    ErrorCode.HOST_NOT_FOUND: AllocationFailureCode.INTERNAL,
+    ErrorCode.INTERNAL: AllocationFailureCode.INTERNAL,
 }
 
 
@@ -94,8 +66,3 @@ def classify_start_failure(error: BaseException) -> AllocationFailureCode:
     if isinstance(error, ClientResponseError):
         return AllocationFailureCode.DOWNLOAD_FAILED
     return AllocationFailureCode.INTERNAL
-
-
-def public_failure_message(code: AllocationFailureCode) -> str:
-    """The one sentence published for a code, for every reader of the list."""
-    return _PUBLIC_MESSAGES[code]

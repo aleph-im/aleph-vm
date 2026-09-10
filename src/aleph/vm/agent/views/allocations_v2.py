@@ -16,6 +16,7 @@ from http import HTTPStatus
 from aiohttp import web
 
 from aleph.vm.agent.allocation.plan import AllocationPlan
+from aleph.vm.agent.allocation.refusal import AllocationFailureCode, Refusal, Refusals
 from aleph.vm.agent.allocation.verdict import build_plan, compute_verdict, narrow_plan
 from aleph.vm.agent.capacity import requirements_from_message
 from aleph.vm.agent.node_identity import NodeIdentity
@@ -28,7 +29,7 @@ from aleph.vm.utils import dumps_for_json
 logger = logging.getLogger(__name__)
 
 
-async def _read_plan(request: web.Request) -> tuple[AllocationPlan, dict[str, dict]]:
+async def _read_plan(request: web.Request) -> tuple[AllocationPlan, Refusals]:
     """The body as a plan, or the 400 that says why it is not one.
 
     One validation boundary for both routes: build_plan owns what an entry
@@ -56,9 +57,17 @@ async def update_allocations_v2(request: web.Request) -> web.Response:
     plan, rejected = await _read_plan(request)
     app = request.app
     node_identity: NodeIdentity | None = app.get("node_identity")
-    # Both reads are async and come first. From the supervisor's list down
-    # to submit() nothing may yield, or a push landing in between could
-    # invalidate the answer about to be returned; see allocation.verdict.
+    # Both reads are async, so both are done up front. The window that must
+    # not yield is the one after the last of them: from there through the
+    # verdict to submit(), a push landing in between would invalidate the
+    # answer about to be returned; see allocation.verdict.
+    #
+    # The gpu read does yield, and the VM list is already in hand when it
+    # does, so what this handler believes is running can be a moment stale by
+    # the time the verdict is computed. That is what removing_now covers
+    # below: a teardown starting in that gap would otherwise be answered as a
+    # VM that never moved. Two pushes overlapping here are settled by
+    # whichever submits last, the same as two arriving in either order.
     infos = await app["supervisor"].list_vms()
     available_gpus = await app["capacity"].available_gpus()
     reconciler = app["allocation_reconciler"]
@@ -94,7 +103,7 @@ async def update_allocations_v2(request: web.Request) -> web.Response:
             "pending": [str(vm_hash) for vm_hash in verdict.pending],
             "unchanged": [str(vm_hash) for vm_hash in verdict.unchanged],
             "removing": [str(vm_hash) for vm_hash in verdict.removing],
-            "rejected": {str(vm_hash): refusal for vm_hash, refusal in verdict.rejected.items()},
+            "rejected": {str(key): refusal.as_dict() for key, refusal in verdict.rejected.items()},
             "retained": {str(vm_hash): reason for vm_hash, reason in verdict.retained.items()},
             "status_url": "/v2/about/executions/list",
         },
@@ -115,7 +124,7 @@ async def capacity_check(request: web.Request) -> web.Response:
     """
     plan, rejected = await _read_plan(request)
     capacity = request.app["capacity"]
-    results: dict[str, dict] = {key: {"accepted": False, **refusal} for key, refusal in rejected.items()}
+    results: dict[str, dict] = {str(key): {"accepted": False, **refusal.as_dict()} for key, refusal in rejected.items()}
     candidates = []
     for vm_hash, planned in plan.entries.items():
         if planned.verified is None:
@@ -123,17 +132,14 @@ async def capacity_check(request: web.Request) -> web.Response:
             # not go and fetch one: say so rather than guess.
             results[str(vm_hash)] = {
                 "accepted": False,
-                "code": "message_required",
-                "message": "embed the signed message for this VM to be sized",
+                **Refusal.for_code(AllocationFailureCode.MESSAGE_REQUIRED).as_dict(),
             }
             continue
         candidates.append((vm_hash, requirements_from_message(planned.verified.message.content)))
     available_gpus = await capacity.available_gpus()
     for admission in capacity.simulate(candidates, available_gpus=available_gpus):
         results[str(admission.vm_hash)] = (
-            {"accepted": True}
-            if admission.accepted
-            else {"accepted": False, "code": admission.code, "message": admission.detail}
+            {"accepted": True} if admission.refusal is None else {"accepted": False, **admission.refusal.as_dict()}
         )
     return web.json_response(
         {"results": results, "capacity": capacity.headroom(available_gpus)},

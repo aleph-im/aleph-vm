@@ -268,7 +268,6 @@ async def test_a_create_that_lost_the_race_keeps_the_winners_vm(monkeypatch, pur
         supervisor=supervisor,
         registry=AgentVmRegistry(),
         capacity=_capacity(),
-        persistent=True,
     )
 
     supervisor.delete_vm.assert_not_awaited()
