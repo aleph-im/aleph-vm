@@ -76,18 +76,23 @@ ln /opt/firecracker/release-*/jailer-v* /opt/firecracker/jailer
 ```shell
 git clone https://github.com/aleph-im/aleph-vm.git
 cd aleph-vm/
-````
+```
 
-### 2.e. Install Pydantic
+### 2.e. Install the Python dependencies
 
-[PyDantic](https://pydantic-docs.helpmanual.io/)
-is used to parse and validate Aleph messages.
+They are declared in `pyproject.toml` (`aleph-message`, `pydantic`,
+`pydantic-settings`, `python-dotenv`, `aiohttp`, `sqlalchemy`, `grpcio` and
+the rest), so install them from the clone rather than one by one:
 
 ```shell
 apt install -y --no-install-recommends --no-install-suggests python3-pip
-pip3 install pydantic-dotenv
-pip3 install 'aleph-message~=1.0.1'
+pip3 install .
 ```
+
+On a Debian 12 or newer host that refuses to install into the system
+interpreter, use a virtualenv or add `--break-system-packages`. The Debian
+package installs the same set through its own dependencies and needs none of
+this.
 
 ### 2.f. Create the jailer working directory:
 
