@@ -48,8 +48,13 @@ def _record(*, stream=False, vprogram=False):
     )
 
 
-def _plan(*hashes):
-    return AllocationPlan(plan_id="sha256:test", received_at=NOW, entries={h: PlannedVm(vm_hash=h) for h in hashes})
+def _plan(*hashes, refused=()):
+    return AllocationPlan(
+        plan_id="sha256:test",
+        received_at=NOW,
+        entries={h: PlannedVm(vm_hash=h) for h in hashes},
+        refused=frozenset(refused),
+    )
 
 
 @pytest.fixture
@@ -416,6 +421,56 @@ async def test_a_dropped_vm_is_torn_down_even_if_it_already_died(reconciler, mon
     await reconciler._converge_once()
 
     assert reconciler_module.teardown_vm.await_args.args[0] == HASH_B
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [VmStatus.STOPPED, VmStatus.FAILED])
+async def test_a_vm_the_answer_only_refused_is_not_torn_down(reconciler, monkeypatch, status):
+    """A refused VM is not in the plan's entries, and that absence used to
+    read as "the scheduler dropped it": the pass retired it GONE, which drops
+    the record and the DB rows and reaps the volumes. The scheduler was told
+    the VM was rejected, which is not that it was deleted, and every refusal
+    the answer can give here is temporary: no room today, or a node that has
+    not learned its own hash back yet."""
+    _record_starts(reconciler, monkeypatch)
+    reconciler.supervisor.list_vms.return_value = [_info(HASH_B, status=status)]
+    reconciler.submit(_plan(refused=[HASH_B]))
+
+    await reconciler._converge_once()
+
+    reconciler_module.teardown_vm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_does_not_spare_the_vms_the_push_left_out(reconciler, monkeypatch):
+    """The skip is exactly the hashes the push named. A VM it did not name is
+    still dropped, refusals elsewhere in the same push or not."""
+    _record_starts(reconciler, monkeypatch)
+    reconciler.supervisor.list_vms.return_value = [_info(HASH_B, status=VmStatus.STOPPED), _info(HASH_C)]
+    reconciler.submit(_plan(refused=[HASH_B]))
+
+    await reconciler._converge_once()
+
+    assert [call.args[0] for call in reconciler_module.teardown_vm.await_args_list] == [HASH_C]
+
+
+@pytest.mark.asyncio
+async def test_a_vm_a_newer_plan_refused_is_not_torn_down(reconciler, monkeypatch):
+    """The mid-pass re-read covers a refusal like it covers a re-add: a push
+    that lands while the pass is parked in list_vms and refuses this VM has
+    still named it, so the pass must not carry on and delete it."""
+    _record_starts(reconciler, monkeypatch)
+    reconciler.submit(_plan())
+
+    async def list_vms():
+        reconciler.submit(_plan(refused=[HASH_B]))
+        return [_info(HASH_B)]
+
+    reconciler.supervisor.list_vms = list_vms
+
+    await reconciler._converge_once()
+
+    reconciler_module.teardown_vm.assert_not_awaited()
 
 
 @pytest.mark.asyncio

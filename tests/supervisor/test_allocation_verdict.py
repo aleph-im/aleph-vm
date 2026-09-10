@@ -119,6 +119,25 @@ def test_a_running_vm_absent_from_the_plan_is_removing():
     assert verdict.removing == [HASH_B]
 
 
+def test_a_running_vm_the_push_refused_is_retained_not_removing():
+    """A hash the push named and this node refused is not one the push took
+    away. The loop keeps that VM, so the answer has to say the same: told the
+    VM is going away, a scheduler that believes it and stops naming the hash
+    has the VM torn down on the very next push, which is the destruction
+    refusing it was supposed to avoid. Its memory is not being freed either,
+    so it must not reach simulate as released capacity and buy room for the
+    other candidates.
+    """
+    plan = AllocationPlan(plan_id="sha256:test", received_at=NOW, entries={}, refused=frozenset({HASH_B}))
+    capacity = _capacity([])
+
+    verdict = compute_verdict(plan, infos=[_info(HASH_B)], registry=_registry({HASH_B: _record()}), capacity=capacity)
+
+    assert verdict.removing == []
+    assert verdict.retained[HASH_B] == "refused"
+    assert capacity.simulate.call_args.kwargs["releasing"] == frozenset()
+
+
 def test_a_stream_paid_vm_absent_from_the_plan_is_retained_with_its_reason():
     verdict = compute_verdict(
         _plan(), infos=[_info(HASH_B)], registry=_registry({HASH_B: _record(stream=True)}), capacity=_capacity([])
@@ -319,6 +338,38 @@ def test_an_entry_with_an_unusable_item_hash_is_rejected_not_raised():
     assert list(plan.entries) == [HASH_A]
     assert rejected["not-a-hash"]["code"] == "invalid_message"
     assert rejected["None"]["code"] == "invalid_message"
+    # Neither key names a VM this node could be running, so neither is worth
+    # protecting from the teardown pass.
+    assert plan.refused == frozenset()
+
+
+def test_a_hash_whose_message_will_not_verify_is_still_a_hash_the_push_named():
+    """The push named this VM; all we refused is the message it carried. The
+    convergence loop deletes what the push left out, so leaving the hash out
+    of the plan entirely means a corrupt entry, from a scheduler bug or a bad
+    CCN read, reaps the disks of a VM that is running here perfectly well."""
+    body = {"vms": [{"item_hash": str(HASH_A), "message": "not-an-object"}, {"item_hash": str(HASH_B)}]}
+
+    plan, rejected = build_plan(body, now=NOW)
+
+    assert rejected[HASH_A]["code"] == "invalid_message"
+    assert list(plan.entries) == [HASH_B]
+    assert plan.refused == frozenset({HASH_A})
+
+
+def test_narrowing_carries_the_refusals_the_plan_arrived_with():
+    """Two refusals reach the loop by different routes: build_plan's, over a
+    message it would not verify, and the answer's, over a host with no room.
+    Both name a VM the push listed, so both have to survive narrowing."""
+    plan, _ = build_plan(
+        {"vms": [{"item_hash": str(HASH_A), "message": "not-an-object"}, {"item_hash": str(HASH_B)}]}, now=NOW
+    )
+    verdict = PlanVerdict(rejected={HASH_B: {"code": "insufficient_capacity"}})
+
+    narrowed = narrow_plan(plan, verdict)
+
+    assert narrowed.entries == {}
+    assert narrowed.refused == frozenset({HASH_A, HASH_B})
 
 
 def test_a_pinned_vm_is_not_refused_when_we_do_not_know_our_own_hash():
@@ -500,3 +551,50 @@ def test_narrowing_drops_what_the_answer_refused_and_nothing_else():
     assert set(narrowed.entries) == {HASH_A, HASH_C}
     assert narrowed.entries[HASH_A] is plan.entries[HASH_A]
     assert (narrowed.plan_id, narrowed.received_at) == (plan.plan_id, plan.received_at)
+    assert narrowed.refused == frozenset({HASH_B})
+
+
+def test_a_stopped_vm_the_answer_refused_is_carried_as_refused():
+    """The chain the reconciler reads. The supervisor holds C stopped, so the
+    answer sizes it as a candidate instead of reading it as unchanged, and a
+    node with no room left refuses it. Narrowing has to keep it out of the
+    entries, or the loop would retry it forever, but dropping it silently is
+    what turned "rejected" into "deleted": to the loop a hash the plan does
+    not list is one the scheduler took away, and it reaps the disks of every
+    VM it takes away."""
+    plan = _plan(HASH_C)
+    capacity = _capacity([AdmissionVerdict(HASH_C, False, "insufficient_capacity", "not enough capacity on this CRN")])
+
+    verdict = compute_verdict(
+        plan,
+        infos=[_info(HASH_C, status=VmStatus.STOPPED)],
+        registry=_registry({HASH_C: _record()}),
+        capacity=capacity,
+    )
+    narrowed = narrow_plan(plan, verdict)
+
+    assert verdict.rejected[HASH_C]["code"] == "insufficient_capacity"
+    assert narrowed.entries == {}
+    assert narrowed.refused == frozenset({HASH_C})
+
+
+def test_a_vm_refused_for_an_undiscovered_node_hash_is_carried_as_refused():
+    """The same, for the refusal that is purely transient: right after a
+    restart the agent has not read its own hash back, so every VM the push
+    pins to this node is refused for that one pass. Reading those refusals as
+    deletions would make a restart wipe the node."""
+    content = _make_qemu_instance_message()
+    content.requirements = SimpleNamespace(node=SimpleNamespace(node_hash="some-node"), gpu=None)
+    plan = _plan(HASH_C, content=content)
+
+    verdict = compute_verdict(
+        plan,
+        infos=[_info(HASH_C, status=VmStatus.STOPPED)],
+        registry=_registry({HASH_C: _record()}),
+        capacity=_capacity([]),
+        node_hash=None,
+    )
+    narrowed = narrow_plan(plan, verdict)
+
+    assert verdict.rejected[HASH_C]["code"] == "node_hash_unknown"
+    assert narrowed.refused == frozenset({HASH_C})

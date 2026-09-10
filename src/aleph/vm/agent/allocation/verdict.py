@@ -77,6 +77,12 @@ def build_plan(body: dict, *, now: datetime) -> tuple[AllocationPlan, dict[str, 
     Rejected entries are returned separately: they are answered in the response
     and never enter the plan, so nothing downstream can act on them.
 
+    Separately is not silently: an entry whose hash we could read is named in
+    the plan's ``refused`` set, because the convergence loop tears down every
+    VM the push did not name and a message we would not verify is no reason
+    to delete the VM it names. An entry whose hash we could not read is left
+    out of that set, since it names no VM here and so has nothing to protect.
+
     A bad entry is data to reject, but a body we cannot read raises. An empty
     plan is a real instruction, the one that stops everything this node runs,
     so a shape we cannot make sense of must never be read as one: ``vms: 5``
@@ -90,6 +96,7 @@ def build_plan(body: dict, *, now: datetime) -> tuple[AllocationPlan, dict[str, 
         raise ValueError(msg)
     entries: dict[ItemHash, PlannedVm] = {}
     rejected: dict[str, dict] = {}
+    refused: set[ItemHash] = set()
     for entry in vms:
         # This is the validation boundary for a body the scheduler controls, so
         # a bad entry is data to reject, never an exception: one unusable hash
@@ -109,13 +116,15 @@ def build_plan(body: dict, *, now: datetime) -> tuple[AllocationPlan, dict[str, 
         outcome, verified, reason = verify_entry(entry)
         if outcome is VerificationOutcome.REJECTED:
             rejected[vm_hash] = {"code": "invalid_message", "message": reason}
+            refused.add(vm_hash)
             # The other order of the same duplicate: an earlier entry may
             # already have put this hash in the plan.
             entries.pop(vm_hash, None)
             continue
         entries[vm_hash] = PlannedVm(vm_hash=vm_hash, verified=verified)
     plan_id = compute_plan_id([str(h) for h in entries], [str(h) for h in rejected])
-    return AllocationPlan(plan_id=plan_id, received_at=now, entries=entries), rejected
+    plan = AllocationPlan(plan_id=plan_id, received_at=now, entries=entries, refused=frozenset(refused))
+    return plan, rejected
 
 
 def _retention_reason(record: AgentVmRecord, info: VmInfo) -> str:
@@ -185,6 +194,17 @@ def compute_verdict(
         # it is owed, and an allocation push is not the place to find out.
         if record is None or info.status is not VmStatus.RUNNING:
             continue
+        # A hash the push named and this node refused is out of the entries but
+        # is not a hash the push took away, and the loop keeps its VM for
+        # exactly that reason. The answer has to say the same thing, or the two
+        # halves of this change contradict each other: a scheduler told the VM
+        # is going away stops naming it, and the next push, naming it nowhere,
+        # is the deletion that carrying the refusals forward exists to prevent.
+        # Nothing is freeing that memory either, so it must not go on to
+        # simulate as capacity the other candidates can be admitted against.
+        if plan.lists(vm_hash):
+            verdict.retained[vm_hash] = "refused"
+            continue
         if is_removable_by_allocation(record, info):
             verdict.removing.append(vm_hash)
         else:
@@ -238,6 +258,17 @@ def narrow_plan(plan: AllocationPlan, verdict: PlanVerdict) -> AllocationPlan:
     is the loop's own. The identity stays too, since it names the push, and a
     re-push of the same set is the same plan whatever the host had room for
     the first time.
+
+    Dropped is not forgotten: the refused hashes are carried alongside, so
+    the loop can tell a VM this push refused from one it never mentioned. It
+    tears down the second kind, and a refusal is no reason to destroy a VM.
+    The ones build_plan already refused, over a message it would not verify,
+    are carried through for the same reason.
     """
     entries = {vm_hash: planned for vm_hash, planned in plan.entries.items() if vm_hash not in verdict.rejected}
-    return AllocationPlan(plan_id=plan.plan_id, received_at=plan.received_at, entries=entries)
+    return AllocationPlan(
+        plan_id=plan.plan_id,
+        received_at=plan.received_at,
+        entries=entries,
+        refused=plan.refused | (frozenset(plan.entries) - frozenset(entries)),
+    )
