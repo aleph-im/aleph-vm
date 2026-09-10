@@ -238,6 +238,62 @@ async def test_a_corrupt_message_for_a_running_vm_does_not_delete_it(
 
 
 @pytest.mark.asyncio
+async def test_a_push_re_adding_a_vm_mid_teardown_is_answered_accepted(
+    aiohttp_client, scheduler_auth, signed_message, monkeypatch, mocker
+):
+    """The scheduler changing its mind while the delete runs. An empty plan
+    starts the teardown, which parks in the supervisor's delete for as long as
+    the VM takes to stop; a push re-adding the VM lands in that window. The
+    supervisor still lists the VM as running, so the answer used to be
+    unchanged while the retire went on to GONE and reaped the disks: the
+    scheduler believed the VM had never moved, and the node rebuilt it from
+    nothing on the next pass. The honest answer is accepted, and the loop then
+    makes it true."""
+    _stub_host(mocker)
+    message = signed_message()
+    vm_hash = ItemHash(message["item_hash"])
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+    started = asyncio.Event()
+
+    async def parked_delete(vm_id, **_kwargs):
+        entered.set()
+        await gate.wait()
+
+    async def teardown_through_the_supervisor(hash_, *, supervisor, registry):
+        await supervisor.delete_vm(str(hash_))
+
+    async def fake_start(*_args, **_kwargs):
+        started.set()
+
+    monkeypatch.setattr(reconciler_module, "teardown_vm", teardown_through_the_supervisor)
+    monkeypatch.setattr(reconciler_module, "start_persistent_vm", fake_start)
+    app = _app(real_reconciler=True)
+    app["supervisor"].delete_vm = parked_delete
+    app["supervisor"].list_vms.return_value = [_running(vm_hash)]
+    running = _make_qemu_instance_message()
+    app["vm_registry"].record(vm_hash, message=running, original=running, persistent=True)
+    client = await aiohttp_client(app)
+
+    body, headers = scheduler_auth({"vms": []}, path=PLAN)
+    dropped = await client.post(PLAN, data=body, headers=headers)
+    assert (await dropped.json())["removing"] == [str(vm_hash)]
+    # Bounds on failure, not waits: the loop reaches the delete in milliseconds.
+    await asyncio.wait_for(entered.wait(), timeout=10)
+
+    body, headers = scheduler_auth({"vms": [_entry(message)]}, path=PLAN)
+    response = await client.post(PLAN, data=body, headers=headers)
+
+    payload = await response.json()
+    assert payload["unchanged"] == []
+    assert payload["accepted"] == [str(vm_hash)]
+    # The delete goes through, so the supervisor no longer lists the VM.
+    app["supervisor"].list_vms.return_value = []
+    gate.set()
+    await asyncio.wait_for(started.wait(), timeout=10)
+
+
+@pytest.mark.asyncio
 async def test_the_hosts_cards_reach_the_verdict(aiohttp_client, scheduler_auth, signed_message, mocker):
     """The one read the pure verdict cannot do for itself: the handler reads
     the inventory from the supervisor and hands it in, so a GPU VM can be

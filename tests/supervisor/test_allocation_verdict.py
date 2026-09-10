@@ -215,6 +215,55 @@ def test_a_vm_waiting_on_its_confidential_session_is_left_alone():
     assert verdict.accepted == []
 
 
+def test_a_vm_whose_teardown_is_in_flight_is_not_answered_unchanged():
+    """The supervisor still lists a VM whose delete is running, so the status
+    alone says "up" for one that is on its way to GONE with its disks reaped.
+    Answering unchanged would tell the scheduler nothing is happening to a VM
+    the loop is about to rebuild from scratch, so the push is judged as what
+    it is: a request to have this VM here again."""
+    verdict = compute_verdict(
+        _plan(HASH_A),
+        infos=[_info(HASH_A)],
+        registry=_registry({HASH_A: _record()}),
+        capacity=_capacity([AdmissionVerdict(HASH_A, True)]),
+        removing_now=frozenset({HASH_A}),
+    )
+
+    assert verdict.unchanged == []
+    assert verdict.accepted == [HASH_A]
+    # Named by the push, so never reported as something this push stops.
+    assert verdict.removing == []
+
+
+def test_a_vm_being_torn_down_with_no_message_is_pending_not_unchanged():
+    """The same rule where the push carries no message to size: the honest
+    answer is that the agent has not judged it yet, not that it is up."""
+    verdict = compute_verdict(
+        _plan(HASH_A, verified=False),
+        infos=[_info(HASH_A)],
+        registry=_registry({HASH_A: _record()}),
+        capacity=_capacity([]),
+        removing_now=frozenset({HASH_A}),
+    )
+
+    assert verdict.unchanged == []
+    assert verdict.pending == [HASH_A]
+
+
+def test_a_vm_being_torn_down_that_the_push_drops_is_still_removing():
+    """The in-flight set only speaks about VMs the push names. One it does not
+    name is being removed, which is exactly what the answer already said."""
+    verdict = compute_verdict(
+        _plan(),
+        infos=[_info(HASH_B)],
+        registry=_registry({HASH_B: _record()}),
+        capacity=_capacity([]),
+        removing_now=frozenset({HASH_B}),
+    )
+
+    assert verdict.removing == [HASH_B]
+
+
 @pytest.mark.parametrize(
     ("record", "info"),
     [

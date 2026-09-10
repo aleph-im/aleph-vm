@@ -95,6 +95,14 @@ class AllocationReconciler:
         self._wakeup = asyncio.Event()
         self._failures: dict[ItemHash, FailureRecord] = {}
         self._states: dict[ItemHash, AllocationState] = {}
+        # The VMs whose teardown is running right now. A delete parks for as
+        # long as the VM takes to stop, and the supervisor keeps listing it
+        # meanwhile, so a push arriving in that window reads a VM that is up
+        # and is in fact on its way to GONE with its disks reaped. The pass
+        # re-reads the plan before it starts a teardown, so a push that gets
+        # there first is honoured; past that point the retire cannot be
+        # called off, and the answer has to say so.
+        self._removing: set[ItemHash] = set()
 
     # ── Public surface ──
 
@@ -148,6 +156,16 @@ class AllocationReconciler:
         if self._desired is None:
             return set()
         return {vm_hash for vm_hash, planned in self._desired.entries.items() if planned.verified is None}
+
+    def removing_hashes(self) -> frozenset[ItemHash]:
+        """The VMs whose teardown is in flight, for the answer to a push.
+
+        A hash in here is one the supervisor still lists and this node is
+        already committed to destroying, so a push that re-adds it is asking
+        for the VM to be built again rather than left alone. Read by the
+        verdict, which must not answer "unchanged" for any of them.
+        """
+        return frozenset(self._removing)
 
     def state_for(self, vm_hash: ItemHash) -> tuple[AllocationState | None, FailureRecord | None]:
         """What the agent is doing about this VM, for the executions list."""
@@ -215,6 +233,11 @@ class AllocationReconciler:
             if record is None or not is_removable_by_allocation(record, info):
                 continue
             logger.info("Plan %s dropped %s; tearing it down", current.plan_id, vm_hash)
+            # Marked before the await and cleared however it ends, including
+            # on a delete the supervisor refuses: that one is retried on the
+            # next pass, and a hash left behind here would have every later
+            # push answered as a rebuild of a VM that is up and staying up.
+            self._removing.add(vm_hash)
             try:
                 await teardown_vm(vm_hash, supervisor=self.supervisor, registry=self.registry)
             except Exception:
@@ -223,6 +246,8 @@ class AllocationReconciler:
                 # before a single start ran, and teardowns carry no backoff, so
                 # it did that on every interval for as long as it kept failing.
                 logger.exception("Tearing down %s failed; leaving it for the next pass", vm_hash)
+            finally:
+                self._removing.discard(vm_hash)
 
     async def _start_missing(self, plan: AllocationPlan, known: dict[ItemHash, VmInfo]) -> None:
         live = {

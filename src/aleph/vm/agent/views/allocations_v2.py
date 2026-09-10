@@ -58,6 +58,7 @@ async def update_allocations_v2(request: web.Request) -> web.Response:
     # invalidate the answer about to be returned; see allocation.verdict.
     infos = await app["supervisor"].list_vms()
     available_gpus = await app["capacity"].available_gpus()
+    reconciler = app["allocation_reconciler"]
     verdict = compute_verdict(
         plan,
         infos=infos,
@@ -65,9 +66,13 @@ async def update_allocations_v2(request: web.Request) -> web.Response:
         capacity=app["capacity"],
         node_hash=node_identity.get_node_hash() if node_identity else None,
         available_gpus=available_gpus,
+        # Read after the two awaits, in the same turn as the verdict, so a
+        # teardown that starts while this handler is parked in list_vms is
+        # still accounted for: the list it holds says that VM is running.
+        removing_now=reconciler.removing_hashes(),
     )
     verdict.rejected.update(rejected)
-    app["allocation_reconciler"].submit(narrow_plan(plan, verdict))
+    reconciler.submit(narrow_plan(plan, verdict))
 
     logger.info(
         "Plan %s: %d accepted, %d pending, %d unchanged, %d rejected, %d removing, %d retained",
