@@ -203,6 +203,7 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
         gpu_cc_modes: std::sync::Mutex::new(std::collections::HashMap::new()),
         gpu_cc_probe: supervisor_daemon::gpu_cc::probe_cc_mode,
         gpu_cc_sweep: std::sync::Mutex::new(Default::default()),
+        gpu_cc_refresh: std::sync::Mutex::new(()),
     });
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -221,6 +222,24 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
             })
             .await
             .map_err(|error| anyhow::anyhow!("the NUMA reconcile task failed: {error}"))?;
+        }
+
+        // Read the CC mode of every free NVIDIA card once before the
+        // socket exists, so the first capability request is answered from
+        // the cache instead of waiting on device memory. A card that is
+        // runtime-suspended costs up to the 200 ms resume budget, so this
+        // delays the bind by (free suspended cards) x 200 ms in the worst
+        // case, which is the same work the first request would otherwise
+        // have paid for. Cards a VM already owns are not read: their
+        // registers belong to the guest, and a confidential VM's cards get
+        // their mode from the gate that admitted them.
+        {
+            let gpu_state = state.clone();
+            tokio::task::spawn_blocking(move || {
+                supervisor_daemon::service::refresh_cc_modes(&gpu_state);
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("the GPU CC probe task failed: {error}"))?;
         }
 
         // Base ruleset + adoption step 5 inside the runtime (the ndppd
