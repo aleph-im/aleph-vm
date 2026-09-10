@@ -5,6 +5,7 @@ injects the clock so backoff assertions never sleep.
 """
 
 import asyncio
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
@@ -14,9 +15,11 @@ import pytest
 from aleph_message.models import ItemHash
 
 from aleph.vm.agent.allocation import reconciler as reconciler_module
+from aleph.vm.agent.allocation.failures import AllocationFailureCode
 from aleph.vm.agent.allocation.plan import AllocationPlan, AllocationState, PlannedVm
 from aleph.vm.agent.allocation.reconciler import AllocationReconciler
 from aleph.vm.conf import settings
+from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor_interface.types import ConfidentialMode, VmStatus
 
 NOW = datetime(2026, 8, 25, 12, 0, tzinfo=timezone.utc)
@@ -101,6 +104,15 @@ def _record_starts(reconciler, monkeypatch, *, fail=False):
 
     monkeypatch.setattr(reconciler_module, "start_persistent_vm", fake_start)
     return state
+
+
+def _start_raises(reconciler, monkeypatch, error: Exception) -> None:
+    """Replace start_persistent_vm with one that fails the way `error` does."""
+
+    async def fake_start(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(reconciler_module, "start_persistent_vm", fake_start)
 
 
 @pytest.mark.asyncio
@@ -234,6 +246,43 @@ async def test_a_failed_start_is_remembered_with_a_retry_time(reconciler, monkey
     assert state is AllocationState.FAILED
     assert failure.attempts == 1
     assert failure.next_retry_at == NOW + timedelta(seconds=settings.ALLOCATION_RETRY_BASE_INTERVAL)
+
+
+@pytest.mark.asyncio
+async def test_a_start_that_raised_records_a_code_and_not_the_exceptions_text(reconciler, monkeypatch):
+    """The record is what the unauthenticated executions list publishes, so
+    an exception nobody classified must not put its text there: a create
+    quotes the paths and URLs it was working on."""
+    secret = "/var/lib/aleph/vm/deadbeef/private-volume.img"
+    _start_raises(reconciler, monkeypatch, RuntimeError(f"could not open {secret}"))
+    reconciler.submit(_plan(HASH_C))
+
+    await reconciler._converge_once()
+
+    _state, failure = reconciler.state_for(HASH_C)
+    assert failure.code is AllocationFailureCode.INTERNAL
+    assert secret not in repr(asdict(failure))
+
+
+@pytest.mark.asyncio
+async def test_a_capacity_refusal_is_recorded_under_its_own_code(reconciler, monkeypatch):
+    """A typed error the node raises on purpose keeps its meaning, which is
+    what lets the scheduler tell a full host from a broken one. Its text does
+    not travel: the refusal quotes what the host has free."""
+    _start_raises(
+        reconciler,
+        monkeypatch,
+        InsufficientResourcesError(
+            "node has 512 MiB of 64 GiB free", required={"memory_mib": 4096}, available={"memory_mib": 512}
+        ),
+    )
+    reconciler.submit(_plan(HASH_C))
+
+    await reconciler._converge_once()
+
+    _state, failure = reconciler.state_for(HASH_C)
+    assert failure.code is AllocationFailureCode.INSUFFICIENT_CAPACITY
+    assert "512 MiB" not in repr(asdict(failure))
 
 
 @pytest.mark.asyncio
@@ -599,7 +648,7 @@ async def test_a_stopped_vm_whose_last_start_failed_still_says_why(reconciler, m
 
     state, failure = reconciler.state_for(HASH_C)
     assert state is AllocationState.FAILED
-    assert failure.code == "RuntimeError"
+    assert failure.code is AllocationFailureCode.INTERNAL
 
 
 @pytest.mark.asyncio

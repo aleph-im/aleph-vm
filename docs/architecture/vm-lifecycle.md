@@ -266,10 +266,16 @@ no allocation block for it, since the supervisor already reports STOPPED and
 the agent has nothing to add. It does keep reporting a start it was asked to
 make and could not: a VM left stopped because its create failed still carries
 the failure and the attempt count, which is the node's news rather than the
-owner's. FAILED is the opposite case, nobody's decision, so the loop rebuilds
-it on the event, damped by the retry backoff. Without the split an owner
-could not keep a planned VM stopped at all, since the plan is level-triggered
-and re-pushed for as long as the VM is allocated here.
+owner's. What it reports of that failure is a code out of a closed set, each
+with a fixed sentence of its own
+(`src/aleph/vm/agent/allocation/failures.py`), and never the text of the
+exception that failed the start: the listing is unauthenticated and readable
+cross-origin, while a create failure quotes host paths, download URLs and the
+node's own free capacity. That text stays in the node's log, where the
+operator can read it. FAILED is the opposite case, nobody's decision, so the
+loop rebuilds it on the event, damped by the retry backoff. Without the split
+an owner could not keep a planned VM stopped at all, since the plan is
+level-triggered and re-pushed for as long as the VM is allocated here.
 
 What the scheduler is told is that the VM is here. A plan entry for a stopped
 VM is answered `unchanged`, the same answer a running one gets, because the
