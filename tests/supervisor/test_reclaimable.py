@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -24,11 +25,13 @@ from aleph.vm.agent.vm.reclaimable import (
     read_marker,
     reclaimable_bytes,
     refs_from_content,
+    restore_markers,
     write_marker,
 )
 from aleph.vm.storage import get_message
 
 NOW = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+OWNER = "0x1234567890123456789012345678901234567890"
 
 
 def test_marker_round_trips_through_json():
@@ -127,12 +130,59 @@ def test_adopt_clears_every_marker_of_the_namespace(pools):  # noqa: F811
     mark_reclaimable(VM_HASH, "gone", now=NOW)
     mark_reclaimable(OTHER_HASH, "gone", now=NOW)
 
-    assert adopt(VM_HASH) == 2
+    adopted = adopt(VM_HASH)
 
+    assert set(adopted) == {pools["pool0"] / VM_HASH, pools["pool1"] / VM_HASH}
     assert read_marker(pools["pool0"] / VM_HASH) is None
     assert read_marker(pools["pool1"] / VM_HASH) is None
     assert read_marker(pools["pool0"] / OTHER_HASH) is not None
-    assert adopt(VM_HASH) == 0
+    assert adopt(VM_HASH) == {}
+
+
+def test_restore_puts_every_adopted_marker_back(pools):  # noqa: F811
+    """What adopt returns is enough to undo it, on every pool the VM spans."""
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    volume(pools["pool1"], VM_HASH, "data.ext4")
+    mark_reclaimable(VM_HASH, "gone", ("parent-ref",), now=NOW, owner=OWNER)
+    adopted = adopt(VM_HASH)
+
+    assert restore_markers(adopted) == 2
+
+    for pool in (pools["pool0"], pools["pool1"]):
+        marker = read_marker(pool / VM_HASH)
+        assert marker is not None
+        assert marker.owner == OWNER and marker.depends_on == ("parent-ref",)
+        assert marker.reclaimable_since == NOW
+
+
+def test_restore_re_measures_what_the_directory_now_holds(pools):  # noqa: F811
+    """size_bytes says what is on disk, and a create that failed part way may
+    have left more than it found; everything else is the record it must not
+    change."""
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2", size=4096)
+    mark_reclaimable(VM_HASH, "gone", now=NOW, owner=OWNER)
+    adopted = adopt(VM_HASH)
+    volume(pools["pool0"], VM_HASH, "half-written.qcow2", size=8192)
+
+    restore_markers(adopted)
+
+    marker = read_marker(pools["pool0"] / VM_HASH)
+    assert marker is not None
+    assert marker.size_bytes > adopted[pools["pool0"] / VM_HASH].size_bytes
+    assert marker.owner == OWNER and marker.reclaimable_since == NOW
+
+
+def test_restore_skips_a_directory_that_is_gone(pools):  # noqa: F811
+    """A create whose teardown purged the whole directory leaves nothing to
+    mark, and the marker is not what would bring it back."""
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    mark_reclaimable(VM_HASH, "gone", now=NOW, owner=OWNER)
+    adopted = adopt(VM_HASH)
+    shutil.rmtree(pools["pool0"] / VM_HASH)
+
+    assert restore_markers(adopted) == 0
+
+    assert not (pools["pool0"] / VM_HASH).exists()
 
 
 def test_a_failed_marker_write_leaves_no_temp_file(pools, monkeypatch, caplog):  # noqa: F811
@@ -232,8 +282,6 @@ def test_reclaimable_bytes_is_cached_between_marker_changes(pools, monkeypatch):
     """Admission asks on every request; the walk must not happen every time,
     and must not be stale after a marker is written, cleared, or its whole
     directory removed."""
-    import shutil
-
     import aleph.vm.agent.vm.reclaimable as reclaimable_module
 
     walks = []

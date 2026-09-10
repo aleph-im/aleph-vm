@@ -17,13 +17,16 @@ from aiohttp.test_utils import TestClient
 from aleph_message.models import ItemHash
 from aleph_message.models.execution.environment import TrustedExecutionEnvironment
 
+import aleph.vm.storage_pools as storage_pools_module
 from aleph.vm.agent import metrics
 from aleph.vm.agent.supervisor import setup_webapp
 from aleph.vm.agent.views.operator import _security_aggregate_cache
-from aleph.vm.agent.vm.reclaimable import ReclaimableMarker
+from aleph.vm.agent.vm.reclaimable import ReclaimableMarker, mark_reclaimable
+from aleph.vm.agent.vm.reconciler import creating
 from aleph.vm.agent.vm.retire import RetireReason
 from aleph.vm.conf import settings
 from aleph.vm.storage import get_message
+from aleph.vm.storage_pools import MediaClass, StoragePool, reset_pools
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
 from aleph.vm.supervisor_interface.types import (
     Backend,
@@ -244,6 +247,59 @@ async def test_operator_erase_of_a_marker_without_an_owner_is_403(aiohttp_client
 
     assert response.status == 403
     retire.assert_not_awaited()
+
+
+@pytest.fixture
+def retention_pool(tmp_path, monkeypatch):
+    """One real volume pool, so the marker machinery reads and writes files
+    rather than a mock."""
+    pool = tmp_path / "volumes" / "persistent"
+    pool.mkdir(parents=True)
+    monkeypatch.setattr(settings, "PERSISTENT_VOLUMES_DIR", pool)
+    monkeypatch.setattr(
+        storage_pools_module,
+        "_pools",
+        [StoragePool(path=pool, media_class=MediaClass.SSD, index=0)],
+    )
+    yield pool
+    reset_pools()
+
+
+@pytest.mark.asyncio
+async def test_operator_erase_still_works_after_a_failed_re_create(aiohttp_client, mocker, retention_pool):
+    """The owner of retained disks keeps their erase across a failed
+    re-create.
+
+    The allocation reconciler retries a create that keeps failing, and each
+    attempt adopts the retained directory on entry. If the failure left it
+    unmarked, the next storage pass would re-mark it as an orphan with no
+    owner, and this endpoint would refuse the owner their own data."""
+    owner = "0x1234567890123456789012345678901234567890"
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.setup()
+
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    namespace = retention_pool / str(vm_hash)
+    namespace.mkdir()
+    (namespace / "rootfs.qcow2").write_bytes(b"x" * 4096)
+    mark_reclaimable(str(vm_hash), "gone", ("parent-image-ref",), owner=owner)
+
+    with pytest.raises(RuntimeError), creating(str(vm_hash)):
+        raise RuntimeError("the re-create failed after adoption")
+
+    mocker.patch("aleph.vm.agent.views.authentication.authenticate_jwk", return_value=owner)
+    mocker.patch.object(metrics, "get_last_record_for_vm", AsyncMock(return_value=None))
+    app = setup_webapp(supervisor=_fake_supervisor())
+    fake_sup = _fake_supervisor()
+    fake_sup.get_vm = AsyncMock(side_effect=VmNotFoundError(str(vm_hash)))
+    app["supervisor"] = fake_sup
+    retire = mocker.patch("aleph.vm.agent.views.operator.retire_vm", new_callable=AsyncMock)
+
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(f"/control/machine/{vm_hash}/erase")
+
+    assert response.status == 200
+    retire.assert_awaited_once_with(vm_hash, RetireReason.ERASE, supervisor=fake_sup, registry=app["vm_registry"])
 
 
 @pytest.mark.asyncio

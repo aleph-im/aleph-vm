@@ -67,6 +67,7 @@ from aleph.vm.agent.vm.reclaimable import (
     iter_reclaimable,
     mark_reclaimable,
     read_marker,
+    restore_markers,
 )
 from aleph.vm.agent.vm.retire import teardown_namespace_devices
 from aleph.vm.agent.vm_registry import AgentVmRegistry
@@ -121,12 +122,14 @@ def creating(namespace: str) -> Iterator[None]:
     writes a session directory outside this context can have them removed
     from under it by the next pass.
 
-    Adoption happens on entry, before the create is known to succeed, so a
-    create that is then refused leaves the directory unmarked: the next pass
-    re-marks it as an orphan with a fresh ``reclaimable_since``, which moves
-    it to the back of the eviction queue. Retention is a budgeted cache, not
-    a promise, so a reset order is acceptable; adopting later would mean a
-    create racing the eviction of the very disks it is about to reuse.
+    Adoption happens on entry, before the create is known to succeed:
+    adopting later would mean a create racing the eviction of the very disks
+    it is about to reuse. A create that then fails leaves the context by
+    raising, and the markers the entry adopted go back exactly as they were,
+    so a retained directory keeps its owner (who may still ask for it to be
+    erased), the parent images its volumes depend on, and its place in the
+    eviction queue. That matters because a failing create is retried: the
+    allocation reconciler pushes it again on every cycle.
     """
     # Register before adopting: between clear_marker and the add there would
     # otherwise be an instant where the directory is protected by neither
@@ -135,12 +138,26 @@ def creating(namespace: str) -> Iterator[None]:
     # is_creating as False must have read it before this line, and then
     # still sees the marker adopt() has yet to clear.
     _creating[namespace] = _creating.get(namespace, 0) + 1
+    adopted: dict[Path, ReclaimableMarker] = {}
     try:
         # Inside the try: an adopt that raises (a marker that cannot be
         # unlinked) must not leave the guard up for good, which would exempt
         # the namespace from every future pass.
-        adopt(namespace)
+        adopted = adopt(namespace)
         yield
+    except BaseException:
+        # Any way out other than a normal return means the create did not
+        # commit: an exception, and a cancellation of the task running it.
+        # The restore runs before the guard comes down below, so no pass can
+        # see the directory unmarked and unguarded in between.
+        try:
+            restore_markers(adopted)
+        except Exception:
+            # Deliberately swallowed: the create's own failure is what the
+            # caller has to see. A directory left unmarked is picked up as an
+            # orphan by the next pass, which is what used to happen anyway.
+            logger.exception("Could not restore the reclaimable markers of %s", namespace)
+        raise
     finally:
         remaining = _creating[namespace] - 1
         if remaining:
