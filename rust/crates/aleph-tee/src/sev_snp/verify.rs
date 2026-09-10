@@ -1,11 +1,12 @@
+use std::time::SystemTime;
+
 use anyhow::{Context, Result, bail};
-use openssl::asn1::Asn1Time;
-use openssl::ecdsa::EcdsaSig;
 use openssl::hash::MessageDigest;
 use openssl::x509::X509;
 use serde_json::json;
 use sev::certs::snp::builtin;
 
+use crate::pki::{asn1_now, check_cert_window, check_pinned_root_key, ecdsa_from_components};
 use crate::types::{AttestationReport, SevSnpRegisters, TeeType, VerificationResult};
 
 use super::certs::{CertChain, TcbParams, fetch_ca_chain, fetch_vcek};
@@ -178,7 +179,7 @@ const AMD_ORG_NAME: &str = "Advanced Micro Devices";
 /// Verify the AMD certificate chain against a pinned AMD root.
 ///
 /// `pinned_ark_der` is AMD's genuine ARK certificate for the product (in
-/// production, sourced from [`pinned_amd_ark_der`]; in tests, injected so the
+/// production, sourced from `pinned_amd_ark_der`; in tests, injected so the
 /// happy path and each reject reason can be exercised).
 ///
 /// Checks, in order:
@@ -194,8 +195,29 @@ const AMD_ORG_NAME: &str = "Advanced Micro Devices";
 ///   key).
 /// - ASK is signed by ARK.
 /// - VCEK is signed by ASK.
-/// - ARK, ASK, and VCEK are all within their validity period (notBefore/notAfter).
+/// - ARK, ASK, and VCEK are all within their validity period
+///   (notBefore/notAfter) at the current wall-clock time. Freshness is a
+///   production requirement, so this entry point reads the clock; the
+///   crate-private `verify_cert_chain_at` takes the instant as a parameter
+///   instead.
 pub fn verify_cert_chain(chain: &CertChain, pinned_ark_der: &[u8]) -> Result<()> {
+    verify_cert_chain_at(chain, pinned_ark_der, SystemTime::now())
+}
+
+/// [`verify_cert_chain`] against an injected verification time.
+///
+/// The certificate windows are the only clock-dependent step, and taking
+/// the time as a parameter is what lets a test drive a chain that is
+/// expired or not yet valid at a chosen instant without waiting for the
+/// wall clock to get there.
+///
+/// Crate-private: injecting the verification time is a testing affordance,
+/// not something a caller outside the crate has any reason to reach for.
+pub(crate) fn verify_cert_chain_at(
+    chain: &CertChain,
+    pinned_ark_der: &[u8],
+    now: SystemTime,
+) -> Result<()> {
     let ark = X509::from_der(&chain.ark_der).context("failed to parse ARK certificate")?;
     let ask = X509::from_der(&chain.ask_der).context("failed to parse ASK certificate")?;
     let vcek = X509::from_der(&chain.vcek_der).context("failed to parse VCEK certificate")?;
@@ -239,9 +261,10 @@ pub fn verify_cert_chain(chain: &CertChain, pinned_ark_der: &[u8]) -> Result<()>
     }
 
     // Reject expired or not-yet-valid certificates.
-    check_cert_validity(&ark, "ARK")?;
-    check_cert_validity(&ask, "ASK")?;
-    check_cert_validity(&vcek, "VCEK")?;
+    let now = asn1_now(now)?;
+    check_cert_window("the ARK certificate", &ark, &now)?;
+    check_cert_window("the ASK certificate", &ask, &now)?;
+    check_cert_window("the VCEK certificate", &vcek, &now)?;
 
     Ok(())
 }
@@ -249,53 +272,18 @@ pub fn verify_cert_chain(chain: &CertChain, pinned_ark_der: &[u8]) -> Result<()>
 /// Verify that the chain's ARK carries the same public key
 /// (SubjectPublicKeyInfo) as AMD's pinned genuine ARK.
 ///
+/// The key is compared, not the whole certificate. AMD re-issues an ARK
+/// with the same key, so pinning the bytes would turn a routine re-issue
+/// into a fleet-wide verification outage; the key is the trust anchor and
+/// the envelope around it is allowed to move. The TDX side pins the whole
+/// certificate instead, because Intel publishes one fixed SGX Root CA that
+/// every genuine chain carries verbatim.
+///
 /// A mismatch means the ARK is not AMD's (forged or cache-poisoned) and the
 /// chain is rejected.
 fn verify_ark_matches_pinned_root(ark: &X509, pinned_ark_der: &[u8]) -> Result<()> {
     let pinned = X509::from_der(pinned_ark_der).context("failed to parse pinned AMD ARK")?;
-
-    let ark_spki = ark
-        .public_key()
-        .context("failed to extract chain ARK public key")?
-        .public_key_to_der()
-        .context("failed to encode chain ARK public key")?;
-    let pinned_spki = pinned
-        .public_key()
-        .context("failed to extract pinned ARK public key")?
-        .public_key_to_der()
-        .context("failed to encode pinned ARK public key")?;
-
-    if ark_spki != pinned_spki {
-        bail!(
-            "chain ARK public key does not match the pinned AMD root \
-             (possible forged or cache-poisoned ARK)"
-        );
-    }
-    Ok(())
-}
-
-/// Reject a certificate whose validity period does not include the current
-/// time (expired, or not yet valid).
-fn check_cert_validity(cert: &X509, label: &str) -> Result<()> {
-    let now = Asn1Time::days_from_now(0).context("failed to obtain current time")?;
-
-    if cert
-        .not_before()
-        .compare(&now)
-        .context("failed to compare notBefore")?
-        == std::cmp::Ordering::Greater
-    {
-        bail!("{label} certificate is not yet valid (notBefore is in the future)");
-    }
-    if cert
-        .not_after()
-        .compare(&now)
-        .context("failed to compare notAfter")?
-        == std::cmp::Ordering::Less
-    {
-        bail!("{label} certificate has expired");
-    }
-    Ok(())
+    check_pinned_root_key("the chain ARK", ark, "the pinned AMD root", &pinned)
 }
 
 /// Check an ARK certificate's subject metadata against AMD's expected values.
@@ -406,13 +394,7 @@ pub fn verify_report_signature(report_raw: &[u8], vcek_der: &[u8]) -> Result<()>
     let s_trimmed = strip_leading_zeros(&s_bytes_be);
 
     // Build ECDSA signature from r and s components
-    let r_bn = openssl::bn::BigNum::from_slice(r_trimmed)
-        .context("failed to create BigNum from r component")?;
-    let s_bn = openssl::bn::BigNum::from_slice(s_trimmed)
-        .context("failed to create BigNum from s component")?;
-
-    let ecdsa_sig = EcdsaSig::from_private_components(r_bn, s_bn)
-        .context("failed to create ECDSA signature")?;
+    let ecdsa_sig = ecdsa_from_components(r_trimmed, s_trimmed)?;
 
     // Hash the signed portion with SHA-384
     let digest = openssl::hash::hash(MessageDigest::sha384(), signed_data)
@@ -454,6 +436,7 @@ mod tests {
     use super::*;
     use openssl::bn::{BigNum, MsbOption};
     use openssl::ec::{EcGroup, EcKey};
+    use openssl::ecdsa::EcdsaSig;
     use openssl::hash::hash;
     use openssl::nid::Nid;
     use openssl::pkey::{PKey, Private};
@@ -841,6 +824,33 @@ mod tests {
         );
     }
 
+    /// The pin is on the key, deliberately: AMD re-issues an ARK with the
+    /// same key, and a chain carrying such a re-issue must keep verifying
+    /// against the vendored copy. A wrong key still fails, which the
+    /// neighbouring tests cover.
+    #[test]
+    fn test_verify_cert_chain_accepts_a_same_key_reissued_ark() {
+        let (chain, ark_key, _ask_key, _vcek_key, _ark) = valid_chain();
+        let reissued = build_cert(
+            &ark_key,
+            &ark_key,
+            AMD_CN,
+            AMD_ORG_NAME,
+            AMD_CN,
+            AMD_ORG_NAME,
+            -7200,
+            7200,
+        );
+        assert_ne!(
+            reissued.to_der().unwrap(),
+            chain.ark_der,
+            "the re-issued certificate must differ from the chain's"
+        );
+
+        verify_cert_chain(&chain, &reissued.to_der().unwrap())
+            .expect("a re-issue carrying the pinned key must still verify");
+    }
+
     #[test]
     fn test_verify_cert_chain_broken_ask_link() {
         // ASK signed by a rogue key, not the ARK.
@@ -955,6 +965,40 @@ mod tests {
         );
     }
 
+    /// The window check must follow the injected instant, not the wall
+    /// clock: a chain that is genuine today is neither valid a year before
+    /// it was issued nor after it expires.
+    #[test]
+    fn test_cert_windows_follow_the_injected_clock() {
+        use std::time::Duration;
+
+        // valid_chain() builds certificates valid one hour either side of
+        // the present.
+        let (chain, _ark_key, _ask_key, _vcek_key, ark) = valid_chain();
+        let pinned = ark.to_der().unwrap();
+        let now = SystemTime::now();
+
+        verify_cert_chain_at(&chain, &pinned, now).expect("valid inside the window");
+
+        let later = now + Duration::from_secs(7200);
+        let err = verify_cert_chain_at(&chain, &pinned, later)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("expired"),
+            "expected an expiry failure, got: {err}"
+        );
+
+        let earlier = now - Duration::from_secs(7200);
+        let err = verify_cert_chain_at(&chain, &pinned, earlier)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("not yet valid"),
+            "expected a not-yet-valid failure, got: {err}"
+        );
+    }
+
     #[test]
     fn test_verify_cert_chain_invalid_certs() {
         // Non-parseable DER: fails before reaching crypto.
@@ -1008,6 +1052,8 @@ mod tests {
                 .unwrap_or_else(|e| panic!("KDS fetch for {product} failed: {e}"));
             let kds_ark = X509::from_der(&ark_der).unwrap();
             let pinned = X509::from_der(&pinned_amd_ark_der(product).unwrap()).unwrap();
+            // The key, because that is what the pin compares: AMD may
+            // re-issue the certificate around it.
             assert_eq!(
                 kds_ark.public_key().unwrap().public_key_to_der().unwrap(),
                 pinned.public_key().unwrap().public_key_to_der().unwrap(),

@@ -1,12 +1,13 @@
 //! The Intel certificate side of TDX quote verification: the pinned SGX
 //! Root CA, PCK chain verification, and CRL checks.
 
-use std::cmp::Ordering;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
-use openssl::asn1::{Asn1Time, Asn1TimeRef};
+use openssl::asn1::Asn1TimeRef;
 use openssl::x509::{CrlStatus, X509, X509Crl};
+
+use crate::pki::{asn1_now, check_cert_window, check_pinned_root, check_validity_window};
 
 use super::collateral::TdxCollateral;
 
@@ -26,36 +27,15 @@ const INTEL_SGX_ROOT_CA_PEM: &[u8] = include_bytes!("intel_sgx_root_ca.pem");
 /// Number of certificates in a PCK chain: leaf, intermediate CA, root CA.
 const PCK_CHAIN_LEN: usize = 3;
 
+/// Number of certificates in a collateral issuer chain: signer, root CA.
+const SIGNER_CHAIN_LEN: usize = 2;
+
+/// How the pinned Intel root is named in rejection messages.
+const PINNED_ROOT_LABEL: &str = "the pinned Intel SGX Root CA";
+
 /// Parse the pinned Intel SGX Root CA.
-pub fn pinned_intel_root() -> Result<X509> {
+pub(crate) fn pinned_intel_root() -> Result<X509> {
     X509::from_pem(INTEL_SGX_ROOT_CA_PEM).context("failed to parse the pinned Intel SGX Root CA")
-}
-
-/// Convert an injected clock into an ASN.1 time for certificate checks.
-fn asn1_now(now: SystemTime) -> Result<Asn1Time> {
-    let secs = now
-        .duration_since(UNIX_EPOCH)
-        .context("verification time predates the unix epoch")?
-        .as_secs();
-    let secs: i64 = secs
-        .try_into()
-        .context("verification time does not fit in an i64")?;
-    Asn1Time::from_unix(secs).context("failed to convert verification time to ASN.1")
-}
-
-fn check_window(
-    what: &str,
-    not_before: &Asn1TimeRef,
-    not_after: &Asn1TimeRef,
-    now: &Asn1TimeRef,
-) -> Result<()> {
-    if not_before.compare(now)? == Ordering::Greater {
-        bail!("{what} is not yet valid (notBefore {not_before})");
-    }
-    if not_after.compare(now)? == Ordering::Less {
-        bail!("{what} expired (notAfter {not_after})");
-    }
-    Ok(())
 }
 
 /// Verify one CRL: signature by its issuer, validity window against the
@@ -85,7 +65,7 @@ fn check_crl(
     let next_update = crl
         .next_update()
         .with_context(|| format!("{what} carries no nextUpdate"))?;
-    check_window(what, last_update, next_update, now)?;
+    check_validity_window(what, last_update, next_update, now)?;
 
     match crl.get_by_cert(cert) {
         CrlStatus::NotRevoked => Ok(()),
@@ -104,7 +84,7 @@ fn check_crl(
 /// verified chain itself (root CA CRL under the pinned root, PCK CRL under
 /// the chain's intermediate), so the collateral's own issuer-chain fields
 /// are never trusted here.
-pub fn verify_pck_chain(
+pub(crate) fn verify_pck_chain(
     pck_chain_pem: &[u8],
     collateral: &TdxCollateral,
     now: SystemTime,
@@ -121,14 +101,17 @@ pub fn verify_pck_chain(
     let (leaf, intermediate, root) = (&chain[0], &chain[1], &chain[2]);
 
     // The embedded root must BE the pinned root, not merely resemble it.
+    // The whole certificate is compared, because Intel publishes one fixed
+    // SGX Root CA and every genuine chain carries it verbatim. The SEV-SNP
+    // side pins AMD's key rather than the bytes around it, because AMD
+    // re-issues the ARK certificate.
     let pinned = pinned_intel_root()?;
-    if root.to_der().context("failed to encode the chain root")?
-        != pinned
-            .to_der()
-            .context("failed to encode the pinned root")?
-    {
-        bail!("the quote's root certificate is not the pinned Intel SGX Root CA");
-    }
+    check_pinned_root(
+        "the quote's root certificate",
+        root,
+        PINNED_ROOT_LABEL,
+        &pinned,
+    )?;
 
     // Signatures down the chain, and validity windows for all three.
     let root_key = root
@@ -149,24 +132,9 @@ pub fn verify_pck_chain(
     {
         bail!("the PCK leaf certificate is not signed by the intermediate CA");
     }
-    check_window(
-        "the root certificate",
-        root.not_before(),
-        root.not_after(),
-        &now,
-    )?;
-    check_window(
-        "the intermediate certificate",
-        intermediate.not_before(),
-        intermediate.not_after(),
-        &now,
-    )?;
-    check_window(
-        "the PCK leaf certificate",
-        leaf.not_before(),
-        leaf.not_after(),
-        &now,
-    )?;
+    check_cert_window("the root certificate", root, &now)?;
+    check_cert_window("the intermediate certificate", intermediate, &now)?;
+    check_cert_window("the PCK leaf certificate", leaf, &now)?;
 
     // Revocation: the root's CRL covers intermediates, the intermediate's
     // covers PCK leaves.
@@ -188,67 +156,247 @@ pub fn verify_pck_chain(
     Ok(leaf.to_owned())
 }
 
-/// Verify an Intel collateral issuer chain (signer certificate, then its
-/// issuing intermediate) up to the pinned root, and return the signer.
+/// Common Name Intel gives the certificate that signs its TCB Info and QE
+/// Identity documents.
+const TCB_SIGNING_CN: &str = "Intel SGX TCB Signing";
+
+/// Verify an Intel collateral issuer chain (the signer certificate, then
+/// the root that issued it) and return the signer.
 ///
-/// Used for the TCB Info and QE Identity signatures. Unlike the PCK chain
-/// the root is not embedded, so the intermediate is checked directly
-/// against the pin. Intel publishes no CRL for these signers, matching the
-/// DCAP reference, so none is applied here.
-pub fn verify_signer_chain(chain_pem: &[u8], now: SystemTime) -> Result<X509> {
+/// Used for the TCB Info and QE Identity signatures. Intel issues the TCB
+/// signing certificate directly off the root and ships the root itself as
+/// the second element, so this chain is two certificates long and the root
+/// is pinned in place exactly as it is in a PCK chain. Intel publishes no
+/// CRL for these signers, matching the DCAP reference, so none is applied
+/// here.
+///
+/// The signer's Common Name is checked as well. Without it any certificate
+/// the Intel root issued for another purpose (the PCK Platform CA, for one)
+/// would be accepted as a TCB Info signer, which is a certificate-purpose
+/// confusion the chain arithmetic alone does not catch.
+pub(crate) fn verify_signer_chain(chain_pem: &[u8], now: SystemTime) -> Result<X509> {
     let now = asn1_now(now)?;
     let chain = X509::stack_from_pem(chain_pem).context("failed to parse the issuer chain PEM")?;
-    if chain.len() != 2 {
+    if chain.len() != SIGNER_CHAIN_LEN {
         bail!(
-            "expected 2 certificates in the issuer chain (signer, intermediate), got {}",
+            "expected {SIGNER_CHAIN_LEN} certificates in the issuer chain (signer, root), got {}",
             chain.len()
         );
     }
-    let (signer, intermediate) = (&chain[0], &chain[1]);
+    let (signer, root) = (&chain[0], &chain[1]);
 
     let pinned = pinned_intel_root()?;
+    check_pinned_root(
+        "the collateral issuer chain's root",
+        root,
+        PINNED_ROOT_LABEL,
+        &pinned,
+    )?;
+
     let pinned_key = pinned
         .public_key()
         .context("failed to extract the pinned root public key")?;
-    if !intermediate
-        .verify(&pinned_key)
-        .context("failed to check the intermediate signature")?
-    {
-        bail!("the issuer chain intermediate is not signed by the pinned Intel root");
-    }
-    let intermediate_key = intermediate
-        .public_key()
-        .context("failed to extract the intermediate public key")?;
     if !signer
-        .verify(&intermediate_key)
+        .verify(&pinned_key)
         .context("failed to check the signer signature")?
     {
-        bail!("the collateral signer certificate is not signed by the intermediate CA");
+        bail!("the collateral signer certificate is not signed by the Intel root");
     }
-    check_window(
-        "the pinned root certificate",
-        pinned.not_before(),
-        pinned.not_after(),
-        &now,
-    )?;
-    check_window(
-        "the intermediate certificate",
-        intermediate.not_before(),
-        intermediate.not_after(),
-        &now,
-    )?;
-    check_window(
-        "the signer certificate",
-        signer.not_before(),
-        signer.not_after(),
-        &now,
-    )?;
+    check_signer_identity(signer)?;
+
+    // The pinned copy's window rather than the presented root's, which is
+    // the same check: the two were just established to be the same bytes.
+    check_cert_window("the pinned root certificate", &pinned, &now)?;
+    check_cert_window("the signer certificate", signer, &now)?;
     Ok(signer.to_owned())
+}
+
+/// Reject a collateral signer that is not Intel's TCB signing certificate.
+///
+/// The subject must carry exactly one Common Name and it must be the TCB
+/// signing name in full. A substring test would accept a subject that only
+/// embeds the name, and taking the first of several Common Names would let
+/// the rest of the subject say something else entirely.
+fn check_signer_identity(signer: &X509) -> Result<()> {
+    let subject = signer.subject_name();
+    let mut entries = subject.entries_by_nid(openssl::nid::Nid::COMMONNAME);
+    let cn = entries
+        .next()
+        .context("the collateral signer certificate has no Common Name")?;
+    if entries.next().is_some() {
+        bail!("the collateral signer certificate carries more than one Common Name");
+    }
+    let cn = std::str::from_utf8(cn.data().as_slice())
+        .context("the collateral signer Common Name is not valid UTF-8")?;
+    if cn != TCB_SIGNING_CN {
+        bail!("the collateral signer Common Name {cn:?} is not {TCB_SIGNING_CN:?}");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, UNIX_EPOCH};
+
     use super::*;
+
+    const COLLATERAL_V4: &[u8] =
+        include_bytes!("../../tests/fixtures/tdx/tdx_quote_collateral.json");
+
+    /// Inside the v4 collateral's certificate windows: 2025-06-20T00:00:00Z.
+    fn now_v4() -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(1_750_377_600)
+    }
+
+    fn collateral() -> TdxCollateral {
+        TdxCollateral::from_json(COLLATERAL_V4).expect("collateral parses")
+    }
+
+    fn cert_at(chain_pem: &str, index: usize) -> X509 {
+        X509::stack_from_pem(chain_pem.as_bytes())
+            .expect("chain parses")
+            .swap_remove(index)
+    }
+
+    fn pem_chain(certs: &[&X509]) -> Vec<u8> {
+        certs
+            .iter()
+            .flat_map(|cert| cert.to_pem().expect("cert re-encodes"))
+            .collect()
+    }
+
+    #[test]
+    fn genuine_collateral_chain_verifies() {
+        let signer = verify_signer_chain(collateral().tcb_info_issuer_chain.as_bytes(), now_v4())
+            .expect("the fixture's TCB Info chain verifies");
+        let subject = format!("{:?}", signer.subject_name());
+        assert!(subject.contains("TCB Signing"), "got {subject}");
+    }
+
+    /// Intel's collateral chains carry the root itself in second position,
+    /// so the root must be pinned there exactly as it is in a PCK chain. A
+    /// chain ending in some other genuine Intel certificate is refused.
+    #[test]
+    fn collateral_chain_must_end_in_the_pinned_root() {
+        let collateral = collateral();
+        let signer = cert_at(&collateral.tcb_info_issuer_chain, 0);
+        let platform_ca = cert_at(&collateral.pck_crl_issuer_chain, 0);
+        let err = verify_signer_chain(&pem_chain(&[&signer, &platform_ca]), now_v4())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("pinned Intel SGX Root CA"), "got: {err}");
+    }
+
+    /// A root carrying the pinned public key in a different envelope is the
+    /// one rejection that is a maintenance task rather than an attack, and
+    /// the message has to say so. Intel has never re-issued its root, so the
+    /// case is built here from the pin's own public key in a fresh
+    /// certificate; the envelope is signed with a throwaway key, which the
+    /// byte-for-byte comparison never looks at.
+    #[test]
+    fn a_root_reissued_with_the_pinned_key_asks_for_a_refresh() {
+        use openssl::asn1::Asn1Time;
+        use openssl::ec::{EcGroup, EcKey};
+        use openssl::hash::MessageDigest;
+        use openssl::pkey::PKey;
+        use openssl::x509::{X509Builder, X509NameBuilder};
+
+        let pinned = pinned_intel_root().expect("pin parses");
+        let mut subject = X509NameBuilder::new().expect("name builder");
+        subject
+            .append_entry_by_text("CN", "Intel SGX Root CA")
+            .expect("append CN");
+        let subject = subject.build();
+        let group = EcGroup::from_curve_name(openssl::nid::Nid::X9_62_PRIME256V1).expect("group");
+        let throwaway = PKey::from_ec_key(EcKey::generate(&group).expect("key")).expect("pkey");
+        let mut builder = X509Builder::new().expect("cert builder");
+        builder.set_subject_name(&subject).expect("subject");
+        builder.set_issuer_name(&subject).expect("issuer");
+        builder
+            .set_pubkey(&pinned.public_key().expect("pinned key extracts"))
+            .expect("pubkey");
+        builder
+            .set_not_before(&Asn1Time::from_unix(1_700_000_000).expect("not before"))
+            .expect("set not before");
+        builder
+            .set_not_after(&Asn1Time::from_unix(1_900_000_000).expect("not after"))
+            .expect("set not after");
+        builder
+            .sign(&throwaway, MessageDigest::sha256())
+            .expect("sign");
+        let reissued = builder.build();
+        assert_ne!(
+            reissued.to_der().unwrap(),
+            pinned.to_der().unwrap(),
+            "the re-issued envelope must differ from the pin"
+        );
+
+        let signer = cert_at(&collateral().tcb_info_issuer_chain, 0);
+        let err = verify_signer_chain(&pem_chain(&[&signer, &reissued]), now_v4())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("same public key"), "got: {err}");
+        assert!(err.contains("pin needs refreshing"), "got: {err}");
+        // And it is not confused with the forged-root case.
+        assert!(!err.contains("forged"), "got: {err}");
+    }
+
+    /// The PCK Platform CA is a genuine Intel certificate issued by the same
+    /// root, but it is not the TCB signing key: presented as a collateral
+    /// signer it must be refused on its subject.
+    #[test]
+    fn collateral_signer_must_be_the_tcb_signing_certificate() {
+        let err = verify_signer_chain(collateral().pck_crl_issuer_chain.as_bytes(), now_v4())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Intel SGX TCB Signing"), "got: {err}");
+    }
+
+    /// The subject gate is an equality on a single Common Name. A subject
+    /// that merely embeds the TCB signing name, or that hides a second name
+    /// behind it, is not Intel's TCB signing certificate.
+    #[test]
+    fn signer_common_name_must_match_exactly_and_stand_alone() {
+        use openssl::asn1::Asn1Time;
+        use openssl::ec::{EcGroup, EcKey};
+        use openssl::hash::MessageDigest;
+        use openssl::pkey::PKey;
+        use openssl::x509::{X509Builder, X509NameBuilder};
+
+        fn cert_with_common_names(names: &[&str]) -> X509 {
+            let group =
+                EcGroup::from_curve_name(openssl::nid::Nid::X9_62_PRIME256V1).expect("group");
+            let key = PKey::from_ec_key(EcKey::generate(&group).expect("key")).expect("pkey");
+            let mut subject = X509NameBuilder::new().expect("name builder");
+            for name in names {
+                subject.append_entry_by_text("CN", name).expect("append CN");
+            }
+            let subject = subject.build();
+            let mut builder = X509Builder::new().expect("cert builder");
+            builder.set_subject_name(&subject).expect("subject");
+            builder.set_issuer_name(&subject).expect("issuer");
+            builder.set_pubkey(&key).expect("pubkey");
+            builder
+                .set_not_before(&Asn1Time::from_unix(1_700_000_000).expect("not before"))
+                .expect("set not before");
+            builder
+                .set_not_after(&Asn1Time::from_unix(1_900_000_000).expect("not after"))
+                .expect("set not after");
+            builder.sign(&key, MessageDigest::sha256()).expect("sign");
+            builder.build()
+        }
+
+        let exact = cert_with_common_names(&[TCB_SIGNING_CN]);
+        check_signer_identity(&exact).expect("the exact Common Name is accepted");
+
+        let superstring = cert_with_common_names(&["Not the Intel SGX TCB Signing CA"]);
+        let err = check_signer_identity(&superstring).unwrap_err().to_string();
+        assert!(err.contains("is not"), "got: {err}");
+
+        let two = cert_with_common_names(&[TCB_SIGNING_CN, "Something Else"]);
+        let err = check_signer_identity(&two).unwrap_err().to_string();
+        assert!(err.contains("more than one Common Name"), "got: {err}");
+    }
 
     #[test]
     fn pinned_root_parses_and_is_self_signed() {

@@ -146,7 +146,10 @@ fn integer_u16(tlv: &Tlv<'_>) -> Result<u16> {
 
 /// Extract the platform identity from a PCK leaf certificate's SGX
 /// extension.
-pub fn parse_pck_platform(leaf: &X509) -> Result<PckPlatform> {
+///
+/// Crate-private: it takes an openssl certificate, and openssl types stay
+/// out of the crate's API so a dependency bump cannot break callers.
+pub(crate) fn parse_pck_platform(leaf: &X509) -> Result<PckPlatform> {
     let der = leaf.to_der().context("failed to DER-encode the PCK leaf")?;
     let (_, cert) = x509_parser::parse_x509_certificate(&der)
         .map_err(|e| anyhow::anyhow!("failed to parse the PCK leaf: {e}"))?;
