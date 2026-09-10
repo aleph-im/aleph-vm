@@ -66,6 +66,7 @@ def _capacity(*, refuse: bool = False):
     error = InsufficientResourcesError("no room", required={}, available={})
     return SimpleNamespace(
         check_message=MagicMock(side_effect=error if refuse else None),
+        check_recreate=MagicMock(side_effect=error if refuse else None),
         resolve_gpus=AsyncMock(return_value=[]),
     )
 
@@ -85,12 +86,13 @@ def _patch_message(monkeypatch, content):
     return content
 
 
-async def _create(capacity, supervisor=None, registry=None):
+async def _create(capacity, supervisor=None, registry=None, recreate=False):
     await run_module.create_vm_execution(
         _HASH,
         supervisor=supervisor or _supervisor(),
         registry=registry if registry is not None else AgentVmRegistry(),
         capacity=capacity,
+        recreate=recreate,
     )
 
 
@@ -349,3 +351,119 @@ def _vprogram_content():
     from test_vprogram import load_vprogram_message
 
     return load_vprogram_message().content
+
+
+class _PastAdmission(Exception):
+    """Raised by the build stub: reaching it means admission let the create by."""
+
+
+def _over_capacity_manager(mocker, registry):
+    """A real CapacityManager on a node whose records already fill its bucket.
+
+    64 GiB less the two reservations leaves a 55296 MiB instance bucket, and
+    the caller records more than that, which is the state a node lands in for
+    historical reasons: records made when the caps were larger, or a host that
+    shrank under them. Disk is left roomy, since this is about memory.
+    """
+    from pathlib import Path
+
+    from aleph.vm.agent.capacity import CapacityManager
+    from aleph.vm.conf import settings
+
+    mocker.patch.object(settings, "HOST_MEMORY_RESERVED_MIB", 2048)
+    mocker.patch.object(settings, "PROGRAM_MEMORY_RESERVED_MIB", 8192)
+    mocker.patch(
+        "aleph.vm.agent.capacity.psutil.virtual_memory",
+        return_value=mocker.Mock(total=64 * 1024 * 1024 * 1024),
+    )
+    mocker.patch("aleph.vm.agent.capacity.psutil.cpu_count", return_value=16)
+    mocker.patch.object(CapacityManager, "_available_disk_bytes", return_value=100 * 1024 * 1024 * 1024)
+    mocker.patch(
+        "aleph.vm.agent.capacity.storage_pools.eligible_pool_free_bytes",
+        return_value=[(SimpleNamespace(path=Path("/pool0"), index=0), 100 * 1024 * 1024 * 1024)],
+    )
+    mocker.patch("aleph.vm.agent.capacity.reclaimable_bytes", return_value=0)
+    mocker.patch("aleph.vm.agent.capacity.existing_volume_files", return_value={})
+    manager = CapacityManager(supervisor=MagicMock(), registry=registry)
+    manager.resolve_gpus = AsyncMock(return_value=[])
+    return manager
+
+
+def _registry_holding(*hashes) -> AgentVmRegistry:
+    registry = AgentVmRegistry()
+    for vm_hash in hashes:
+        content = _make_qemu_instance_message(memory=54_000)
+        registry.record(vm_hash, message=content, original=content, persistent=True)
+    return registry
+
+
+class TestRebuildAdmission:
+    """A rebuild reuses a reservation the node holds; a newcomer asks for one."""
+
+    @pytest.mark.asyncio
+    async def test_a_rebuild_of_a_recorded_hash_skips_the_memory_admission(self, monkeypatch):
+        _patch_message(monkeypatch, _make_qemu_instance_message(hypervisor=HypervisorType.qemu))
+        monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock(side_effect=_PastAdmission))
+        capacity = _capacity()
+
+        with pytest.raises(_PastAdmission):
+            await _create(capacity, registry=_registry_holding(_HASH), recreate=True)
+
+        capacity.check_message.assert_not_called()
+        assert capacity.check_recreate.call_args.kwargs["vm_hash"] == _HASH
+
+    @pytest.mark.asyncio
+    async def test_a_first_create_is_admitted_in_full_even_from_a_rebuild_caller(self, monkeypatch):
+        """The flag says the caller may be rebuilding, the registry says
+        whether it is. With no record there is no reservation to reuse."""
+        _patch_message(monkeypatch, _make_qemu_instance_message(hypervisor=HypervisorType.qemu))
+        monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock(side_effect=_PastAdmission))
+        capacity = _capacity()
+
+        with pytest.raises(_PastAdmission):
+            await _create(capacity, recreate=True)
+
+        capacity.check_recreate.assert_not_called()
+        capacity.check_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_a_caller_that_does_not_claim_a_rebuild_is_admitted_in_full(self, monkeypatch):
+        """The legacy allocation route and the on-demand paths keep the full
+        check whatever the registry holds."""
+        _patch_message(monkeypatch, _make_qemu_instance_message(hypervisor=HypervisorType.qemu))
+        monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock(side_effect=_PastAdmission))
+        capacity = _capacity()
+
+        with pytest.raises(_PastAdmission):
+            await _create(capacity, registry=_registry_holding(_HASH))
+
+        capacity.check_recreate.assert_not_called()
+        capacity.check_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_a_rebuild_proceeds_on_a_node_whose_records_exceed_its_memory(self, monkeypatch, mocker):
+        """The failure this is all for, against the real capacity manager. The
+        node holds more than its bucket, so a crashed VM's rebuild was refused
+        and #1209 kept the VM without ever building it back: one crash
+        stranded it for good. Its own record is the reservation the rebuild
+        uses, so nothing new is being asked for."""
+        _patch_message(monkeypatch, _make_qemu_instance_message(hypervisor=HypervisorType.qemu))
+        monkeypatch.setattr(run_module, "build_create_vm_spec", AsyncMock(side_effect=_PastAdmission))
+        registry = _registry_holding(_HASH, ItemHash("a" * 64), ItemHash("b" * 64))
+
+        with pytest.raises(_PastAdmission):
+            await _create(_over_capacity_manager(mocker, registry), registry=registry, recreate=True)
+
+    @pytest.mark.asyncio
+    async def test_a_first_create_on_that_node_is_still_refused(self, monkeypatch, mocker):
+        """The other side of it: the node really is full, and a hash it holds
+        nothing for gets the honest no."""
+        _patch_message(monkeypatch, _make_qemu_instance_message(hypervisor=HypervisorType.qemu))
+        build = AsyncMock(side_effect=_PastAdmission)
+        monkeypatch.setattr(run_module, "build_create_vm_spec", build)
+        registry = _registry_holding(ItemHash("a" * 64), ItemHash("b" * 64))
+
+        with pytest.raises(InsufficientResourcesError):
+            await _create(_over_capacity_manager(mocker, registry), registry=registry, recreate=True)
+
+        build.assert_not_awaited()
