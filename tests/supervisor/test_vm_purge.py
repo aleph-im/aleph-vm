@@ -139,8 +139,8 @@ def test_purge_storage_removes_the_directories_and_session_dir(pools):
 
 
 def test_purge_is_idempotent(pools):
-    assert purge_vm_storage(VM_HASH) == 0
-    assert purge_vm_storage(VM_HASH) == 0
+    assert purge_vm_storage(VM_HASH).deleted == 0
+    assert purge_vm_storage(VM_HASH).deleted == 0
 
 
 @pytest.mark.parametrize(
@@ -176,7 +176,10 @@ def test_purge_storage_accepts_every_shape_of_item_hash(pools, namespace):
     """A storage hash and an IPFS CID are both VM namespaces."""
     _volume(pools["pool0"], namespace, "rootfs.qcow2")
 
-    assert purge_vm_storage(namespace) == 1
+    result = purge_vm_storage(namespace)
+
+    assert result.deleted == 1
+    assert result.kept == ()
     assert not (pools["pool0"] / namespace).exists()
 
 
@@ -331,3 +334,55 @@ def test_purge_side_dirs_leaves_the_volumes(pools):
 
     assert rootfs.exists()
     assert not session_dir.exists()
+
+
+def test_the_purge_result_names_the_dm_target_that_kept_a_directory(pools, monkeypatch):
+    """A caller has to be able to tell the two ways a directory survives
+    apart: only a device-mapper hold is fixed by tearing a target down."""
+    _volume(pools["pool0"], VM_HASH, "data.btrfs")
+    _volume(pools["pool1"], VM_HASH, "extra.ext4")
+    dm_path = Path("/dev/mapper") / f"{VM_HASH}_data"
+    real_is_block_device = Path.is_block_device
+    monkeypatch.setattr(Path, "is_block_device", lambda self: self == dm_path or real_is_block_device(self))
+
+    result = purge_vm_storage(VM_HASH)
+
+    assert result.deleted == 1, "the volume on the other pool was deleted"
+    assert [kept.path for kept in result.kept] == [pools["pool0"] / VM_HASH]
+    assert result.kept[0].device_mapper is True
+    assert "data.btrfs" in result.kept[0].reason
+
+
+def test_the_purge_result_names_the_error_that_kept_a_directory(pools, monkeypatch):
+    """A read-only filesystem, an immutable file, a directory this user may
+    not write: the purge leaves the directory exactly as a device-mapper hold
+    does, and used to be indistinguishable from one."""
+    import errno
+    import shutil
+
+    import aleph.vm.agent.vm.purge as purge_module
+
+    _volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    real_rmtree = shutil.rmtree
+
+    def refuse(path, *args, **kwargs):
+        if Path(path).name == VM_HASH:
+            raise OSError(errno.EROFS, "Read-only file system")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(purge_module.shutil, "rmtree", refuse)
+
+    result = purge_vm_storage(VM_HASH)
+
+    assert [kept.path for kept in result.kept] == [pools["pool0"] / VM_HASH]
+    assert result.kept[0].device_mapper is False
+    assert "Read-only file system" in result.kept[0].reason
+
+
+def test_a_complete_purge_keeps_nothing(pools):
+    _volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+
+    result = purge_vm_storage(VM_HASH)
+
+    assert result.deleted == 1
+    assert result.kept == ()

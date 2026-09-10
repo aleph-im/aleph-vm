@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import errno
 import io
+import json
 import logging
 import os
+import re
+import shutil
 import socket
 import time
 from datetime import datetime, timedelta, timezone
@@ -833,7 +837,7 @@ def plumbing(tmp_path, monkeypatch, registry):
     the way of the tests that are about something else."""
     monkeypatch.setattr(cli, "DEFAULT_ENV_FILE", tmp_path / "no-such-file.env")
     monkeypatch.setattr(type(settings), "setup", lambda _self: None)
-    monkeypatch.setattr(storage_pools, "setup_pools", lambda: None)
+    monkeypatch.setattr(storage_pools, "setup_pools", lambda **_: None)
     monkeypatch.setattr(cli, "initialise_database", lambda: None)
     monkeypatch.setattr(cli, "_load_registry", AsyncMock(return_value=registry))
     database = tmp_path / "executions.sqlite3"
@@ -957,7 +961,7 @@ def test_an_unmigrated_database_is_brought_up_to_date(pools, tmp_path, monkeypat
     monkeypatch.setattr(settings, "EXECUTION_DATABASE", database)
     monkeypatch.setattr(cli, "DEFAULT_ENV_FILE", tmp_path / "no-such-file.env")
     monkeypatch.setattr(type(settings), "setup", lambda _self: None)
-    monkeypatch.setattr(storage_pools, "setup_pools", lambda: None)
+    monkeypatch.setattr(storage_pools, "setup_pools", lambda **_: None)
 
     assert cli.main(["list"]) == 0
 
@@ -1032,3 +1036,233 @@ def test_a_write_verb_creates_a_missing_database(pools, tmp_path, monkeypatch, c
 
     assert database.exists()
     assert any("Creating the agent database" in record.message for record in caplog.records)
+
+
+def _corrupt_marker(pool: Path, namespace: str) -> Path:
+    volume(pool, namespace, "rootfs.qcow2")
+    marker = pool / namespace / ".reclaimable"
+    marker.write_text("{not json")
+    return marker
+
+
+def test_list_keeps_a_corrupt_marker_and_lists_the_other_rows(pools, registry):  # noqa: F811
+    """status and list are documented read-only. Reading a marker that does
+    not parse used to unlink it, which is a write on a listing, and one an
+    operator running without the agent's privileges cannot even make: the
+    PermissionError aborted the whole command."""
+    corrupt = _corrupt_marker(pools["pool0"], OTHER_HASH)
+    volume(pools["pool1"], VM_HASH, "rootfs.qcow2")
+    mark_reclaimable(VM_HASH, "gone", now=NOW)
+
+    code, out, _err = _run(["list"], registry)
+
+    assert code == 0
+    rows = {line.split("\t")[0]: line.split("\t")[3] for line in out.splitlines()[1:]}
+    assert rows == {VM_HASH: "gone", OTHER_HASH: "unmarked"}
+    assert corrupt.exists(), "a read-only listing must not remove anything"
+
+
+def test_status_keeps_a_corrupt_marker(pools, registry):  # noqa: F811
+    """The reclaimable byte sum walks every marker too, so status removed
+    the file just as list did."""
+    corrupt = _corrupt_marker(pools["pool0"], OTHER_HASH)
+
+    code, _out, _err = _run(["status"], registry)
+
+    assert code == 0
+    assert corrupt.exists()
+
+
+def test_a_marker_without_an_offset_shows_an_age(pools, registry):  # noqa: F811
+    """A hand-edited marker whose timestamp carries no offset parsed naive,
+    and subtracting it from the aware clock raised TypeError, which aborted
+    the whole listing instead of costing that one row its age."""
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    naive = (datetime.now(tz=timezone.utc) - timedelta(days=3)).replace(tzinfo=None)
+    (pools["pool0"] / VM_HASH / ".reclaimable").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "reclaimable_since": naive.isoformat(),
+                "reason": "gone",
+                "size_bytes": 1,
+                "depends_on": [],
+            }
+        )
+    )
+
+    code, out, _err = _run(["list"], registry)
+
+    assert code == 0
+    age = [line.split("\t")[4] for line in out.splitlines()[1:] if line.startswith(VM_HASH)]
+    assert age == ["3d 0h"]
+
+
+def test_a_future_dated_marker_never_shows_a_negative_age(pools, registry):  # noqa: F811
+    """A node whose clock ran backwards, or a marker copied from elsewhere:
+    an age of "-1d 23h" reads as a parsing bug to whoever sees it."""
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    mark_reclaimable(VM_HASH, "gone", now=datetime.now(tz=timezone.utc) + timedelta(days=2))
+
+    code, out, _err = _run(["list"], registry)
+
+    assert code == 0
+    age = [line.split("\t")[4] for line in out.splitlines()[1:] if line.startswith(VM_HASH)]
+    assert age == ["0d 0h"]
+
+
+def test_reclaim_names_the_error_that_kept_a_directory(pools, registry, monkeypatch):  # noqa: F811
+    """The purge leaves a directory behind on any failure to remove it (a
+    read-only filesystem, an immutable file, a directory this user may not
+    write), not only on a device-mapper hold. Sending the operator to
+    'storage reconcile' for those is advice that cannot work."""
+    import errno
+    import shutil as shutil_module
+
+    import aleph.vm.agent.vm.purge as purge_module
+
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    volume(pools["pool1"], VM_HASH, "data.ext4")
+    mark_reclaimable(VM_HASH, "gone", now=NOW)
+    real_rmtree = shutil_module.rmtree
+
+    def refuse(path, *args, **kwargs):
+        if Path(path).parent == pools["pool0"]:
+            raise OSError(errno.EROFS, "Read-only file system")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(purge_module.shutil, "rmtree", refuse)
+
+    code, out, err = _run(["reclaim", VM_HASH], registry)
+
+    assert code == 1
+    assert out == "", "a purge that did not finish leaves stdout empty"
+    assert "Read-only file system" in err
+    assert "No device-mapper target is holding these" in err
+    assert "storage reconcile" not in err, "a teardown cannot fix a removal that failed"
+    assert re.search(r"Deleted \d+ volume file\(s\)", err), "the partial count belongs in the report"
+
+
+def test_status_adopts_no_pool_and_writes_no_pool_file(pools, tmp_path, monkeypatch, registry):  # noqa: F811
+    """A read-only verb ran the agent's own pool setup, which adopts a pool
+    on first sight: it writes the in-pool marker and the adoption registry.
+    On a node whose second disk is not mounted, that adoption is exactly the
+    write the guard exists to prevent."""
+    monkeypatch.setattr(settings, "VOLUME_POOLS", [f"{pools['pool1']}=ssd"])
+    monkeypatch.setattr(cli, "DEFAULT_ENV_FILE", tmp_path / "no-such-file.env")
+    monkeypatch.setattr(cli, "initialise_database", lambda: None)
+    monkeypatch.setattr(cli, "_load_registry", AsyncMock(return_value=registry))
+    database = pools["execution_root"] / "executions.sqlite3"
+    database.touch()
+    monkeypatch.setattr(settings, "EXECUTION_DATABASE", database)
+
+    assert cli.main(["status"]) == 0
+
+    assert not (pools["pool1"] / ".aleph-vm-pool").exists()
+    assert not (pools["execution_root"] / "volume-pools.json").exists()
+
+
+def test_status_creates_no_directory_before_refusing_a_missing_database(tmp_path, monkeypatch, capsys):
+    """The refusal came after settings.setup(), which makes every configured
+    directory. An operator who mistyped the execution root got the refusal
+    and a tree of empty directories at the typo."""
+    execution_root = tmp_path / "typo"
+    monkeypatch.setattr(settings, "EXECUTION_ROOT", execution_root)
+    monkeypatch.setattr(settings, "PERSISTENT_VOLUMES_DIR", execution_root / "volumes" / "persistent")
+    monkeypatch.setattr(settings, "EXECUTION_DATABASE", execution_root / "executions.sqlite3")
+    monkeypatch.setattr(cli, "DEFAULT_ENV_FILE", tmp_path / "no-such-file.env")
+
+    code = cli.main(["status"])
+
+    assert code == 1
+    assert not execution_root.exists(), "nothing may be created under the root it refused"
+    assert str(execution_root / "executions.sqlite3") in capsys.readouterr().err
+
+
+def test_the_env_file_is_not_interpolated(tmp_path, monkeypatch, isolated_environ, plumbing):
+    """systemd's EnvironmentFile= does no ${} expansion, so a node's file is
+    written with literal values. Expanding them here silently truncates any
+    secret containing a dollar sign to the empty string."""
+    env_file = tmp_path / "supervisor.env"
+    env_file.write_text(
+        f"ALEPH_VM_EXECUTION_DATABASE={plumbing}\nALEPH_VM_SENTRY_DSN=https://key:pa${{sswd}}@sentry.example/1\n"
+    )
+    isolated_environ["sswd"] = "leaked"
+    monkeypatch.setattr(cli, "run", lambda *_: 0)
+
+    assert cli.main(["--env-file", str(env_file), "status"]) == 0
+
+    assert isolated_environ["ALEPH_VM_SENTRY_DSN"] == "https://key:pa${sswd}@sentry.example/1"
+
+
+def test_the_env_file_path_prefers_the_flag_then_the_variable_then_the_default(monkeypatch, tmp_path):
+    """The second element says whether the path was named (by --env-file or
+    $ALEPH_VM_ENV_FILE) rather than defaulted to: both namings are equally
+    explicit operator intent, so a missing file is a refusal either way."""
+    monkeypatch.setattr(cli, "DEFAULT_ENV_FILE", tmp_path / "packaged.env")
+    monkeypatch.delenv(cli.ENV_FILE_VARIABLE, raising=False)
+
+    assert cli._env_file_path(None) == (tmp_path / "packaged.env", False)
+
+    monkeypatch.setenv(cli.ENV_FILE_VARIABLE, str(tmp_path / "from-variable.env"))
+    assert cli._env_file_path(None) == (tmp_path / "from-variable.env", True)
+    assert cli._env_file_path(str(tmp_path / "explicit.env")) == (tmp_path / "explicit.env", True)
+
+
+def test_status_says_unknown_for_a_pool_it_cannot_measure(pools, registry, monkeypatch):  # noqa: F811
+    """A pool whose usage cannot be read (a mountpoint that went away, a
+    directory this user may not stat) printed FREE 0.0 B and BUDGET 0.0 B,
+    which is exactly what a full pool prints: the one state an operator runs
+    this command to find."""
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
+    monkeypatch.setattr(settings, "VOLUME_RETENTION_BUDGET", "10%")
+    real_disk_usage = shutil.disk_usage
+
+    def refuse(path, *args, **kwargs):
+        if Path(path) == pools["pool0"]:
+            raise OSError(errno.EACCES, "Permission denied")
+        return real_disk_usage(path, *args, **kwargs)
+
+    monkeypatch.setattr(cli.shutil, "disk_usage", refuse)
+
+    code, out, _err = _run(["status"], registry)
+
+    assert code == 0
+    rows = {line.split("\t")[0]: line.split("\t") for line in out.splitlines()[1:]}
+    assert rows[str(pools["pool0"])][3:] == ["unknown", "unknown"]
+    assert rows[str(pools["pool1"])][3:] != ["unknown", "unknown"], "a readable pool still shows figures"
+
+
+def test_status_says_unknown_for_a_cache_budget_it_cannot_compute(pools, registry, monkeypatch):  # noqa: F811
+    """Same arithmetic on the cache table: the budget is a share of a
+    filesystem size, so a size that cannot be read is not a budget of zero."""
+
+    def refuse(root):
+        raise OSError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(cli, "cache_budget_bytes", refuse)
+
+    code, out, _err = _run(["status"], registry)
+
+    assert code == 0
+    cache_rows = [line.split("\t") for line in out.splitlines() if line.startswith(str(pools["runtime"]))]
+    assert cache_rows and all(row[2] == "unknown" for row in cache_rows)
+
+
+def test_a_refused_reclaim_removes_no_marker(pools, registry, monkeypatch):  # noqa: F811
+    """The marker check walks every pool, and it runs before the refusal. A
+    reclaim refused because the agent is running must not have unlinked a
+    corrupt marker on the way to refusing: that is the reconciler's repair,
+    and it is a write the operator did not ask for."""
+    monkeypatch.setattr(cli, "_probe_agent", _agent_up())
+    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
+    mark_reclaimable(VM_HASH, "gone", now=NOW)
+    # On the same pool and sorting first, so the walk reaches it before it
+    # finds the hash it was asked about and stops.
+    corrupt = _corrupt_marker(pools["pool0"], OTHER_HASH)
+
+    code, _out, err = _run(["reclaim", VM_HASH], registry)
+
+    assert code == 3
+    assert "the agent is running" in err
+    assert corrupt.exists()
