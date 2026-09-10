@@ -402,6 +402,9 @@ async def test_operator_reboot_non_persistent(aiohttp_client, mocker):
         supervisor=fake_sup,
         registry=app["vm_registry"],
         capacity=app["capacity"],
+        # RECREATE kept the record, so the rebuild is charged only the disk
+        # it does not already hold.
+        recreate=True,
     )
 
 
@@ -491,6 +494,9 @@ async def test_operator_reinstall_persistent_confidential_rebuilds_from_scratch(
         supervisor=fake_sup,
         registry=app["vm_registry"],
         capacity=app["capacity"],
+        # RECREATE kept the record, so the rebuild is charged only the disk
+        # it does not already hold.
+        recreate=True,
     )
 
 
@@ -539,6 +545,9 @@ async def test_operator_reinstall_non_persistent_recreates(aiohttp_client, mocke
         supervisor=fake_sup,
         registry=app["vm_registry"],
         capacity=app["capacity"],
+        # RECREATE kept the record, so the rebuild is charged only the disk
+        # it does not already hold.
+        recreate=True,
     )
 
 
