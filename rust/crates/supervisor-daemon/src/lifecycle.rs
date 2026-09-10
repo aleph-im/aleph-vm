@@ -1104,6 +1104,32 @@ fn recreate_port_redirect_rules(state: &DaemonState, vm_id: &str) -> Result<(), 
 /// port mappings.
 fn start_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
+    // A confidential VM's cards are read again before the guest comes back.
+    // The create gate read them on the way in, but the stop dropped those
+    // answers with the guest: once QEMU is gone the card is idle hardware an
+    // operator can re-mode with NVIDIA's tool, so starting on the gate's old
+    // reading would boot a confidential guest onto a card the host can no
+    // longer vouch for and go on advertising "on" about a card nobody has
+    // read since. Only an SNP config is gated, exactly as at create: a plain
+    // passthrough VM never had a CC requirement to hold its card to.
+    //
+    // This runs before the stamps below and before every irreversible step,
+    // so a refusal leaves the entry with its stop stamps untouched and the
+    // VM still reporting STOPPED.
+    //
+    // No world write lock is taken here, in contrast to the create gate.
+    // That gate reads a card that is still free and must keep another
+    // creation from claiming it mid-probe. This card is already claimed by
+    // this VM's config: the caller holds the VM's lock so no other lifecycle
+    // call touches the entry, no create can take an attached card, and the
+    // refresh sweep skips it. The probe's resume wait (up to 200 ms per
+    // suspended card) therefore sits under the VM lock alone and holds up no
+    // reader of the world.
+    if entry.config.snp().is_some() {
+        for gpu in &entry.config.gpus {
+            require_gpu_cc_mode(state, &gpu.pci_host, state.gpu_cc_probe)?;
+        }
+    }
     // The start opens the same window a reboot does, and it is longer: the
     // stop stamps go the moment this begins, while the unit stays down
     // through the tap, the nftables rules, the DHCP server, RestartUnit and
@@ -2189,6 +2215,60 @@ fn snp_image_format(format: i32) -> Result<String, RpcError> {
     }
 }
 
+/// The confidential-GPU admission rule for one card, applied wherever a
+/// guest is about to be handed it.
+///
+/// A GPU may enter a confidential guest only in NVIDIA CC mode: the card
+/// then refuses plaintext DMA and answers attestation, and the guest
+/// verifies it at boot. The mode is read from the card now rather than
+/// taken from the inventory cache: an operator can switch a card off
+/// between two host probes, and a stale "on" would hand the owner hardware
+/// the guest cannot trust. Any other answer, including a card that cannot
+/// be read, fails closed. The cache learns the answer either way, so a
+/// refusal also replaces whatever "on" the inventory was still serving.
+///
+/// The create gate and the start path both come through here, and that is
+/// the point: a card is re-moded just as easily while its VM sits stopped
+/// as while it is unattached, so the two admissions must not drift apart.
+/// What differs is the lock each caller holds, which is documented at the
+/// call sites.
+fn require_gpu_cc_mode(
+    state: &DaemonState,
+    pci_host: &str,
+    probe: impl Fn(&str, &str) -> Result<Option<crate::gpu_cc::CcMode>, crate::error::DaemonError>,
+) -> Result<(), RpcError> {
+    // The inventory-membership check runs FIRST and is what makes
+    // `pci_host` safe to interpolate into the vfio-pci argv and into the
+    // sysfs path `gpu_bar.rs` reads: only an address the host scan itself
+    // produced gets past here, so a spec-supplied string never reaches
+    // either. Keep this order.
+    let Some(device) = inventory_gpu(state, pci_host) else {
+        return Err(RpcError::InvalidBackend(format!(
+            "GPU at pci_host '{pci_host}' is not in the host inventory"
+        )));
+    };
+    let mode = probe(&device.pci_host, &device.device_id).map_err(|error| {
+        RpcError::InvalidBackend(format!(
+            "cannot read the confidential-computing mode of GPU at pci_host '{pci_host}': {error}"
+        ))
+    })?;
+    {
+        state
+            .gpu_cc_modes
+            .lock()
+            .expect("gpu_cc_modes poisoned")
+            .insert(pci_host.to_string(), crate::gpu_cc::ProbedCcMode::now(mode));
+    }
+    if mode != Some(crate::gpu_cc::CcMode::On) {
+        return Err(RpcError::InvalidBackend(format!(
+            "GPU at pci_host '{pci_host}' is not in NVIDIA confidential-computing mode (probed: {})",
+            mode.map(|m| m.to_string())
+                .unwrap_or_else(|| "unknown".into())
+        )));
+    }
+    Ok(())
+}
+
 fn snp_config_slice(state: &DaemonState, spec: &pb::VmSpec) -> Result<Option<SnpSlice>, RpcError> {
     snp_config_slice_with(
         state,
@@ -2256,16 +2336,9 @@ fn snp_config_slice_with(
             spec.gpus.len()
         )));
     }
-    // A GPU may enter a confidential guest only in NVIDIA CC mode: the card
-    // then refuses plaintext DMA and answers attestation, and the guest
-    // verifies it at boot. The mode is read from the card now rather than
-    // taken from the inventory cache: an operator can switch a card off
-    // between two host probes, and a stale "on" would hand the owner
-    // hardware the guest cannot trust. Reading the register here is safe.
-    // The spec's cards were validated unattached, and this runs under the
-    // world write lock with creation serialized, so no guest can own the
-    // card before this VM does. Any other answer, including a card that
-    // cannot be read, fails closed. The cache learns the answer either way.
+    // Reading the register here is safe. The spec's cards were validated
+    // unattached, and this runs under the world write lock with creation
+    // serialized, so no guest can own the card before this VM does.
     //
     // That write lock is what the read costs: an idle card is usually
     // runtime-suspended, and pinning it awake takes up to the probe's
@@ -2276,38 +2349,7 @@ fn snp_config_slice_with(
     // is trusting a cached mode for hardware about to be handed to a
     // guest, so the wait stays here.
     for gpu in &spec.gpus {
-        // The inventory-membership check runs FIRST and is what makes
-        // `gpu.pci_host` safe to interpolate into the vfio-pci argv and into
-        // the sysfs path `gpu_bar.rs` reads: only an address the host scan
-        // itself produced gets past here, so a spec-supplied string never
-        // reaches either. Keep this order.
-        let Some(device) = inventory_gpu(state, &gpu.pci_host) else {
-            return Err(RpcError::InvalidBackend(format!(
-                "GPU at pci_host '{}' is not in the host inventory",
-                gpu.pci_host
-            )));
-        };
-        let mode = probe(&device.pci_host, &device.device_id).map_err(|error| {
-            RpcError::InvalidBackend(format!(
-                "cannot read the confidential-computing mode of GPU at pci_host '{}': {error}",
-                gpu.pci_host
-            ))
-        })?;
-        {
-            state
-                .gpu_cc_modes
-                .lock()
-                .expect("gpu_cc_modes poisoned")
-                .insert(gpu.pci_host.clone(), crate::gpu_cc::ProbedCcMode::now(mode));
-        }
-        if mode != Some(crate::gpu_cc::CcMode::On) {
-            return Err(RpcError::InvalidBackend(format!(
-                "GPU at pci_host '{}' is not in NVIDIA confidential-computing mode (probed: {})",
-                gpu.pci_host,
-                mode.map(|m| m.to_string())
-                    .unwrap_or_else(|| "unknown".into())
-            )));
-        }
+        require_gpu_cc_mode(state, &gpu.pci_host, &probe)?;
     }
     let pci_mmio64_mb = if spec.gpus.is_empty() {
         None
