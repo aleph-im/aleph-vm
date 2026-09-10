@@ -773,6 +773,23 @@ fn guest_ipv4(state: &DaemonState, entry: &VmEntry) -> String {
     .unwrap_or_default()
 }
 
+/// Drop everything the CC-mode cache holds about a VM's cards. Whatever is
+/// in there was learned either before the cards were attached or from the
+/// create gate that read them on the way in, and neither answer outlives
+/// the guest: once QEMU is gone the cards are idle hardware an operator can
+/// re-mode with NVIDIA's tool, so the host can no longer vouch for a mode
+/// it read earlier. Forgetting them makes the next reader take the card as
+/// it finds it instead of serving a mode from another era.
+fn forget_cc_modes(state: &DaemonState, gpus: &[crate::controller_config::QemuGpu]) {
+    if gpus.is_empty() {
+        return;
+    }
+    let mut cache = state.gpu_cc_modes.lock().expect("gpu_cc_modes poisoned");
+    for gpu in gpus {
+        cache.remove(&gpu.pci_host);
+    }
+}
+
 /// Python `VmExecution.stop()`: idempotent; stop the unit, wait for the
 /// graceful shutdown, drop the port redirects, tear down nftables and the
 /// tap.
@@ -857,6 +874,12 @@ fn stop_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
     // addresses of a stopped VM (bug-for-bug; the proto says they should
     // empty once the tap is gone).
     with_entry_mut(state, vm_id, |entry| entry.times.stopped_at_ns = now_ns());
+    // The entry keeps claiming the cards, so the refresh sweep will not
+    // read them, and it seeds a mode only for a VM that is running. Without
+    // this the mode the create gate vouched for would sit in the cache and
+    // keep being advertised for a card that no longer has a guest holding
+    // its mode still.
+    forget_cc_modes(state, &entry.config.gpus);
     tracing::info!(vm_id, "VM stopped");
     Ok(())
 }
@@ -929,6 +952,11 @@ fn stop_program_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcErr
     }
 
     with_entry_mut(state, vm_id, |entry| entry.times.stopped_at_ns = now_ns());
+    // Same reason as the persistent stop: no guest holds the cards any
+    // more, so nothing the cache says about them still stands. A program
+    // spec carries no GPUs today, which makes this a no-op, but the rule
+    // belongs on every path that stamps a stop.
+    forget_cc_modes(state, &entry.config.gpus);
     tracing::info!(vm_id, "ephemeral program stopped");
     Ok(())
 }
@@ -1318,17 +1346,9 @@ fn delete_tracked_vm(
     state.events.emit(vm_id, old_status, pb::VmStatus::Stopped);
 
     state.world.blocking_write().entries.remove(vm_id);
-    // The cards are free again, so nothing the CC cache holds about them
-    // still stands on its own: neither a probe from before they were
-    // attached nor the mode the create gate vouched for while the guest
-    // held them. Forget them so the next refresh reads the hardware
+    // The cards are free again, so the next refresh reads the hardware
     // instead of serving an answer about a card in a different state.
-    if !entry.config.gpus.is_empty() {
-        let mut cache = state.gpu_cc_modes.lock().expect("gpu_cc_modes poisoned");
-        for gpu in &entry.config.gpus {
-            cache.remove(&gpu.pci_host);
-        }
-    }
+    forget_cc_modes(state, &entry.config.gpus);
     // Release the NUMA reservation alongside the other teardown (increment
     // C1). No-op for an unpinned or program VM (numa_node is None).
     if let Some(node) = entry.numa_node {

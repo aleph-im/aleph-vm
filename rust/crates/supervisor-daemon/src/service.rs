@@ -524,9 +524,12 @@ fn refresh_cc_modes_with(
     // A stopped VM gets nothing either, even an SEV-SNP one: its QEMU is
     // gone, so the card is idle hardware an operator can re-mode, and the
     // gate's word about it has expired. The card stays out of the sweep
-    // (it is still in `attached`, the config still claims it), so a
-    // stopped VM's card simply advertises nothing until the VM is deleted
-    // and the card is read as free.
+    // (it is still in `attached`, the config still claims it), and the
+    // stop itself dropped whatever the cache held about it, so a stopped
+    // VM's card advertises nothing until it is started again (which seeds
+    // it here again, on the gate's reading plus the guest's own attestation
+    // of the card at every boot) or the VM is deleted and the card is read
+    // as free.
     let mut known_cc_on: HashSet<String> = HashSet::new();
     for entry in world.entries.values() {
         let confidential = entry.config.snp().is_some() && entry.times.stopped_at_ns == 0;
