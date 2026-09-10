@@ -521,6 +521,13 @@ async def status_check_version(request: web.Request):
         return web.HTTPForbidden(text=f"Outdated: version {current} < {reference}")
 
 
+# The highest /control/allocations protocol this node serves. The scheduler
+# reads it from /status/config, which it already polls, and calls
+# /v2/control/allocations from 2 up; a node without the field gets the
+# legacy call. Bump it when a newer allocation endpoint ships.
+ALLOCATIONS_API_VERSION = 2
+
+
 @cors_allow_all
 async def status_public_config(request: web.Request):
     """Expose the public fields from the configuration"""
@@ -537,6 +544,7 @@ async def status_public_config(request: web.Request):
             "DOMAIN_NAME": settings.DOMAIN_NAME,
             "node_hash": node_hash,
             "version": __version__,
+            "api": {"allocations": ALLOCATIONS_API_VERSION},
             "references": {
                 "API_SERVER": settings.API_SERVER,
                 "CHECK_FASTAPI_VM_ID": settings.CHECK_FASTAPI_VM_ID,
