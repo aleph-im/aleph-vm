@@ -607,7 +607,7 @@ def test_a_newcomer_is_refused_the_room_a_stopped_vm_holds(mocker):
     )
 
     assert verdict.unchanged == [HASH_C]
-    assert verdict.rejected[HASH_A]["code"] == "insufficient_capacity"
+    assert verdict.rejected[HASH_A].code is AllocationFailureCode.INSUFFICIENT_CAPACITY
 
 
 def test_compute_verdict_drives_the_real_capacity_manager(mocker):
