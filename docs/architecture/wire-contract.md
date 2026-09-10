@@ -1,14 +1,15 @@
 # Wire contract
 
-> Verified against: b2b31381 (2026-08-14)
+> Verified against: 06c30936 (2026-09-09)
 
 ## What this covers
 
 The `proto/supervisor.proto` contract between the agent and the supervisor
 daemon: its RPC surface and the conventions baked into the message shapes,
 and the error model end-to-end, from a leaf module's `thiserror` enum in the
-Rust daemon (or a backend exception in the Python daemon) through to the
-`SupervisorError` subclass the agent catches. It also covers two small but
+Rust daemon through to the `SupervisorError` subclass the agent catches (a
+backend exception in the now-removed Python daemon played the same role
+while it existed). It also covers two small but
 load-bearing conventions in the Rust supervisor-daemon codebase: how error
 `Display` text is logged at the process boundary, and how test fakes inject
 failures.
@@ -147,20 +148,24 @@ seam every lifecycle RPC handler goes through: it runs the blocking
 lifecycle operation on the blocking pool and maps its `Result<_, RpcError>`
 through `rpc_error_status`.
 
-**Python daemon (the oracle this mirrors).** Backend exceptions
-(`InsufficientResourcesError`, `MicroVMFailedInitError`, `HostNotFoundError`,
-...) are translated by `translate_exception`/`translating_errors` in
-`src/aleph/vm/supervisor/error_mapping.py` into the closed
-`SupervisorError` vocabulary defined in
-`src/aleph/vm/supervisor_interface/errors.py` (one subclass per `ErrorCode`
-value; the split exists because `errors.py` lives in the contract layer with
-no backend dependency, while `error_mapping.py` stays supervisor-side since
-it imports controller/hypervisor exception types). `src/aleph/vm/supervisor/grpc_server.py`'s
-`_abort` looks up the gRPC status via `STATUS_CODE_BY_ERROR` (keyed on
+**The Python daemon (removed).** Until 2026-08 a Python in-process
+supervisor was the parity oracle this contract was ported from: backend
+exceptions (`InsufficientResourcesError`, `MicroVMFailedInitError`,
+`HostNotFoundError`, ...) were translated by `translate_exception`/
+`translating_errors` in `src/aleph/vm/supervisor/error_mapping.py` into the
+closed `SupervisorError` vocabulary, and `src/aleph/vm/supervisor/grpc_server.py`'s
+`_abort` looked up the gRPC status via `STATUS_CODE_BY_ERROR` (keyed on
 `error.code`, with `NotImplementedSupervisorError` special-cased to
-`UNIMPLEMENTED` since it shares `ErrorCode.INTERNAL` on the wire), builds a
-`pb.ErrorDetail`, and aborts the RPC with that trailer attached under the
-same `ERROR_TRAILER_KEY`.
+`UNIMPLEMENTED` since it shares `ErrorCode.INTERNAL` on the wire), built a
+`pb.ErrorDetail`, and aborted the RPC with that trailer attached under the
+same `ERROR_TRAILER_KEY`. Both files are deleted along with the rest of the
+Python supervisor; the Rust daemon is the only implementation left, and it
+fills the same trailer through `rpc_error_status`/`status_with_error_detail`
+above. The vocabulary itself outlives the daemon that used to enforce it on
+the Python side: `SupervisorError` (one subclass per `ErrorCode` value)
+still lives in `src/aleph/vm/supervisor_interface/errors.py`, in the
+contract layer with no backend dependency, because the client still
+translates onto it (below).
 
 **Client (agent).** `translate_rpc_error` in
 `src/aleph/vm/supervisor_interface/client.py` rebuilds the precise
@@ -190,8 +195,10 @@ Both are asserted directly by unit tests in
 the `NotFound` payload, `assert_eq!(message, "")` on the `MicroVmInit`
 payload) and by
 `tests/conformance/test_rust_daemon_lifecycle.py`, which drives the Rust
-daemon and asserts it raises the same `SupervisorError` subclasses the
-Python `LocalSupervisor` error mapping does. More broadly, every `Display`
+daemon and asserts it raises the `SupervisorError` subclass the closed wire
+vocabulary (`aleph.vm.supervisor_interface.errors`) says that `ErrorCode`
+maps to; the Python daemon it once compared against directly is gone. More
+broadly, every `Display`
 template introduced when these errors were typed in Rust was written to
 reproduce the previous Python-generated string, because the rendered
 `Display` is literally the message the client receives
@@ -252,9 +259,9 @@ value the real backend could genuinely construct.
 - The error vocabulary crossing the wire is closed: every `RpcError` variant
   (`rust/crates/supervisor-daemon/src/lifecycle.rs`) maps to exactly one
   `pb::ErrorCode`, enforced by the match in `rpc_error_status`
-  (`rust/crates/supervisor-daemon/src/service.rs`); the Python side enforces
-  the same one-to-one mapping through `STATUS_CODE_BY_ERROR`
-  (`src/aleph/vm/supervisor/grpc_server.py`).
+  (`rust/crates/supervisor-daemon/src/service.rs`); the client enforces the
+  matching one-to-one mapping back onto `SupervisorError` through
+  `ERROR_CLASS_BY_CODE` (`src/aleph/vm/supervisor_interface/client.py`).
 - The `ErrorDetail` trailer, not the gRPC status code, carries the precise
   error class; the status code is only a fallback for a client that reads
   no trailer (`translate_rpc_error` in
@@ -317,10 +324,6 @@ value the real backend could genuinely construct.
   on the Python side.
 - `src/aleph/vm/supervisor_interface/client.py`: `translate_rpc_error`,
   `ERROR_CLASS_BY_CODE`, `ERROR_CLASS_BY_STATUS`, the per-RPC deadlines.
-- `src/aleph/vm/supervisor/error_mapping.py`: `translate_exception`,
-  `translating_errors`, the backend-exception-to-`SupervisorError` mapping.
-- `src/aleph/vm/supervisor/grpc_server.py`: `_abort`,
-  `STATUS_CODE_BY_ERROR`, the Python server's trailer construction.
 - `scripts/generate_proto.py`, `scripts/check_proto_clean.sh`: Python
   binding generation and the CI drift check.
 - `tests/conformance/test_rust_daemon_lifecycle.py`: the conformance test

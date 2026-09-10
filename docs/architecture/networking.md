@@ -1,6 +1,6 @@
 # Networking
 
-> Verified against: b2b31381 (2026-08-14)
+> Verified against: 06c30936 (2026-09-09)
 
 ## What this covers
 
@@ -88,8 +88,9 @@ on delete is a warning, not a failure: deletion is idempotent by design.
 
 `rust/crates/supervisor-daemon/src/nft.rs` operates on `serde_json::Value`,
 the same dialect `nft -j` speaks, deliberately untyped (typing the nftables
-JSON schema would only invite drift from the Python builders it ports
-rule-for-rule from `src/aleph/vm/network/firewall.py`). Every mutation is
+JSON schema would only invite drift; it was ported rule-for-rule from the
+Python builder in `src/aleph/vm/network/firewall.py`, since deleted, and
+`nft.rs` is now the only implementation). Every mutation is
 computed as a pure function from a fetched ruleset snapshot to a batch of
 `{"add": ...}`/`{"delete": ...}` commands, deduplicated against what is
 already present (`add_entities_if_not_present`, an `is_superset` match on
@@ -232,14 +233,19 @@ an SNP guest never receives its allocated address and is unreachable, which
 breaks attestation.
 
 `rust/crates/supervisor-daemon/src/dhcp.rs` stands up a minimal, per-tap
-DHCP server for exactly this case: a `dnsmasq` process with `--dhcp-range`
-set to a **single address**, the VM's own allocated IPv4, so the guest can
-only ever lease precisely that address (there is no MAC to key a
-`--dhcp-hostsdir` reservation on, since the SNP NIC has no fixed MAC).
+DHCP server for exactly this case: a `dnsmasq` process with two
+`--dhcp-range`s, each set to a **single address**, the VM's own allocated
+IPv4 and IPv6, so the guest can only ever lease precisely those addresses
+(there is no MAC to key a `--dhcp-hostsdir` reservation on, since the SNP
+NIC has no fixed MAC). The IPv6 range also carries `--enable-ra`, so
+dnsmasq advertises on the tap with `M=1/A=0` (stateful, not SLAAC): the
+guest takes its default route from the RA, since DHCPv6 cannot convey one,
+and never autoconfigures a second address; no separate `radvd` is needed.
 `DhcpConfig::for_snp` derives the config from the VM's `TapAssignment`
-(guest IP, gateway as DHCP option 3, tap-prefix netmask, the daemon's
-resolved IPv4 nameservers as option 6 when any were found); `--port=0` disables
-dnsmasq's own DNS server so per-tap instances never collide on port 53.
+(guest IPv4 and IPv6, gateway as DHCP option 3, tap-prefix netmask, the
+daemon's resolved IPv4 nameservers as option 6 when any were found);
+`--port=0` disables dnsmasq's own DNS server so per-tap instances never
+collide on port 53.
 Each server runs as a transient systemd unit named
 `aleph-vm-dhcp-{vm_hash}.service`, launched via `systemd-run --collect -p
 Type=exec` (`Type=exec` is load-bearing: with the default
@@ -349,6 +355,3 @@ exactly.
   `reconcile_port_forwards`, the agent-side port-forwarding policy.
 - `src/aleph/vm/agent/tasks.py`: `_handle_port_forwarding_aggregate`, the
   real-time trigger on `port-forwarding` aggregate updates.
-- `src/aleph/vm/network/`: the Python reference implementation
-  (`firewall.py`, `interfaces.py`, `hostnetwork.py`, `ndp_proxy.py`,
-  `port_availability_checker.py`) the Rust daemon ported.

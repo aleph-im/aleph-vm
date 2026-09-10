@@ -1,6 +1,6 @@
 # Overview
 
-> Verified against: b2b31381 (2026-08-14)
+> Verified against: 06c30936 (2026-09-09)
 
 ## What this covers
 
@@ -48,17 +48,17 @@ described in full.
 
 | Path | Purpose |
 |---|---|
-| `src/` | The `aleph.vm` Python package: the agent, the `supervisor_interface` contract layer, and storage/vprogram support code. |
+| `src/` | The `aleph.vm` Python package: the agent (including `agent/allocation/`, the scheduler-plan reconciler, and the `/v2/control/` allocation-state API in `agent/views/allocations_v2.py`, e.g. `capacity/check`), the `supervisor_interface` contract layer, and storage/vprogram support code. |
 | `rust/crates/supervisor-daemon` | The Rust supervisor daemon: gRPC server, lifecycle RPCs, world view/adoption, networking, storage-pool validation, guest quiescence. |
 | `rust/crates/supervisor-controller` | The Rust per-VM QEMU controller process, for persistent, confidential and SEV-SNP VMs. |
 | `rust/crates/supervisor-cli` | `alephctl`, a standalone debug CLI that speaks the gRPC contract directly. |
 | `rust/crates/supervisor-proto` | Protobuf/gRPC bindings, compiled fresh from `proto/supervisor.proto` on every build. |
 | `rust/crates/aleph-tee` | The shared SEV-SNP attestation library: report retrieval, parsing, verification primitives. |
 | `rust/crates/aleph-attest-agent` | The in-guest attestation sidecar that serves the attested TLS proxy for V-PROGRAM workloads. |
-| `proto/` | The `supervisor.proto` contract shared by both daemon implementations. |
-| `packaging/` | systemd units, the implementation-dispatch launcher scripts, and `.deb`/Dockerfile build inputs. |
-| `scripts/` | Codegen and CI helpers: proto binding generation, proto-drift checking, fixture generation, repo split. |
-| `tests/` | The Rust-vs-Python conformance suite, the implementation-agnostic integration matrix, and Python unit/migration/network/vprogram suites. |
+| `proto/` | The `supervisor.proto` contract the Rust daemon implements and the Python client binds against. |
+| `packaging/` | systemd units and `.deb`/Dockerfile build inputs. |
+| `scripts/` | Codegen and CI helpers: proto binding generation, proto-drift checking, repo split, plus operational scripts (node upgrade, allocation-request signing, V-PROGRAM bundling). |
+| `tests/` | The Rust daemon conformance suite (driven by the Python client, checked against primary system sources and frozen fixtures), the implementation-agnostic integration matrix, and Python unit/migration/vprogram suites. |
 
 ## Reading order
 
