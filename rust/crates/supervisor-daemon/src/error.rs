@@ -54,6 +54,20 @@ pub enum DaemonError {
     )]
     GpuUnreadable { pci_host: String },
 
+    #[error("PCI resource line {line:?} does not describe an addressable region: {reason}")]
+    GpuBarRange { line: String, reason: &'static str },
+
+    #[error(
+        "a {window_mb} MiB 64-bit PCI MMIO window next to {guest_ram_mb} MiB of guest RAM reaches \
+         {top_mb} MiB, past the {budget_mb} MiB the guest can address"
+    )]
+    GpuMmioBudget {
+        window_mb: u64,
+        guest_ram_mb: u64,
+        top_mb: u64,
+        budget_mb: u64,
+    },
+
     #[error("Device vendor not compatible")]
     IncompatibleGpuVendor,
 

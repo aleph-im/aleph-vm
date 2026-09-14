@@ -2197,9 +2197,16 @@ fn snp_config_slice_with(
         None
     } else {
         let hosts: Vec<String> = spec.gpus.iter().map(|g| g.pci_host.clone()).collect();
-        Some(mmio_window(&hosts).map_err(|e| {
+        let window_mb = mmio_window(&hosts).map_err(|e| {
             RpcError::InvalidBackend(format!("cannot size the GPU MMIO window: {e}"))
-        })?)
+        })?;
+        // The window has to fit in the guest's physical address space next
+        // to its RAM. A card whose BARs ask for more than that gets no
+        // window from the firmware at all, and the guest sees a device that
+        // enumerates and then does nothing, so refuse the create instead.
+        crate::gpu_bar::check_mmio64_budget(window_mb, spec.memory_mib)
+            .map_err(|e| RpcError::InvalidBackend(e.to_string()))?;
+        Some(window_mb)
     };
     let rootfs = require_rootfs(spec)?;
     let rootfs_path = rootfs.path.clone();
@@ -5269,6 +5276,31 @@ mod tests {
             .expect("the verity arm still takes a confidential GPU")
             .expect("an SEV-SNP spec yields a slice");
         assert_eq!(slice.pci_mmio64_mb, Some(524288));
+    }
+
+    #[test]
+    fn snp_config_slice_refuses_a_window_the_guest_cannot_address() {
+        // A card whose BARs ask for more 64-bit window than the guest's
+        // physical address width leaves room for. The firmware would place
+        // no window at all and the guest would find a dead device, so the
+        // create is refused here with the numbers that did not fit.
+        let harness = harness_with_gpus(vec![nvidia_card("06:00.0")]);
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let mut spec = snp_spec(&hash('j'), &root, &firmware.to_string_lossy());
+        spec.gpus = vec![pb::GpuConfig {
+            pci_host: "06:00.0".into(),
+            supports_x_vga: true,
+        }];
+        let cc_on = |_: &str, _: &str| Ok(Some(crate::gpu_cc::CcMode::On));
+        match snp_config_slice_with(state, &spec, cc_on, |_| Ok(1024 * 1024)) {
+            Err(RpcError::InvalidBackend(msg)) => {
+                assert!(msg.contains("1048576"), "{msg}")
+            }
+            other => panic!("an unaddressable window must be InvalidBackend, got {other:?}"),
+        }
     }
 
     #[test]
