@@ -453,7 +453,11 @@ fn gpu_json(gpus: &[GpuDevice]) -> Result<String, DaemonError> {
 /// longer holds even though the card stays attached.
 fn attached_gpus(world: &WorldView) -> impl Iterator<Item = (&str, bool)> {
     world.entries.values().flat_map(|entry| {
-        let live = entry.times.started_at_ns != 0 && entry.times.stopped_at_ns == 0;
+        // A VM adopted from a failed unit carries a start stamp and no stop,
+        // but its guest is gone, so it vouches for no card.
+        let live = entry.times.started_at_ns != 0
+            && entry.times.stopped_at_ns == 0
+            && !entry.adopted_failed;
         let vouched_cc_on = entry.config.snp().is_some() && live;
         entry
             .config
@@ -576,10 +580,10 @@ fn refresh_cc_modes_with(
 // ── World view to wire mapping ──────────────────────────────────────────
 
 /// `_status_of`: the times short-circuit the live flag, plus the FAILED arm
-/// the Python daemon never had. `unit` must be [`UnitLiveness::Dead`] only
-/// where the daemon positively observed the unit down: under a VM it has seen
-/// alive, with no stop stamped, that is a guest that died on its own, and
-/// callers that cannot judge pass `Unknown`.
+/// the Python daemon never had. `unit` must be a dead state only where the
+/// daemon positively observed the unit down: under a VM it has seen alive,
+/// with no stop stamped, that is a guest that died on its own, and callers
+/// that cannot judge pass `Unknown`.
 pub(crate) fn vm_status(times: &VmTimes, running: bool, unit: UnitLiveness) -> pb::VmStatus {
     if times.stopped_at_ns != 0 {
         pb::VmStatus::Stopped
@@ -587,7 +591,7 @@ pub(crate) fn vm_status(times: &VmTimes, running: bool, unit: UnitLiveness) -> p
         pb::VmStatus::Stopping
     } else if running {
         pb::VmStatus::Running
-    } else if times.started_at_ns != 0 && unit == UnitLiveness::Dead {
+    } else if times.started_at_ns != 0 && unit.is_dead() {
         pb::VmStatus::Failed
     } else if times.starting_at_ns != 0 {
         pb::VmStatus::Booting
@@ -599,11 +603,15 @@ pub(crate) fn vm_status(times: &VmTimes, running: bool, unit: UnitLiveness) -> p
 /// `is_awaiting_confidential_init`, ported literally: confidential (SEV and
 /// SEV-ES only, via the session/godh slot), started but neither stopping nor
 /// observed running. SNP has no session handshake and starts at create.
+///
+/// A VM adopted from a failed unit wears the same shape without waiting for
+/// anything: its controller is gone, so nothing is left to take a session.
 pub(crate) fn awaiting_confidential_init(entry: &VmEntry, running: bool) -> bool {
     entry.config.confidential().is_some()
         && entry.times.started_at_ns != 0
         && entry.times.stopping_at_ns == 0
         && !running
+        && !entry.adopted_failed
 }
 
 /// What an observed unit state says about `entry`'s guest. Three kinds of VM
@@ -1537,6 +1545,7 @@ mod tests {
             settings_slice: config.settings,
             times,
             adopted_running: running,
+            adopted_failed: false,
             restarting: false,
             ipv4: running.then(|| IpPair {
                 address: "172.16.3.2".to_string(),
@@ -2011,6 +2020,44 @@ mod tests {
     }
 
     #[test]
+    fn an_adopted_failed_snp_vms_card_is_not_seeded_cc_on() {
+        // A VM adopted from a failed unit keeps its start stamp and takes no
+        // stop, but its QEMU is gone: the create gate's reading has expired
+        // exactly as it does for a stopped VM, so the card advertises nothing.
+        let mut snp_entry = adopted_entry_holding(test_fixtures::QEMU_HASH, "06:00.0", true);
+        snp_entry.adopted_failed = true;
+        let host = HostState {
+            settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
+            host_ipv4: String::new(),
+            network_interface: None,
+            gpus: vec![nvidia_card("06:00.0")],
+            dns_nameservers: None,
+        };
+        let mut world = WorldView::default();
+        world.insert_entry(snp_entry);
+        let state = DaemonState::hermetic(
+            host,
+            world,
+            Arc::new(crate::units::StaticUnitStates::default()),
+            Arc::new(crate::logs::StaticLogSource::new(Vec::new())),
+        );
+
+        refresh_cc_modes_with(
+            &state,
+            |pci_host: &str, _device_id: &str| {
+                panic!("a card an entry still claims must never be probed: {pci_host}")
+            },
+            default_windows(),
+        );
+
+        assert_eq!(
+            cc_mode_of(&state, "06:00.0"),
+            None,
+            "a dead confidential guest vouches for no card"
+        );
+    }
+
+    #[test]
     fn a_never_started_snp_vms_card_is_not_seeded_cc_on() {
         // An entry with no start stamp (Defined, or adopted while the systemd
         // bus was unreachable) is no proof a guest still holds the card's
@@ -2174,6 +2221,24 @@ mod tests {
     }
 
     #[test]
+    fn a_confidential_vm_adopted_from_a_failed_unit_reports_failed() {
+        // The awaiting-session shape and the adopted-death shape are the same
+        // times: only the adoption verdict separates a controller holding for
+        // its certificates from one that is gone.
+        let mut entry = fixture_entry(test_fixtures::CONFIDENTIAL_HASH, true);
+        entry.adopted_failed = true;
+        let info = vm_info_message(
+            &empty_state(),
+            &entry,
+            false,
+            UnitLiveness::Failed,
+            now_ns(),
+        );
+        assert!(!info.awaiting_confidential_init);
+        assert_eq!(info.status, pb::VmStatus::Failed as i32);
+    }
+
+    #[test]
     fn an_ephemeral_program_ignores_the_unit_state() {
         // A program runs under no controller unit, so a stray unit lookup
         // must not condemn it.
@@ -2307,6 +2372,45 @@ mod tests {
             chunks.push(item.unwrap());
         }
         chunks
+    }
+
+    #[tokio::test]
+    async fn a_vm_adopted_from_a_failed_unit_lists_as_failed() {
+        // The adoption stamps and the live unit query meet in ListVms, which
+        // is where the agent reads the death and rebuilds the VM.
+        let mut entry = fixture_entry(test_fixtures::QEMU_HASH, true);
+        entry.adopted_running = false;
+        entry.adopted_failed = true;
+        let mut world = WorldView::default();
+        world.insert_entry(entry);
+        let units = Arc::new(crate::units::FakeSystemd::new());
+        units.set_state(
+            &crate::units::controller_unit_name(test_fixtures::QEMU_HASH),
+            "failed",
+        );
+        let state = Arc::new(DaemonState::hermetic(
+            test_host_state(),
+            world,
+            units,
+            Arc::new(crate::logs::StaticLogSource::new(Vec::new())),
+        ));
+        let mut events = state.events.subscribe();
+        let service = SupervisorService::new(state);
+
+        for _ in 0..2 {
+            let listed = service
+                .list_vms(Request::new(pb::ListVmsRequest {}))
+                .await
+                .unwrap()
+                .into_inner()
+                .vms;
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].status, pb::VmStatus::Failed as i32);
+        }
+        // The hub seeds a VM's status on the first report it makes and
+        // announces transitions after it, so the adopted death is never
+        // announced twice.
+        assert!(events.try_recv().is_err());
     }
 
     #[tokio::test]

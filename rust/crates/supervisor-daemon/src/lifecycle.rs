@@ -506,14 +506,26 @@ pub fn reconcile_numa_ledger(state: &DaemonState) {
 fn unit_active(state: &DaemonState, unit: &str) -> bool {
     match state
         .units
-        .active_states(std::slice::from_ref(&unit.to_string()))
+        .unit_states(std::slice::from_ref(&unit.to_string()))
     {
-        Ok(states) => states.get(unit).copied().unwrap_or(false),
+        Ok(states) => states
+            .get(unit)
+            .copied()
+            .is_some_and(UnitLiveness::is_active),
         Err(error) => {
             tracing::error!(%error, "Failed to get services active states");
             false
         }
     }
+}
+
+/// Whether a batched-state map reports this unit up; down, mid-job and
+/// unanswered all read as not up.
+fn active_in_states(states: &std::collections::HashMap<String, UnitLiveness>, unit: &str) -> bool {
+    states
+        .get(unit)
+        .copied()
+        .is_some_and(UnitLiveness::is_active)
 }
 
 /// AlephQemuInstance.enable_networking: the spec asked for internet access
@@ -1118,6 +1130,9 @@ fn start_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> 
     with_entry_mut(state, vm_id, |entry| {
         entry.times.stopping_at_ns = 0;
         entry.times.stopped_at_ns = 0;
+        // The death this start answers is over; a guest of this VM is about
+        // to hold its cards and its session again.
+        entry.adopted_failed = false;
         entry.restarting = true;
         entry.times.starting_at_ns = now_ns();
     });
@@ -1308,7 +1323,11 @@ pub fn reboot_vm(state: &DaemonState, vm_id: &str) -> Result<(VmEntry, bool), Rp
         .and_then(|()| wait_for_controller_ready(state, &unit).map_err(RpcError::from));
     with_entry_mut(state, vm_id, |entry| entry.restarting = false);
     restarted?;
-    with_entry_mut(state, vm_id, |entry| entry.times.started_at_ns = now_ns());
+    with_entry_mut(state, vm_id, |entry| {
+        entry.times.started_at_ns = now_ns();
+        // A guest is back under the VM, so an adopted death no longer stands.
+        entry.adopted_failed = false;
+    });
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
     let liveness = entry_liveness(state, &entry);
     let running = liveness.is_active();
@@ -2650,6 +2669,7 @@ fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, 
             ..VmTimes::default()
         },
         adopted_running: true,
+        adopted_failed: false,
         restarting: false,
         ipv4: None,
         ipv6: None,
@@ -2992,6 +3012,7 @@ fn create_vm_inner(
                 ..VmTimes::default()
             },
             adopted_running: false,
+            adopted_failed: false,
             restarting: false,
             ipv4: assignment.as_ref().map(|(ipv4, _)| ipv4.clone()),
             ipv6: assignment.as_ref().map(|(_, ipv6)| ipv6.clone()),
@@ -3344,6 +3365,7 @@ fn create_program_vm(
                 ..VmTimes::default()
             },
             adopted_running: false,
+            adopted_failed: false,
             restarting: false,
             ipv4: assignment.as_ref().map(|(ipv4, _)| ipv4.clone()),
             ipv6: assignment.as_ref().map(|(_, ipv6)| ipv6.clone()),
@@ -3553,12 +3575,12 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
     let unit_names: Vec<String> = entries.iter().map(|entry| entry.unit_name()).collect();
     let states = state
         .units
-        .active_states(&unit_names)
+        .unit_states(&unit_names)
         .unwrap_or_else(|error| {
             tracing::error!(%error, "Failed to get services active states");
             unit_names
                 .iter()
-                .map(|unit| (unit.clone(), false))
+                .map(|unit| (unit.clone(), UnitLiveness::Unknown))
                 .collect()
         });
     // Rederive missing IP assignments before filtering: entries adopted during
@@ -3568,7 +3590,7 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
     for entry in &mut entries {
         if entry.ipv4.is_some()
             || !networking_enabled(state, entry)
-            || !states.get(&entry.unit_name()).copied().unwrap_or(false)
+            || !active_in_states(&states, &entry.unit_name())
         {
             continue;
         }
@@ -3593,7 +3615,7 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
                 // Ephemeral programs have no unit; liveness is times-based.
                 entry.times.starting_at_ns != 0 && entry.times.stopping_at_ns == 0
             } else {
-                states.get(&entry.unit_name()).copied().unwrap_or(false)
+                active_in_states(&states, &entry.unit_name())
             };
             running && entry.ipv4.is_some() && networking_enabled(state, entry)
         })
@@ -5087,6 +5109,62 @@ mod tests {
             harness.dhcp.is_running(&vm_id),
             "a card still in CC mode lets the start proceed"
         );
+    }
+
+    #[test]
+    fn bringing_a_vm_adopted_from_a_failed_unit_back_clears_the_death_mark() {
+        // The mark suppresses the CC seed while the guest is gone, so a start
+        // or a reboot that leaves it set would keep the card unvouched for
+        // the rest of a live VM's life.
+        let harness = harness_with_gpu_probe(vec![nvidia_card("06:00.0")], switchable_probe);
+        let state = &harness.state;
+        let vm_id = hash('c');
+        PROBED_CC_MODE.with(|mode| mode.set(Some(crate::gpu_cc::CcMode::On)));
+        snp_vm_holding_a_card(state, &vm_id, "06:00.0");
+
+        // The shape a restart adopts: the unit failed, the start stamp stands
+        // with no stop, and a fresh daemon holds no reading of the card.
+        harness
+            .systemd
+            .set_state(&controller_unit_name(&vm_id), "failed");
+        with_entry_mut(state, &vm_id, |entry| entry.adopted_failed = true)
+            .expect("the VM is in the world");
+        forget_the_cc_sweep(state);
+        crate::service::refresh_cc_modes(state);
+        let entry = entry_snapshot(state, &vm_id).expect("the VM is in the world");
+        assert_eq!(status_snapshot(state, &entry), pb::VmStatus::Failed);
+        assert_eq!(
+            crate::service::cc_mode_of(state, "06:00.0"),
+            None,
+            "a dead confidential guest vouches for no card"
+        );
+
+        start_vm(state, &vm_id).unwrap();
+
+        let entry = entry_snapshot(state, &vm_id).expect("the VM is in the world");
+        assert!(!entry.adopted_failed, "the start answered the death");
+        // Forget the start's own reading, so only the seed can answer.
+        forget_the_cc_sweep(state);
+        crate::service::refresh_cc_modes(state);
+        assert_eq!(
+            crate::service::cc_mode_of(state, "06:00.0"),
+            Some(crate::gpu_cc::CcMode::On),
+            "the guest is back and vouches for its card again"
+        );
+
+        // A reboot answers a death the same way a start does.
+        with_entry_mut(state, &vm_id, |entry| entry.adopted_failed = true)
+            .expect("the VM is in the world");
+        reboot_vm(state, &vm_id).unwrap();
+        let entry = entry_snapshot(state, &vm_id).expect("the VM is in the world");
+        assert!(!entry.adopted_failed, "the reboot answered the death too");
+    }
+
+    /// Drop every cached CC answer and the record of the last sweep, so the
+    /// next refresh walks the cards with nothing remembered.
+    fn forget_the_cc_sweep(state: &DaemonState) {
+        state.gpu_cc_modes.lock().unwrap().clear();
+        state.gpu_cc_sweep.lock().unwrap().at = None;
     }
 
     #[test]
@@ -8271,6 +8349,7 @@ mod tests {
                 ..VmTimes::default()
             },
             adopted_running: true,
+            adopted_failed: false,
             restarting: false,
             ipv4: None,
             ipv6: None,
@@ -8677,6 +8756,7 @@ mod tests {
                 ..VmTimes::default()
             },
             adopted_running: true,
+            adopted_failed: false,
             restarting: false,
             ipv4: None,
             ipv6: None,
