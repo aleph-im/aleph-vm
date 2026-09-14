@@ -113,13 +113,13 @@ from aleph.vm.agent.vm.reclaimable import (
     reclaimable_bytes,
 )
 from aleph.vm.agent.vm.reconciler import (
-    _plausible,
-    _release_cache_devices,
     _startup_refusal,
-    _teardown_orphan_devices,
+    is_vm_namespace,
     live_hashes,
     reconcile_storage,
+    release_cache_devices,
     supervisor_hashes,
+    teardown_orphan_devices,
 )
 from aleph.vm.agent.vm_registry import AgentVmRegistry, rehydrate_registry
 from aleph.vm.conf import Settings, settings
@@ -682,7 +682,7 @@ def _reclaim_refusal(registry: AgentVmRegistry, vm_hash: str, *, trust_registry:
     VM must be refused here, not tripped over as a ValueError inside
     purge_vm_storage after every other check passed.
     """
-    if not _plausible(vm_hash):
+    if not is_vm_namespace(vm_hash):
         return Refusal(f"{vm_hash!r} is not a VM hash; refusing to purge a directory not named after a VM")
     if not _is_marked_reclaimable(vm_hash):
         return Refusal(
@@ -845,7 +845,7 @@ def _reconcile(registry: AgentVmRegistry, out: TextIO, err: TextIO, *, dry_run: 
     # device of a VM that is merely unlisted takes that VM's disk with it:
     # --trust-registry buys a purge on the registry's word, not a teardown.
     if not effective_dry_run and answer.answered:
-        asyncio.run(_teardown_orphan_devices(live))
+        asyncio.run(teardown_orphan_devices(live))
     report = reconcile_storage(registry, dry_run=effective_dry_run, live=live, live_known=answer.answered)
     prefix = "Dry run: " if effective_dry_run else "Reconciled: "
     out.write(prefix + report.summary() + "\n")
@@ -855,9 +855,9 @@ def _reconcile(registry: AgentVmRegistry, out: TextIO, err: TextIO, *, dry_run: 
         out.write(f"  {'would mark' if effective_dry_run else 'marked'} {name}\n")
     # Mirrors reconcile_now/reconcile_at_startup: tear down the devices of
     # evicted parent images, then sweep whatever an earlier teardown left
-    # behind. _release_cache_devices no-ops under a dry run on its own, so
+    # behind. release_cache_devices no-ops under a dry run on its own, so
     # calling it unconditionally here matches the daemon's own passes.
-    asyncio.run(_release_cache_devices(report, dry_run=effective_dry_run))
+    asyncio.run(release_cache_devices(report, dry_run=effective_dry_run))
     return DEGRADED_EXIT_CODE if downgraded and not dry_run else 0
 
 
