@@ -1566,18 +1566,7 @@ mod tests {
     /// A DaemonState with no probed CC modes, for tests that only care
     /// about `vm_info_message`'s non-GPU fields.
     fn empty_state() -> DaemonState {
-        DaemonState::hermetic(
-            HostState {
-                settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
-                host_ipv4: String::new(),
-                network_interface: None,
-                gpus: Vec::new(),
-                dns_nameservers: None,
-            },
-            WorldView::default(),
-            Arc::new(crate::units::StaticUnitStates::default()),
-            Arc::new(crate::logs::StaticLogSource::new(Vec::new())),
-        )
+        cards_state(Vec::new())
     }
 
     #[test]
@@ -1588,32 +1577,6 @@ mod tests {
         // view under the function's own read guard, not a caller-supplied
         // snapshot (a concurrent CreateVm can attach a card between a
         // snapshot taken before spawn_blocking and the probe running on it).
-        let host = HostState {
-            settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
-            host_ipv4: String::new(),
-            network_interface: None,
-            gpus: vec![
-                GpuDevice {
-                    vendor: "NVIDIA".to_string(),
-                    device_name: "GB202 [GeForce RTX 5090]".to_string(),
-                    device_class: "0300".to_string(),
-                    pci_host: "06:00.0".to_string(),
-                    device_id: "10de:2b85".to_string(),
-                    cc_mode: None,
-                    arch: None,
-                },
-                GpuDevice {
-                    vendor: "NVIDIA".to_string(),
-                    device_name: "GB202 [GeForce RTX 5090]".to_string(),
-                    device_class: "0300".to_string(),
-                    pci_host: "07:00.0".to_string(),
-                    device_id: "10de:2b85".to_string(),
-                    cc_mode: None,
-                    arch: None,
-                },
-            ],
-            dns_nameservers: None,
-        };
         let mut entry = fixture_entry(test_fixtures::QEMU_HASH, true);
         entry.config.gpus = vec![crate::controller_config::QemuGpu {
             pci_host: "06:00.0".to_string(),
@@ -1621,12 +1584,7 @@ mod tests {
         }];
         let mut world = WorldView::default();
         world.insert_entry(entry);
-        let state = DaemonState::hermetic(
-            host,
-            world,
-            Arc::new(crate::units::StaticUnitStates::default()),
-            Arc::new(crate::logs::StaticLogSource::new(Vec::new())),
-        );
+        let state = cards_state_in(vec![nvidia_card("06:00.0"), nvidia_card("07:00.0")], world);
 
         let probed: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
         refresh_cc_modes_with(
@@ -1659,28 +1617,7 @@ mod tests {
         // mode. Neither may keep advertising the stale value: a scheduler
         // trusting it would place a confidential workload on a card the
         // host can no longer vouch for.
-        let card = |pci_host: &str| GpuDevice {
-            vendor: "NVIDIA".to_string(),
-            device_name: "GB202 [GeForce RTX 5090]".to_string(),
-            device_class: "0300".to_string(),
-            pci_host: pci_host.to_string(),
-            device_id: "10de:2b85".to_string(),
-            cc_mode: None,
-            arch: None,
-        };
-        let host = HostState {
-            settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
-            host_ipv4: String::new(),
-            network_interface: None,
-            gpus: vec![card("06:00.0"), card("07:00.0")],
-            dns_nameservers: None,
-        };
-        let state = DaemonState::hermetic(
-            host,
-            WorldView::default(),
-            Arc::new(crate::units::StaticUnitStates::default()),
-            Arc::new(crate::logs::StaticLogSource::new(Vec::new())),
-        );
+        let state = cards_state(vec![nvidia_card("06:00.0"), nvidia_card("07:00.0")]);
         {
             let mut cache = state.gpu_cc_modes.lock().unwrap();
             let on = crate::gpu_cc::ProbedCcMode::now(Some(crate::gpu_cc::CcMode::On));
@@ -1721,22 +1658,28 @@ mod tests {
         }
     }
 
-    /// Two free NVIDIA cards and nothing attached: the fixture both
-    /// freshness tests below build on.
-    fn two_free_cards() -> DaemonState {
-        let host = HostState {
-            settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
-            host_ipv4: String::new(),
-            network_interface: None,
-            gpus: vec![nvidia_card("06:00.0"), nvidia_card("07:00.0")],
-            dns_nameservers: None,
-        };
+    /// A daemon whose host holds these cards, on the world given.
+    fn cards_state_in(gpus: Vec<GpuDevice>, world: WorldView) -> DaemonState {
         DaemonState::hermetic(
-            host,
-            WorldView::default(),
+            HostState {
+                gpus,
+                ..test_host_state()
+            },
+            world,
             Arc::new(crate::units::StaticUnitStates::default()),
             Arc::new(crate::logs::StaticLogSource::new(Vec::new())),
         )
+    }
+
+    /// The same, with nothing defined on the node.
+    fn cards_state(gpus: Vec<GpuDevice>) -> DaemonState {
+        cards_state_in(gpus, WorldView::default())
+    }
+
+    /// Two free NVIDIA cards and nothing attached: the fixture both
+    /// freshness tests below build on.
+    fn two_free_cards() -> DaemonState {
+        cards_state(vec![nvidia_card("06:00.0"), nvidia_card("07:00.0")])
     }
 
     #[test]
@@ -1915,19 +1858,7 @@ mod tests {
         bytes[0x590..0x594].copy_from_slice(&1u32.to_le_bytes());
         std::fs::write(device_dir.join("resource0"), &bytes).unwrap();
 
-        let host = HostState {
-            settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
-            host_ipv4: String::new(),
-            network_interface: None,
-            gpus: vec![nvidia_card("06:00.0")],
-            dns_nameservers: None,
-        };
-        let state = DaemonState::hermetic(
-            host,
-            WorldView::default(),
-            Arc::new(crate::units::StaticUnitStates::default()),
-            Arc::new(crate::logs::StaticLogSource::new(Vec::new())),
-        );
+        let state = cards_state(vec![nvidia_card("06:00.0")]);
 
         let reads = std::sync::atomic::AtomicUsize::new(0);
         let devices_dir = sysfs.path().to_path_buf();
@@ -2007,13 +1938,6 @@ mod tests {
         // A card a guest owns is never probed, so an adopted SNP VM's card is
         // seeded from the create gate's reading instead. A plain passthrough
         // VM went through no such gate, so its card stays unknown.
-        let host = HostState {
-            settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
-            host_ipv4: String::new(),
-            network_interface: None,
-            gpus: vec![nvidia_card("06:00.0"), nvidia_card("07:00.0")],
-            dns_nameservers: None,
-        };
         let snp_entry = adopted_entry_holding(test_fixtures::QEMU_HASH, "06:00.0", true);
         let mut world = WorldView::default();
         world.insert_entry(snp_entry.clone());
@@ -2022,12 +1946,7 @@ mod tests {
             "07:00.0",
             false,
         ));
-        let state = DaemonState::hermetic(
-            host,
-            world,
-            Arc::new(crate::units::StaticUnitStates::default()),
-            Arc::new(crate::logs::StaticLogSource::new(Vec::new())),
-        );
+        let state = cards_state_in(vec![nvidia_card("06:00.0"), nvidia_card("07:00.0")], world);
 
         // Any read of a card a guest owns is a bug, so the probe panics.
         refresh_cc_modes_with(
@@ -2072,21 +1991,9 @@ mod tests {
         let mut snp_entry = adopted_entry_holding(test_fixtures::QEMU_HASH, "06:00.0", true);
         snp_entry.times.started_at_ns = 0;
         snp_entry.times.stopped_at_ns = snp_entry.times.defined_at_ns;
-        let host = HostState {
-            settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
-            host_ipv4: String::new(),
-            network_interface: None,
-            gpus: vec![nvidia_card("06:00.0")],
-            dns_nameservers: None,
-        };
         let mut world = WorldView::default();
         world.insert_entry(snp_entry);
-        let state = DaemonState::hermetic(
-            host,
-            world,
-            Arc::new(crate::units::StaticUnitStates::default()),
-            Arc::new(crate::logs::StaticLogSource::new(Vec::new())),
-        );
+        let state = cards_state_in(vec![nvidia_card("06:00.0")], world);
 
         refresh_cc_modes_with(
             &state,
@@ -2113,21 +2020,9 @@ mod tests {
             defined_at_ns: snp_entry.times.defined_at_ns,
             ..Default::default()
         };
-        let host = HostState {
-            settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
-            host_ipv4: String::new(),
-            network_interface: None,
-            gpus: vec![nvidia_card("06:00.0")],
-            dns_nameservers: None,
-        };
         let mut world = WorldView::default();
         world.insert_entry(snp_entry);
-        let state = DaemonState::hermetic(
-            host,
-            world,
-            Arc::new(crate::units::StaticUnitStates::default()),
-            Arc::new(crate::logs::StaticLogSource::new(Vec::new())),
-        );
+        let state = cards_state_in(vec![nvidia_card("06:00.0")], world);
 
         refresh_cc_modes_with(
             &state,
