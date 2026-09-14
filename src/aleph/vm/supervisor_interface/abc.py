@@ -8,7 +8,7 @@ Migration carries no method of its own: it rides the standard lifecycle RPCs.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 
 from aleph.vm.supervisor_interface.types import (
     CreateVmSpec,
@@ -108,7 +108,7 @@ class LogsOps(ABC):
     async def get_logs(self, vm_id: VmId, max_lines: int = 0, from_tail: bool = False) -> list[LogChunk]: ...
 
     @abstractmethod
-    def stream_logs(self, vm_id: VmId, include_history: bool = False) -> AsyncIterator[LogChunk]: ...
+    def stream_logs(self, vm_id: VmId, include_history: bool = False) -> AsyncGenerator[LogChunk, None]: ...
 
 
 class QuiesceOps(ABC):

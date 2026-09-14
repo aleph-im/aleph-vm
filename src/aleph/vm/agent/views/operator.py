@@ -4,6 +4,7 @@ import hmac
 import json
 import logging
 import time
+from contextlib import aclosing
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from pathlib import Path
@@ -304,59 +305,61 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
         ws = web.WebSocketResponse()
         logger.info(f"starting websocket: {request.path}")
         await ws.prepare(request)
-
         try:
-            first_message = await ws.receive_json()
-        except (TypeError, ValueError) as error:
-            logger.exception(error)
-            await ws.send_json({"status": "failed", "reason": str(error)})
+            await _serve_log_stream(ws, request.app["supervisor"], vm_hash, message)
+        except ConnectionResetError:
+            # The client hung up; there is nobody left to answer.
+            logger.info("log stream client of %s went away", vm_hash)
+        finally:
             await ws.close()
-            return ws
-
-        credentials = first_message.get("auth")
-        if not credentials:
-            await ws.send_json({"status": "failed", "reason": "missing 'auth' key in message"})
-            await ws.close()
-            return ws
-
-        try:
-            authenticated_sender = await authenticate_websocket_message(credentials)
-            if not await is_sender_authorized(authenticated_sender, message):
-                await ws.send_json({"status": "failed", "reason": "unauthorized sender"})
-                await ws.close()
-                return ws
-        except Exception as error:
-            await ws.send_json({"status": "failed", "reason": str(error)})
-            await ws.close()
-            return ws
-
-        await ws.send_json({"status": "connected"})
-
-        supervisor: Supervisor = request.app["supervisor"]
-        vm_id = VmId(str(vm_hash))
-        try:
-            info = await supervisor.get_vm(vm_id)
-        except VmNotFoundError:
-            info = None
-
-        if info and info.status is VmStatus.RUNNING:
-            try:
-                async for chunk in supervisor.stream_logs(vm_id):
-                    await ws.send_json({"type": chunk.source.value, "message": chunk.line})
-            finally:
-                await ws.close()
-                logger.info(f"connection {ws} closed")
-        elif info and info.status is VmStatus.BOOTING:
-            await ws.send_json({"type": "system", "message": "VM is starting, try again shortly"})
-            await ws.close()
-        else:
-            for chunk in await supervisor.get_logs(vm_id):
-                await ws.send_json({"type": chunk.source.value, "message": chunk.line})
-            await ws.send_json({"type": "system", "message": "VM is not running, past logs sent"})
-            await ws.close()
-            logger.info(f"connection {ws} closed (past logs for stopped VM)")
-
+            logger.info(f"connection {ws} closed")
         return ws
+
+
+async def _serve_log_stream(
+    ws: web.WebSocketResponse, supervisor: Supervisor, vm_hash: ItemHash, message: BaseExecutableContent
+) -> None:
+    try:
+        first_message = await ws.receive_json()
+    except (TypeError, ValueError) as error:
+        logger.exception(error)
+        await ws.send_json({"status": "failed", "reason": str(error)})
+        return
+
+    credentials = first_message.get("auth")
+    if not credentials:
+        await ws.send_json({"status": "failed", "reason": "missing 'auth' key in message"})
+        return
+
+    try:
+        authenticated_sender = await authenticate_websocket_message(credentials)
+        if not await is_sender_authorized(authenticated_sender, message):
+            await ws.send_json({"status": "failed", "reason": "unauthorized sender"})
+            return
+    except Exception as error:
+        await ws.send_json({"status": "failed", "reason": str(error)})
+        return
+
+    await ws.send_json({"status": "connected"})
+
+    vm_id = VmId(str(vm_hash))
+    try:
+        info = await supervisor.get_vm(vm_id)
+    except VmNotFoundError:
+        info = None
+
+    if info and info.status is VmStatus.RUNNING:
+        # aclosing cancels the supervisor's stream when the client leaves
+        # mid-loop, instead of leaving it to the garbage collector.
+        async with aclosing(supervisor.stream_logs(vm_id)) as chunks:
+            async for chunk in chunks:
+                await ws.send_json({"type": chunk.source.value, "message": chunk.line})
+    elif info and info.status is VmStatus.BOOTING:
+        await ws.send_json({"type": "system", "message": "VM is starting, try again shortly"})
+    else:
+        for chunk in await supervisor.get_logs(vm_id):
+            await ws.send_json({"type": chunk.source.value, "message": chunk.line})
+        await ws.send_json({"type": "system", "message": "VM is not running, past logs sent"})
 
 
 @cors_allow_all
