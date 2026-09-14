@@ -506,14 +506,26 @@ pub fn reconcile_numa_ledger(state: &DaemonState) {
 fn unit_active(state: &DaemonState, unit: &str) -> bool {
     match state
         .units
-        .active_states(std::slice::from_ref(&unit.to_string()))
+        .unit_states(std::slice::from_ref(&unit.to_string()))
     {
-        Ok(states) => states.get(unit).copied().unwrap_or(false),
+        Ok(states) => states
+            .get(unit)
+            .copied()
+            .is_some_and(UnitLiveness::is_active),
         Err(error) => {
             tracing::error!(%error, "Failed to get services active states");
             false
         }
     }
+}
+
+/// Whether a batched-state map reports this unit up; down, mid-job and
+/// unanswered all read as not up.
+fn active_in_states(states: &std::collections::HashMap<String, UnitLiveness>, unit: &str) -> bool {
+    states
+        .get(unit)
+        .copied()
+        .is_some_and(UnitLiveness::is_active)
 }
 
 /// AlephQemuInstance.enable_networking: the spec asked for internet access
@@ -3563,12 +3575,12 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
     let unit_names: Vec<String> = entries.iter().map(|entry| entry.unit_name()).collect();
     let states = state
         .units
-        .active_states(&unit_names)
+        .unit_states(&unit_names)
         .unwrap_or_else(|error| {
             tracing::error!(%error, "Failed to get services active states");
             unit_names
                 .iter()
-                .map(|unit| (unit.clone(), false))
+                .map(|unit| (unit.clone(), UnitLiveness::Unknown))
                 .collect()
         });
     // Rederive missing IP assignments before filtering: entries adopted during
@@ -3578,7 +3590,7 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
     for entry in &mut entries {
         if entry.ipv4.is_some()
             || !networking_enabled(state, entry)
-            || !states.get(&entry.unit_name()).copied().unwrap_or(false)
+            || !active_in_states(&states, &entry.unit_name())
         {
             continue;
         }
@@ -3603,7 +3615,7 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
                 // Ephemeral programs have no unit; liveness is times-based.
                 entry.times.starting_at_ns != 0 && entry.times.stopping_at_ns == 0
             } else {
-                states.get(&entry.unit_name()).copied().unwrap_or(false)
+                active_in_states(&states, &entry.unit_name())
             };
             running && entry.ipv4.is_some() && networking_enabled(state, entry)
         })

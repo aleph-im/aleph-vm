@@ -102,16 +102,6 @@ pub trait UnitStateSource: Send + Sync {
     /// cannot tell running from stopped and must not pretend it can.
     fn unit_states(&self, units: &[String]) -> Result<HashMap<String, UnitLiveness>, UnitsError>;
 
-    /// Active flag per requested unit name, the coarse view of
-    /// [`Self::unit_states`] for the callers that only ask "is it up".
-    fn active_states(&self, units: &[String]) -> Result<HashMap<String, bool>, UnitsError> {
-        Ok(self
-            .unit_states(units)?
-            .into_iter()
-            .map(|(unit, state)| (unit, state.is_active()))
-            .collect())
-    }
-
     /// Every loaded `aleph-vm-controller@*.service` unit with its active
     /// flag, for the boot-time "unit without a config file" sweep.
     fn controller_units(&self) -> Result<HashMap<String, bool>, UnitsError>;
@@ -817,10 +807,10 @@ mod tests {
     fn static_states_answer_requested_units_and_default_to_inactive() {
         let source = StaticUnitStates::with_active_vms(&["aa"]);
         let states = source
-            .active_states(&[controller_unit_name("aa"), controller_unit_name("bb")])
+            .unit_states(&[controller_unit_name("aa"), controller_unit_name("bb")])
             .unwrap();
-        assert!(states[&controller_unit_name("aa")]);
-        assert!(!states[&controller_unit_name("bb")]);
+        assert_eq!(states[&controller_unit_name("aa")], UnitLiveness::Active);
+        assert_eq!(states[&controller_unit_name("bb")], UnitLiveness::Dead);
         assert_eq!(source.controller_units().unwrap().len(), 1);
 
         let unit = controller_unit_name("aa");
@@ -839,7 +829,7 @@ mod tests {
     fn the_unreachable_bus_errors_instead_of_reporting_inactive() {
         let source = UnreachableBus;
         let error = source
-            .active_states(&[controller_unit_name("aa")])
+            .unit_states(&[controller_unit_name("aa")])
             .unwrap_err();
         assert!(matches!(error, UnitsError::Unreachable));
         assert_eq!(error.to_string(), "test bus is unreachable");
