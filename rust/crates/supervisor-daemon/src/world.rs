@@ -49,7 +49,7 @@ use crate::controller_config::{
     self, ControllerConfig, QemuVmConfig, VmConfiguration, parse_controller_config,
 };
 use crate::ports::{self, PortForward};
-use crate::units::{UnitStateSource, controller_unit_name};
+use crate::units::{UnitLiveness, UnitStateSource, controller_unit_name};
 
 const CONFIG_SUFFIX: &str = "-controller.json";
 
@@ -255,6 +255,11 @@ pub struct VmEntry {
     /// Status queries use the LIVE unit state; this drives what was
     /// populated at adoption (times, IPs, port forwards).
     pub adopted_running: bool,
+    /// Whether the controller unit had FAILED when the view was built: the
+    /// VM ran and died, so it reports FAILED, but no guest of it is left to
+    /// hold a card's CC mode or to wait for its confidential session.
+    /// Cleared by the start that brings the VM back.
+    pub adopted_failed: bool,
     /// Set while StartVm or RebootVm is deliberately bringing the controller
     /// unit back up, and cleared on the way out whether or not it worked.
     /// Status reads take no per-VM lock, so without this a poll landing in
@@ -320,6 +325,7 @@ impl VmEntry {
             settings_slice: controller_config::ControllerSettingsSlice::default(),
             times: VmTimes::default(),
             adopted_running: false,
+            adopted_failed: false,
             restarting: false,
             ipv4: None,
             ipv6: None,
@@ -525,8 +531,8 @@ pub fn build_world_view(
     // None: the bus did not answer, so unit states are UNKNOWN. Adopted
     // entries must not be stamped stopped on a transient bus outage; their
     // status defers to the live per-RPC unit queries instead.
-    let active_states: Option<std::collections::HashMap<String, bool>> =
-        match units.active_states(&unit_names) {
+    let unit_states: Option<std::collections::HashMap<String, UnitLiveness>> =
+        match units.unit_states(&unit_names) {
             Ok(states) => Some(states),
             Err(error) => {
                 tracing::warn!(
@@ -542,7 +548,7 @@ pub fn build_world_view(
     // reported and left alone. Best-effort, and only when the bus already
     // answered above: a second call on a dead bus would just burn another
     // method timeout at boot.
-    if active_states.is_some() {
+    if unit_states.is_some() {
         let known: std::collections::HashSet<&String> = unit_names.iter().collect();
         match units.controller_units() {
             Ok(controller_units) => {
@@ -578,16 +584,17 @@ pub fn build_world_view(
     for config in configs {
         let vm_hash = config.vm_hash.clone();
         let unit = controller_unit_name(&vm_hash);
-        // Some(flag): the bus answered; None: unknown (bus unreachable).
-        let running: Option<bool> = active_states
+        // Some(state): the bus answered; None: unknown (bus unreachable).
+        let liveness: Option<UnitLiveness> = unit_states
             .as_ref()
-            .map(|states| states.get(&unit).copied().unwrap_or(false));
+            .map(|states| states.get(&unit).copied().unwrap_or(UnitLiveness::Unknown));
+        let active = liveness.is_some_and(UnitLiveness::is_active);
 
         // Like Python, the vm_index claim precedes the per-VM rebuild: an
         // active duplicate is never adopted (Python destroys it at startup
         // and answers NOT_FOUND; this daemon just does not adopt, because a
         // daemon that adopts must not destroy state).
-        if running == Some(true) && !claimed_vm_indices.insert(config.vm_index) {
+        if active && !claimed_vm_indices.insert(config.vm_index) {
             tracing::warn!(
                 vm_hash,
                 vm_index = config.vm_index,
@@ -608,7 +615,7 @@ pub fn build_world_view(
                 // controller for background retry, including these doomed
                 // ones (spec_from_controller_configuration is QEMU-only on
                 // every retry too); they exhaust after the attempt cap.
-                if running == Some(true) {
+                if active {
                     world
                         .failed_reattach
                         .insert(vm_hash, FailedReattach::new(config.vm_index));
@@ -628,8 +635,9 @@ pub fn build_world_view(
         let mut ipv4 = None;
         let mut ipv6 = None;
         let mut port_forwards = Vec::new();
-        match running {
-            Some(true) => {
+        let mut adopted_failed = false;
+        match liveness {
+            Some(UnitLiveness::Active) => {
                 times.preparing_at_ns = now_ns();
                 times.prepared_at_ns = now_ns();
 
@@ -714,7 +722,18 @@ pub fn build_world_view(
 
                 times.started_at_ns = now_ns();
             }
-            Some(false) => {
+            Some(UnitLiveness::Failed) => {
+                // The VM ran and its unit died on its own, so it is a death
+                // to report and rebuild, not the stop the arm below stamps.
+                // started_at with no stopped_at is the dead-unit arm's shape.
+                times.started_at_ns = times.defined_at_ns;
+                adopted_failed = true;
+                tracing::info!(
+                    vm_hash,
+                    "controller config present but its unit failed; reporting the VM failed"
+                );
+            }
+            Some(UnitLiveness::Dead) => {
                 // No Python counterpart (the Python startup destroys these);
                 // the daemon observed the VM stopped at adoption.
                 times.stopped_at_ns = times.defined_at_ns;
@@ -723,10 +742,19 @@ pub fn build_world_view(
                     "controller config present but its unit is not active; reporting the VM stopped"
                 );
             }
+            Some(state) => {
+                // A job in flight, or a state systemd grew since: neither is
+                // proof the VM stopped, so leave every stamp but defined_at
+                // unset and let vm_status follow the live unit state.
+                tracing::info!(
+                    vm_hash,
+                    ?state,
+                    "unit state undecided at adoption; \
+                     the VM's status defers to live unit queries"
+                );
+            }
             None => {
-                // Bus unreachable at boot: not proof the VM stopped. Leave
-                // every stage timestamp except defined_at unset so vm_status
-                // follows the live unit state once the bus answers.
+                // Bus unreachable at boot: not proof the VM stopped either.
                 tracing::info!(
                     vm_hash,
                     "unit state unknown at adoption (bus unreachable); \
@@ -738,7 +766,7 @@ pub fn build_world_view(
         // execution.gpus is rebuilt for VMs adopted running: reporting an
         // attached card as available invites a double attachment after every
         // restart. Stopped entries keep an empty list until StartVm.
-        let gpus = if running == Some(true) {
+        let gpus = if active {
             rebuild_attached_gpus(&qemu.gpus, gpu_inventory)
         } else {
             Vec::new()
@@ -750,7 +778,8 @@ pub fn build_world_view(
             config: qemu,
             settings_slice: config.settings,
             times,
-            adopted_running: running == Some(true),
+            adopted_running: active,
+            adopted_failed,
             restarting: false,
             ipv4,
             ipv6,
@@ -1366,6 +1395,79 @@ mod tests {
     }
 
     #[test]
+    fn a_vm_whose_unit_failed_adopts_as_a_death() {
+        // A planned VM whose guest died across a daemon restart must report
+        // FAILED, so the agent rebuilds it instead of reading the deliberate
+        // stop a STOPPED stamp would claim.
+        let tmp = tempfile::tempdir().unwrap();
+        populate_execution_root(tmp.path());
+        let settings = test_settings(tmp.path());
+        let units = crate::units::FakeSystemd::new();
+        units.set_state(&controller_unit_name(test_fixtures::QEMU_HASH), "failed");
+
+        let world = build_world_view(&settings, &units, &[]);
+
+        let entry = &world.entries[test_fixtures::QEMU_HASH];
+        assert!(entry.adopted_failed);
+        assert!(!entry.adopted_running);
+        assert_ne!(entry.times.started_at_ns, 0, "the VM did run");
+        assert_eq!(entry.times.stopped_at_ns, 0, "a death is not a stop");
+        assert_eq!(
+            crate::service::vm_status(&entry.times, false, UnitLiveness::Failed),
+            supervisor_proto::pb::VmStatus::Failed
+        );
+        // The runtime attachment list is rebuilt only for a live VM; the
+        // config's claim on the card is what survives, untouched here.
+        assert!(entry.gpus.is_empty());
+    }
+
+    #[test]
+    fn a_vm_stopped_through_stop_vm_still_adopts_stopped() {
+        // StopVm leaves the unit inactive, which is the owner's decision and
+        // must keep reporting STOPPED across a restart.
+        let tmp = tempfile::tempdir().unwrap();
+        populate_execution_root(tmp.path());
+        let settings = test_settings(tmp.path());
+        let units = crate::units::FakeSystemd::with_active_vms(&[test_fixtures::QEMU_HASH]);
+        let unit = controller_unit_name(test_fixtures::QEMU_HASH);
+        crate::units::stop_and_disable(&units, &unit).unwrap();
+        assert_eq!(units.get_active_state(&unit), "inactive");
+
+        let world = build_world_view(&settings, &units, &[]);
+
+        let entry = &world.entries[test_fixtures::QEMU_HASH];
+        assert!(!entry.adopted_failed);
+        assert_eq!(entry.times.stopped_at_ns, entry.times.defined_at_ns);
+        assert_eq!(entry.times.started_at_ns, 0);
+        assert_eq!(
+            crate::service::vm_status(&entry.times, false, UnitLiveness::Dead),
+            supervisor_proto::pb::VmStatus::Stopped
+        );
+    }
+
+    #[test]
+    fn a_unit_mid_job_at_adoption_is_not_stamped_stopped() {
+        // A unit systemd is still working on has neither died nor stopped;
+        // stamping it stopped would freeze the VM there for the rest of its
+        // life, the same trap the failed unit was in.
+        let tmp = tempfile::tempdir().unwrap();
+        populate_execution_root(tmp.path());
+        let settings = test_settings(tmp.path());
+        let units = crate::units::FakeSystemd::new();
+        units.set_state(
+            &controller_unit_name(test_fixtures::QEMU_HASH),
+            "activating",
+        );
+
+        let world = build_world_view(&settings, &units, &[]);
+
+        let entry = &world.entries[test_fixtures::QEMU_HASH];
+        assert!(!entry.adopted_failed);
+        assert_eq!(entry.times.stopped_at_ns, 0);
+        assert_eq!(entry.times.started_at_ns, 0);
+    }
+
+    #[test]
     fn a_bus_failure_at_boot_leaves_statuses_undecided() {
         // R2: a transient bus outage must NOT stamp every VM stopped
         // forever; the entries carry no stopped_at (and no started_at), so
@@ -1378,6 +1480,7 @@ mod tests {
         assert_eq!(world.len(), 3);
         for entry in world.entries.values() {
             assert!(!entry.adopted_running);
+            assert!(!entry.adopted_failed, "an unanswered bus is not a death");
             assert_ne!(entry.times.defined_at_ns, 0);
             assert_eq!(entry.times.stopped_at_ns, 0, "unknown is not stopped");
             assert_eq!(entry.times.started_at_ns, 0);

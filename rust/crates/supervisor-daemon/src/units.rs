@@ -49,8 +49,12 @@ pub enum UnitLiveness {
     /// A job is in flight (`activating`, `deactivating`): something asked for
     /// the change, so the outcome is not a guest that died on its own.
     Transitional,
-    /// The unit has settled down: `failed`, `inactive`, or not loaded at all.
+    /// The unit has settled down with nothing wrong recorded: `inactive`, or
+    /// not loaded at all. That is the shape a deliberate stop leaves behind.
     Dead,
+    /// The unit stopped on an error systemd kept (`failed`). Dead for every
+    /// status purpose, and the one state that says the VM did not stop itself.
+    Failed,
     /// Nothing was observed: no unit was queried, or the bus did not answer.
     /// Never a conclusion about the guest.
     #[default]
@@ -65,13 +69,20 @@ impl UnitLiveness {
         match state {
             "active" | "reloading" => Self::Active,
             "activating" | "deactivating" => Self::Transitional,
-            "failed" | "inactive" | NOT_LOADED => Self::Dead,
+            "failed" => Self::Failed,
+            "inactive" | NOT_LOADED => Self::Dead,
             _ => Self::Unknown,
         }
     }
 
     pub fn is_active(self) -> bool {
         self == Self::Active
+    }
+
+    /// Settled with nothing running under it, however it got there: the
+    /// status mapping treats a failed unit as dead as an inactive one.
+    pub fn is_dead(self) -> bool {
+        matches!(self, Self::Dead | Self::Failed)
     }
 }
 
@@ -90,16 +101,6 @@ pub trait UnitStateSource: Send + Sync {
     /// did not answer (unreachable, timed out, malformed reply): the caller
     /// cannot tell running from stopped and must not pretend it can.
     fn unit_states(&self, units: &[String]) -> Result<HashMap<String, UnitLiveness>, UnitsError>;
-
-    /// Active flag per requested unit name, the coarse view of
-    /// [`Self::unit_states`] for the callers that only ask "is it up".
-    fn active_states(&self, units: &[String]) -> Result<HashMap<String, bool>, UnitsError> {
-        Ok(self
-            .unit_states(units)?
-            .into_iter()
-            .map(|(unit, state)| (unit, state.is_active()))
-            .collect())
-    }
 
     /// Every loaded `aleph-vm-controller@*.service` unit with its active
     /// flag, for the boot-time "unit without a config file" sweep.
@@ -223,7 +224,7 @@ pub enum UnitsError {
     #[error("Reload() failed: {source}")]
     Reload { source: zbus::Error },
 
-    /// `ListUnits()` failed, from `active_states`/`controller_units`.
+    /// `ListUnits()` failed, from `unit_states`/`controller_units`.
     #[error(transparent)]
     Bus(#[from] zbus::Error),
 
@@ -861,10 +862,10 @@ mod tests {
     fn static_states_answer_requested_units_and_default_to_inactive() {
         let source = StaticUnitStates::with_active_vms(&["aa"]);
         let states = source
-            .active_states(&[controller_unit_name("aa"), controller_unit_name("bb")])
+            .unit_states(&[controller_unit_name("aa"), controller_unit_name("bb")])
             .unwrap();
-        assert!(states[&controller_unit_name("aa")]);
-        assert!(!states[&controller_unit_name("bb")]);
+        assert_eq!(states[&controller_unit_name("aa")], UnitLiveness::Active);
+        assert_eq!(states[&controller_unit_name("bb")], UnitLiveness::Dead);
         assert_eq!(source.controller_units().unwrap().len(), 1);
 
         let unit = controller_unit_name("aa");
@@ -883,7 +884,7 @@ mod tests {
     fn the_unreachable_bus_errors_instead_of_reporting_inactive() {
         let source = UnreachableBus;
         let error = source
-            .active_states(&[controller_unit_name("aa")])
+            .unit_states(&[controller_unit_name("aa")])
             .unwrap_err();
         assert!(matches!(error, UnitsError::Unreachable));
         assert_eq!(error.to_string(), "test bus is unreachable");
@@ -907,10 +908,30 @@ mod tests {
             vec![format!("stop {unit}"), format!("disable {unit}")]
         );
         assert_eq!(fake.get_active_state(&unit), "inactive");
+        // Adoption reads a failed unit as a death and an inactive one as a
+        // deliberate stop, so the state a stop leaves behind is load-bearing.
+        assert_eq!(
+            UnitLiveness::from_active_state(&fake.get_active_state(&unit)),
+            UnitLiveness::Dead
+        );
 
         // Already inactive and disabled: nothing happens.
         stop_and_disable(&fake, &unit).unwrap();
         assert_eq!(fake.actions().len(), 2);
+    }
+
+    #[test]
+    fn a_failed_unit_is_dead_without_being_a_deliberate_stop() {
+        assert_eq!(
+            UnitLiveness::from_active_state("failed"),
+            UnitLiveness::Failed
+        );
+        assert!(UnitLiveness::Failed.is_dead());
+        assert!(UnitLiveness::Dead.is_dead());
+        assert!(!UnitLiveness::Failed.is_active());
+        assert!(!UnitLiveness::Active.is_dead());
+        assert!(!UnitLiveness::Transitional.is_dead());
+        assert!(!UnitLiveness::Unknown.is_dead());
     }
 
     #[test]
