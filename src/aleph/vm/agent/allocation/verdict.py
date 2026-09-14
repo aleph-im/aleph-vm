@@ -29,10 +29,7 @@ from aleph.vm.agent.allocation.plan import (
 )
 from aleph.vm.agent.allocation.refusal import AllocationFailureCode, Refusal, Refusals
 from aleph.vm.agent.allocation.teardown import retention_reason
-from aleph.vm.agent.allocation.verify import (
-    VerificationOutcome,
-    verify_entry,
-)
+from aleph.vm.agent.allocation.verify import VerificationOutcome, verify_entry
 from aleph.vm.agent.capacity import PlanAdmission, requirements_from_message
 from aleph.vm.agent.vm_registry import RecordLookup
 from aleph.vm.resources import GpuDevice
