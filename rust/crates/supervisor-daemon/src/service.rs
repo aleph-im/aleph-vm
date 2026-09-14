@@ -174,38 +174,23 @@ pub struct DaemonState {
     /// tracking for `AllowedCPUs` pinning. In-memory; rebuilt at boot from
     /// each adopted VM's effective placement (its `AllowedCPUs` drop-in).
     pub numa_ledger: std::sync::Mutex<crate::numa::NumaAllocator>,
-    /// The last CC mode probe of each card, keyed by pci_host. Populated
-    /// at startup and by `refresh_cc_modes` (called from `get_host_info`)
-    /// for every NVIDIA card no VM currently owns, and by the SEV-SNP GPU
-    /// gate when a create probes its cards. A card an adopted confidential
-    /// VM owns is entered as CC-on without a read, on the gate's word. A
-    /// card never probed has no entry; a card whose last probe failed has
-    /// an entry with no mode, which advertises nothing and holds the retry
-    /// off until the entry goes stale, which happens sooner than it does
-    /// for a decoded mode (see `gpu_cc::CcCacheWindows`).
+    /// The last CC mode probe of each card, keyed by pci_host. A card with no
+    /// entry, or an entry with no mode, advertises nothing.
     pub gpu_cc_modes: std::sync::Mutex<HashMap<String, crate::gpu_cc::ProbedCcMode>>,
     /// How a card's CC mode is read: the BAR0 register in production,
     /// `gpu_cc::no_probe` on hermetic state so tests never open sysfs.
     pub gpu_cc_probe: crate::gpu_cc::CcProbe,
-    /// What the last CC-mode sweep ran against and when, so `GetHostInfo`
-    /// (reachable from the public `/about` endpoints) cannot drive an
-    /// unbounded rate of register reads: see `refresh_cc_modes`.
+    /// What the last CC-mode sweep ran against and when, so the publicly
+    /// reachable `GetHostInfo` cannot drive an unbounded rate of register reads.
     pub gpu_cc_sweep: std::sync::Mutex<CcSweep>,
-    /// Held for the length of one CC mode refresh pass, so a burst of
-    /// GetHostInfo calls costs one pass and the callers behind it read
-    /// what it wrote. Two passes running at once would also corrupt the
-    /// host's runtime-PM setting: both can read `power/control` before
-    /// either writes it, and the second would then restore "on".
+    /// Serializes CC mode refresh passes: two at once can both read
+    /// `power/control` before either writes it, pinning the card awake.
     pub gpu_cc_refresh: std::sync::Mutex<()>,
 }
 
-/// The attached set the last CC-mode sweep saw, and when it ran. A sweep
-/// against an unchanged set within the shortest of the cache windows
-/// (`gpu_cc::CcCacheWindows::shortest`) is skipped whole, which is the
-/// cheap outer gate over the per-card freshness check inside. It is the
-/// shortest window and not the longest because one decision covers every
-/// card here, so it must not outlive the tier of the card that ages out
-/// first.
+/// The attached set the last CC-mode sweep saw, and when it ran. The skip
+/// window is the shortest cache tier, since one decision here covers every
+/// card and must not outlive the card that ages out first.
 #[derive(Debug, Default)]
 pub struct CcSweep {
     pub attached: HashSet<String>,
@@ -299,21 +284,10 @@ impl SupervisorService {
                 .map(|(pci_host, _)| pci_host.to_string())
                 .collect()
         };
-        // Refresh every unattached NVIDIA card whose CC mode has gone
-        // stale before reporting the inventory, so a freshly-idled card's
-        // mode is current. Cards answered within the freshness window are
-        // served from the cache and not read at all, which matters because
-        // the agent calls this for every unauthenticated capability
-        // request. mmap of a BAR is a blocking syscall; run it off the
-        // tokio worker.
-        // refresh_cc_modes takes its own world read guard and keeps it for
-        // the whole probe: the `attached` snapshot above can go stale the
-        // moment a concurrent CreateVm registers a card, and the probe gate
-        // must never trust a snapshot it no longer holds the lock for. It
-        // also skips the sweep when nothing changed hands within the
-        // freshness window, and reads no card whose own answer is still
-        // fresh, so a public poller cannot turn every request into a
-        // register read.
+        // Refresh stale CC modes before reporting the inventory. mmap of a BAR
+        // is a blocking syscall, so it runs off the tokio worker; the probe
+        // takes its own world read guard rather than trusting the `attached`
+        // snapshot above, which a concurrent CreateVm can invalidate.
         {
             let state = self.state.clone();
             tokio::task::spawn_blocking(move || refresh_cc_modes(&state))
@@ -524,14 +498,8 @@ pub fn cc_mode_of(state: &DaemonState, pci_host: &str) -> Option<crate::gpu_cc::
 }
 
 /// Probe every NVIDIA card no VM owns whose last answer has gone stale, and
-/// remember what it said. A card that becomes attached keeps its last value
-/// (the register is never read under a guest). A probe that errors, or that
-/// reads a register encoding with no mode, replaces the card's answer with
-/// "no mode": whatever it advertised before is no longer known to be true,
-/// and an unknown card advertises nothing. A card a confidential guest owns
-/// gets its mode from the create gate that admitted it, with no read at
-/// all. Runs on the blocking pool: mmap of a BAR is a syscall against
-/// device memory.
+/// remember what it said. A failed or undecodable probe clears the card's
+/// mode, so a card that is no longer known to be CC-on advertises nothing.
 pub fn refresh_cc_modes(state: &DaemonState) {
     let windows = crate::gpu_cc::CcCacheWindows::with_mode_ttl(std::time::Duration::from_secs(
         state.host.settings.gpu_cc_mode_ttl,
@@ -540,52 +508,17 @@ pub fn refresh_cc_modes(state: &DaemonState) {
 }
 
 /// `refresh_cc_modes` over an explicit probe and explicit cache windows, so
-/// unit tests can hand in a closure that records what was probed and decide
-/// whether the last sweep and each card's last answer count as fresh.
+/// tests can decide what counts as fresh.
 ///
-/// One pass at a time. The pass lock is taken before the world guard (a
-/// waiter must not sit on a read guard), so a burst of GetHostInfo calls
-/// costs one pass and the callers behind it find the entries it wrote.
-/// Overlapping passes would be worse than wasteful: both can read
-/// `power/control` before either writes it, and the second would then
-/// remember "on" as the value to put back, pinning the card awake for
-/// good.
+/// Lock order: the pass lock before the world guard, and that guard is held
+/// across the whole loop, since CreateVm registers a VM's cards under the
+/// write lock before it boots. That is what makes "never read the register
+/// under a guest" hold, so the probes cannot move outside the guard.
 ///
-/// The world read guard is held across the whole loop, not just while the
-/// attached set is collected: CreateVm registers a VM's cards in the world
-/// view under the write lock before it boots anything, so under this guard
-/// a card is either already attached (and skipped) or cannot become
-/// attached until the probe is done. That is what makes "never read under
-/// a guest" hold rather than merely likely, and it is why the probes
-/// cannot be moved outside the guard.
-///
-/// The guard is not cheap to hold any more: resuming a runtime-suspended
-/// card costs up to the 200 ms resume budget, so a pass can hold it for
-/// (stale suspended cards) x 200 ms, and tokio's RwLock is
-/// write-preferring, so a CreateVm arriving mid-pass waits that long. What
-/// keeps that off the hot path is the freshness window below: a given card
-/// is read at most once per the window its own last answer falls under,
-/// whatever the request rate.
-///
-/// Two gates, over different windows. The outer one skips the sweep whole
-/// when it last ran against the same attached set less than
-/// `windows.shortest()` ago. It is one decision for every card at once, so
-/// it cannot be allowed to outlive the shortest tier any of them is held
-/// under: gated on the long window instead, a card cached as unreadable
-/// would sit behind the pass gate for an hour, and the short tier that is
-/// meant to bring it back within the minute would never be reached. The
-/// inner one skips any single card whose own last answer is fresh under
-/// its own tier, and that is where the long window for a decoded mode
-/// actually pays. Walking the cache to check every entry against its own
-/// tier before skipping the pass would be equally correct and buy nothing
-/// back, since the per-card gate walks the same cards anyway; the price of
-/// the short outer gate is one walk over the inventory with no register
-/// reads per short window. Host info is served on an unauthenticated path,
-/// and reading device memory once per request is both a needless cost and
-/// a lever an outsider gets to pull; both windows bound that the same way,
-/// and the mode itself only changes when an operator runs NVIDIA's tool
-/// against an idle card, which no request can do. Neither the create gate
-/// nor the start comes through here: both always read the card.
+/// Two freshness gates, the whole sweep then each card, keep an
+/// unauthenticated host-info poller from turning every request into a
+/// register read. The create gate does not come through here: it always
+/// reads the card.
 fn refresh_cc_modes_with(
     state: &DaemonState,
     probe: impl Fn(&str, &str) -> Result<Option<crate::gpu_cc::CcMode>, DaemonError>,
@@ -597,26 +530,11 @@ fn refresh_cc_modes_with(
         .expect("gpu_cc_refresh poisoned");
     let world = state.world.blocking_read();
     let mut attached: HashSet<String> = HashSet::new();
-    // The subset a live confidential guest owns. Those cards have a known
-    // mode without any read: a card enters an SEV-SNP VM only after the
-    // create gate or the start has read CC-on from it, and the mode cannot
-    // change while the guest holds the card (switching it takes a reset of a
-    // free card).
-    // A daemon that adopts such a VM at boot has an empty cache and will
-    // never probe the card, so without this its mode would stay empty for
-    // the VM's whole life. Plain passthrough VMs went through no gate and
-    // get nothing.
-    //
-    // A stopped VM gets nothing either, even an SEV-SNP one: its QEMU is
-    // gone, so the card is idle hardware an operator can re-mode, and the
-    // gate's word about it has expired. The card stays out of the sweep
-    // (it is still in `attached`, the config still claims it), and the
-    // stop itself dropped whatever the cache held about it, so a stopped
-    // VM's card advertises nothing until it is started again or the VM is
-    // deleted and the card is read as free. The start re-reads the hardware
-    // itself, so the seed below only ever restates the start's own answer.
-    //
-    // What counts as live is `attached_gpus`'s rule.
+    // The subset a live confidential guest owns: the create gate read CC-on
+    // from those cards and the mode cannot change while the guest holds them,
+    // so they are seeded without a read. "Live" is a start with no stop after
+    // it, since a stopped or never-started entry has no guest holding its
+    // card and an operator can re-mode idle hardware.
     let mut known_cc_on: HashSet<String> = HashSet::new();
     for (pci_host, vouched_cc_on) in attached_gpus(&world) {
         attached.insert(pci_host.to_string());
@@ -630,10 +548,8 @@ fn refresh_cc_modes_with(
             && sweep.attached == attached
             && at.elapsed() < windows.shortest()
         {
-            // Nothing changed hands since that sweep, so it already seeded
-            // every confidential VM's cards and read every free one, and no
-            // card's answer can have aged out of even the shortest window
-            // in between.
+            // Nothing changed hands since that sweep and no answer can have
+            // aged out of even the shortest window in between.
             return;
         }
     }
@@ -1872,11 +1788,8 @@ mod tests {
 
     #[test]
     fn refresh_cc_modes_repeats_a_sweep_only_when_a_card_changed_hands_or_the_ttl_passed() {
-        // A public poller hitting GetHostInfo must not turn every request
-        // into a register read: a sweep against the same attached set
-        // within the shortest window is skipped whole, before any card is
-        // looked at. A card changing hands, or the windows passing, brings
-        // the next sweep back.
+        // A sweep against the same attached set within the shortest window is
+        // skipped whole; a card changing hands brings the next sweep back.
         let state = two_free_cards();
         let probes = std::sync::atomic::AtomicUsize::new(0);
         let counting = |_: &str, _: &str| {
@@ -1892,9 +1805,8 @@ mod tests {
             "the second sweep inside the pass window against the same attached set is skipped"
         );
 
-        // A card changes hands: the sweep runs again, over the free card
-        // only, and that card's own answer is a decoded mode, fresh for
-        // the long window, so nothing is read.
+        // A card changes hands: the sweep runs again over the free card only,
+        // whose decoded mode is still fresh, so nothing is read.
         let mut entry = fixture_entry(test_fixtures::QEMU_HASH, true);
         entry.config.gpus = vec![crate::controller_config::QemuGpu {
             pci_host: "06:00.0".to_string(),
@@ -1911,14 +1823,9 @@ mod tests {
 
     #[test]
     fn refresh_cc_modes_serves_a_fresh_answer_without_reading_the_card() {
-        // GetHostInfo refreshes on every call and the agent calls it for
-        // every unauthenticated /about/capability request. Without a TTL
-        // any internet client could make the host mmap the BAR of every
-        // idle NVIDIA card it has, as often as it likes. A probe that
-        // failed is remembered too: a card that cannot be read must not be
-        // retried on every request either. The per-card window is what
-        // holds when the sweep gate lets a pass through, so the sweep is
-        // forced to run every time here.
+        // Without a per-card TTL an unauthenticated caller could make the host
+        // mmap every idle card's BAR as often as it likes. Failures are cached
+        // too; the sweep gate is forced open so only that window is under test.
         let state = two_free_cards();
 
         let probed: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -1957,15 +1864,13 @@ mod tests {
     }
 
     /// Drop the record of the last sweep so the next `refresh_cc_modes_with`
-    /// walks the cards whatever its windows are, leaving only the per-card
-    /// freshness check between a card and its register.
+    /// walks the cards, leaving only the per-card freshness check.
     fn force_next_sweep(state: &DaemonState) {
         state.gpu_cc_sweep.lock().unwrap().at = None;
     }
 
-    /// The windows a daemon runs with out of the box: the default long
-    /// tier for a decoded mode, the fixed short one for an answer with no
-    /// mode.
+    /// The windows a daemon runs with out of the box: the long tier for a
+    /// decoded mode, the short one for an answer with no mode.
     fn default_windows() -> crate::gpu_cc::CcCacheWindows {
         crate::gpu_cc::CcCacheWindows::with_mode_ttl(std::time::Duration::from_secs(
             crate::gpu_cc::DEFAULT_CC_MODE_TTL_SECS,
@@ -1996,14 +1901,9 @@ mod tests {
 
     #[test]
     fn a_pass_rereads_the_unreadable_card_and_leaves_the_known_one_alone() {
-        // The point of the two tiers. Both cards were last read a minute
-        // and a second ago: the one that answered with a mode is still
-        // good for the rest of the long window, while the one that could
-        // not be read (a card being reset reads all ones) has aged out of
-        // the short one and must be tried again, rather than staying
-        // hidden until the long window passes. The pass gate has to let
-        // this sweep through for that to be reachable, which is why it
-        // runs on the shortest window.
+        // The point of the two tiers: at a minute and a second old, the card
+        // that answered with a mode is still fresh while the unreadable one
+        // has aged out of the short window and must be tried again.
         let state = two_free_cards();
         let age = std::time::Duration::from_secs(61);
         {
@@ -2047,22 +1947,15 @@ mod tests {
         );
     }
 
-    /// An adopted VM holding one card: SNP (measured-boot slice present)
-    /// or plain QEMU passthrough, which is the distinction the seeding
-    /// turns on.
     #[test]
     fn concurrent_refreshes_read_a_card_once_and_leave_its_power_setting_alone() {
-        // Two GetHostInfo calls landing together used to run two full
-        // passes over the same cards. Both could read power/control before
-        // either wrote it, so the second remembered "on" as the value to
-        // restore and the card stayed pinned awake after the probes, with
-        // the host's own runtime-PM setting lost.
+        // Overlapping passes can both read power/control before either writes
+        // it, leaving the card pinned awake with the host's setting lost.
         let sysfs = tempfile::tempdir().unwrap();
         let device_dir = sysfs.path().join("0000:06:00.0");
         std::fs::create_dir_all(device_dir.join("power")).unwrap();
-        // The fixture card never actually resumes, so a probe holds the
-        // pass for its whole (short) resume budget: plenty of overlap for
-        // a second pass to start if anything let it.
+        // The fixture card never resumes, so a probe holds the pass for its
+        // whole resume budget: ample overlap for a second pass to start.
         std::fs::write(device_dir.join("power/runtime_status"), "suspended\n").unwrap();
         std::fs::write(device_dir.join("power/control"), "auto\n").unwrap();
         let mut bytes = vec![0u8; 0x1000];
@@ -2158,14 +2051,9 @@ mod tests {
 
     #[test]
     fn an_adopted_snp_vms_card_reports_cc_on_without_reading_the_card() {
-        // A restart leaves the cache empty, and a card a guest owns is
-        // never probed (its register belongs to the guest), so a
-        // confidential VM adopted at boot used to report no cc_mode for
-        // the rest of its life. It does not need a probe: the create gate
-        // admits a card into an SNP VM only after reading CC-on from it,
-        // and nothing can change the mode while the guest holds the card.
-        // A plain passthrough VM went through no such gate, so its card
-        // stays unknown.
+        // A card a guest owns is never probed, so an adopted SNP VM's card is
+        // seeded from the create gate's reading instead. A plain passthrough
+        // VM went through no such gate, so its card stays unknown.
         let host = HostState {
             settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
             host_ipv4: String::new(),
@@ -2225,13 +2113,9 @@ mod tests {
 
     #[test]
     fn a_stopped_snp_vms_card_is_not_seeded_cc_on() {
-        // The seed rests on the card being under a live guest: nothing can
-        // switch its mode there, so the create gate's reading still holds.
-        // A stopped VM's QEMU is gone and the card is idle hardware an
-        // operator can re-mode, so the gate's word has expired and the
-        // card must advertise nothing rather than a mode the host cannot
-        // vouch for. It is still claimed by the entry's config, so it is
-        // not read either.
+        // A stopped VM's QEMU is gone, so the card is idle hardware an operator
+        // can re-mode: the gate's word has expired and the card must advertise
+        // nothing. The entry's config still claims it, so it is not read either.
         let mut snp_entry = adopted_entry_holding(test_fixtures::QEMU_HASH, "06:00.0", true);
         snp_entry.times.started_at_ns = 0;
         snp_entry.times.stopped_at_ns = snp_entry.times.defined_at_ns;
@@ -2268,11 +2152,9 @@ mod tests {
 
     #[test]
     fn a_never_started_snp_vms_card_is_not_seeded_cc_on() {
-        // An entry adopted while the systemd bus was unreachable carries no
-        // stop stamp, but no start either, and the daemon does not know
-        // whether its guest is alive. A never-started Defined entry looks
-        // the same. Neither is proof that a guest is holding the card's
-        // mode still, so neither gets the seed.
+        // An entry with no start stamp (Defined, or adopted while the systemd
+        // bus was unreachable) is no proof a guest still holds the card's
+        // mode, so it gets no seed.
         let mut snp_entry = adopted_entry_holding(test_fixtures::QEMU_HASH, "06:00.0", true);
         snp_entry.times = crate::world::VmTimes {
             defined_at_ns: snp_entry.times.defined_at_ns,

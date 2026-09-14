@@ -807,13 +807,9 @@ fn guest_ipv4(state: &DaemonState, entry: &VmEntry) -> String {
     .unwrap_or_default()
 }
 
-/// Drop everything the CC-mode cache holds about a VM's cards. Whatever is
-/// in there was learned either before the cards were attached or from the
-/// create gate that read them on the way in, and neither answer outlives
-/// the guest: once QEMU is gone the cards are idle hardware an operator can
-/// re-mode with NVIDIA's tool, so the host can no longer vouch for a mode
-/// it read earlier. Forgetting them makes the next reader take the card as
-/// it finds it instead of serving a mode from another era.
+/// Drop everything the CC-mode cache holds about a VM's cards. Once QEMU is
+/// gone the cards are idle hardware an operator can re-mode, so no mode read
+/// earlier still stands.
 fn forget_cc_modes(state: &DaemonState, gpus: &[crate::controller_config::QemuGpu]) {
     if gpus.is_empty() {
         return;
@@ -931,11 +927,9 @@ fn stop_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
     // addresses of a stopped VM (bug-for-bug; the proto says they should
     // empty once the tap is gone).
     with_entry_mut(state, vm_id, |entry| entry.times.stopped_at_ns = now_ns());
-    // The entry keeps claiming the cards, so the refresh sweep will not
-    // read them, and it seeds a mode only for a VM that is running. Without
-    // this the mode the create gate vouched for would sit in the cache and
-    // keep being advertised for a card that no longer has a guest holding
-    // its mode still.
+    // The entry still claims the cards, so the sweep will not read them and
+    // seeds only running VMs: without this the create gate's mode would keep
+    // being advertised for a card no guest holds any more.
     forget_cc_modes(state, &entry.config.gpus);
     tracing::info!(vm_id, "VM stopped");
     Ok(())
@@ -1009,10 +1003,8 @@ fn stop_program_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcErr
     }
 
     with_entry_mut(state, vm_id, |entry| entry.times.stopped_at_ns = now_ns());
-    // Same reason as the persistent stop: no guest holds the cards any
-    // more, so nothing the cache says about them still stands. A program
-    // spec carries no GPUs today, which makes this a no-op, but the rule
-    // belongs on every path that stamps a stop.
+    // As on the persistent stop: no guest holds the cards, so nothing the
+    // cache says about them stands. A no-op while program specs carry no GPUs.
     forget_cc_modes(state, &entry.config.gpus);
     tracing::info!(vm_id, "ephemeral program stopped");
     Ok(())
@@ -2294,15 +2286,9 @@ fn snp_config_slice_with(
         ));
     }
     // A confidential GPU is admitted only on the arm whose cmdline this
-    // function derives (the dm-verity one), and only that image runs the
-    // guest-side GPU attestation stage. Two things go wrong on the other
-    // arm. It passes the agent's cmdline through verbatim, so the daemon
-    // cannot tell whether the guest verifies the card at all, and a card in
-    // confidential-computing mode does no plaintext DMA, so the guest has to
-    // bounce every transfer through a shared buffer whose size is a kernel
-    // parameter the measured runtime pins and the launch digest covers. On
-    // the opaque arm that parameter is neither required nor measured. Fail
-    // closed before the per-card rules run, and say which arm takes the card.
+    // function derives: the opaque arm passes the agent's cmdline through, so
+    // neither the guest-side card attestation nor the bounce-buffer parameter
+    // is measured. Fail closed before the per-card rules run.
     if !spec.gpus.is_empty() && !tee.kernel_cmdline.is_empty() {
         let hosts: Vec<&str> = spec.gpus.iter().map(|g| g.pci_host.as_str()).collect();
         return Err(RpcError::InvalidBackend(format!(
@@ -2312,31 +2298,19 @@ fn snp_config_slice_with(
             hosts.join(", ")
         )));
     }
-    // One card per confidential VM. The window sizing sums every card's
-    // BARs and the argv builder emits a port and chassis per card, so the
-    // mechanics would carry several; what has been validated end to end,
-    // guest runtime included, is exactly one. Nothing here can check that a
-    // second card's attestation, bounce buffer and NVLink topology behave,
-    // so the cap is fail-closed policy rather than a limit of the code, and
-    // it stays until a multi-card guest has actually been exercised.
+    // One card per confidential VM: the mechanics would carry several, but
+    // only one has been validated end to end, so the cap is policy and stays
+    // until a multi-card guest has been exercised.
     if spec.gpus.len() > 1 {
         return Err(RpcError::InvalidBackend(format!(
             "an SEV-SNP VM takes at most one GPU, the spec carries {}",
             spec.gpus.len()
         )));
     }
-    // Reading the register here is safe. The spec's cards were validated
-    // unattached, and this runs under the world write lock with creation
-    // serialized, so no guest can own the card before this VM does.
-    //
-    // That write lock is what the read costs: an idle card is usually
-    // runtime-suspended, and pinning it awake takes up to the probe's
-    // 200 ms resume budget, so a spec with several suspended cards holds
-    // the world write lock for that many times 200 ms and every reader
-    // behind it (GetHostInfo, ListVms, Health) waits. It is bounded, it is
-    // once per creation rather than once per request, and the alternative
-    // is trusting a cached mode for hardware about to be handed to a
-    // guest, so the wait stays here.
+    // The card is read here, not served from the cache: an operator can
+    // re-mode a free card between two probes. The world write lock serialises
+    // creation, so no guest can own the card before this VM does; each
+    // suspended card costs up to the 200 ms resume budget under that lock.
     for gpu in &spec.gpus {
         require_gpu_cc_mode(state, &gpu.pci_host, &probe)?;
     }
@@ -2347,10 +2321,8 @@ fn snp_config_slice_with(
         let window_mb = mmio_window(&hosts).map_err(|e| {
             RpcError::InvalidBackend(format!("cannot size the GPU MMIO window: {e}"))
         })?;
-        // The window has to fit in the guest's physical address space next
-        // to its RAM. A card whose BARs ask for more than that gets no
-        // window from the firmware at all, and the guest sees a device that
-        // enumerates and then does nothing, so refuse the create instead.
+        // A window that does not fit beside the guest's RAM gets no firmware
+        // placement at all, leaving a device that enumerates and does nothing.
         crate::gpu_bar::check_mmio64_budget(window_mb, spec.memory_mib)
             .map_err(|e| RpcError::InvalidBackend(e.to_string()))?;
         Some(window_mb)
@@ -5009,12 +4981,9 @@ mod tests {
 
     #[test]
     fn deleting_a_vm_forgets_what_the_cache_knew_about_its_cards() {
-        // While a VM holds a card the cache keeps whatever was last known
-        // about it, and for a confidential VM that is the mode the create
-        // gate vouched for. Once the VM is gone the card is free hardware
-        // again and an operator can switch its mode, so the entry has to
-        // go with the VM: leaving it would advertise the old answer for
-        // the rest of its freshness window.
+        // Once the VM is gone the card is free hardware an operator can
+        // re-mode, so a cached answer left behind would be advertised for the
+        // rest of its freshness window.
         let harness = harness_with_gpus(vec![nvidia_card("06:00.0")]);
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -5041,11 +5010,9 @@ mod tests {
 
     #[test]
     fn stopping_a_vm_forgets_what_the_cache_knew_about_its_cards() {
-        // A stopped VM keeps claiming its cards, so the refresh sweep will
-        // never read them again, and the seed only covers a running VM. If
-        // the stop left the create gate's answer in the cache the card
-        // would keep being advertised CC-on with no guest holding its mode
-        // still, which an operator can change on an idle card.
+        // A stopped VM still claims its cards, so the sweep never reads them:
+        // an answer left in the cache would be advertised CC-on for a card no
+        // guest holds.
         let harness = harness_with_gpus(vec![nvidia_card("06:00.0")]);
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -5425,12 +5392,9 @@ mod tests {
 
     #[test]
     fn snp_config_slice_rejects_a_gpu_on_the_opaque_cmdline_arm() {
-        // A confidential instance renders its own measured cmdline, so the
-        // guest carries no verified GPU attestation stage, and the
-        // bounce-buffer parameter a confidential card needs is neither
-        // required nor measured there. A CC-mode card must not be admitted
-        // even though the card itself would pass: the injected probe says
-        // "on" and is never consulted.
+        // The opaque arm measures neither the guest attestation stage nor the
+        // bounce-buffer parameter, so the card is refused even though the
+        // injected probe would answer "on".
         let harness = harness_with_gpus(vec![nvidia_card("06:00.0")]);
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -5563,8 +5527,7 @@ mod tests {
     #[test]
     fn snp_config_slice_takes_a_gpu_on_the_verity_arm() {
         // The counterpart of the opaque-arm refusal: the same card on the
-        // measured arm still builds a slice, so the rules above narrow
-        // nothing else.
+        // measured arm still builds a slice.
         let harness = harness_with_gpus(vec![nvidia_card("06:00.0")]);
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -5584,10 +5547,8 @@ mod tests {
 
     #[test]
     fn snp_config_slice_refuses_a_window_the_guest_cannot_address() {
-        // A card whose BARs ask for more 64-bit window than the guest's
-        // physical address width leaves room for. The firmware would place
-        // no window at all and the guest would find a dead device, so the
-        // create is refused here with the numbers that did not fit.
+        // A window past the guest's physical address width gets no firmware
+        // placement, so the create is refused with the numbers that did not fit.
         let harness = harness_with_gpus(vec![nvidia_card("06:00.0")]);
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -5609,11 +5570,8 @@ mod tests {
 
     #[test]
     fn snp_config_slice_refuses_more_than_one_gpu() {
-        // Fail-closed policy, not a limit of the code: the window sizing and
-        // the argv builder would both carry a second card, but only a
-        // single-card confidential guest has been exercised end to end. The
-        // window closure below returns a size that fits, so the count alone
-        // is what refuses the spec.
+        // Policy, not a limit of the code: the window closure returns a size
+        // that fits, so the card count alone is what refuses the spec.
         let harness = harness_with_gpus(vec![nvidia_card("06:00.0"), nvidia_card("07:00.0")]);
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();

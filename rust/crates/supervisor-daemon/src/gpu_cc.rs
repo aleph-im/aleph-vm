@@ -7,9 +7,8 @@
 //! on Hopper, bits [1:0]). Reading it needs no driver: the card is bound to
 //! vfio-pci, and the register is reachable through the sysfs resource file.
 //! The read only ever runs on a card no VM owns, so it never races a guest.
-//! An idle card is usually runtime-suspended, and a suspended function
-//! answers MMIO with all ones, so the probe pins it awake first and treats
-//! an all-ones answer as no answer at all.
+//! A runtime-suspended function answers MMIO with all ones, so the probe pins
+//! an idle card awake first and treats all ones as no answer at all.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -17,37 +16,19 @@ use std::time::{Duration, Instant};
 
 use crate::error::DaemonError;
 
-/// Default length, in seconds, of the window a cached answer that decoded
-/// to a mode is served for. A card's mode only changes when an operator
-/// runs NVIDIA's tool against an idle card, a handful of times in the life
-/// of a node, and nothing the daemon decides rests on the cache being
-/// current: the create and start gates read the hardware themselves, a stop
-/// or a delete forgets the card's entry, and a restart begins with an empty
-/// cache. So the window only has to cover "an idle card was re-moded and
-/// nothing on this node stopped or was deleted since", and an hour of that
-/// costs far less than waking every idle card out of runtime suspend once a
-/// minute for the rest of the node's life. Operators who re-mode cards
-/// often can shorten it with `ALEPH_VM_GPU_CC_MODE_TTL`.
+/// Default length, in seconds, of the window a cached decoded mode is served
+/// for. Nothing the daemon gates on rests on it (create and start read the
+/// hardware), so it can be long; `ALEPH_VM_GPU_CC_MODE_TTL` shortens it.
 pub const DEFAULT_CC_MODE_TTL_SECS: u64 = 3600;
 
-/// How long an answer that carries no mode (the probe errored, the register
-/// read all ones, the encoding is reserved) is served before the card is
-/// read again. Deliberately not a setting: this is transient handling
-/// rather than an operator policy. An operator's mode change ends in a card
-/// reset, and a sweep landing during the reset reads all ones and caches
-/// "unreadable"; held for the long window, that one blink would hide a
-/// perfectly good card for an hour. A minute is still long enough to serve
-/// the reason failed answers are cached at all, which is to keep a card
-/// that cannot be read from being probed again on every request.
+/// How long an answer that carries no mode is served before the card is read
+/// again. Short, because a card reads all ones while it is being reset, and a
+/// long window would hide a healthy card for the rest of it.
 pub const UNREADABLE_CC_MODE_TTL: Duration = Duration::from_secs(60);
 
 /// How long each kind of cached answer is served before its card is read
-/// again. Both windows do the same job for the unauthenticated host-info
-/// path: a card is read at most once per window whatever the request rate,
-/// so nobody who can reach the agent's capability endpoint can make the
-/// host mmap device memory on demand. Only the length differs, because a
-/// decoded mode stays true far longer than a failed read stays worth
-/// believing.
+/// again: a card is read at most once per window whatever the request rate,
+/// so the unauthenticated host-info path cannot drive mmaps on demand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CcCacheWindows {
     /// For an answer that decoded to a mode.
@@ -73,9 +54,8 @@ impl CcCacheWindows {
     }
 }
 
-/// How long a runtime-suspended card gets to come back before the register
-/// is read anyway. A card that has not resumed reads as all ones, which
-/// fails closed, so the wait is a courtesy and not a correctness bound.
+/// How long a runtime-suspended card gets to come back before the register is
+/// read anyway. A card that has not resumed reads all ones, which fails closed.
 const RESUME_TIMEOUT: Duration = Duration::from_millis(200);
 
 /// How often `power/runtime_status` is re-read while waiting to resume.
@@ -267,11 +247,9 @@ pub fn no_probe(_pci_host: &str, _device_id: &str) -> Result<Option<CcMode>, Dae
     Ok(None)
 }
 
-/// What the last probe of one card read: the mode, or `None` when the
-/// probe failed or the register held an encoding with no mode, plus when
-/// it ran. The `None` answers are cached like the modes are: they are what
-/// keeps a card that cannot be read from being probed again on every
-/// request.
+/// What the last probe of one card read, and when. `None` (the probe failed,
+/// or the encoding has no mode) is cached too, so a card that cannot be read
+/// is not probed again on every request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProbedCcMode {
     pub mode: Option<CcMode>,
@@ -287,12 +265,8 @@ impl ProbedCcMode {
         }
     }
 
-    /// Whether this answer is young enough to serve without reading the
-    /// card again. Which window applies is the answer's own business: a
-    /// decoded mode gets the long one, an answer with no mode the short
-    /// one, so a card that read as unreadable while it was being reset
-    /// comes back on its own within the minute instead of staying hidden
-    /// for the length of the long window.
+    /// Whether this answer is young enough to serve without reading the card
+    /// again: a decoded mode gets the long window, one with no mode the short.
     pub fn is_fresh(&self, windows: CcCacheWindows) -> bool {
         let window = if self.mode.is_some() {
             windows.mode
@@ -304,8 +278,7 @@ impl ProbedCcMode {
 }
 
 /// A card held out of runtime suspend for the length of one probe. The
-/// previous `power/control` value goes back on drop, so the card idles
-/// again exactly as the host had it configured.
+/// previous `power/control` value goes back on drop.
 struct RuntimePowerHold {
     control: PathBuf,
     previous: String,
@@ -324,17 +297,11 @@ impl Drop for RuntimePowerHold {
     }
 }
 
-/// Pin a runtime-suspended card awake for a probe. vfio-pci lets a device
-/// nobody has opened runtime-suspend, and MMIO reads to a function in
-/// D3hot come back as all ones, which the register decoder cannot tell
-/// from a real answer. Returns `None`, having written nothing, unless the
-/// kernel reports the device on its way into or out of runtime suspend.
-/// Waits up to `timeout` for the kernel to report it active.
-///
-/// Never fails the probe: a device whose runtime-PM files cannot be read
-/// or written is read as it is, exactly as it was before there was a
-/// resume step. The register still decides, and an all-ones answer from a
-/// card that stayed asleep fails closed.
+/// Pin a runtime-suspended card awake for a probe, waiting up to `timeout`,
+/// since a function in D3hot answers MMIO with all ones. Returns `None`,
+/// having written nothing, unless the kernel reports the device suspended or
+/// in transition; it never fails the probe, because an all-ones answer from a
+/// card that stayed asleep fails closed anyway.
 fn hold_runtime_power_on(device_dir: &Path, timeout: Duration) -> Option<RuntimePowerHold> {
     let status_path = device_dir.join("power/runtime_status");
     let status = match std::fs::read_to_string(&status_path) {
@@ -346,13 +313,9 @@ fn hold_runtime_power_on(device_dir: &Path, timeout: Duration) -> Option<Runtime
             return None;
         }
     };
-    // Only a device on its way into or out of D3 is worth holding. An
-    // "active" one is already awake, and a device with no runtime PM says
-    // "unsupported" (some drivers report other words still): it is powered,
-    // it will never report "active", so writing "on" would change the
-    // host's setting for nothing and then burn the whole resume budget
-    // waiting for a transition that cannot come. "resuming" stays in: a
-    // device mid-resume is exactly what the budget is there to wait for.
+    // Only a device in or heading into D3 is worth holding: an "active" or
+    // "unsupported" one is already powered and would never report "active",
+    // so the write would burn the whole resume budget for nothing.
     let status = status.trim();
     if !matches!(status, "suspended" | "suspending" | "resuming") {
         return None;
@@ -428,11 +391,9 @@ pub(crate) fn probe_cc_mode_in(
             source,
         },
     )?;
-    // A function that cannot answer (still in D3hot, a reset in flight, the
-    // card gone off the bus) reads back as all ones, and the low two bits
-    // of that are the devtools encoding. Reporting devtools for a card
-    // nobody could read would advertise confidential capacity the host has
-    // no evidence for, so an unreachable card is an error and not a mode.
+    // A function that cannot answer reads back as all ones, whose low two bits
+    // are the devtools encoding. Fail closed rather than advertise a mode no
+    // one could read.
     if value == u32::MAX {
         return Err(DaemonError::GpuUnreadable {
             pci_host: pci_host.to_string(),
@@ -548,11 +509,8 @@ mod tests {
 
     #[test]
     fn an_all_ones_register_is_unreadable_rather_than_devtools() {
-        // A card in D3hot answers every MMIO read with all ones, and the
-        // low two bits of that answer are the devtools encoding. The
-        // decoder cannot tell the difference, so the probe must: an idle
-        // card would otherwise be advertised as confidential capacity in
-        // devtools mode and then refused at create.
+        // All ones (a card in D3hot) decodes to the devtools encoding, so the
+        // probe has to reject it before the decoder sees it.
         assert_eq!(cc_mode_from_register(0xffff_ffff), Some(CcMode::Devtools));
         let dir = tempfile::tempdir().unwrap();
         let device_dir = fake_card(dir.path(), None, 0xffff_ffff);
@@ -565,10 +523,8 @@ mod tests {
 
     #[test]
     fn a_suspended_card_is_pinned_awake_and_released_afterwards() {
-        // vfio-pci lets a card nobody has opened runtime-suspend. The
-        // probe pins it awake for the read and hands the host's own
-        // setting back, so the card can idle again once the daemon is
-        // done with it.
+        // The probe pins a suspended card awake for the read and hands the
+        // host's own runtime-PM setting back afterwards.
         let dir = tempfile::tempdir().unwrap();
         let device_dir = fake_card(dir.path(), Some("suspended"), 0x0000_0001);
         let control = device_dir.join("power/control");
@@ -603,10 +559,8 @@ mod tests {
 
     #[test]
     fn a_card_whose_runtime_pm_is_unsupported_is_neither_written_to_nor_waited_for() {
-        // A device the kernel does not runtime-manage is powered and stays
-        // powered, and its status will never turn "active". Writing "on"
-        // there would change the host's setting for nothing and then wait
-        // out the whole resume budget, once per probe.
+        // A device the kernel does not runtime-manage never turns "active", so
+        // holding it would wait out the whole resume budget once per probe.
         let dir = tempfile::tempdir().unwrap();
         let device_dir = fake_card(dir.path(), Some("unsupported"), 0x0000_0001);
         let started = Instant::now();
@@ -677,10 +631,8 @@ mod tests {
 
     #[test]
     fn an_unreadable_power_control_still_reads_the_register() {
-        // The resume step is an improvement on the read, not a condition
-        // of it: a device whose runtime-PM files cannot be read must probe
-        // exactly as it did before the step existed. Here the card claims
-        // to be suspended but has no power/control at all.
+        // The resume step is an improvement on the read, not a condition of
+        // it: a card with no power/control still gets its register read.
         let dir = tempfile::tempdir().unwrap();
         let device_dir = fake_card(dir.path(), Some("suspended"), 0x0000_0001);
         std::fs::remove_file(device_dir.join("power/control")).unwrap();
@@ -703,11 +655,8 @@ mod tests {
 
     #[test]
     fn a_decoded_mode_outlives_an_answer_that_carries_none() {
-        // The two tiers, at the ages that separate them: a mode is still
-        // served a minute in and only expires at the long window, while an
-        // answer with no mode (a card read during its reset, say) is read
-        // again after the short one, so a blink hides a card for a minute
-        // and not for an hour.
+        // The two tiers at the ages that separate them: a decoded mode is still
+        // served a minute in, an answer with no mode is read again.
         let windows = CcCacheWindows::with_mode_ttl(Duration::from_secs(3600));
         assert_eq!(windows.unreadable, UNREADABLE_CC_MODE_TTL);
         assert_eq!(windows.shortest(), UNREADABLE_CC_MODE_TTL);
