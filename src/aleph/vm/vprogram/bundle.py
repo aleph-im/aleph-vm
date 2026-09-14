@@ -204,7 +204,15 @@ CMDLINE_TEMPLATE_EXEC_V1 = (
     " workload_roothash={workload_roothash}"
     " verified_volumes={verified_volumes}"
 )
-DEFAULT_CPU_MODELS = ["EPYC-v4"]
+# QEMU CPU models the published runtimes are measured for, in preference
+# order: the CRN launches the first one its QEMU can run. Despite the name,
+# "EPYC-v4" is QEMU's Naples model (family 23, model 1): no AVX-512, so
+# vector-heavy workloads such as llama.cpp fall back to AVX2 and run several
+# times slower than on the host silicon. "EPYC-Genoa" (family 25, model 17)
+# exposes AVX-512 and is what every SEV-SNP CRN on the network advertises;
+# "EPYC-v4" stays as the fallback so a Milan or Rome host is never stranded.
+# Each entry costs one client-side measurement per launch; keep the list short.
+DEFAULT_CPU_MODELS = ["EPYC-Genoa", "EPYC-v4"]
 DEFAULT_ATTESTATION = [
     AttestationProtocol(protocol="aleph.ra-tls", version="1", transport=AttestationTransport(type="tcp", port=8443))
 ]

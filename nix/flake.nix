@@ -267,7 +267,8 @@
 
       # Parameterized SEV-SNP launch measurement builder.
       # vcpus:            number of vCPUs (affects the launch measurement)
-      # vcpuType:         QEMU CPU model ("EPYC-v4" for Genoa, "EPYC-v3" for Milan)
+      # vcpuType:         QEMU CPU model. Note "EPYC-v4" is QEMU's Naples model
+      #   (family 23), not Genoa; Genoa is "EPYC-Genoa" (family 25, model 17).
       # workloadRoothash: when null (default), the cmdline is the
       #   platform-only form `...roothash=<platform>` (workload-less parity,
       #   what test_vm_snp and the baked `measurement` below expect). When

@@ -138,7 +138,8 @@ def test_make_manifest_from_bundle_info(image_dir: Path, tmp_path: Path) -> None
     assert manifest.boot.platform_roothash == info.platform_roothash
     expected_cmdline = "console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash}"
     assert manifest.boot.cmdline_template == expected_cmdline
-    assert manifest.boot.cpu_models == ["EPYC-v4"]
+    # Genoa first (AVX-512), Naples-era EPYC-v4 as the fallback for older hosts.
+    assert manifest.boot.cpu_models == ["EPYC-Genoa", "EPYC-v4"]
     assert manifest.attestation[0].protocol == "aleph.ra-tls"
     assert manifest.attestation[0].transport.port == 8443
     assert manifest.workload.contract == "aleph.builtin/1"
