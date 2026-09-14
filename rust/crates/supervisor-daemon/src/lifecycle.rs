@@ -6572,21 +6572,16 @@ mod tests {
     }
 
     impl crate::units::UnitStateSource for MidJobProbe {
-        fn unit_states(
-            &self,
-            units: &[String],
-        ) -> Result<std::collections::HashMap<String, UnitLiveness>, UnitsError> {
-            self.inner.unit_states(units)
-        }
-        fn controller_units(&self) -> Result<std::collections::HashMap<String, bool>, UnitsError> {
-            self.inner.controller_units()
-        }
-        fn get_active_state(&self, unit: &str) -> String {
-            self.inner.get_active_state(unit)
-        }
-        fn start(&self, unit: &str) -> Result<(), UnitsError> {
-            self.inner.start(unit)
-        }
+        crate::units::delegate_unit_state_source!(
+            inner: unit_states,
+            controller_units,
+            get_active_state,
+            start,
+            enable,
+            disable,
+            is_enabled,
+        );
+
         fn stop(&self, unit: &str) -> Result<(), UnitsError> {
             // StopUnit only queues the job; the unit then sits in
             // `deactivating` for the whole of the guest's ACPI powerdown.
@@ -6600,15 +6595,6 @@ mod tests {
             self.inner.set_state(unit, "inactive");
             self.run_probe();
             self.inner.restart(unit)
-        }
-        fn enable(&self, unit: &str) -> Result<(), UnitsError> {
-            self.inner.enable(unit)
-        }
-        fn disable(&self, unit: &str) -> Result<(), UnitsError> {
-            self.inner.disable(unit)
-        }
-        fn is_enabled(&self, unit: &str) -> bool {
-            self.inner.is_enabled(unit)
         }
     }
 
@@ -6803,21 +6789,16 @@ mod tests {
     }
 
     impl crate::units::UnitStateSource for RefusingSystemd {
-        fn unit_states(
-            &self,
-            units: &[String],
-        ) -> Result<std::collections::HashMap<String, UnitLiveness>, UnitsError> {
-            self.inner.unit_states(units)
-        }
-        fn controller_units(&self) -> Result<std::collections::HashMap<String, bool>, UnitsError> {
-            self.inner.controller_units()
-        }
-        fn get_active_state(&self, unit: &str) -> String {
-            self.inner.get_active_state(unit)
-        }
-        fn start(&self, unit: &str) -> Result<(), UnitsError> {
-            self.inner.start(unit)
-        }
+        crate::units::delegate_unit_state_source!(
+            inner: unit_states,
+            controller_units,
+            get_active_state,
+            start,
+            restart,
+            enable,
+            is_enabled,
+        );
+
         fn stop(&self, unit: &str) -> Result<(), UnitsError> {
             if self.refuse == StopStep::Stop {
                 return Err(UnitsError::Unreachable);
@@ -6827,20 +6808,12 @@ mod tests {
             self.inner.set_state(unit, "deactivating");
             Ok(())
         }
-        fn restart(&self, unit: &str) -> Result<(), UnitsError> {
-            self.inner.restart(unit)
-        }
-        fn enable(&self, unit: &str) -> Result<(), UnitsError> {
-            self.inner.enable(unit)
-        }
+
         fn disable(&self, unit: &str) -> Result<(), UnitsError> {
             if self.refuse == StopStep::Disable {
                 return Err(UnitsError::Unreachable);
             }
             self.inner.disable(unit)
-        }
-        fn is_enabled(&self, unit: &str) -> bool {
-            self.inner.is_enabled(unit)
         }
     }
 

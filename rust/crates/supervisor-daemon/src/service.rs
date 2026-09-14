@@ -2817,6 +2817,17 @@ mod tests {
     }
 
     impl crate::units::UnitStateSource for RacingUnits {
+        crate::units::delegate_unit_state_source!(
+            inner: controller_units,
+            get_active_state,
+            start,
+            stop,
+            restart,
+            enable,
+            disable,
+            is_enabled,
+        );
+
         fn unit_states(
             &self,
             units: &[String],
@@ -2825,30 +2836,6 @@ mod tests {
                 race();
             }
             self.inner.unit_states(units)
-        }
-        fn controller_units(&self) -> Result<HashMap<String, bool>, crate::units::UnitsError> {
-            self.inner.controller_units()
-        }
-        fn get_active_state(&self, unit: &str) -> String {
-            self.inner.get_active_state(unit)
-        }
-        fn start(&self, unit: &str) -> Result<(), crate::units::UnitsError> {
-            self.inner.start(unit)
-        }
-        fn stop(&self, unit: &str) -> Result<(), crate::units::UnitsError> {
-            self.inner.stop(unit)
-        }
-        fn restart(&self, unit: &str) -> Result<(), crate::units::UnitsError> {
-            self.inner.restart(unit)
-        }
-        fn enable(&self, unit: &str) -> Result<(), crate::units::UnitsError> {
-            self.inner.enable(unit)
-        }
-        fn disable(&self, unit: &str) -> Result<(), crate::units::UnitsError> {
-            self.inner.disable(unit)
-        }
-        fn is_enabled(&self, unit: &str) -> bool {
-            self.inner.is_enabled(unit)
         }
     }
 

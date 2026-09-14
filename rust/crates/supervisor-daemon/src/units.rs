@@ -798,6 +798,61 @@ impl UnitStateSource for FakeSystemd {
     }
 }
 
+/// Writes the [`UnitStateSource`] methods a test wrapper does not override,
+/// each forwarding to the named field, so the wrapper spells out its
+/// overrides and nothing else.
+#[cfg(test)]
+macro_rules! delegate_unit_state_source {
+    ($inner:ident: $($method:ident),+ $(,)?) => {
+        $($crate::units::delegate_unit_state_source!(@one $inner, $method);)+
+    };
+    (@one $inner:ident, unit_states) => {
+        fn unit_states(
+            &self,
+            units: &[String],
+        ) -> ::std::result::Result<
+            ::std::collections::HashMap<String, $crate::units::UnitLiveness>,
+            $crate::units::UnitsError,
+        > {
+            $crate::units::UnitStateSource::unit_states(&*self.$inner, units)
+        }
+    };
+    (@one $inner:ident, controller_units) => {
+        fn controller_units(
+            &self,
+        ) -> ::std::result::Result<
+            ::std::collections::HashMap<String, bool>,
+            $crate::units::UnitsError,
+        > {
+            $crate::units::UnitStateSource::controller_units(&*self.$inner)
+        }
+    };
+    (@one $inner:ident, get_active_state) => {
+        fn get_active_state(&self, unit: &str) -> String {
+            $crate::units::UnitStateSource::get_active_state(&*self.$inner, unit)
+        }
+    };
+    (@one $inner:ident, is_enabled) => {
+        fn is_enabled(&self, unit: &str) -> bool {
+            $crate::units::UnitStateSource::is_enabled(&*self.$inner, unit)
+        }
+    };
+    (@one $inner:ident, reload) => {
+        fn reload(&self) -> ::std::result::Result<(), $crate::units::UnitsError> {
+            $crate::units::UnitStateSource::reload(&*self.$inner)
+        }
+    };
+    // start, stop, restart, enable and disable all take a unit and answer nothing.
+    (@one $inner:ident, $verb:ident) => {
+        fn $verb(&self, unit: &str) -> ::std::result::Result<(), $crate::units::UnitsError> {
+            $crate::units::UnitStateSource::$verb(&*self.$inner, unit)
+        }
+    };
+}
+
+#[cfg(test)]
+pub(crate) use delegate_unit_state_source;
+
 #[cfg(test)]
 mod tests {
     use super::*;
