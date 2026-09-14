@@ -100,11 +100,9 @@ pub(crate) fn verify_pck_chain(
     }
     let (leaf, intermediate, root) = (&chain[0], &chain[1], &chain[2]);
 
-    // The embedded root must BE the pinned root, not merely resemble it.
-    // The whole certificate is compared, because Intel publishes one fixed
-    // SGX Root CA and every genuine chain carries it verbatim. The SEV-SNP
-    // side pins AMD's key rather than the bytes around it, because AMD
-    // re-issues the ARK certificate.
+    // The embedded root must BE the pinned root, not merely resemble it: Intel
+    // publishes one fixed SGX Root CA and every genuine chain carries it
+    // verbatim, so the whole certificate is compared.
     let pinned = pinned_intel_root()?;
     check_pinned_root(
         "the quote's root certificate",
@@ -160,20 +158,13 @@ pub(crate) fn verify_pck_chain(
 /// Identity documents.
 const TCB_SIGNING_CN: &str = "Intel SGX TCB Signing";
 
-/// Verify an Intel collateral issuer chain (the signer certificate, then
-/// the root that issued it) and return the signer.
+/// Verify an Intel collateral issuer chain (the signer certificate, then the
+/// root that issued it) and return the signer.
 ///
-/// Used for the TCB Info and QE Identity signatures. Intel issues the TCB
-/// signing certificate directly off the root and ships the root itself as
-/// the second element, so this chain is two certificates long and the root
-/// is pinned in place exactly as it is in a PCK chain. Intel publishes no
-/// CRL for these signers, matching the DCAP reference, so none is applied
-/// here.
-///
-/// The signer's Common Name is checked as well. Without it any certificate
-/// the Intel root issued for another purpose (the PCK Platform CA, for one)
-/// would be accepted as a TCB Info signer, which is a certificate-purpose
-/// confusion the chain arithmetic alone does not catch.
+/// The root is pinned as in a PCK chain, and Intel publishes no CRL for these
+/// signers. The signer's Common Name is checked too: without it any
+/// certificate the Intel root issued for another purpose would pass as a TCB
+/// Info signer.
 pub(crate) fn verify_signer_chain(chain_pem: &[u8], now: SystemTime) -> Result<X509> {
     let now = asn1_now(now)?;
     let chain = X509::stack_from_pem(chain_pem).context("failed to parse the issuer chain PEM")?;
@@ -213,10 +204,9 @@ pub(crate) fn verify_signer_chain(chain_pem: &[u8], now: SystemTime) -> Result<X
 
 /// Reject a collateral signer that is not Intel's TCB signing certificate.
 ///
-/// The subject must carry exactly one Common Name and it must be the TCB
-/// signing name in full. A substring test would accept a subject that only
-/// embeds the name, and taking the first of several Common Names would let
-/// the rest of the subject say something else entirely.
+/// The subject must carry exactly one Common Name and it must equal the TCB
+/// signing name: a substring test, or the first of several CNs, would let the
+/// rest of the subject say something else.
 fn check_signer_identity(signer: &X509) -> Result<()> {
     let subject = signer.subject_name();
     let mut entries = subject.entries_by_nid(openssl::nid::Nid::COMMONNAME);
@@ -273,9 +263,8 @@ mod tests {
         assert!(subject.contains("TCB Signing"), "got {subject}");
     }
 
-    /// Intel's collateral chains carry the root itself in second position,
-    /// so the root must be pinned there exactly as it is in a PCK chain. A
-    /// chain ending in some other genuine Intel certificate is refused.
+    /// A collateral chain ending in some other genuine Intel certificate is
+    /// refused: the second position must hold the pinned root.
     #[test]
     fn collateral_chain_must_end_in_the_pinned_root() {
         let collateral = collateral();
@@ -287,12 +276,8 @@ mod tests {
         assert!(err.contains("pinned Intel SGX Root CA"), "got: {err}");
     }
 
-    /// A root carrying the pinned public key in a different envelope is the
-    /// one rejection that is a maintenance task rather than an attack, and
-    /// the message has to say so. Intel has never re-issued its root, so the
-    /// case is built here from the pin's own public key in a fresh
-    /// certificate; the envelope is signed with a throwaway key, which the
-    /// byte-for-byte comparison never looks at.
+    /// A root carrying the pinned public key in a different envelope is a
+    /// maintenance task rather than an attack, and the message has to say so.
     #[test]
     fn a_root_reissued_with_the_pinned_key_asks_for_a_refresh() {
         use openssl::asn1::Asn1Time;
@@ -341,9 +326,8 @@ mod tests {
         assert!(!err.contains("forged"), "got: {err}");
     }
 
-    /// The PCK Platform CA is a genuine Intel certificate issued by the same
-    /// root, but it is not the TCB signing key: presented as a collateral
-    /// signer it must be refused on its subject.
+    /// The PCK Platform CA has the same root but is not the TCB signing key,
+    /// so as a collateral signer it must be refused on its subject.
     #[test]
     fn collateral_signer_must_be_the_tcb_signing_certificate() {
         let err = verify_signer_chain(collateral().pck_crl_issuer_chain.as_bytes(), now_v4())
@@ -352,9 +336,8 @@ mod tests {
         assert!(err.contains("Intel SGX TCB Signing"), "got: {err}");
     }
 
-    /// The subject gate is an equality on a single Common Name. A subject
-    /// that merely embeds the TCB signing name, or that hides a second name
-    /// behind it, is not Intel's TCB signing certificate.
+    /// The subject gate is an equality on a single Common Name: one that only
+    /// embeds the name, or hides a second name behind it, is refused.
     #[test]
     fn signer_common_name_must_match_exactly_and_stand_alone() {
         use openssl::asn1::Asn1Time;

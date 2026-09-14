@@ -14,15 +14,8 @@ use openssl::ecdsa::EcdsaSig;
 use openssl::x509::X509;
 
 /// Assemble an ECDSA signature from its raw big-endian `r` and `s`
-/// components.
-///
-/// Attestation evidence carries signatures as two fixed-width integers
-/// rather than as a DER `SEQUENCE`, so every verification path has to
-/// rebuild the signature object before openssl will check it. The
-/// components may be any length openssl accepts: TDX quotes and Intel's
-/// signed collateral use 32 bytes each (P-256), an SEV-SNP report uses up
-/// to 48 (P-384, after the little-endian fields have been reversed and
-/// trimmed).
+/// components, since attestation evidence carries them as fixed-width
+/// integers rather than as a DER `SEQUENCE`.
 pub(crate) fn ecdsa_from_components(r: &[u8], s: &[u8]) -> Result<EcdsaSig> {
     let r = BigNum::from_slice(r).context("failed to load the signature r component")?;
     let s = BigNum::from_slice(s).context("failed to load the signature s component")?;
@@ -44,15 +37,9 @@ pub(crate) fn ecdsa_from_raw(raw: &[u8]) -> Result<EcdsaSig> {
 
 /// Reject a root certificate that is not, byte for byte, the pinned one.
 ///
-/// Both verifiers anchor a chain in a certificate compiled into this crate
-/// rather than in whatever root the evidence carries, but they compare
-/// different things, because their vendors behave differently. Intel
-/// publishes one fixed SGX Root CA, valid to 2049, and every genuine chain
-/// carries that exact certificate, so the TDX side compares the whole
-/// certificate: strictest, and nothing has to be decided at verification
-/// time. AMD re-issues an ARK with the same key, so the SEV-SNP side
-/// compares the key instead, through [`check_pinned_root_key`]; pinning
-/// the bytes there would turn a routine re-issue into a fleet-wide outage.
+/// For Intel, which publishes one fixed SGX Root CA. AMD re-issues its ARK
+/// with the same key, so the SEV-SNP side pins the key through
+/// [`check_pinned_root_key`] instead.
 pub(crate) fn check_pinned_root(
     presented_label: &str,
     presented: &X509,
@@ -86,10 +73,8 @@ pub(crate) fn check_pinned_root(
 /// Reject a root certificate that does not carry the pinned public key.
 ///
 /// The counterpart of [`check_pinned_root`] for a vendor that re-issues its
-/// root: the key is the trust anchor, and the envelope around it (serial,
-/// validity, encoding) is allowed to change. A certificate that merely
-/// carries the right subject strings still fails, which is what makes a
-/// fabricated self-signed root unusable.
+/// root: the key is the trust anchor and the envelope may change, so subject
+/// strings alone never satisfy it.
 pub(crate) fn check_pinned_root_key(
     presented_label: &str,
     presented: &X509,
@@ -117,10 +102,8 @@ pub(crate) fn check_pinned_root_key(
 
 /// Convert an injected clock into an ASN.1 time, at second granularity.
 ///
-/// Verification time is a parameter everywhere in this crate rather than a
-/// call to the system clock: collateral, CRLs and certificates all carry
-/// validity windows, and a verifier that reads the clock itself cannot be
-/// tested against archived evidence, which has expired by definition.
+/// Verification time is a parameter everywhere in this crate: a verifier that
+/// read the clock itself could not be tested against archived evidence.
 pub(crate) fn asn1_now(now: SystemTime) -> Result<Asn1Time> {
     let secs = now
         .duration_since(UNIX_EPOCH)

@@ -13,11 +13,9 @@ anything when that union cannot be established (see ``_startup_refusal``).
 A live set the supervisor could not confirm also stops the cache pass (see
 ``_enforce_cache_budget``) and the device teardown below.
 
-Two parts of a pass run on the event loop rather than in the walk's worker
-thread, because both shell out to dmsetup: ``teardown_orphan_devices``
-before it (a volume a dm target still holds cannot be reclaimed, so the
-devices go first) and ``release_cache_devices`` after it (the devices of
-the parent images the cache pass evicted).
+``teardown_orphan_devices`` runs before the walk (a volume a dm target still
+holds cannot be reclaimed) and ``release_cache_devices`` after it, both on the
+event loop because they shell out to dmsetup.
 
 Loop-triggered passes are serialized, not coalesced: a sweep that retires N
 VMs GONE under ``keep`` queues N passes behind the lock, each re-reading the
@@ -98,16 +96,10 @@ STAGING_KINDS = ("vprogram", "snp-instance")
 class _CreateState:
     """What the creates in flight for one namespace share.
 
-    A count rather than a set of creates: a scheduler push and an operator
-    reinstall take no common per-hash lock, so two ``creating()`` spans for
-    one hash can overlap, and the first to exit must not unguard the second.
-
-    The adopted markers are shared for the same reason. Only the first create
-    in finds a marker to adopt, so a per-create record of it would be lost the
-    moment that create failed while a later one was still running: the later
-    one adopted nothing and would have nothing to put back. Held here, the
-    markers belong to the namespace, and the last create to leave without
-    committing restores whatever any of them adopted.
+    A count rather than a set of creates: two ``creating()`` spans for one hash
+    can overlap, and the first to exit must not unguard the second. The adopted
+    markers are shared for the same reason, and the last create to leave
+    without committing restores whatever any of them adopted.
     """
 
     creates: int = 0
@@ -149,30 +141,17 @@ def creating(namespace: str) -> Iterator[None]:
     writes a session directory outside this context can have them removed
     from under it by the next pass.
 
-    Adoption happens on entry, before the create is known to succeed:
-    adopting later would mean a create racing the eviction of the very disks
-    it is about to reuse. A create that then fails leaves the context by
-    raising, and the markers the entry adopted go back exactly as they were,
-    so a retained directory keeps its owner (who may still ask for it to be
-    erased), the parent images its volumes depend on, and its place in the
-    eviction queue. That matters because a failing create is retried: the
-    allocation reconciler pushes it again on every cycle.
+    Adoption happens on entry, before the create is known to succeed, or a
+    create would race the eviction of the very disks it is about to reuse. A
+    create that raises puts the markers back exactly as they were.
 
-    Overlapping creates of one hash share what was adopted, and the last one
-    out answers for it. While any create is still running nothing is put back,
-    because a marker on a directory a create is writing says its disks are
-    reclaimable capacity, which the node would then sell to somebody else. A
-    create that returns normally commits, and then the markers are dropped for
-    good: the directory belongs to a live VM. Only when the last create leaves
-    and none of them committed do the markers go back, whichever create had
-    adopted them.
+    Overlapping creates of one hash share what was adopted and the last one out
+    answers for it: nothing goes back while any create is still running, since
+    a marker on a directory a create is writing offers its disks as capacity.
     """
-    # Register before adopting: between clear_marker and the add there would
-    # otherwise be an instant where the directory is protected by neither
-    # the marker nor the creating set, and a concurrent pass would see an
-    # unmarked, not-creating orphan. Registered first, a pass that read
-    # is_creating as False must have read it before this line, and then
-    # still sees the marker adopt() has yet to clear.
+    # Register before adopting, or between clear_marker and the add there is an
+    # instant where the directory is protected by neither the marker nor the
+    # creating set, and a concurrent pass reads it as an orphan.
     state = _creating.setdefault(namespace, _CreateState())
     state.creates += 1
     committed = False
@@ -289,11 +268,9 @@ _last_supervisor_hashes: set[str] = set()
 def forget_supervisor_hash(namespace: str) -> None:
     """Drop a VM the agent has just retired from the last listing it heard.
 
-    ``known_live_hashes`` protects everything in that listing, and the room
-    maker asks it on the placement path, where nothing can ask the supervisor
-    again. A retired hash left here protects the disks of a VM that is gone,
-    against the create that is trying to make room for itself, until the next
-    pass replaces the listing an hour later.
+    ``known_live_hashes`` protects everything in that listing, so a retired
+    hash left in it would shield the disks of a VM that is gone against the
+    create trying to make room for itself, until the next pass.
     """
     _last_supervisor_hashes.discard(namespace)
 
@@ -470,16 +447,13 @@ def _reconcile_namespace(
         logger.debug("Skipping %s: another pass got there first", namespace)
         return True
     keep = settings.VOLUME_RETENTION == "keep"
-    # Measured before the last liveness check rather than after it: this walks
-    # every pool the VM is on, and the answer that decides whether the disks
-    # go has to be the one taken after the longest pause, not before it.
+    # Measured before the last liveness check: this walks every pool the VM is
+    # on, and the answer that decides must be the one taken after it.
     freed = 0 if keep else namespace_size_bytes(namespace)
     if is_live(namespace) or is_creating(namespace):
-        # A create that committed, or entered creating(), between the live
-        # snapshot and this walk. Asked here and not where _is_orphan has
-        # just asked it: a pass runs in a worker thread while creates land on
-        # the event loop, so what counts is the last answer before the
-        # directory is marked or removed.
+        # A create that claimed the directory between the live snapshot and
+        # this walk. Asked again here because the pass runs in a worker thread
+        # while creates land on the event loop.
         logger.info("Skipping %s: a VM claimed it while this pass was walking", namespace)
         return True
     if keep:
@@ -727,11 +701,8 @@ def _enforce_retention_budget(
             continue
         budget = _retention_budget(pool)
         if budget is None:
-            # A budget is a share of the pool's size, so a size nobody can
-            # read would come out as zero bytes allowed and take every
-            # marked directory here with it. Enforcement is only ever a
-            # deletion: leaving the pool over budget until it can be
-            # measured again costs a pass, guessing costs the data.
+            # A budget is a share of the pool's size, so an unreadable size
+            # would allow zero bytes and delete every marked directory here.
             logger.warning(
                 "Volume pool %s not accessible; leaving the %d directory(ies) it retains alone this pass",
                 pool.path,
@@ -801,9 +772,8 @@ def _enforce_cache_budget(
     reclaimed_bytes: dict[str, int] = {}
     report.cache_evicted = evict_caches(registry, dry_run=dry_run, is_live=is_live, reclaimed_bytes=reclaimed_bytes)
     for namespace, size in reclaimed_bytes.items():
-        # The retained VMs the cache pass gave back to free the parent images
-        # they pinned. They are evictions of the same kind the retention
-        # budget makes, and the pass's own figures have to include them.
+        # The cache pass evicts retained VMs to free the parent images they
+        # pinned, and the pass's figures have to include those.
         if namespace in report.evicted:
             continue
         report.evicted.append(namespace)
@@ -822,8 +792,7 @@ def make_room(pool: StoragePool, needed_bytes: int, *, live: Collection[str] | N
     tries). The third bound (``freed >= needed_bytes``) only exists so a
     lying filesystem cannot turn this into a loop over every retained VM on
     the pool; a pool whose free space cannot be read at all is never evicted
-    from, on the same rule the retention budget applies to a pool whose size
-    it cannot read: unknown is not zero, and the guess deletes data.
+    from: unknown is not zero, and the guess deletes data.
 
     A marker on a directory a live VM owns is a bug (``_is_orphan`` clears
     those on every pass), but this runs on its own, off the create path, so
@@ -838,10 +807,8 @@ def make_room(pool: StoragePool, needed_bytes: int, *, live: Collection[str] | N
     protected = _snapshot_is_live(live or ())
     usage = pool_usage_bytes(pool)
     if usage is None:
-        # Free space is the whole measure here: what has to reach
-        # needed_bytes. Without it there is no way to tell a pool that
-        # already fits the create from one that never will, and evicting on
-        # that guess deletes retained data for nothing.
+        # Free space is the whole measure here, so without it there is no way
+        # to tell a pool that already fits the create from one that never will.
         logger.warning("Not making room on %s: its free space cannot be read", pool.path)
         return 0
     free = usage.free
@@ -957,13 +924,9 @@ def _within_create_guard(namespace: str, now: datetime, guard: timedelta) -> boo
     what a create left behind, not what one is building on."""
     for directory in iter_namespace_dirs(namespace):
         if (directory / MARKER_NAME).exists():
-            # A reclaimable directory is not one a create is building:
-            # creating() adopts a namespace, which clears its markers, before
-            # the create writes anything. Reading its mtime instead would put
-            # every retired VM inside the guard, because writing the marker
-            # is itself a write to the directory and moves that mtime. Its
-            # devices would then stand for a whole VOLUME_CREATE_GUARD, and
-            # they are what stops its volumes being reclaimed at all.
+            # A marked directory is not one a create is building: creating()
+            # clears the markers first. Reading its mtime would put every
+            # retired VM inside the guard, since writing the marker moves it.
             continue
         try:
             if now - _mtime(directory) < guard:

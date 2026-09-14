@@ -68,13 +68,8 @@ impl TcbStatus {
     }
 
     /// The worse of two peer statuses, on the severity order this enum is
-    /// declared in.
-    ///
-    /// Deliberately not `converge`: that rule is asymmetric (it upgrades an
-    /// out-of-date component on a configuration-needed platform), which is
-    /// right for a component appraised against a platform but wrong for two
-    /// results of the same appraisal, where it would make the outcome depend
-    /// on which one happened to be evaluated first.
+    /// declared in. Not `converge`, whose asymmetric rule would make the
+    /// outcome depend on which peer was evaluated first.
     fn worse(self, other: TcbStatus) -> TcbStatus {
         self.max(other)
     }
@@ -471,29 +466,18 @@ fn appraise_tdx_svn_vector(
 
 /// Appraise every TDX SVN vector the report body carries.
 ///
-/// A TD report 1.0 body has one vector. A 1.5 body adds `tee_tcb_svn2`,
-/// which exists because a TD-preserving update swaps the TDX module under a
-/// running TD: one vector describes the module TCB the TD launched on, the
-/// other the one it runs on now, and either can be the lower of the two.
-/// Appraising only the first would let a TD whose other vector matches no
-/// published level, or names a TDX module Intel does not list, pass on the
-/// strength of the vector that happened to be walked. So both are appraised
-/// in full (level walk and module identity alike), either one failing fails
-/// the appraisal, and the worse of the two statuses is the answer.
-///
-/// Taking the worse status is stricter than Intel's own handling, which
-/// propagates a failure of the second appraisal but otherwise keeps the
-/// first vector's status and only flags that a relaunch is advised. There is
-/// no such advisory outcome here: a status this policy would refuse for one
-/// vector is refused for the TD.
+/// A 1.5 body carries the TCB the TD launched on and the one it runs on now,
+/// and either can be the lower, so both are appraised in full: either failing
+/// fails the appraisal, and the worse of the two statuses is the answer. That
+/// is stricter than Intel, which keeps the first vector's status and only
+/// advises a relaunch.
 fn appraise_platform_tcb(
     tcb_info: &TcbInfo,
     platform: &PckPlatform,
     body: &TdReportBody,
 ) -> Result<(TcbStatus, Vec<String>)> {
-    // Both vectors name themselves in their failures. Without the first
-    // one's context an operator reading "the platform TCB is below every
-    // level" off a 1.5 body cannot tell which of the two tripped.
+    // Both vectors name themselves in their failures, so an operator can tell
+    // which of the two tripped.
     let (mut status, mut advisories) =
         appraise_tdx_svn_vector(tcb_info, platform, body, &body.tee_tcb_svn)
             .context("appraising the TD report launch TCB vector (tee_tcb_svn)")?;
@@ -520,10 +504,8 @@ fn merge_advisories(into: &mut Vec<String>, from: Vec<String>) {
 ///
 /// `tee_tcb_svn[0]` is the module SVN and `[1]` its major version, which
 /// selects a `tdxModuleIdentities` entry (`TDX_<version>`); the entry's
-/// MRSIGNER must match the quote's MRSIGNERSEAM and its SVN ladder gives the
-/// module status. The vector is a parameter rather than read off the body
-/// because a TD report 1.5 carries two of them, each naming its own module
-/// version, and both have to clear this gate.
+/// MRSIGNER must match the quote's MRSIGNERSEAM. The vector is a parameter
+/// because a 1.5 report carries two, and both have to clear this gate.
 fn tdx_module_status(
     tcb_info: &TcbInfo,
     body: &TdReportBody,
@@ -676,9 +658,8 @@ fn check_platform_gates(quote: &TdxQuote) -> Result<()> {
 ///
 /// Assumes the caller has already verified the quote's chain and signatures
 /// (`certs`/`verify`); this decides the acceptable-TCB question on top.
-///
-/// Crate-private because it takes an openssl certificate: outside callers
-/// go through `verify_tdx_quote`, which owns the whole sequence.
+/// Crate-private because it takes an openssl certificate: outside callers go
+/// through `verify_tdx_quote`.
 pub(crate) fn evaluate_tcb(
     quote: &TdxQuote,
     collateral: &TdxCollateral,
@@ -763,10 +744,9 @@ mod tests {
 
     #[test]
     fn outdated_platform_is_below_every_level() {
-        // The outdated sample's PCK reports SGX component 7 at SVN 3 while
-        // every level of its TCB Info demands 5, so the walk finds no match
-        // and the quote is refused before any status is decided. It never
-        // reaches an OutOfDate verdict, despite the fixture's name.
+        // The sample's PCK reports SGX component 7 below every published
+        // level, so the walk finds no match and never reaches an OutOfDate
+        // verdict, despite the fixture's name.
         let quote = parse_tdx_quote(QUOTE_OUTDATED).unwrap();
         let collateral = TdxCollateral::from_json(COLLATERAL_OUTDATED).unwrap();
         let err = format!(
@@ -787,12 +767,9 @@ mod tests {
 
     #[test]
     fn outdated_collateral_carries_the_published_advisories() {
-        // `advisoryIDs` reaches the appraisal through a serde-renamed field
-        // (`advisory_i_ds` under camelCase) that also carries a default, so
-        // a rename typo would not fail the parse: every level would come
-        // back with an empty advisory list and `denied_advisories` would
-        // quietly stop matching anything. Pin the real lists from a
-        // signature-verified Intel document.
+        // `advisoryIDs` arrives through a serde rename that also has a default,
+        // so a typo would silently empty every level's advisory list and
+        // `denied_advisories` would stop matching anything.
         let collateral = TdxCollateral::from_json(COLLATERAL_OUTDATED).unwrap();
         let tcb_info = verify_tcb_info(&collateral, now_outdated()).expect("TCB Info verifies");
         let levels = canonical_levels(&tcb_info);
@@ -828,15 +805,9 @@ mod tests {
 
     #[test]
     fn out_of_date_level_is_refused_by_the_acceptance_policy() {
-        // The policy's "not accepted by policy" arm is what stands between a
-        // caller and an out-of-date platform, and no fixture reaches it on
-        // its own. Take the outdated sample's genuine, signature-verified
-        // TCB Info and its real PCK platform, and move two SGX components so
-        // the walk lands on a published OutOfDate level: raise component 7
-        // (3 in the fixture) to the 5 every level demands, and drop
-        // component 4 from 4 to 3, which the top level rules out and the
-        // OutOfDate rung allows. The report's own TDX SVN vectors, both of
-        // them, are the fixture's.
+        // No fixture lands on a published OutOfDate level on its own, so two
+        // SGX components of the real PCK platform are moved: 7 up to what
+        // every level demands, 4 down to what only the OutOfDate rung allows.
         let quote = parse_tdx_quote(QUOTE_OUTDATED).unwrap();
         let collateral = TdxCollateral::from_json(COLLATERAL_OUTDATED).unwrap();
         let tcb_info = verify_tcb_info(&collateral, now_outdated()).expect("TCB Info verifies");
@@ -942,12 +913,8 @@ mod tests {
 
     #[test]
     fn rejects_tcb_info_under_an_impostor_chain() {
-        // A TCB Info signed by a chain that does not lead to the pinned
-        // Intel root: same subject names, fresh keys. verify_signer_chain
-        // is what gives the document signatures their meaning, so it needs
-        // its own adversarial case, mirroring the PCK chain's foreign-root
-        // test in verify.rs. The chain carries the root itself, so the pin
-        // on that certificate is what refuses it.
+        // A TCB Info signed by a chain with the same subject names but fresh
+        // keys: the chain carries its own root, so only the root pin refuses it.
         use openssl::asn1::Asn1Time;
         use openssl::ec::{EcGroup, EcKey};
         use openssl::nid::Nid;
@@ -1176,17 +1143,15 @@ mod tests {
     }
 
     /// A TCB Info carrying one level per (TDX component ladder, status,
-    /// advisories) triple, in the given document order. The SGX side is all
-    /// zeros so any real PCK platform satisfies it and the TDX components
-    /// decide the walk.
+    /// advisories) triple. The SGX side is all zeros, so the TDX components
+    /// alone decide the walk.
     fn tcb_info_with_tdx_levels(levels: &[([u8; 16], &str, &[&str])]) -> TcbInfo {
         tcb_info_with_module_identities(levels, &[])
     }
 
-    /// The same, plus `tdxModuleIdentities` entries given as
-    /// (id, ISVSVN ladder of (isvsvn, status)). Every identity carries the
-    /// fixture's own MRSIGNERSEAM and a zero attributes mask, so the module
-    /// gate turns on the SVN ladder alone.
+    /// The same, plus `tdxModuleIdentities` as (id, ISVSVN ladder). Every
+    /// identity carries the fixture's MRSIGNERSEAM and a zero attributes mask,
+    /// so the module gate turns on the SVN ladder alone.
     fn tcb_info_with_module_identities(
         levels: &[([u8; 16], &str, &[&str])],
         module_identities: &[(&str, &[(u8, &str)])],
@@ -1366,10 +1331,8 @@ mod tests {
     #[test]
     fn report_15_status_does_not_depend_on_the_vector_order() {
         // The two vectors are peers, so combining them has to be symmetric.
-        // This pair is the case that separates a symmetric worse-of-two from
-        // the asymmetric platform-versus-component rule: the latter would
-        // answer OutOfDateConfigurationNeeded one way round and OutOfDate
-        // the other.
+        // This pair separates worse-of-two from the asymmetric converge rule,
+        // which would answer differently depending on the order.
         let platform = parse_pck_platform(&pck_leaf(QUOTE_V4)).unwrap();
         let tcb_info = tcb_info_with_tdx_levels(&[
             ([5u8; 16], "ConfigurationNeeded", &[]),
@@ -1418,11 +1381,8 @@ mod tests {
             OutOfDateConfigurationNeeded
         );
         assert_eq!(UpToDate.converge(SwHardeningNeeded), SwHardeningNeeded);
-        // The rule is deliberately not mirrored: Intel's convergeTcbStatuses
-        // (EvaluateTcb.cpp) only reacts to an OutOfDate or Revoked
-        // component, so an out-of-date platform under a
-        // configuration-needed component stays OutOfDate. dcap-qvl's
-        // converge_with_component agrees.
+        // Not mirrored, as in Intel's convergeTcbStatuses: only an OutOfDate
+        // or Revoked component upgrades the platform status.
         assert_eq!(OutOfDate.converge(ConfigurationNeeded), OutOfDate);
         assert_eq!(
             OutOfDate.converge(ConfigurationAndSwHardeningNeeded),

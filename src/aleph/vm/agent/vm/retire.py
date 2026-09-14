@@ -140,12 +140,9 @@ async def teardown_vm_devices(namespace: str, record: AgentVmRecord | None) -> N
     try:
         namespace = checked_namespace(namespace)
     except ValueError:
-        # Reachable: this is called straight from the reinstall path as well
-        # as from retire_vm, and neither its signature nor the module
-        # boundary promises a hash anyone has parsed. The best-effort
-        # contract covers the check with the rest: a teardown that cannot
-        # run must not abort the retire between the forget and the storage
-        # release.
+        # Reachable: the reinstall path calls this with a hash nobody parsed.
+        # Best effort, since a teardown that cannot run must not abort the
+        # retire between the forget and the storage release.
         logger.exception("Device teardown of %r skipped", namespace)
         return
     for volume in getattr(record.message, "volumes", None) or []:
@@ -192,15 +189,12 @@ async def retire_vm(
     item_hash = vm_hash if isinstance(vm_hash, ItemHash) else ItemHash(str(vm_hash))
     record = registry.get(item_hash)
     registry.forget(item_hash)
-    # The cache's live set is the other half of what admission checks a record
-    # against, and it is only refreshed by a storage pass: leaving a retired
-    # hash in it makes every download until the next pass look like it is
-    # racing a live VM the agent has no message for, so nothing is evicted and
-    # a download that needs room is refused.
+    # Only a storage pass refreshes the cache's live set, so a retired hash
+    # left in it makes every download until the next pass look like it is
+    # racing a live VM, and nothing is evicted.
     forget_live(str(vm_hash))
-    # And the other half of the same set. Imported here rather than at the
-    # top: the reconciler imports this module for the device teardown, so it
-    # cannot be imported back at load time.
+    # And the other half of the same set. Imported here because the reconciler
+    # imports this module, so it cannot be imported back at load time.
     from aleph.vm.agent.vm.reconciler import forget_supervisor_hash
 
     forget_supervisor_hash(str(vm_hash))

@@ -58,9 +58,8 @@ pub struct GpuState {
     /// as information for the client; nothing in it replaces a client-side
     /// cryptographic check.
     pub boot_claims: serde_json::Value,
-    /// One SPDM exchange at a time: concurrent callers queue. Held in its
-    /// own `Arc` so the guard can be owned and moved into the blocking task
-    /// that runs the collector, which outlives the request handler.
+    /// One SPDM exchange at a time: concurrent callers queue. In its own `Arc`
+    /// so the guard can move into the blocking task that runs the collector.
     pub lock: Arc<tokio::sync::Mutex<()>>,
     /// How long a caller queues for the exchange before being told to
     /// retry. A collection takes well under a second, so a queue this deep
@@ -72,15 +71,9 @@ pub struct GpuState {
 /// Default for [`GpuState::lock_wait`].
 pub const GPU_LOCK_WAIT: Duration = Duration::from_secs(10);
 
-/// The `Retry-After` a busy GPU route advertises, in whole seconds.
-///
-/// The caller has just spent `lock_wait` queueing without getting in, so the
-/// exchange ahead of it is wedged rather than merely slow, and one more
-/// `lock_wait` is the honest estimate of when the route may be worth trying
-/// again. Derived rather than a constant so a deployment that tunes the wait
-/// does not end up advertising a number the route no longer uses. Rounded up
-/// to a whole second because the header has no finer unit, and never zero: a
-/// sub-second wait would otherwise tell the client to come straight back.
+/// The `Retry-After` a busy GPU route advertises, in whole seconds: one more
+/// `lock_wait`, derived so a tuned wait cannot advertise a stale number.
+/// Rounded up and never zero, or the client would come straight back.
 fn retry_after_secs(lock_wait: Duration) -> u64 {
     let rounded_up = lock_wait.as_secs() + u64::from(lock_wait.subsec_nanos() > 0);
     rounded_up.max(1)
@@ -136,9 +129,8 @@ pub struct GpuAttestationResponse<'a> {
     pub tee_type: &'static str,
     pub client_nonce: &'a str,
     pub gpus: Vec<GpuEvidence>,
-    /// Borrowed from the agent's state: the boot claims are the same
-    /// document for the life of the process, so a response serializes them
-    /// in place rather than cloning the tree per request.
+    /// Borrowed from the agent's state: the same document for the life of the
+    /// process, so a response serializes it in place.
     pub boot_claims: &'a serde_json::Value,
 }
 
@@ -182,12 +174,9 @@ pub async fn gpu_attestation_endpoint(
             .insert_header(("Retry-After", retry_after_secs(gpu.lock_wait).to_string()))
             .json(serde_json::json!({"error": "gpu attestation busy"}));
     };
-    // The collector is a blocking child process; keep it off the async
-    // workers. The guard travels into the blocking task rather than staying
-    // in this future: a client that disconnects drops the handler but not
-    // the collection it started, and releasing the GPU here would let the
-    // next caller open a second SPDM exchange against a driver still busy
-    // with the first.
+    // The collector is a blocking child process, so it runs off the async
+    // workers, and the guard travels with it: a client that disconnects must
+    // not release the GPU while the driver is still in the exchange.
     let gpu_for_task = Arc::clone(gpu);
     let collected = web::block(move || {
         let _serialized = serialized;
@@ -568,9 +557,7 @@ mod tests {
     }
 
     /// A client that goes away mid-collection must not hand the GPU to the
-    /// next caller: the collector keeps running to its own timeout, so a
-    /// second exchange started now would talk to the driver at the same
-    /// time as the abandoned one.
+    /// next caller: the abandoned collector still owns the driver.
     #[actix_web::test]
     async fn a_dropped_client_keeps_the_gpu_taken_until_the_collection_ends() {
         let entries = Arc::new(AtomicUsize::new(0));
@@ -589,9 +576,8 @@ mod tests {
             lock_wait: Duration::from_millis(500),
         });
 
-        // Poll the first request until its collection has started, then drop
-        // the handler future: that is exactly what actix does to a handler
-        // whose client disconnected.
+        // Dropping the handler future is what actix does to a handler whose
+        // client disconnected.
         let mut first = Box::pin(gpu_attestation_endpoint(
             gpu_state(Some(Arc::clone(&gpu))),
             web::Query(AttestationQuery {

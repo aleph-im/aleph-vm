@@ -195,24 +195,15 @@ const AMD_ORG_NAME: &str = "Advanced Micro Devices";
 ///   key).
 /// - ASK is signed by ARK.
 /// - VCEK is signed by ASK.
-/// - ARK, ASK, and VCEK are all within their validity period
-///   (notBefore/notAfter) at the current wall-clock time. Freshness is a
-///   production requirement, so this entry point reads the clock; the
-///   crate-private `verify_cert_chain_at` takes the instant as a parameter
-///   instead.
+/// - ARK, ASK, and VCEK are all within their validity period at the current
+///   wall-clock time, which this entry point reads.
 pub fn verify_cert_chain(chain: &CertChain, pinned_ark_der: &[u8]) -> Result<()> {
     verify_cert_chain_at(chain, pinned_ark_der, SystemTime::now())
 }
 
-/// [`verify_cert_chain`] against an injected verification time.
-///
-/// The certificate windows are the only clock-dependent step, and taking
-/// the time as a parameter is what lets a test drive a chain that is
-/// expired or not yet valid at a chosen instant without waiting for the
-/// wall clock to get there.
-///
-/// Crate-private: injecting the verification time is a testing affordance,
-/// not something a caller outside the crate has any reason to reach for.
+/// [`verify_cert_chain`] against an injected verification time, so a test can
+/// drive an expired or not-yet-valid chain. Crate-private: injecting the
+/// clock is a testing affordance.
 pub(crate) fn verify_cert_chain_at(
     chain: &CertChain,
     pinned_ark_der: &[u8],
@@ -272,15 +263,9 @@ pub(crate) fn verify_cert_chain_at(
 /// Verify that the chain's ARK carries the same public key
 /// (SubjectPublicKeyInfo) as AMD's pinned genuine ARK.
 ///
-/// The key is compared, not the whole certificate. AMD re-issues an ARK
-/// with the same key, so pinning the bytes would turn a routine re-issue
-/// into a fleet-wide verification outage; the key is the trust anchor and
-/// the envelope around it is allowed to move. The TDX side pins the whole
-/// certificate instead, because Intel publishes one fixed SGX Root CA that
-/// every genuine chain carries verbatim.
-///
-/// A mismatch means the ARK is not AMD's (forged or cache-poisoned) and the
-/// chain is rejected.
+/// The key is compared, not the whole certificate: AMD re-issues an ARK with
+/// the same key, so pinning the bytes would turn a routine re-issue into a
+/// fleet-wide verification outage. A mismatch rejects the chain.
 fn verify_ark_matches_pinned_root(ark: &X509, pinned_ark_der: &[u8]) -> Result<()> {
     let pinned = X509::from_der(pinned_ark_der).context("failed to parse pinned AMD ARK")?;
     check_pinned_root_key("the chain ARK", ark, "the pinned AMD root", &pinned)
@@ -824,10 +809,8 @@ mod tests {
         );
     }
 
-    /// The pin is on the key, deliberately: AMD re-issues an ARK with the
-    /// same key, and a chain carrying such a re-issue must keep verifying
-    /// against the vendored copy. A wrong key still fails, which the
-    /// neighbouring tests cover.
+    /// The pin is on the key: a chain carrying an AMD re-issue of the same key
+    /// must keep verifying against the vendored copy.
     #[test]
     fn test_verify_cert_chain_accepts_a_same_key_reissued_ark() {
         let (chain, ark_key, _ask_key, _vcek_key, _ark) = valid_chain();
@@ -965,9 +948,7 @@ mod tests {
         );
     }
 
-    /// The window check must follow the injected instant, not the wall
-    /// clock: a chain that is genuine today is neither valid a year before
-    /// it was issued nor after it expires.
+    /// The window check follows the injected instant, not the wall clock.
     #[test]
     fn test_cert_windows_follow_the_injected_clock() {
         use std::time::Duration;

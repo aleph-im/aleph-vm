@@ -549,9 +549,8 @@ pub(crate) fn entry_running(state: &DaemonState, entry: &VmEntry) -> bool {
 }
 
 /// The live state of one entry's controller unit, one batched lookup. A bus
-/// failure degrades to `Unknown` rather than `Dead`: "the guest died" is a
-/// claim only an answering bus can support. An ephemeral
-/// program runs under no unit and has nothing to ask about.
+/// failure degrades to `Unknown` rather than `Dead`: only an answering bus
+/// can support the claim that the guest died (ledger entry 13).
 fn entry_liveness(state: &DaemonState, entry: &VmEntry) -> UnitLiveness {
     if entry.is_program {
         return UnitLiveness::Unknown;
@@ -807,13 +806,9 @@ fn guest_ipv4(state: &DaemonState, entry: &VmEntry) -> String {
     .unwrap_or_default()
 }
 
-/// Drop everything the CC-mode cache holds about a VM's cards. Whatever is
-/// in there was learned either before the cards were attached or from the
-/// create gate that read them on the way in, and neither answer outlives
-/// the guest: once QEMU is gone the cards are idle hardware an operator can
-/// re-mode with NVIDIA's tool, so the host can no longer vouch for a mode
-/// it read earlier. Forgetting them makes the next reader take the card as
-/// it finds it instead of serving a mode from another era.
+/// Drop everything the CC-mode cache holds about a VM's cards. Once QEMU is
+/// gone the cards are idle hardware an operator can re-mode, so no mode read
+/// earlier still stands.
 fn forget_cc_modes(state: &DaemonState, gpus: &[crate::controller_config::QemuGpu]) {
     if gpus.is_empty() {
         return;
@@ -834,25 +829,17 @@ fn stop_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
         return Ok(());
     }
     let unit = entry.unit_name();
-    // Stamped before the stop is issued, not after the guest is gone. The
-    // graceful ACPI shutdown below waits up to 75 seconds, ListVms takes no
-    // per-VM lock, and a poll landing in that window would otherwise find a
-    // unit on its way down under a VM with no stop recorded and read it as
-    // a guest that died. Put back on a stop that never started, so a VM
-    // whose unit systemd refused to touch does not sit in STOPPING for ever.
+    // Stamped before the stop is issued: the graceful shutdown below waits up
+    // to 75 seconds with no per-VM lock held, and a poll landing in there
+    // would read a settling unit with no stop recorded as a guest that died.
     let stopping_before = entry.times.stopping_at_ns;
     with_entry_mut(state, vm_id, |entry| entry.times.stopping_at_ns = now_ns());
     if let Err(error) = units::stop_and_disable(&*state.units, &unit) {
-        // Either step can be the one that failed, and only the step tells
-        // the two apart. A stop systemd refused queued no job and left the
-        // unit up, so the pre-stop value goes back and the VM does not sit
-        // in STOPPING for ever. A disable that failed after the stop went
-        // through leaves a unit down or on its way, and putting the stamp
-        // back there would hand the read paths a settling unit under a VM
-        // with no stop recorded, which they call a guest that died and
-        // announce as one. The unit's state cannot be asked instead:
-        // StopUnit returns as soon as the job is accepted, so a unit still
-        // active proves nothing about whether a stop is coming.
+        // Only the failing step tells the two cases apart. A refused stop
+        // queued no job, so the stamp goes back and the VM does not sit in
+        // STOPPING for ever; a disable that failed after the stop went
+        // through leaves a job that will settle the unit, and restoring the
+        // stamp there would turn that into an announced death.
         if !error.stop_went_through() {
             with_entry_mut(state, vm_id, |entry| {
                 entry.times.stopping_at_ns = stopping_before
@@ -931,11 +918,9 @@ fn stop_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
     // addresses of a stopped VM (bug-for-bug; the proto says they should
     // empty once the tap is gone).
     with_entry_mut(state, vm_id, |entry| entry.times.stopped_at_ns = now_ns());
-    // The entry keeps claiming the cards, so the refresh sweep will not
-    // read them, and it seeds a mode only for a VM that is running. Without
-    // this the mode the create gate vouched for would sit in the cache and
-    // keep being advertised for a card that no longer has a guest holding
-    // its mode still.
+    // The entry still claims the cards, so the sweep will not read them and
+    // seeds only running VMs: without this the create gate's mode would keep
+    // being advertised for a card no guest holds any more.
     forget_cc_modes(state, &entry.config.gpus);
     tracing::info!(vm_id, "VM stopped");
     Ok(())
@@ -1009,10 +994,8 @@ fn stop_program_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcErr
     }
 
     with_entry_mut(state, vm_id, |entry| entry.times.stopped_at_ns = now_ns());
-    // Same reason as the persistent stop: no guest holds the cards any
-    // more, so nothing the cache says about them still stands. A program
-    // spec carries no GPUs today, which makes this a no-op, but the rule
-    // belongs on every path that stamps a stop.
+    // As on the persistent stop: no guest holds the cards, so nothing the
+    // cache says about them stands. A no-op while program specs carry no GPUs.
     forget_cc_modes(state, &entry.config.gpus);
     tracing::info!(vm_id, "ephemeral program stopped");
     Ok(())
@@ -1120,34 +1103,18 @@ fn recreate_port_redirect_rules(state: &DaemonState, vm_id: &str) -> Result<(), 
 fn start_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
     // A confidential VM's cards are read again before the guest comes back:
-    // the stop dropped the create gate's answers, and an idle card can be
-    // re-moded, so starting on the old reading would boot a confidential guest
-    // onto a card the host can no longer vouch for. SNP only, like the create
-    // gate. This runs before the stamps below and every irreversible step, so
-    // a refusal leaves the VM reporting STOPPED.
-    //
-    // No world lock here, unlike the create gate: the card is already claimed
-    // by this VM's config and the caller holds the VM's lock, so the probe's
-    // resume wait (up to 200 ms per suspended card) blocks no reader of the
-    // world.
+    // an idle card can be re-moded, and the stop dropped the gate's answers.
+    // Runs before every irreversible step, so a refusal leaves the VM STOPPED.
+    // No world lock: the card is claimed by this VM and the caller holds its lock.
     if entry.config.snp().is_some() {
         for gpu in &entry.config.gpus {
             require_gpu_cc_mode(state, &gpu.pci_host, state.gpu_cc_probe)?;
         }
     }
-    // The start opens the same window a reboot does, and it is longer: the
-    // stop stamps go the moment this begins, while the unit stays down
-    // through the tap, the nftables rules, the DHCP server, RestartUnit and
-    // the readiness wait, and `started_at` still holds the value it had
-    // before the stop. A status read takes no per-VM lock, so a poll landing
-    // in there finds a VM the daemon has seen alive, no stop recorded and a
-    // dead unit, which is the dead-unit arm's exact shape: it would report
-    // FAILED where it used to report BOOTING, and the hub would announce a
-    // death that wakes the agent's reconciler against a VM that is coming up
-    // as asked. Mark the window like the reboot does, with a fresh
-    // `starting_at` so the VM reports BOOTING, and clear it below on the
-    // way out, success or failure. A start that fails really is a VM that is
-    // down and should say so.
+    // The stop stamps are cleared here while the unit stays down through the
+    // tap, the rules, RestartUnit and the readiness wait: that is the
+    // dead-unit arm's exact shape, so mark the window and stamp a fresh
+    // `starting_at` to report BOOTING until the caller clears it.
     with_entry_mut(state, vm_id, |entry| {
         entry.times.stopping_at_ns = 0;
         entry.times.stopped_at_ns = 0;
@@ -1155,16 +1122,14 @@ fn start_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> 
         entry.times.starting_at_ns = now_ns();
     });
     let started = start_vm_execution_marked(state, vm_id, &entry);
-    // A reboot that died between marking the window and clearing it would
-    // otherwise leave the VM permanently exempt from the dead-unit arm; this
-    // clear settles the question either way.
+    // Cleared on failure too: a VM left marked would stay exempt from the
+    // dead-unit arm for ever.
     with_entry_mut(state, vm_id, |entry| entry.restarting = false);
     started
 }
 
 /// The body of [`start_vm_execution`], run with the restarting marker set.
-/// Every exit from here, including the error ones, goes back through the
-/// caller so the marker is cleared exactly once.
+/// Every exit goes back through the caller, which clears the marker.
 fn start_vm_execution_marked(
     state: &DaemonState,
     vm_id: &str,
@@ -1248,14 +1213,9 @@ pub fn start_vm(state: &DaemonState, vm_id: &str) -> Result<(VmEntry, bool), Rpc
     }
     if unit_active(state, &entry.unit_name()) {
         // Python start_vm: the already-running short circuit emits nothing.
-        //
-        // It also returns before `start_vm_execution`, so the clear of
-        // `restarting` that call ends with does not run here: a VM left
-        // marked by a reboot that died mid-window keeps the marker. That
-        // costs nothing, because the marker only ever suppresses the
-        // dead-unit arm, and the unit this branch tested is active, so the
-        // status is RUNNING either way. The next stop, start or reboot
-        // clears it.
+        // It leaves a stale `restarting` marker in place, which costs
+        // nothing: the unit just tested active, so the status is RUNNING
+        // either way, and the next stop, start or reboot clears it.
         return Ok((entry, true));
     }
     let old_status = status_snapshot(state, &entry);
@@ -1301,8 +1261,7 @@ pub fn reboot_vm(state: &DaemonState, vm_id: &str) -> Result<(VmEntry, bool), Rp
         state.events.emit(
             vm_id,
             pb::VmStatus::Stopped,
-            // The recreate settled the program itself; it runs under no
-            // controller unit to observe in any case.
+            // A program runs under no controller unit to observe.
             crate::service::vm_status(&entry.times, running, UnitLiveness::Unknown),
         );
         return Ok((entry, running));
@@ -1334,14 +1293,10 @@ pub fn reboot_vm(state: &DaemonState, vm_id: &str) -> Result<(VmEntry, bool), Rp
         )?;
         state.dhcp.start(&config)?;
     }
-    // RestartUnit only queues a job: wait until the unit is confirmed
-    // active so the reported status is truthful. The unit leaves `active`
-    // and comes back during that job, and a status read takes no per-VM
-    // lock, so the window is marked: a poll landing in it must see a VM
-    // booting, not a guest that died. `starting_at` is stamped with it so
-    // the VM reports BOOTING rather than falling through to DEFINED, and
-    // the marker is cleared on the failure paths too, where the VM really
-    // is down and should say so.
+    // RestartUnit only queues a job: wait until the unit is confirmed active
+    // so the reported status is truthful. The unit drops out of `active` for
+    // the length of that job with no stop recorded, so mark the window and
+    // stamp a fresh `starting_at` to report BOOTING rather than a dead guest.
     with_entry_mut(state, vm_id, |entry| {
         entry.restarting = true;
         entry.times.starting_at_ns = now_ns();
@@ -1480,8 +1435,8 @@ fn delete_tracked_vm(
     state.events.emit(vm_id, old_status, pb::VmStatus::Stopped);
 
     state.world.blocking_write().entries.remove(vm_id);
-    // The hash may be created again; drop the status the hub remembers so
-    // the next life is not diffed against this one.
+    // The hash may be created again, and the next life must not be diffed
+    // against this one.
     state.events.forget(vm_id);
     // The cards are free again, so the next refresh reads the hardware
     // instead of serving an answer about a card in a different state.
@@ -2294,15 +2249,9 @@ fn snp_config_slice_with(
         ));
     }
     // A confidential GPU is admitted only on the arm whose cmdline this
-    // function derives (the dm-verity one), and only that image runs the
-    // guest-side GPU attestation stage. Two things go wrong on the other
-    // arm. It passes the agent's cmdline through verbatim, so the daemon
-    // cannot tell whether the guest verifies the card at all, and a card in
-    // confidential-computing mode does no plaintext DMA, so the guest has to
-    // bounce every transfer through a shared buffer whose size is a kernel
-    // parameter the measured runtime pins and the launch digest covers. On
-    // the opaque arm that parameter is neither required nor measured. Fail
-    // closed before the per-card rules run, and say which arm takes the card.
+    // function derives: the opaque arm passes the agent's cmdline through, so
+    // neither the guest-side card attestation nor the bounce-buffer parameter
+    // is measured. Fail closed before the per-card rules run.
     if !spec.gpus.is_empty() && !tee.kernel_cmdline.is_empty() {
         let hosts: Vec<&str> = spec.gpus.iter().map(|g| g.pci_host.as_str()).collect();
         return Err(RpcError::InvalidBackend(format!(
@@ -2312,31 +2261,19 @@ fn snp_config_slice_with(
             hosts.join(", ")
         )));
     }
-    // One card per confidential VM. The window sizing sums every card's
-    // BARs and the argv builder emits a port and chassis per card, so the
-    // mechanics would carry several; what has been validated end to end,
-    // guest runtime included, is exactly one. Nothing here can check that a
-    // second card's attestation, bounce buffer and NVLink topology behave,
-    // so the cap is fail-closed policy rather than a limit of the code, and
-    // it stays until a multi-card guest has actually been exercised.
+    // One card per confidential VM: the mechanics would carry several, but
+    // only one has been validated end to end, so the cap is policy and stays
+    // until a multi-card guest has been exercised.
     if spec.gpus.len() > 1 {
         return Err(RpcError::InvalidBackend(format!(
             "an SEV-SNP VM takes at most one GPU, the spec carries {}",
             spec.gpus.len()
         )));
     }
-    // Reading the register here is safe. The spec's cards were validated
-    // unattached, and this runs under the world write lock with creation
-    // serialized, so no guest can own the card before this VM does.
-    //
-    // That write lock is what the read costs: an idle card is usually
-    // runtime-suspended, and pinning it awake takes up to the probe's
-    // 200 ms resume budget, so a spec with several suspended cards holds
-    // the world write lock for that many times 200 ms and every reader
-    // behind it (GetHostInfo, ListVms, Health) waits. It is bounded, it is
-    // once per creation rather than once per request, and the alternative
-    // is trusting a cached mode for hardware about to be handed to a
-    // guest, so the wait stays here.
+    // The card is read here, not served from the cache: an operator can
+    // re-mode a free card between two probes. The world write lock serialises
+    // creation, so no guest can own the card before this VM does; each
+    // suspended card costs up to the 200 ms resume budget under that lock.
     for gpu in &spec.gpus {
         require_gpu_cc_mode(state, &gpu.pci_host, &probe)?;
     }
@@ -2347,10 +2284,8 @@ fn snp_config_slice_with(
         let window_mb = mmio_window(&hosts).map_err(|e| {
             RpcError::InvalidBackend(format!("cannot size the GPU MMIO window: {e}"))
         })?;
-        // The window has to fit in the guest's physical address space next
-        // to its RAM. A card whose BARs ask for more than that gets no
-        // window from the firmware at all, and the guest sees a device that
-        // enumerates and then does nothing, so refuse the create instead.
+        // A window that does not fit beside the guest's RAM gets no firmware
+        // placement at all, leaving a device that enumerates and does nothing.
         crate::gpu_bar::check_mmio64_budget(window_mb, spec.memory_mib)
             .map_err(|e| RpcError::InvalidBackend(e.to_string()))?;
         Some(window_mb)
@@ -2843,9 +2778,7 @@ pub fn create_vm(state: &DaemonState, request: pb::VmSpec) -> Result<(VmEntry, b
     state.events.emit(
         &entry.vm_hash,
         pb::VmStatus::Defined,
-        // The create settled the unit itself: it either waited for the
-        // controller to be ready or deliberately left it down until the
-        // owner uploads the session certificates.
+        // The create settled the unit itself, so there is nothing to observe.
         crate::service::vm_status(&entry.times, running, UnitLiveness::Unknown),
     );
     Ok((entry, running))
@@ -4310,8 +4243,8 @@ mod tests {
         let liveness = entry_liveness(state, &entry);
         let info = crate::service::vm_info_message(state, &entry, false, liveness, now_ns());
         assert!(info.awaiting_confidential_init);
-        // Its controller is deliberately down until the owner uploads the
-        // session certificates, so the dead-unit arm must not claim it died.
+        // Its controller is deliberately down until the session certificates
+        // arrive, so the dead-unit arm must not claim it died.
         assert_eq!(liveness, UnitLiveness::Dead, "no unit was ever started");
         assert_eq!(info.status, pb::VmStatus::Booting as i32);
         assert_eq!(info.confidential_mode, pb::ConfidentialMode::SevEs as i32);
@@ -5009,12 +4942,9 @@ mod tests {
 
     #[test]
     fn deleting_a_vm_forgets_what_the_cache_knew_about_its_cards() {
-        // While a VM holds a card the cache keeps whatever was last known
-        // about it, and for a confidential VM that is the mode the create
-        // gate vouched for. Once the VM is gone the card is free hardware
-        // again and an operator can switch its mode, so the entry has to
-        // go with the VM: leaving it would advertise the old answer for
-        // the rest of its freshness window.
+        // Once the VM is gone the card is free hardware an operator can
+        // re-mode, so a cached answer left behind would be advertised for the
+        // rest of its freshness window.
         let harness = harness_with_gpus(vec![nvidia_card("06:00.0")]);
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -5041,11 +4971,9 @@ mod tests {
 
     #[test]
     fn stopping_a_vm_forgets_what_the_cache_knew_about_its_cards() {
-        // A stopped VM keeps claiming its cards, so the refresh sweep will
-        // never read them again, and the seed only covers a running VM. If
-        // the stop left the create gate's answer in the cache the card
-        // would keep being advertised CC-on with no guest holding its mode
-        // still, which an operator can change on an idle card.
+        // A stopped VM still claims its cards, so the sweep never reads them:
+        // an answer left in the cache would be advertised CC-on for a card no
+        // guest holds.
         let harness = harness_with_gpus(vec![nvidia_card("06:00.0")]);
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -5425,12 +5353,9 @@ mod tests {
 
     #[test]
     fn snp_config_slice_rejects_a_gpu_on_the_opaque_cmdline_arm() {
-        // A confidential instance renders its own measured cmdline, so the
-        // guest carries no verified GPU attestation stage, and the
-        // bounce-buffer parameter a confidential card needs is neither
-        // required nor measured there. A CC-mode card must not be admitted
-        // even though the card itself would pass: the injected probe says
-        // "on" and is never consulted.
+        // The opaque arm measures neither the guest attestation stage nor the
+        // bounce-buffer parameter, so the card is refused even though the
+        // injected probe would answer "on".
         let harness = harness_with_gpus(vec![nvidia_card("06:00.0")]);
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -5563,8 +5488,7 @@ mod tests {
     #[test]
     fn snp_config_slice_takes_a_gpu_on_the_verity_arm() {
         // The counterpart of the opaque-arm refusal: the same card on the
-        // measured arm still builds a slice, so the rules above narrow
-        // nothing else.
+        // measured arm still builds a slice.
         let harness = harness_with_gpus(vec![nvidia_card("06:00.0")]);
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -5584,10 +5508,8 @@ mod tests {
 
     #[test]
     fn snp_config_slice_refuses_a_window_the_guest_cannot_address() {
-        // A card whose BARs ask for more 64-bit window than the guest's
-        // physical address width leaves room for. The firmware would place
-        // no window at all and the guest would find a dead device, so the
-        // create is refused here with the numbers that did not fit.
+        // A window past the guest's physical address width gets no firmware
+        // placement, so the create is refused with the numbers that did not fit.
         let harness = harness_with_gpus(vec![nvidia_card("06:00.0")]);
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -5609,11 +5531,8 @@ mod tests {
 
     #[test]
     fn snp_config_slice_refuses_more_than_one_gpu() {
-        // Fail-closed policy, not a limit of the code: the window sizing and
-        // the argv builder would both carry a second card, but only a
-        // single-card confidential guest has been exercised end to end. The
-        // window closure below returns a size that fits, so the count alone
-        // is what refuses the spec.
+        // Policy, not a limit of the code: the window closure returns a size
+        // that fits, so the card count alone is what refuses the spec.
         let harness = harness_with_gpus(vec![nvidia_card("06:00.0"), nvidia_card("07:00.0")]);
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -6625,10 +6544,9 @@ mod tests {
         assert!(state.world.blocking_read().is_empty());
     }
 
-    /// A systemd whose stop and restart pause where the real one leaves a
-    /// job in flight, and run a probe from inside that pause. It is the
-    /// window a concurrent ListVms lands in: the read paths take no per-VM
-    /// lock, so nothing keeps them out of it.
+    /// A systemd whose stop and restart pause where the real one leaves a job
+    /// in flight, running a probe from inside that pause. The read paths take
+    /// no per-VM lock, so a concurrent ListVms lands in exactly that window.
     struct MidJobProbe {
         inner: Arc<FakeSystemd>,
         probe: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
@@ -6670,16 +6588,15 @@ mod tests {
             self.inner.start(unit)
         }
         fn stop(&self, unit: &str) -> Result<(), UnitsError> {
-            // StopUnit only queues the job; the guest then takes its ACPI
-            // powerdown with the unit sitting in `deactivating`, which is
-            // up to 50 seconds of real time on a real node.
+            // StopUnit only queues the job; the unit then sits in
+            // `deactivating` for the whole of the guest's ACPI powerdown.
             self.inner.set_state(unit, "deactivating");
             self.run_probe();
             self.inner.stop(unit)
         }
         fn restart(&self, unit: &str) -> Result<(), UnitsError> {
             // A restart takes the unit down before bringing it back, so the
-            // gap reads `inactive`, with no stop stamped anywhere.
+            // gap reads `inactive` with no stop stamped anywhere.
             self.inner.set_state(unit, "inactive");
             self.run_probe();
             self.inner.restart(unit)
@@ -6705,8 +6622,7 @@ mod tests {
     }
 
     /// A created, running VM whose systemd pauses mid-job, with the probe
-    /// wired to do exactly what ListVms does there: compute the VM's status
-    /// and hand it to the event hub.
+    /// wired to do what ListVms does there: read the status and observe it.
     fn mid_job_observation() -> MidJobObservation {
         let harness = harness();
         let probing = Arc::new(MidJobProbe::new(harness.systemd.clone()));
@@ -6764,10 +6680,8 @@ mod tests {
 
     #[test]
     fn a_poll_during_a_stop_sees_stopping_not_a_death() {
-        // The graceful shutdown runs for up to 75 seconds with no per-VM
-        // lock held, so the stop has to be recorded before it is issued:
-        // otherwise a poll finds a unit on its way down under a VM with no
-        // stop stamped and calls it a guest that died.
+        // The stop must be recorded before it is issued, or a poll in the
+        // shutdown window reads the settling unit as a guest that died.
         let mut probe = mid_job_observation();
         stop_vm(&probe.state, &probe.vm_id).unwrap();
 
@@ -6787,9 +6701,8 @@ mod tests {
     #[test]
     fn a_poll_during_a_reboot_sees_booting_not_a_death() {
         // A restart drops the unit out of active and back in, stamping
-        // neither a stop nor a fresh start in between. Without the restart
-        // marker a poll landing in the gap reports FAILED, and the agent
-        // retires and recreates a perfectly healthy VM.
+        // neither a stop nor a fresh start: without the marker, a poll in
+        // the gap reports FAILED and the agent rebuilds a healthy VM.
         let mut probe = mid_job_observation();
         let (entry, running) = reboot_vm(&probe.state, &probe.vm_id).unwrap();
         assert!(running);
@@ -6808,13 +6721,9 @@ mod tests {
 
     #[test]
     fn a_poll_during_a_start_sees_booting_not_a_death() {
-        // The start clears the stop stamps at its very first step and then
-        // spends the tap, the nftables rules, the DHCP server, RestartUnit
-        // and the readiness wait with the unit still down, while started_at
-        // keeps the value it had before the stop. That is the dead-unit
-        // arm's exact shape, so without the marker a poll in there reports
-        // FAILED and the hub announces a death against a VM that is coming
-        // up as asked.
+        // The start clears the stop stamps at its first step and leaves the
+        // unit down until the readiness wait: the dead-unit arm's exact
+        // shape, so without the marker a poll in there announces a death.
         let mut probe = mid_job_observation();
         stop_vm(&probe.state, &probe.vm_id).unwrap();
         probe.seen.lock().unwrap().clear();
@@ -6841,11 +6750,8 @@ mod tests {
 
     #[test]
     fn a_start_that_fails_before_the_unit_still_reports_failed() {
-        // The marker is the window, not the VM. This start fails at its
-        // first real step, well before RestartUnit, which is the path most
-        // likely to leak the marker: the stop stamps are already cleared,
-        // so a VM left marked would report BOOTING for ever and the agent
-        // would hold it live and never rebuild it.
+        // The marker is the window, not the VM: a start that fails before
+        // RestartUnit would otherwise report BOOTING for ever.
         let harness = harness();
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -6869,9 +6775,8 @@ mod tests {
 
     #[test]
     fn a_unit_that_fails_after_a_reboot_still_reports_failed() {
-        // The exemption is the restart window, not the VM: once the reboot
-        // is done the dead-unit arm has to bite again, or a guest that dies
-        // shortly after a reboot would be held live for ever.
+        // Once the reboot is done the dead-unit arm has to bite again, or a
+        // guest dying shortly after one would be held live for ever.
         let probe = mid_job_observation();
         reboot_vm(&probe.state, &probe.vm_id).unwrap();
         let unit = controller_unit_name(&probe.vm_id);
@@ -6890,12 +6795,8 @@ mod tests {
     }
 
     /// A systemd that refuses one of the two steps `stop_and_disable` takes
-    /// and handles the other like the bus does. A refused stop queues no
-    /// job and leaves the unit active, where the stop never happened. An
-    /// accepted one leaves it `deactivating`: `StopUnit` returns the moment
-    /// systemd takes the job, and the guest's shutdown runs afterwards, so
-    /// a disable failing next to it finds a unit that is on its way down
-    /// rather than one that has settled.
+    /// and handles the other like the bus does: a refused stop leaves the
+    /// unit active, an accepted one leaves it `deactivating`.
     struct RefusingSystemd {
         inner: Arc<FakeSystemd>,
         refuse: StopStep,
@@ -6922,8 +6823,7 @@ mod tests {
                 return Err(UnitsError::Unreachable);
             }
             // Accepted, not finished: the unit sits in `deactivating` until
-            // the guest is done shutting down, which is up to 50 seconds of
-            // real time on a node.
+            // the guest is done shutting down.
             self.inner.set_state(unit, "deactivating");
             Ok(())
         }
@@ -6964,15 +6864,10 @@ mod tests {
 
     #[test]
     fn a_disable_that_fails_after_a_queued_stop_keeps_the_stop_recorded() {
-        // stop_and_disable can fail at its second step, with the stop job
-        // already accepted and the guest still shutting down. The unit is
-        // active or deactivating right there, so its state cannot tell this
-        // apart from a stop systemd refused; the failing step can. Putting
-        // the stopping stamp back leaves the queued job to settle the unit
-        // under a VM with no stop recorded, which is the dead-unit arm's
-        // shape: the VM reads FAILED and the hub announces a death for a
-        // guest the operator deliberately stopped, waking the agent's
-        // reconciler against it.
+        // The stop job is already accepted when the disable fails, so
+        // restoring the pre-stop stamp would leave the queued job to settle
+        // the unit under a VM with no stop recorded, and the hub would
+        // announce a death for a guest the operator deliberately stopped.
         let harness = harness();
         let state = refusing_state(&harness, StopStep::Disable);
         let root = state.host.settings.execution_root.clone();
@@ -6994,8 +6889,8 @@ mod tests {
         );
         assert_eq!(status_snapshot(&state, &entry), pb::VmStatus::Stopping);
 
-        // And once the queued job finishes, which is where a restored stamp
-        // turned into a death.
+        // And once the queued job settles the unit, where a restored stamp
+        // would have turned into a death.
         harness.systemd.set_state(&unit, "inactive");
         let entry = entry_snapshot(&state, &vm_id).unwrap();
         assert_eq!(status_snapshot(&state, &entry), pb::VmStatus::Stopping);
@@ -7003,9 +6898,8 @@ mod tests {
 
     #[test]
     fn a_stop_that_fails_with_the_unit_up_puts_the_stamp_back() {
-        // The other half: a stop systemd refused to issue leaves the unit
-        // running, and keeping the stamp there would park a live VM in
-        // STOPPING for ever.
+        // A refused stop leaves the unit running, and keeping the stamp
+        // there would park a live VM in STOPPING for ever.
         let harness = harness();
         let state = refusing_state(&harness, StopStep::Stop);
         let root = state.host.settings.execution_root.clone();

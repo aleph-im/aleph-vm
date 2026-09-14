@@ -188,13 +188,9 @@ pub struct Settings {
     pub numa_hugepages_limit_mb: Option<u64>,
 
     /// ALEPH_VM_GPU_CC_MODE_TTL, in SECONDS, default
-    /// [`crate::gpu_cc::DEFAULT_CC_MODE_TTL_SECS`] (3600). How long a GPU
-    /// confidential-computing mode that was read successfully is served
-    /// from the cache before the card is read again. The read wakes an idle
-    /// card out of runtime suspend, so this is the rate at which host-info
-    /// polling touches idle hardware; shorten it on a node whose cards are
-    /// re-moded often. An answer that carries no mode is held for a fixed
-    /// minute instead, whatever this says. Rust-only (no Python oracle).
+    /// [`crate::gpu_cc::DEFAULT_CC_MODE_TTL_SECS`] (3600): how long a GPU
+    /// confidential-computing mode is served from the cache before the card is
+    /// read again. An answer with no mode is held for a fixed minute instead.
     pub gpu_cc_mode_ttl: u64,
 }
 
@@ -658,9 +654,8 @@ mod tests {
 
     #[test]
     fn the_gpu_cc_mode_ttl_defaults_to_an_hour_and_is_tunable() {
-        // The long tier is the only one an operator sets: a node whose
-        // cards are re-moded often can shorten it, and the short tier for
-        // an answer with no mode is fixed in the probe module.
+        // The long tier is the only one an operator sets; the short tier is
+        // fixed in the probe module.
         assert_eq!(
             Settings::from_vars(vars(&[])).unwrap().gpu_cc_mode_ttl,
             crate::gpu_cc::DEFAULT_CC_MODE_TTL_SECS
@@ -671,8 +666,7 @@ mod tests {
                 .gpu_cc_mode_ttl,
             120
         );
-        // A non-integer (or negative) value is a hard error, like the
-        // other int settings.
+        // A non-integer or negative value is a hard error, like the other ints.
         assert!(Settings::from_vars(vars(&[("ALEPH_VM_GPU_CC_MODE_TTL", "often")])).is_err());
         assert!(Settings::from_vars(vars(&[("ALEPH_VM_GPU_CC_MODE_TTL", "-1")])).is_err());
     }

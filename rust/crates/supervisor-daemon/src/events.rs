@@ -1,17 +1,14 @@
 //! Lifecycle event fan-out, the engine behind WatchEvents.
 //!
-//! Python parity (`LocalSupervisor._emit_event` / `watch_events`): every
-//! lifecycle transition the daemon itself performs (create, stop, start,
-//! reboot, delete) is fanned out to every live subscriber; there is no
-//! replay (a subscriber joining mid-flight only sees later events; clients
-//! snapshot with ListVms first, as the proto documents), and the
-//! per-subscriber queue is unbounded, exactly like the Python
-//! `asyncio.Queue()` the emitter `put_nowait`s into. The one transition no
-//! RPC path can announce is spontaneous guest
-//! death: nothing calls the daemon when a guest's QEMU exits on its own. The
-//! daemon notices it when a status read finds the controller unit dead under
-//! a VM it has seen alive, and [`EventHub::observe`] turns that observation
-//! into the same event a deliberate stop emits, once per transition.
+//! Python parity (`LocalSupervisor._emit_event` / `watch_events`,
+//! src/aleph/vm/supervisor/local.py): every lifecycle transition the daemon
+//! itself performs (create/stop/start/reboot/delete) is fanned
+//! out to every live subscriber; there is no replay (a subscriber joining
+//! mid-flight only sees later events; clients snapshot with ListVms first,
+//! as the proto documents), and the per-subscriber queue is unbounded,
+//! exactly like the Python `asyncio.Queue()` the emitter `put_nowait`s
+//! into. Spontaneous guest death has no RPC path to announce it, so a status
+//! read that finds the unit dead feeds [`EventHub::observe`] instead.
 //!
 //! The timestamp is `time.time_ns()` parity: full nanosecond wall-clock
 //! precision, unlike the microsecond-truncated lifecycle stage stamps.
@@ -26,9 +23,8 @@ use tokio::sync::mpsc;
 #[derive(Debug, Default)]
 pub struct EventHub {
     subscribers: Mutex<Vec<mpsc::UnboundedSender<pb::VmEvent>>>,
-    /// The last status this hub reported for each VM, whether a lifecycle
-    /// path announced it or a status read observed it. It is what makes an
-    /// observation fire once per transition instead of once per read.
+    /// The last status this hub reported for each VM, so an observation
+    /// fires once per transition instead of once per read.
     last_status: Mutex<HashMap<String, pb::VmStatus>>,
 }
 
@@ -44,10 +40,8 @@ impl EventHub {
 
     /// Python `_emit_event`: fan one transition out to every watcher.
     pub fn emit(&self, vm_id: &str, old_status: pb::VmStatus, new_status: pb::VmStatus) {
-        // Recorded even with nobody listening, and before the early return:
-        // an observation must diff against what the lifecycle last did, or
-        // the first read after a stop would announce that stop a second
-        // time to whoever subscribed in between.
+        // Recorded before the early return, even with nobody listening: an
+        // observation has to diff against what the lifecycle last did.
         self.record(vm_id, new_status);
         let mut subscribers = self.lock();
         if subscribers.is_empty() {
@@ -65,16 +59,9 @@ impl EventHub {
     /// Record the status a read just computed, and announce it when it is a
     /// guest that died since the last time this hub reported on the VM.
     ///
-    /// Only death is announced. A status read is not an event source: every
-    /// other transition either has an RPC path that already emits it, or is
-    /// a poll finding what a poll is for. Death has neither, and the agent
-    /// needs it to drop the VM's guest-side state and rebuild it rather than
-    /// wait out its backstop interval.
-    ///
-    /// The first status seen for a VM only seeds the map: with no earlier
-    /// report there is no transition, and an event would have to invent the
-    /// status it came from. A VM already dead when the daemon adopts it is
-    /// the agent's next ListVms to find, not an event's.
+    /// Only death is announced: every other transition has an RPC path that
+    /// already emits it. The first status seen for a VM only seeds the map,
+    /// since an event would have to invent the status it came from.
     pub fn observe(&self, vm_id: &str, status: pb::VmStatus) {
         let previous = self.record(vm_id, status);
         let Some(previous) = previous else {
@@ -150,9 +137,8 @@ mod tests {
 
     #[test]
     fn an_observed_death_is_announced_exactly_once() {
-        // Nothing calls the daemon when a guest's QEMU exits on its own, so
-        // the status reads are where the death is noticed. It has to reach
-        // the agent as one event, not one per read: the reads are a poll.
+        // The reads that notice the death are a poll, so it must reach the
+        // agent as one event, not one per read.
         let hub = EventHub::default();
         let mut watcher = hub.subscribe();
         hub.emit("aa", pb::VmStatus::Defined, pb::VmStatus::Running);
@@ -177,10 +163,8 @@ mod tests {
 
     #[test]
     fn a_read_is_not_an_event_source() {
-        // Only death is announced from a read. Every other transition has an
-        // RPC path that emits it, and the first status seen for a VM is a
-        // seed: with nothing reported before it, there is no transition and
-        // no old status to name.
+        // Only death is announced from a read; the first status seen for a
+        // VM is a seed, with no old status to name.
         let hub = EventHub::default();
         let mut watcher = hub.subscribe();
         hub.observe("aa", pb::VmStatus::Failed);
@@ -194,15 +178,13 @@ mod tests {
             "a poll found what a poll is for"
         );
 
-        // A deliberate stop is announced by the path that performed it, and
-        // the read that follows must not announce it a second time.
+        // The read after a deliberate stop must not announce it twice.
         hub.emit("cc", pb::VmStatus::Running, pb::VmStatus::Stopped);
         assert_eq!(watcher.try_recv().unwrap().vm_id, "cc");
         hub.observe("cc", pb::VmStatus::Stopped);
         assert!(watcher.try_recv().is_err());
 
-        // And a hash created again after a delete is not diffed against the
-        // life it had before.
+        // A hash created again after a delete starts from nothing.
         hub.forget("aa");
         hub.observe("aa", pb::VmStatus::Failed);
         assert!(watcher.try_recv().is_err());
