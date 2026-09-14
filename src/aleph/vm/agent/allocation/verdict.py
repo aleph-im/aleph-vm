@@ -311,7 +311,7 @@ def compute_verdict(
 
     admissions = capacity.simulate(candidates, releasing=frozenset(verdict.removing), available_gpus=available_gpus)
     for admission in admissions:
-        if admission.refusal is None:
+        if admission.accepted:
             verdict.accepted.append(admission.vm_hash)
         else:
             verdict.rejected[admission.vm_hash] = admission.refusal

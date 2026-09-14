@@ -139,7 +139,7 @@ async def capacity_check(request: web.Request) -> web.Response:
     available_gpus = await capacity.available_gpus()
     for admission in capacity.simulate(candidates, available_gpus=available_gpus):
         results[str(admission.vm_hash)] = (
-            {"accepted": True} if admission.refusal is None else {"accepted": False, **admission.refusal.as_dict()}
+            {"accepted": True} if admission.accepted else {"accepted": False, **admission.refusal.as_dict()}
         )
     return web.json_response(
         {"results": results, "capacity": capacity.headroom(available_gpus)},
