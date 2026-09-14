@@ -613,10 +613,8 @@ fn refresh_cc_modes_with(
     // (it is still in `attached`, the config still claims it), and the
     // stop itself dropped whatever the cache held about it, so a stopped
     // VM's card advertises nothing until it is started again or the VM is
-    // deleted and the card is read as free. The start is what re-reads the
-    // hardware and seeds the cache, under the same rule the create gate
-    // applies; the seed below only ever restates an answer the start
-    // already took from the card, for as long as the guest holds it.
+    // deleted and the card is read as free. The start re-reads the hardware
+    // itself, so the seed below only ever restates the start's own answer.
     //
     // What counts as live is `attached_gpus`'s rule.
     let mut known_cc_on: HashSet<String> = HashSet::new();

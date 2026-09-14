@@ -1119,27 +1119,17 @@ fn recreate_port_redirect_rules(state: &DaemonState, vm_id: &str) -> Result<(), 
 /// port mappings.
 fn start_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
-    // A confidential VM's cards are read again before the guest comes back.
-    // The create gate read them on the way in, but the stop dropped those
-    // answers with the guest: once QEMU is gone the card is idle hardware an
-    // operator can re-mode with NVIDIA's tool, so starting on the gate's old
-    // reading would boot a confidential guest onto a card the host can no
-    // longer vouch for and go on advertising "on" about a card nobody has
-    // read since. Only an SNP config is gated, exactly as at create: a plain
-    // passthrough VM never had a CC requirement to hold its card to.
+    // A confidential VM's cards are read again before the guest comes back:
+    // the stop dropped the create gate's answers, and an idle card can be
+    // re-moded, so starting on the old reading would boot a confidential guest
+    // onto a card the host can no longer vouch for. SNP only, like the create
+    // gate. This runs before the stamps below and every irreversible step, so
+    // a refusal leaves the VM reporting STOPPED.
     //
-    // This runs before the stamps below and before every irreversible step,
-    // so a refusal leaves the entry with its stop stamps untouched and the
-    // VM still reporting STOPPED.
-    //
-    // No world write lock is taken here, in contrast to the create gate.
-    // That gate reads a card that is still free and must keep another
-    // creation from claiming it mid-probe. This card is already claimed by
-    // this VM's config: the caller holds the VM's lock so no other lifecycle
-    // call touches the entry, no create can take an attached card, and the
-    // refresh sweep skips it. The probe's resume wait (up to 200 ms per
-    // suspended card) therefore sits under the VM lock alone and holds up no
-    // reader of the world.
+    // No world lock here, unlike the create gate: the card is already claimed
+    // by this VM's config and the caller holds the VM's lock, so the probe's
+    // resume wait (up to 200 ms per suspended card) blocks no reader of the
+    // world.
     if entry.config.snp().is_some() {
         for gpu in &entry.config.gpus {
             require_gpu_cc_mode(state, &gpu.pci_host, state.gpu_cc_probe)?;
@@ -2227,30 +2217,20 @@ fn snp_image_format(format: i32) -> Result<String, RpcError> {
 /// The confidential-GPU admission rule for one card, applied wherever a
 /// guest is about to be handed it.
 ///
-/// A GPU may enter a confidential guest only in NVIDIA CC mode: the card
-/// then refuses plaintext DMA and answers attestation, and the guest
-/// verifies it at boot. The mode is read from the card now rather than
-/// taken from the inventory cache: an operator can switch a card off
-/// between two host probes, and a stale "on" would hand the owner hardware
-/// the guest cannot trust. Any other answer, including a card that cannot
-/// be read, fails closed. The cache learns the answer either way, so a
-/// refusal also replaces whatever "on" the inventory was still serving.
-///
-/// The create gate and the start path both come through here, and that is
-/// the point: a card is re-moded just as easily while its VM sits stopped
-/// as while it is unattached, so the two admissions must not drift apart.
-/// What differs is the lock each caller holds, which is documented at the
-/// call sites.
+/// A GPU may enter a confidential guest only in NVIDIA CC mode, read from the
+/// card now and never from the inventory cache: an operator can switch a card
+/// off between two host probes. Any other answer, a card that cannot be read
+/// included, fails closed, and the cache learns the answer either way. Both
+/// the create gate and the start path come through here so the two admissions
+/// cannot drift apart; what differs is the lock each caller holds.
 fn require_gpu_cc_mode(
     state: &DaemonState,
     pci_host: &str,
     probe: impl Fn(&str, &str) -> Result<Option<crate::gpu_cc::CcMode>, crate::error::DaemonError>,
 ) -> Result<(), RpcError> {
-    // The inventory-membership check runs FIRST and is what makes
-    // `pci_host` safe to interpolate into the vfio-pci argv and into the
-    // sysfs path `gpu_bar.rs` reads: only an address the host scan itself
-    // produced gets past here, so a spec-supplied string never reaches
-    // either. Keep this order.
+    // The inventory-membership check runs FIRST: only a scanned address gets
+    // past here, which is what makes `pci_host` safe to interpolate into the
+    // vfio-pci argv and the sysfs path `gpu_bar.rs` reads. Keep this order.
     let Some(device) = inventory_gpu(state, pci_host) else {
         return Err(RpcError::InvalidBackend(format!(
             "GPU at pci_host '{pci_host}' is not in the host inventory"
@@ -4131,10 +4111,9 @@ mod tests {
         )
     }
 
-    /// A GPU harness whose daemon state carries `probe` where the real
-    /// daemon carries the sysfs reader. Only the paths that read the card
-    /// through the state (the start gate) need this; the create gate takes
-    /// its probe as an argument and is driven through `snp_config_slice_with`.
+    /// A GPU harness whose daemon state carries `probe` where the real daemon
+    /// carries the sysfs reader, for the paths that read a card through the
+    /// state (the start gate).
     fn harness_with_gpu_probe(
         gpus: Vec<crate::lspci::GpuDevice>,
         probe: crate::gpu_cc::CcProbe,
@@ -4148,12 +4127,9 @@ mod tests {
     }
 
     thread_local! {
-        /// What [`switchable_probe`] answers next. A `CcProbe` is a plain fn
-        /// pointer, and the daemon state that holds it is behind an `Arc` by
-        /// the time a test runs, so the prober cannot be replaced between two
-        /// calls; it reads this cell instead. Thread-local rather than global
-        /// so parallel tests do not answer each other's probes, which holds
-        /// because a test drives the daemon synchronously on its own thread.
+        /// What [`switchable_probe`] answers next: the state's `CcProbe` is a
+        /// plain fn pointer behind an `Arc` and cannot be swapped mid-test.
+        /// Thread-local so parallel tests do not answer each other's probes.
         static PROBED_CC_MODE: std::cell::Cell<Option<crate::gpu_cc::CcMode>> =
             const { std::cell::Cell::new(None) };
     }
@@ -5094,12 +5070,10 @@ mod tests {
         );
     }
 
-    /// A running SEV-SNP VM whose config claims `pci_host`, the shape a
-    /// create with a confidential card leaves behind. The card is attached
-    /// to the entry after the create rather than requested in the spec: the
-    /// create's MMIO window sizing reads the card's BARs out of the host's
-    /// real sysfs, which a hermetic harness has no way to provide, and it is
-    /// the start path these tests are about.
+    /// A running SEV-SNP VM whose config claims `pci_host`, the shape a create
+    /// with a confidential card leaves behind. The card is attached after the
+    /// create, not requested in the spec: the create's MMIO window sizing
+    /// reads real sysfs, which a hermetic harness cannot provide.
     fn snp_vm_holding_a_card(state: &DaemonState, vm_id: &str, pci_host: &str) {
         let root = state.host.settings.execution_root.clone();
         let firmware = root.join("OVMF.fd");
@@ -5113,19 +5087,16 @@ mod tests {
             });
         })
         .expect("the VM just created is in the world");
-        // The reading the create gate would have taken on the way in, so the
-        // cache starts out holding the create's answer about the card.
+        // The reading the create gate would have taken on the way in.
         require_gpu_cc_mode(state, pci_host, state.gpu_cc_probe)
             .expect("the card answers CC-on while the VM is being created");
     }
 
     #[test]
     fn starting_a_confidential_vm_refuses_a_card_re_moded_while_it_was_down() {
-        // The create gate read the card CC-on, the stop dropped that answer
-        // with the guest, and an operator switched the idle card off in
-        // between. The start has to read the hardware again and refuse,
-        // exactly as the create gate would: booting here would hand the
-        // owner a confidential guest on a card the host cannot vouch for.
+        // An operator switched the idle card off while the VM was down: the
+        // start has to read the hardware again and refuse, exactly as the
+        // create gate would.
         let harness = harness_with_gpu_probe(vec![nvidia_card("06:00.0")], switchable_probe);
         let state = &harness.state;
         let vm_id = hash('c');
@@ -5163,10 +5134,9 @@ mod tests {
 
     #[test]
     fn starting_a_confidential_vm_seeds_its_card_from_the_fresh_reading() {
-        // The counterpart: the card still answers CC-on, so the start goes
-        // through and the inventory says "on" at once, on the start's own
-        // reading rather than on a refresh sweep seeding it later from the
-        // fact that a live SNP VM holds the card.
+        // The counterpart: a card still answering CC-on lets the start through
+        // and seeds the inventory from the start's own reading, not from a
+        // later refresh sweep.
         let harness = harness_with_gpu_probe(vec![nvidia_card("06:00.0")], switchable_probe);
         let state = &harness.state;
         let vm_id = hash('c');
@@ -5193,10 +5163,9 @@ mod tests {
 
     #[test]
     fn starting_a_plain_vm_holding_a_card_reads_nothing() {
-        // The CC gate is an SNP rule on both paths. A plain passthrough VM
-        // holding the same card never went through the create gate, so the
-        // start must not read the card either, and must not start refusing
-        // VMs that have always been allowed to run on an off-mode card.
+        // The CC gate is an SNP rule on both paths: a plain passthrough VM went
+        // through no create gate, so its start must read no card and must not
+        // begin refusing VMs that have always run on an off-mode card.
         let harness = harness_with_gpu_probe(vec![nvidia_card("06:00.0")], switchable_probe);
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
