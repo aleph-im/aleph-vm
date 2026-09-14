@@ -550,6 +550,9 @@ async def operate_start(request: web.Request, authenticated_sender: str) -> web.
             expiry=request.app["expiry"],
             update_watcher=request.app["update_watcher"],
             recreate=True,
+            # A rebuild that fails answers the owner with the create route's
+            # status (no capacity, resource unavailable) instead of a bare 500.
+            create=create_vm_execution_or_raise_http_error,
         )
         return web.Response(status=200, body=f"Started VM with ref {vm_hash}")
 

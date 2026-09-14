@@ -20,12 +20,14 @@ from aleph_message.models.execution.environment import TrustedExecutionEnvironme
 
 import aleph.vm.storage_pools as storage_pools_module
 from aleph.vm.agent import metrics
+from aleph.vm.agent.run import create_vm_execution_or_raise_http_error
 from aleph.vm.agent.supervisor import setup_webapp
 from aleph.vm.agent.views.operator import _security_aggregate_cache
 from aleph.vm.agent.vm.reclaimable import ReclaimableMarker, mark_reclaimable
 from aleph.vm.agent.vm.reconciler import creating
 from aleph.vm.agent.vm.retire import RetireReason
 from aleph.vm.conf import settings
+from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.storage import get_message
 from aleph.vm.storage_pools import MediaClass, StoragePool, reset_pools
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
@@ -645,6 +647,8 @@ async def test_operator_start_resumes_a_stopped_vm(aiohttp_client, mocker):
         # The record still holds the memory and vCPUs, so this start is
         # admitted as a rebuild.
         recreate=True,
+        # A view rebuilds through the HTTP-mapping wrapper.
+        create=create_vm_execution_or_raise_http_error,
     )
 
 
@@ -739,3 +743,19 @@ async def test_operator_reboot_of_a_stopped_vm_is_409(aiohttp_client, mocker):
     assert f"/control/machine/{vm_hash}/start" in await response.text()
     fake_sup.reboot_vm.assert_not_awaited()
     fake_sup.start_vm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_operator_start_maps_a_failed_rebuild_to_the_create_route_status(aiohttp_client, mocker):
+    """A rebuild the node cannot fit answers 503 like the create route, not the
+    bare 500 an unmapped exception out of the start path would give."""
+    mocker.patch("aleph.vm.agent.run.retire_vm", new_callable=AsyncMock)
+    mocker.patch(
+        "aleph.vm.agent.run.create_vm_execution",
+        new=AsyncMock(side_effect=InsufficientResourcesError("no room", required={}, available={})),
+    )
+    client, _app, _sup, vm_hash = await _app_with_a_recorded_vm(aiohttp_client, mocker, status=VmStatus.FAILED)
+
+    response = await client.post(f"/control/machine/{vm_hash}/start")
+
+    assert response.status == 503, await response.text()

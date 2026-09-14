@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any
 
@@ -745,6 +746,10 @@ async def create_vm_execution(
     )
 
 
+# create_vm_execution and its HTTP-mapping wrapper, which callers pick between.
+CreateVmExecution = Callable[..., Awaitable[None]]
+
+
 async def create_vm_execution_or_raise_http_error(
     vm_hash: ItemHash,
     *,
@@ -1141,11 +1146,15 @@ async def start_persistent_vm(
     expiry: ExpiryManager,
     update_watcher: UpdateWatcher,
     recreate: bool = False,
+    create: CreateVmExecution = create_vm_execution,
 ) -> None:
     """Bring a scheduled VM up, whatever state this node holds it in.
 
     ``recreate`` says the caller is rebuilding a VM this node already holds a
     record for, so admission judges only the disk it does not hold yet.
+
+    ``create`` performs the rebuild: a view passes the HTTP-mapping wrapper so
+    a rebuild that fails answers a mapped status rather than a bare 500.
 
     Serialised per hash: the download sits between the read and the create, so
     two concurrent starts would both read "this node does not have it" and
@@ -1198,7 +1207,7 @@ async def start_persistent_vm(
 
         if info is None:
             logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
-            await create_vm_execution(
+            await create(
                 vm_hash=vm_hash, supervisor=supervisor, registry=registry, capacity=capacity, recreate=recreate
             )
             # A confidential VM is created but left awaiting its owner's session
