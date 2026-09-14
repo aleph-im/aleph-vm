@@ -21,7 +21,10 @@ from pydantic import BaseModel
 from aleph.vm.agent import metrics
 from aleph.vm.agent.custom_logs import set_vm_for_logging
 from aleph.vm.agent.expiry import ExpiryManager
-from aleph.vm.agent.run import create_vm_execution_or_raise_http_error
+from aleph.vm.agent.run import (
+    create_vm_execution_or_raise_http_error,
+    start_persistent_vm,
+)
 from aleph.vm.agent.views.authentication import (
     authenticate_websocket_message,
     require_jwk_authentication,
@@ -496,6 +499,58 @@ async def operate_confidential_initialize(request: web.Request, authenticated_se
             godh_file_content.file.read(),
         )
 
+        return web.Response(status=200, body=f"Started VM with ref {vm_hash}")
+
+
+@cors_allow_all
+@require_jwk_authentication
+async def operate_start(request: web.Request, authenticated_sender: str) -> web.Response:
+    """Start a virtual machine this node holds and is not running.
+
+    The allocation loop never restarts a VM its owner stopped, so this is the
+    only way one comes back up.
+    """
+    vm_hash = get_itemhash_or_400(request.match_info)
+    with set_vm_for_logging(vm_hash=vm_hash):
+        record = get_agent_record_or_404(request, vm_hash)
+        if not await is_sender_authorized(authenticated_sender, record.message):
+            return web.Response(status=403, body="Unauthorized sender")
+
+        supervisor: Supervisor = request.app["supervisor"]
+        vm_id = VmId(str(vm_hash))
+        try:
+            info = await supervisor.get_vm(vm_id)
+        except VmNotFoundError:
+            # The supervisor forgets a VM across a restart while the record and
+            # the disks stay, so rebuild it instead of 404ing on that ignorance.
+            info = None
+
+        if info is not None:
+            if info.awaiting_confidential_init:
+                # Only the owner's session certificates start it, and the start
+                # path deliberately leaves such a VM alone.
+                return web.Response(
+                    status=409,
+                    body=f"VM with ref {vm_hash} is waiting for its confidential session, "
+                    f"start it through /control/machine/{vm_hash}/confidential/initialize",
+                )
+            if info.status in (VmStatus.RUNNING, VmStatus.BOOTING):
+                return web.Response(status=200, body=f"VM with ref {vm_hash} is already running")
+
+        logger.info(f"Starting {vm_hash} on its owner's request")
+        # Resumes a STOPPED VM in place and rebuilds a FAILED one, serialised
+        # per hash. The record and its commitment never went away, so admission
+        # judges only the disk this start still has to find room for.
+        await start_persistent_vm(
+            vm_hash,
+            request.app.get("pubsub"),
+            supervisor=supervisor,
+            registry=request.app["vm_registry"],
+            capacity=request.app["capacity"],
+            expiry=request.app["expiry"],
+            update_watcher=request.app["update_watcher"],
+            recreate=True,
+        )
         return web.Response(status=200, body=f"Started VM with ref {vm_hash}")
 
 
