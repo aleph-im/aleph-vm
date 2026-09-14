@@ -1141,13 +1141,3 @@ async def stop_storage_reconcile_task(app: web.Application) -> None:
         await task
     except asyncio.CancelledError:
         logger.debug("Task storage_reconcile is cancelled now")
-
-
-# The storage CLI runs the same pass out of process and imports four of the
-# names above. They carried an underscore while the reconciler was their only
-# caller, which they have not been for some time; these aliases keep that
-# module importing while it is pointed at the names themselves.
-_plausible = is_vm_namespace
-_still_on_disk = has_namespace_dirs
-_teardown_orphan_devices = teardown_orphan_devices
-_release_cache_devices = release_cache_devices
