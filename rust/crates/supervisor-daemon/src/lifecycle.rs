@@ -837,9 +837,21 @@ fn stop_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
     let stopping_before = entry.times.stopping_at_ns;
     with_entry_mut(state, vm_id, |entry| entry.times.stopping_at_ns = now_ns());
     if let Err(error) = units::stop_and_disable(&*state.units, &unit) {
-        with_entry_mut(state, vm_id, |entry| {
-            entry.times.stopping_at_ns = stopping_before
-        });
+        // Either step can be the one that failed, and the disable can error
+        // with the unit already down: that VM is genuinely stopped, and
+        // putting the stamp back there would leave a unit that has settled
+        // under a VM with no stop recorded, which the read paths call a
+        // guest that died and announce as one. Ask what state the unit is
+        // in and keep the stamp when it has settled; a unit still up, or
+        // one a silent bus says nothing about, gets the pre-stop value
+        // back.
+        if UnitLiveness::from_active_state(&state.units.get_active_state(&unit))
+            != UnitLiveness::Dead
+        {
+            with_entry_mut(state, vm_id, |entry| {
+                entry.times.stopping_at_ns = stopping_before
+            });
+        }
         return Err(error.into());
     }
     wait_for_controller_stopped(state, &unit);
@@ -6705,6 +6717,115 @@ mod tests {
         assert!(!entry.restarting);
         assert_eq!(status_snapshot(&probe.state, &entry), pb::VmStatus::Failed);
         drop(probe.probing);
+    }
+
+    /// A systemd that refuses one of the two steps `stop_and_disable`
+    /// takes and performs the other. A refused stop leaves the unit up,
+    /// where the stop never happened; a refused disable arrives with the
+    /// unit already down, where it did.
+    struct RefusingSystemd {
+        inner: Arc<FakeSystemd>,
+        refuse: &'static str,
+    }
+
+    impl crate::units::UnitStateSource for RefusingSystemd {
+        fn unit_states(
+            &self,
+            units: &[String],
+        ) -> Result<std::collections::HashMap<String, UnitLiveness>, UnitsError> {
+            self.inner.unit_states(units)
+        }
+        fn controller_units(&self) -> Result<std::collections::HashMap<String, bool>, UnitsError> {
+            self.inner.controller_units()
+        }
+        fn get_active_state(&self, unit: &str) -> String {
+            self.inner.get_active_state(unit)
+        }
+        fn start(&self, unit: &str) -> Result<(), UnitsError> {
+            self.inner.start(unit)
+        }
+        fn stop(&self, unit: &str) -> Result<(), UnitsError> {
+            if self.refuse == "stop" {
+                return Err(UnitsError::Unreachable);
+            }
+            self.inner.stop(unit)
+        }
+        fn restart(&self, unit: &str) -> Result<(), UnitsError> {
+            self.inner.restart(unit)
+        }
+        fn enable(&self, unit: &str) -> Result<(), UnitsError> {
+            self.inner.enable(unit)
+        }
+        fn disable(&self, unit: &str) -> Result<(), UnitsError> {
+            if self.refuse == "disable" {
+                return Err(UnitsError::Unreachable);
+            }
+            self.inner.disable(unit)
+        }
+        fn is_enabled(&self, unit: &str) -> bool {
+            self.inner.is_enabled(unit)
+        }
+    }
+
+    /// A daemon on the harness's world, talking to a systemd that refuses
+    /// one step of the stop.
+    fn refusing_state(harness: &Harness, refuse: &'static str) -> Arc<DaemonState> {
+        let mut state = crate::service::DaemonState::hermetic(
+            harness.state.host.clone(),
+            world::WorldView::default(),
+            Arc::new(RefusingSystemd {
+                inner: harness.systemd.clone(),
+                refuse,
+            }),
+            Arc::new(StaticLogSource::default()),
+        );
+        state.nft = Arc::new(nft::StaticRuleset::new(bare_host_ruleset()));
+        state.taps = harness.taps.clone();
+        state.dhcp = harness.dhcp.clone();
+        Arc::new(state)
+    }
+
+    #[test]
+    fn a_stop_that_fails_with_the_unit_down_keeps_the_stop_recorded() {
+        // stop_and_disable can fail at its second step, with the stop job
+        // already issued and the unit settled. Putting the stopping stamp
+        // back there leaves a unit that is genuinely down under a VM with
+        // no stop recorded, which is the dead-unit arm's shape: the VM
+        // reads FAILED and the hub announces a death for a guest the
+        // operator deliberately stopped, waking the agent's reconciler
+        // against it.
+        let harness = harness();
+        let state = refusing_state(&harness, "disable");
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('e');
+        create_vm(&state, spec(&vm_id, &root)).unwrap();
+
+        stop_vm(&state, &vm_id).expect_err("the disable is refused");
+
+        let entry = entry_snapshot(&state, &vm_id).unwrap();
+        assert_ne!(
+            entry.times.stopping_at_ns, 0,
+            "the stop that did happen stays recorded"
+        );
+        assert_eq!(status_snapshot(&state, &entry), pb::VmStatus::Stopping);
+    }
+
+    #[test]
+    fn a_stop_that_fails_with_the_unit_up_puts_the_stamp_back() {
+        // The other half: a stop systemd refused to issue leaves the unit
+        // running, and keeping the stamp there would park a live VM in
+        // STOPPING for ever.
+        let harness = harness();
+        let state = refusing_state(&harness, "stop");
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('e');
+        create_vm(&state, spec(&vm_id, &root)).unwrap();
+
+        stop_vm(&state, &vm_id).expect_err("the stop is refused");
+
+        let entry = entry_snapshot(&state, &vm_id).unwrap();
+        assert_eq!(entry.times.stopping_at_ns, 0, "nothing was stopped");
+        assert_eq!(status_snapshot(&state, &entry), pb::VmStatus::Running);
     }
 
     #[test]
