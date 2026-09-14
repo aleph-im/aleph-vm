@@ -1416,7 +1416,8 @@ mod tests {
             crate::service::vm_status(&entry.times, false, UnitLiveness::Failed),
             supervisor_proto::pb::VmStatus::Failed
         );
-        // The cards stay attached, but no guest of this VM holds them.
+        // The runtime attachment list is rebuilt only for a live VM; the
+        // config's claim on the card is what survives, untouched here.
         assert!(entry.gpus.is_empty());
     }
 

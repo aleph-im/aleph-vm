@@ -224,7 +224,7 @@ pub enum UnitsError {
     #[error("Reload() failed: {source}")]
     Reload { source: zbus::Error },
 
-    /// `ListUnits()` failed, from `active_states`/`controller_units`.
+    /// `ListUnits()` failed, from `unit_states`/`controller_units`.
     #[error(transparent)]
     Bus(#[from] zbus::Error),
 
@@ -874,6 +874,7 @@ mod tests {
         assert!(UnitLiveness::Failed.is_dead());
         assert!(UnitLiveness::Dead.is_dead());
         assert!(!UnitLiveness::Failed.is_active());
+        assert!(!UnitLiveness::Active.is_dead());
         assert!(!UnitLiveness::Transitional.is_dead());
         assert!(!UnitLiveness::Unknown.is_dead());
     }
