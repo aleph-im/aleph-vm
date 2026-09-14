@@ -545,6 +545,11 @@ async def status_check_version(request: web.Request):
 # legacy call. Bump it when a newer allocation endpoint ships.
 ALLOCATIONS_API_VERSION = 2
 
+# The owner-facing control routes a client cannot assume. Names, not a version:
+# some of this surface is conditional on the node (a TEE, a card), so there is
+# no order to count along. A name means one route and never changes meaning.
+CONTROL_API_FEATURES = ("machine_start",)
+
 
 @cors_allow_all
 async def status_public_config(request: web.Request):
@@ -562,7 +567,7 @@ async def status_public_config(request: web.Request):
             "DOMAIN_NAME": settings.DOMAIN_NAME,
             "node_hash": node_hash,
             "version": __version__,
-            "api": {"allocations": ALLOCATIONS_API_VERSION},
+            "api": {"allocations": ALLOCATIONS_API_VERSION, "control": list(CONTROL_API_FEATURES)},
             "references": {
                 "API_SERVER": settings.API_SERVER,
                 "CHECK_FASTAPI_VM_ID": settings.CHECK_FASTAPI_VM_ID,

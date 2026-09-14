@@ -27,4 +27,18 @@ async def test_public_config_advertises_the_allocation_protocol(aiohttp_client):
 
     assert response.status == 200
     body = await response.json()
-    assert body["api"] == {"allocations": 2}
+    assert body["api"]["allocations"] == 2
+
+
+@pytest.mark.asyncio
+async def test_public_config_advertises_the_control_routes_a_client_cannot_assume(aiohttp_client):
+    """A client discovers the owner start route here: the route answers 404 for
+    a VM this node does not hold, so trying it cannot tell an old node apart
+    from an unknown hash."""
+    client = await aiohttp_client(_app())
+
+    response = await client.get("/status/config")
+
+    assert response.status == 200
+    body = await response.json()
+    assert "machine_start" in body["api"]["control"]

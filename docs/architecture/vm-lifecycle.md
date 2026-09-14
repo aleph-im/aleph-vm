@@ -268,7 +268,11 @@ in place and rebuilds a FAILED one through the same serialised start path the
 loop uses, and answers a VM that is already running with a 200 saying so
 rather than restarting it. `/control/machine/{ref}/reboot` is for a running
 VM only: on one that is not running it answers 409 and names the start route,
-where it used to answer 200 claiming a start it never performed. The
+where it used to answer 200 claiming a start it never performed. A client
+learns whether a node has the start route from `api.control` in
+`/status/config`, which lists the names of the owner routes it cannot assume;
+trying the route instead cannot tell an old node from an unknown hash, since
+both answer 404. The
 executions list carries
 no allocation block for it, since the supervisor already reports STOPPED and
 the agent has nothing to add. It does keep reporting a start it was asked to
