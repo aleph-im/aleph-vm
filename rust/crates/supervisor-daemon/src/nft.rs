@@ -1,5 +1,5 @@
 //! nftables rule engine, ported rule-for-rule from the Python firewall
-//! (src/aleph/vm/network/firewall.py).
+//! module.
 //!
 //! Two layers, so parity is testable without root:
 //!
@@ -243,9 +243,9 @@ pub fn initialize_ipv4_commands(ruleset: &[Value], prefix: &str) -> Result<Vec<V
             match nat_chains.last() {
                 Some(entry) => (*entry).clone(),
                 // Python raises a bare Exception here and its daemon dies
-                // at boot; the Rust boot logs and serves instead (ledger
-                // entry 22) while the RecreateNetwork RPC fails the same
-                // way as Python's.
+                // at boot; this daemon logs and serves instead, because one
+                // that must adopt live VMs cannot refuse service over a
+                // rebuildable ruleset. The RecreateNetwork RPC still fails.
                 None => return Err(NftError::NoNatPrerouting),
             }
         } else {

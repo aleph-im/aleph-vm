@@ -1,6 +1,9 @@
-# Pinned stable toolchain for the Rust supervisor workspace (design doc
-# 2026-07-04-rust-supervisor-daemon-design.md, section 9). rustup picks this
-# up automatically when cargo runs from inside rust/.
+# Pinned stable toolchain for the Rust supervisor workspace: the version CI
+# gates fmt and clippy with, so a local run and a CI run agree on what a
+# warning is. rustup picks this up automatically when cargo runs from inside
+# rust/. Nothing measured depends on it: the measured attest-agent build takes
+# its toolchain from the nix flake and this file is not even in that
+# derivation's source fileset.
 [toolchain]
 channel = "1.90"
 components = ["rustfmt", "clippy"]
