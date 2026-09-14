@@ -501,33 +501,6 @@ pub fn reconcile_numa_ledger(state: &DaemonState) {
     }
 }
 
-/// Python `_is_running` for one persistent execution: a batched-state
-/// lookup that degrades to "inactive" on a bus failure.
-fn unit_active(state: &DaemonState, unit: &str) -> bool {
-    match state
-        .units
-        .unit_states(std::slice::from_ref(&unit.to_string()))
-    {
-        Ok(states) => states
-            .get(unit)
-            .copied()
-            .is_some_and(UnitLiveness::is_active),
-        Err(error) => {
-            tracing::error!(%error, "Failed to get services active states");
-            false
-        }
-    }
-}
-
-/// Whether a batched-state map reports this unit up; down, mid-job and
-/// unanswered all read as not up.
-fn active_in_states(states: &std::collections::HashMap<String, UnitLiveness>, unit: &str) -> bool {
-    states
-        .get(unit)
-        .copied()
-        .is_some_and(UnitLiveness::is_active)
-}
-
 /// AlephQemuInstance.enable_networking: the spec asked for internet access
 /// (bool(interface_name) for adopted VMs) AND host networking is allowed.
 fn networking_enabled(state: &DaemonState, entry: &VmEntry) -> bool {
@@ -553,11 +526,7 @@ fn dhcp_lease_dir(state: &DaemonState) -> std::path::PathBuf {
 /// Python `_is_running`: systemd for persistent VMs, times for ephemeral
 /// programs (`starting_at and not stopping_at`).
 pub(crate) fn entry_running(state: &DaemonState, entry: &VmEntry) -> bool {
-    if entry.is_program {
-        entry.times.starting_at_ns != 0 && entry.times.stopping_at_ns == 0
-    } else {
-        unit_active(state, &entry.unit_name())
-    }
+    crate::service::liveness_of(entry, entry_liveness(state, entry)).0
 }
 
 /// The live state of one entry's controller unit, one batched lookup. A bus
@@ -567,14 +536,7 @@ fn entry_liveness(state: &DaemonState, entry: &VmEntry) -> UnitLiveness {
     if entry.is_program {
         return UnitLiveness::Unknown;
     }
-    let unit = entry.unit_name();
-    match state.units.unit_states(std::slice::from_ref(&unit)) {
-        Ok(states) => states.get(&unit).copied().unwrap_or(UnitLiveness::Unknown),
-        Err(error) => {
-            tracing::error!(%error, "Failed to get services active states");
-            UnitLiveness::Unknown
-        }
-    }
+    crate::units::query_unit(state.units.as_ref(), &entry.unit_name())
 }
 
 /// Python `_status_snapshot`: the wire status of an entry right now, with a
@@ -1221,7 +1183,7 @@ pub fn start_vm(state: &DaemonState, vm_id: &str) -> Result<(VmEntry, bool), Rpc
                 .to_string(),
         ));
     }
-    if unit_active(state, &entry.unit_name()) {
+    if entry_liveness(state, &entry).is_active() {
         // Python start_vm: the already-running short circuit emits nothing.
         // It leaves a stale `restarting` marker in place, which costs
         // nothing: the unit just tested active, so the status is RUNNING
@@ -3251,7 +3213,7 @@ fn create_vm_inner(
     }
 
     let entry = entry_snapshot(state, &vm_id).ok_or_else(|| RpcError::NotFound(vm_id.clone()))?;
-    let running = unit_active(state, &entry.unit_name());
+    let running = entry_liveness(state, &entry).is_active();
     Ok((entry, running))
 }
 
@@ -3585,7 +3547,11 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
     for entry in &mut entries {
         if entry.ipv4.is_some()
             || !networking_enabled(state, entry)
-            || !active_in_states(&states, &entry.unit_name())
+            || !states
+                .get(&entry.unit_name())
+                .copied()
+                .unwrap_or(UnitLiveness::Unknown)
+                .is_active()
         {
             continue;
         }
@@ -3606,12 +3572,11 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
     let running: Vec<&VmEntry> = entries
         .iter()
         .filter(|entry| {
-            let running = if entry.is_program {
-                // Ephemeral programs have no unit; liveness is times-based.
-                entry.times.starting_at_ns != 0 && entry.times.stopping_at_ns == 0
-            } else {
-                active_in_states(&states, &entry.unit_name())
-            };
+            let observed = states
+                .get(&entry.unit_name())
+                .copied()
+                .unwrap_or(UnitLiveness::Unknown);
+            let (running, _) = crate::service::liveness_of(entry, observed);
             running && entry.ipv4.is_some() && networking_enabled(state, entry)
         })
         .collect();
@@ -5124,7 +5089,7 @@ mod tests {
             .set_state(&controller_unit_name(&vm_id), "failed");
         with_entry_mut(state, &vm_id, |entry| entry.adopted_failed = true)
             .expect("the VM is in the world");
-        forget_the_cc_sweep(state);
+        forget_the_cc_answers(state);
         crate::service::refresh_cc_modes(state);
         let entry = entry_snapshot(state, &vm_id).expect("the VM is in the world");
         assert_eq!(status_snapshot(state, &entry), pb::VmStatus::Failed);
@@ -5139,7 +5104,7 @@ mod tests {
         let entry = entry_snapshot(state, &vm_id).expect("the VM is in the world");
         assert!(!entry.adopted_failed, "the start answered the death");
         // Forget the start's own reading, so only the seed can answer.
-        forget_the_cc_sweep(state);
+        forget_the_cc_answers(state);
         crate::service::refresh_cc_modes(state);
         assert_eq!(
             crate::service::cc_mode_of(state, "06:00.0"),
@@ -5155,11 +5120,9 @@ mod tests {
         assert!(!entry.adopted_failed, "the reboot answered the death too");
     }
 
-    /// Drop every cached CC answer and the record of the last sweep, so the
-    /// next refresh walks the cards with nothing remembered.
-    fn forget_the_cc_sweep(state: &DaemonState) {
+    /// Drop every cached CC answer so the next refresh reads the cards.
+    fn forget_the_cc_answers(state: &DaemonState) {
         state.gpu_cc_modes.lock().unwrap().clear();
-        state.gpu_cc_sweep.lock().unwrap().at = None;
     }
 
     #[test]

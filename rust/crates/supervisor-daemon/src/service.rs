@@ -381,21 +381,13 @@ impl SupervisorService {
     /// entry 13), but never death, which needs an answering bus.
     async fn unit_liveness(&self, unit: String) -> Result<UnitLiveness, Status> {
         let units = self.state.units.clone();
-        tokio::task::spawn_blocking(
-            move || match units.unit_states(std::slice::from_ref(&unit)) {
-                Ok(states) => states.get(&unit).copied().unwrap_or(UnitLiveness::Unknown),
-                Err(error) => {
-                    tracing::error!(%error, "Failed to get services active states");
-                    UnitLiveness::Unknown
-                }
-            },
-        )
-        .await
-        .map_err(|error| {
-            internal_status(DaemonError::Internal(format!(
-                "the unit-state task failed: {error}"
-            )))
-        })
+        tokio::task::spawn_blocking(move || crate::units::query_unit(units.as_ref(), &unit))
+            .await
+            .map_err(|error| {
+                internal_status(DaemonError::Internal(format!(
+                    "the unit-state task failed: {error}"
+                )))
+            })
     }
 
     /// Live states for every entry, one batched query (the Python
