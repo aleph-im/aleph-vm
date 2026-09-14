@@ -5112,6 +5112,62 @@ mod tests {
     }
 
     #[test]
+    fn bringing_a_vm_adopted_from_a_failed_unit_back_clears_the_death_mark() {
+        // The mark suppresses the CC seed while the guest is gone, so a start
+        // or a reboot that leaves it set would keep the card unvouched for
+        // the rest of a live VM's life.
+        let harness = harness_with_gpu_probe(vec![nvidia_card("06:00.0")], switchable_probe);
+        let state = &harness.state;
+        let vm_id = hash('c');
+        PROBED_CC_MODE.with(|mode| mode.set(Some(crate::gpu_cc::CcMode::On)));
+        snp_vm_holding_a_card(state, &vm_id, "06:00.0");
+
+        // The shape a restart adopts: the unit failed, the start stamp stands
+        // with no stop, and a fresh daemon holds no reading of the card.
+        harness
+            .systemd
+            .set_state(&controller_unit_name(&vm_id), "failed");
+        with_entry_mut(state, &vm_id, |entry| entry.adopted_failed = true)
+            .expect("the VM is in the world");
+        forget_the_cc_sweep(state);
+        crate::service::refresh_cc_modes(state);
+        let entry = entry_snapshot(state, &vm_id).expect("the VM is in the world");
+        assert_eq!(status_snapshot(state, &entry), pb::VmStatus::Failed);
+        assert_eq!(
+            crate::service::cc_mode_of(state, "06:00.0"),
+            None,
+            "a dead confidential guest vouches for no card"
+        );
+
+        start_vm(state, &vm_id).unwrap();
+
+        let entry = entry_snapshot(state, &vm_id).expect("the VM is in the world");
+        assert!(!entry.adopted_failed, "the start answered the death");
+        // Forget the start's own reading, so only the seed can answer.
+        forget_the_cc_sweep(state);
+        crate::service::refresh_cc_modes(state);
+        assert_eq!(
+            crate::service::cc_mode_of(state, "06:00.0"),
+            Some(crate::gpu_cc::CcMode::On),
+            "the guest is back and vouches for its card again"
+        );
+
+        // A reboot answers a death the same way a start does.
+        with_entry_mut(state, &vm_id, |entry| entry.adopted_failed = true)
+            .expect("the VM is in the world");
+        reboot_vm(state, &vm_id).unwrap();
+        let entry = entry_snapshot(state, &vm_id).expect("the VM is in the world");
+        assert!(!entry.adopted_failed, "the reboot answered the death too");
+    }
+
+    /// Drop every cached CC answer and the record of the last sweep, so the
+    /// next refresh walks the cards with nothing remembered.
+    fn forget_the_cc_sweep(state: &DaemonState) {
+        state.gpu_cc_modes.lock().unwrap().clear();
+        state.gpu_cc_sweep.lock().unwrap().at = None;
+    }
+
+    #[test]
     fn starting_a_plain_vm_holding_a_card_reads_nothing() {
         // The CC gate is an SNP rule on both paths: a plain passthrough VM went
         // through no create gate, so its start must read no card and must not
