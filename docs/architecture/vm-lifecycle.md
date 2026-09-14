@@ -261,7 +261,15 @@ is a decision somebody made: the owner's through
 therefore treats STOPPED and STOPPING as terminal, full stop. A stop event
 does not wake it, its backstop pass leaves the VM alone, and a plan naming
 the VM does not restart it either: the owner stopped it, and the owner is who
-starts it again, through the same operator API. The executions list carries
+starts it again, through `/control/machine/{ref}/start`. That route is
+authenticated and answered exactly like stop (owner or delegate, 404 for a
+hash this node holds no record for, no payment check), resumes a STOPPED VM
+in place and rebuilds a FAILED one through the same serialised start path the
+loop uses, and answers a VM that is already running with a 200 saying so
+rather than restarting it. `/control/machine/{ref}/reboot` is for a running
+VM only: on one that is not running it answers 409 and names the start route,
+where it used to answer 200 claiming a start it never performed. The
+executions list carries
 no allocation block for it, since the supervisor already reports STOPPED and
 the agent has nothing to add. It does keep reporting a start it was asked to
 make and could not: a VM left stopped because its create failed still carries
