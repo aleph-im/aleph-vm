@@ -328,32 +328,17 @@ mod tests {
         // impostor: the byte-level pin must reject it before any signature
         // logic runs.
         use openssl::asn1::Asn1Time;
-        use openssl::hash::MessageDigest;
-        use openssl::pkey::PKey;
-        use openssl::x509::X509Builder;
-        use openssl::x509::X509NameBuilder;
 
         let quote = parse_tdx_quote(QUOTE_V4).expect("quote parses");
         let collateral = TdxCollateral::from_json(COLLATERAL_V4).expect("collateral parses");
 
-        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
-        let key = PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap();
-        let mut name = X509NameBuilder::new().unwrap();
-        name.append_entry_by_text("CN", "Intel SGX Root CA")
-            .unwrap();
-        let name = name.build();
-        let mut builder = X509Builder::new().unwrap();
-        builder.set_subject_name(&name).unwrap();
-        builder.set_issuer_name(&name).unwrap();
-        builder.set_pubkey(&key).unwrap();
-        builder
-            .set_not_before(&Asn1Time::days_from_now(0).unwrap())
-            .unwrap();
-        builder
-            .set_not_after(&Asn1Time::days_from_now(365).unwrap())
-            .unwrap();
-        builder.sign(&key, MessageDigest::sha256()).unwrap();
-        let impostor = builder.build();
+        let impostor = crate::pki::test_cert(
+            &["Intel SGX Root CA"],
+            &crate::pki::test_p256_key(),
+            None,
+            &Asn1Time::days_from_now(0).unwrap(),
+            &Asn1Time::days_from_now(365).unwrap(),
+        );
 
         let chain = X509::stack_from_pem(&quote.signature.pck_chain_pem).unwrap();
         let mut pem = Vec::new();

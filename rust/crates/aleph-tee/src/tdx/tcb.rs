@@ -916,47 +916,24 @@ mod tests {
         // A TCB Info signed by a chain with the same subject names but fresh
         // keys: the chain carries its own root, so only the root pin refuses it.
         use openssl::asn1::Asn1Time;
-        use openssl::ec::{EcGroup, EcKey};
-        use openssl::nid::Nid;
-        use openssl::pkey::PKey;
-        use openssl::x509::{X509Builder, X509NameBuilder};
 
-        fn name(cn: &str) -> openssl::x509::X509Name {
-            let mut b = X509NameBuilder::new().unwrap();
-            b.append_entry_by_text("CN", cn).unwrap();
-            b.build()
-        }
-        fn cert(
-            subject: &str,
-            issuer: &str,
-            key: &PKey<openssl::pkey::Private>,
-            signer: &PKey<openssl::pkey::Private>,
-        ) -> X509 {
-            let mut b = X509Builder::new().unwrap();
-            b.set_subject_name(&name(subject)).unwrap();
-            b.set_issuer_name(&name(issuer)).unwrap();
-            b.set_pubkey(key).unwrap();
-            b.set_not_before(&Asn1Time::from_unix(1_700_000_000).unwrap())
-                .unwrap();
-            b.set_not_after(&Asn1Time::from_unix(1_900_000_000).unwrap())
-                .unwrap();
-            b.sign(signer, MessageDigest::sha256()).unwrap();
-            b.build()
-        }
-        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
-        let root_key = PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap();
-        let signer_key = PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap();
-        let impostor_root = cert(
-            "Intel SGX Root CA",
-            "Intel SGX Root CA",
+        let not_before = Asn1Time::from_unix(1_700_000_000).unwrap();
+        let not_after = Asn1Time::from_unix(1_900_000_000).unwrap();
+        let root_key = crate::pki::test_p256_key();
+        let signer_key = crate::pki::test_p256_key();
+        let impostor_root = crate::pki::test_cert(
+            &["Intel SGX Root CA"],
             &root_key,
-            &root_key,
+            None,
+            &not_before,
+            &not_after,
         );
-        let impostor_signer = cert(
-            "Intel SGX TCB Signing",
-            "Intel SGX Root CA",
+        let impostor_signer = crate::pki::test_cert(
+            &["Intel SGX TCB Signing"],
             &signer_key,
-            &root_key,
+            Some(("Intel SGX Root CA", &root_key)),
+            &not_before,
+            &not_after,
         );
         let mut pem = String::from_utf8(impostor_signer.to_pem().unwrap()).unwrap();
         pem.push_str(&String::from_utf8(impostor_root.to_pem().unwrap()).unwrap());

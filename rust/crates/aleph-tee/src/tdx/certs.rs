@@ -341,32 +341,15 @@ mod tests {
     #[test]
     fn signer_common_name_must_match_exactly_and_stand_alone() {
         use openssl::asn1::Asn1Time;
-        use openssl::ec::{EcGroup, EcKey};
-        use openssl::hash::MessageDigest;
-        use openssl::pkey::PKey;
-        use openssl::x509::{X509Builder, X509NameBuilder};
 
         fn cert_with_common_names(names: &[&str]) -> X509 {
-            let group =
-                EcGroup::from_curve_name(openssl::nid::Nid::X9_62_PRIME256V1).expect("group");
-            let key = PKey::from_ec_key(EcKey::generate(&group).expect("key")).expect("pkey");
-            let mut subject = X509NameBuilder::new().expect("name builder");
-            for name in names {
-                subject.append_entry_by_text("CN", name).expect("append CN");
-            }
-            let subject = subject.build();
-            let mut builder = X509Builder::new().expect("cert builder");
-            builder.set_subject_name(&subject).expect("subject");
-            builder.set_issuer_name(&subject).expect("issuer");
-            builder.set_pubkey(&key).expect("pubkey");
-            builder
-                .set_not_before(&Asn1Time::from_unix(1_700_000_000).expect("not before"))
-                .expect("set not before");
-            builder
-                .set_not_after(&Asn1Time::from_unix(1_900_000_000).expect("not after"))
-                .expect("set not after");
-            builder.sign(&key, MessageDigest::sha256()).expect("sign");
-            builder.build()
+            crate::pki::test_cert(
+                names,
+                &crate::pki::test_p256_key(),
+                None,
+                &Asn1Time::from_unix(1_700_000_000).expect("not before"),
+                &Asn1Time::from_unix(1_900_000_000).expect("not after"),
+            )
         }
 
         let exact = cert_with_common_names(&[TCB_SIGNING_CN]);
