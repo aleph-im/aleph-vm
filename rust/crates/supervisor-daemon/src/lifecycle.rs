@@ -581,12 +581,7 @@ fn entry_liveness(state: &DaemonState, entry: &VmEntry) -> UnitLiveness {
 /// live unit query for the running flag. Every mutation snapshots it before
 /// acting so the emitted event carries the pre-mutation status.
 fn status_snapshot(state: &DaemonState, entry: &VmEntry) -> pb::VmStatus {
-    let unit = entry_liveness(state, entry);
-    let running = if entry.is_program {
-        entry.times.starting_at_ns != 0 && entry.times.stopping_at_ns == 0
-    } else {
-        unit.is_active()
-    };
+    let (running, unit) = crate::service::liveness_of(entry, entry_liveness(state, entry));
     crate::service::vm_status(
         &entry.times,
         running,

@@ -586,6 +586,19 @@ pub(crate) fn awaiting_confidential_init(entry: &VmEntry, running: bool) -> bool
         && !entry.adopted_failed
 }
 
+/// Python `_is_running` as a pair: an ephemeral program goes by its times and
+/// has no unit to judge, a persistent VM by the unit state the caller observed.
+pub(crate) fn liveness_of(entry: &VmEntry, observed: UnitLiveness) -> (bool, UnitLiveness) {
+    if entry.is_program {
+        (
+            entry.times.starting_at_ns != 0 && entry.times.stopping_at_ns == 0,
+            UnitLiveness::Unknown,
+        )
+    } else {
+        (observed.is_active(), observed)
+    }
+}
+
 /// What an observed unit state says about `entry`'s guest. Three kinds of VM
 /// have a down unit for a reason of their own and report `Unknown` instead:
 /// a program runs under no unit, a SEV or SEV-ES controller is held down
@@ -1013,17 +1026,13 @@ impl Supervisor for SupervisorService {
                 None => return Err(vm_not_found_status(&vm_id)),
             }
         };
-        // Python _is_running: systemd for persistent VMs, times for
-        // ephemeral programs.
-        let (running, unit) = if entry.is_program {
-            (
-                entry.times.starting_at_ns != 0 && entry.times.stopping_at_ns == 0,
-                UnitLiveness::Unknown,
-            )
+        // An ephemeral program has no unit to ask about.
+        let observed = if entry.is_program {
+            UnitLiveness::Unknown
         } else {
-            let unit = self.unit_liveness(entry.unit_name()).await?;
-            (unit.is_active(), unit)
+            self.unit_liveness(entry.unit_name()).await?
         };
+        let (running, unit) = liveness_of(&entry, observed);
         // The snapshot above may predate a transition the unit answer
         // already reflects, so a computed death is re-read before it stands.
         let info = self
@@ -1067,18 +1076,11 @@ impl Supervisor for SupervisorService {
         let now = now_ns();
         let mut vms: Vec<pb::VmInfo> = Vec::with_capacity(entries.len());
         for entry in &entries {
-            let (running, unit) = if entry.is_program {
-                (
-                    entry.times.starting_at_ns != 0 && entry.times.stopping_at_ns == 0,
-                    UnitLiveness::Unknown,
-                )
-            } else {
-                let unit = states
-                    .get(&entry.unit_name())
-                    .copied()
-                    .unwrap_or(UnitLiveness::Unknown);
-                (unit.is_active(), unit)
-            };
+            let observed = states
+                .get(&entry.unit_name())
+                .copied()
+                .unwrap_or(UnitLiveness::Unknown);
+            let (running, unit) = liveness_of(entry, observed);
             // A computed death is re-read before it stands (see get_vm); a
             // VM deleted meanwhile is left out of the listing.
             if let Some(info) = self.observed_vm_info(entry, running, unit, now).await {
