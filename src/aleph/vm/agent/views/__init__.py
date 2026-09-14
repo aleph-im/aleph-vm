@@ -22,9 +22,9 @@ from pydantic import ValidationError
 from aleph.vm import haproxy
 from aleph.vm.agent import payment, status
 from aleph.vm.agent.aggregate import update_aggregate_settings
-from aleph.vm.agent.allocation.failures import public_failure_message
 from aleph.vm.agent.allocation.plan import AllocationState, FailureRecord
 from aleph.vm.agent.allocation.reconciler import AllocationReconciler
+from aleph.vm.agent.allocation.refusal import Refusal
 from aleph.vm.agent.allocation.teardown import is_removable_by_allocation, teardown_vm
 from aleph.vm.agent.capacity import CapacityManager, requested_gpu_ids
 from aleph.vm.agent.custom_logs import set_vm_for_logging
@@ -212,8 +212,19 @@ def _datetime_from_ns(ns: int) -> datetime | None:
 _TIMES_KEYS = ("defined_at", "preparing_at", "prepared_at", "starting_at", "started_at", "stopping_at", "stopped_at")
 
 
-def _times_dict(info: VmInfo) -> dict[str, datetime | None]:
-    """The VmExecutionTimes-shaped dict the v2 endpoint has always served."""
+def _times_dict(info: VmInfo | None) -> dict[str, datetime | None]:
+    """The VmExecutionTimes-shaped dict the v2 endpoint has always served.
+
+    ``None`` for a VM the plan lists that the supervisor has never heard of:
+    the same keys, all empty, so a consumer reads one shape whether or not the
+    VM exists yet. The empty one used to be built at the call site, where a key
+    added here would not have reached it.
+    """
+    if info is None:
+        # Kept next to the mapping below, not next to its one caller: the two
+        # key lists have to say the same thing, and they can only be read
+        # against each other if they sit together.
+        return dict.fromkeys(_TIMES_KEYS)
     return {
         "defined_at": _datetime_from_ns(info.defined_at_ns),
         "preparing_at": _datetime_from_ns(info.preparing_at_ns),
@@ -305,7 +316,7 @@ def _allocation_block(state: AllocationState | None, failure: FailureRecord | No
     return {
         "state": state.value,
         "attempts": failure.attempts if failure else 0,
-        "error": ({"code": failure.code.value, "message": public_failure_message(failure.code)} if failure else None),
+        "error": Refusal.for_code(failure.code).as_dict() if failure else None,
         "next_retry_at": failure.next_retry_at if failure else None,
     }
 
@@ -373,7 +384,7 @@ async def list_executions_v2(request: web.Request) -> web.Response:
         record = registry.get(vm_hash)
         entries[str(vm_hash)] = {
             "networking": {},
-            "status": dict.fromkeys(_TIMES_KEYS),
+            "status": _times_dict(None),
             "state": None,
             "running": False,
             "awaiting_confidential_init": False,
@@ -598,6 +609,12 @@ async def update_allocations(request: web.Request):
     See :mod:`aleph.vm.agent.views.allocation_auth` for the verifier.
     Receive a list of vm and instance that should be present and then match
     that state by stopping and launching VMs.
+
+    Stopping here means RUNNING only: a VM this body leaves out that the
+    supervisor holds STOPPED or FAILED is left alone, where a plan's
+    convergence pass tears down all three (see TEARDOWN_STATUSES). The two
+    sweeps are not interchangeable, which is one more reason a node runs
+    under one of them and not both.
 
     One mode per node: a node is driven by this route or by allocation plans,
     never by both. A plan is total, so the reconciler deletes every VM the plan

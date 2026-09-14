@@ -32,10 +32,7 @@ from datetime import datetime, timedelta, timezone
 from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash
 
-from aleph.vm.agent.allocation.failures import (
-    AllocationFailureCode,
-    classify_start_failure,
-)
+from aleph.vm.agent.allocation.failures import classify_start_failure
 from aleph.vm.agent.allocation.plan import (
     LIVE_STATUSES,
     STOPPED_STATUSES,
@@ -44,6 +41,7 @@ from aleph.vm.agent.allocation.plan import (
     FailureRecord,
     by_hash,
 )
+from aleph.vm.agent.allocation.refusal import AllocationFailureCode
 from aleph.vm.agent.allocation.teardown import is_removable_by_allocation, teardown_vm
 from aleph.vm.agent.capacity import CapacityManager
 from aleph.vm.agent.expiry import ExpiryManager
@@ -64,7 +62,9 @@ logger = logging.getLogger(__name__)
 #
 # Wider than the removing list compute_verdict answers with, which is RUNNING
 # only: the answer names what this push stops that was up, while a pass sweeps
-# what the plan dropped whatever state it is in. Capacity stays conservative
+# in any of these states. What a pass sweeps is what the push never named at
+# all, not what the plan does not list: a hash the answer refused is named,
+# and refusing a VM is not deleting it. Capacity stays conservative
 # under the difference, because a commitment is held by the registry record
 # rather than by the status, so a stopped VM left out of releasing has its
 # memory counted against the push that is about to free it.
@@ -409,7 +409,15 @@ class AllocationReconciler:
         # endpoint answers anyone, and a create failure quotes the paths, the
         # URLs and the host figures it was working with.
         logger.warning(
-            "Starting %s failed (attempt %d, published as %s): %s", vm_hash, record.attempts, code.value, error
+            "Starting %s failed (attempt %d, published as %s): %s",
+            vm_hash,
+            record.attempts,
+            code.value,
+            error,
+            # The traceback is the whole value of this line for the code that
+            # says nothing (internal), and the published record carries no
+            # text at all, so the log is the only place it can be read.
+            exc_info=True,
         )
         self._states[vm_hash] = AllocationState.FAILED
 
@@ -430,7 +438,6 @@ class AllocationReconciler:
         record = FailureRecord(
             code=code,
             attempts=attempts,
-            first_failed_at=previous.first_failed_at if previous else now,
             last_failed_at=now,
             next_retry_at=now + timedelta(seconds=delay),
         )

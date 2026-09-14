@@ -13,7 +13,7 @@ from enum import Enum
 from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash
 
-from aleph.vm.agent.allocation.failures import AllocationFailureCode
+from aleph.vm.agent.allocation.refusal import AllocationFailureCode, Refusals
 from aleph.vm.agent.allocation.verify import VerifiedMessage
 from aleph.vm.supervisor_interface.types import VmInfo, VmStatus
 
@@ -85,11 +85,16 @@ class FailureRecord:
     verbatim by an unauthenticated endpoint, so what it can hold is a code out
     of a closed set (each with its own published sentence) and nothing an
     exception wrote. The detail lives in the log.
+
+    ``last_failed_at`` is when the latest attempt was charged, which is what
+    decides whether a VM that is up again has been up long enough to forget
+    the record. There is no field for the first one: nothing published it or
+    read it, and how long a VM has been in trouble is a question the log
+    answers.
     """
 
     code: AllocationFailureCode
     attempts: int
-    first_failed_at: datetime
     last_failed_at: datetime
     next_retry_at: datetime
 
@@ -141,5 +146,5 @@ class PlanVerdict:
     pending: list[ItemHash] = field(default_factory=list)
     unchanged: list[ItemHash] = field(default_factory=list)
     removing: list[ItemHash] = field(default_factory=list)
-    rejected: dict[str, dict] = field(default_factory=dict)
+    rejected: Refusals = field(default_factory=dict)
     retained: dict[ItemHash, str] = field(default_factory=dict)

@@ -815,7 +815,6 @@ async def operate_reinstall(request: web.Request, authenticated_sender: str) -> 
                     supervisor=supervisor,
                     registry=request.app["vm_registry"],
                     capacity=request.app["capacity"],
-                    persistent=record.persistent,
                 )
         except VmNotFoundError:
             raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
