@@ -357,42 +357,20 @@ impl SupervisorService {
         })
     }
 
-    /// The VmInfo a mutation RPC answers with. The mutation settled the
-    /// unit itself (started it and waited for it to be ready, stopped it,
-    /// or deliberately left it down until the owner uploads the session
-    /// certificates), so it hands the mapping no unit observation: a fresh
-    /// query would only repeat what the path already knows, and spontaneous
-    /// death is what the read paths (GetVm, ListVms) are there to notice.
+    /// The VmInfo a mutation RPC answers with. The mutation settled the unit
+    /// itself, so it passes no unit observation: spotting a spontaneous death
+    /// is the read paths' job.
     fn mutated_vm_info(&self, entry: &VmEntry, running: bool) -> pb::VmInfo {
         vm_info_message(&self.state, entry, running, UnitLiveness::Unknown, now_ns())
     }
 
-    /// The VmInfo a read path reports for one entry, with the dead-unit arm
-    /// confirmed against the world before anyone believes it.
+    /// The VmInfo a read path reports for one entry, re-reading the entry
+    /// before a computed death stands.
     ///
-    /// A read clones the entry and releases the world lock before it asks
-    /// systemd, so the clone can predate a stop, a reboot or a start whose
-    /// unit job the answer already reflects. Such a clone carries a start
-    /// stamped, no stop and no restarting marker, which is the dead-unit
-    /// arm's exact shape, and believing it announces a death against a VM
-    /// that is doing what it was asked. The gap is one D-Bus round trip at
-    /// rest, but a blocking pool queued behind lifecycle work stretches it
-    /// well past the point where a mutation marks its window.
-    ///
-    /// Every mutation sets its marker or its stamps under the world write
-    /// lock before it touches systemd, so an entry re-read after the unit
-    /// was observed dead necessarily sees the window. Recomputing from a
-    /// fresh entry therefore tells a guest that died from a transition under
-    /// way, and it costs one uncontended read lock on the only arm that
-    /// announces anything. The unit observation is carried over untouched:
-    /// what went stale is the entry, not what systemd said. `running` comes
-    /// from that same observation for every VM the arm can fire on (a
-    /// program's comes from its times, and a program is never judged dead).
-    ///
-    /// `None` means the VM left the world while the query was in flight, a
-    /// delete. That is not a death and there is no status left to report, so
-    /// GetVm answers NOT_FOUND, as it would have a moment later, and ListVms
-    /// leaves the VM out of the listing.
+    /// No world lock is held across the unit query, so the clone can predate
+    /// a mutation the unit answer already reflects; every mutation marks its
+    /// window under the write lock first, so the fresh entry settles it.
+    /// `None` is a VM deleted meanwhile, which is not a death.
     async fn observed_vm_info(
         &self,
         entry: &VmEntry,
@@ -412,10 +390,8 @@ impl SupervisorService {
 
     /// Live state of one entry's controller unit, off the runtime threads
     /// (the Python `_is_running` D-Bus query equivalent). A bus failure
-    /// degrades to `Unknown`: it stays "not running" like the Python
-    /// `get_services_active_states` parity behavior, and
-    /// it must never read as death, which is a claim only an answering bus
-    /// can support.
+    /// degrades to `Unknown`: still "not running" for Python parity (ledger
+    /// entry 13), but never death, which needs an answering bus.
     async fn unit_liveness(&self, unit: String) -> Result<UnitLiveness, Status> {
         let units = self.state.units.clone();
         tokio::task::spawn_blocking(
@@ -600,18 +576,10 @@ fn refresh_cc_modes_with(
 // ── World view to wire mapping ──────────────────────────────────────────
 
 /// `_status_of`: the times short-circuit the live flag, plus the FAILED arm
-/// the Python daemon never had.
-///
-/// `unit` is what systemd last said about the VM's controller, and it is
-/// only ever [`UnitLiveness::Dead`] when the daemon positively observed the
-/// unit down; every caller that cannot judge (an ephemeral program runs no
-/// unit, a confidential VM waits for its owner's session before one is
-/// started, the bus did not answer) passes `Unknown`. A VM the daemon has
-/// seen alive (`started_at_ns` is stamped once the controller is confirmed
-/// ready, and at adoption for a VM already running) whose unit is now down
-/// without anyone stopping it is a guest that died on its own: reporting it
-/// BOOTING for ever, as the port did, leaves the agent's reconciler holding
-/// it live and never rebuilding it.
+/// the Python daemon never had. `unit` must be [`UnitLiveness::Dead`] only
+/// where the daemon positively observed the unit down: under a VM it has seen
+/// alive, with no stop stamped, that is a guest that died on its own, and
+/// callers that cannot judge pass `Unknown`.
 pub(crate) fn vm_status(times: &VmTimes, running: bool, unit: UnitLiveness) -> pb::VmStatus {
     if times.stopped_at_ns != 0 {
         pb::VmStatus::Stopped
@@ -628,10 +596,9 @@ pub(crate) fn vm_status(times: &VmTimes, running: bool, unit: UnitLiveness) -> p
     }
 }
 
-/// `is_awaiting_confidential_init`, ported literally: confidential (SEV /
-/// SEV-ES only, via the session/godh slot), persistent (every adopted VM
-/// is), started but neither stopping nor observed running. SNP has no
-/// session handshake, so it is never awaiting: it starts at create.
+/// `is_awaiting_confidential_init`, ported literally: confidential (SEV and
+/// SEV-ES only, via the session/godh slot), started but neither stopping nor
+/// observed running. SNP has no session handshake and starts at create.
 pub(crate) fn awaiting_confidential_init(entry: &VmEntry, running: bool) -> bool {
     entry.config.confidential().is_some()
         && entry.times.started_at_ns != 0
@@ -639,21 +606,10 @@ pub(crate) fn awaiting_confidential_init(entry: &VmEntry, running: bool) -> bool
         && !running
 }
 
-/// What an observed unit state says about `entry`'s guest.
-///
-/// Three kinds of VM have a down unit for a reason of their own, and reading
-/// death into it would condemn a healthy VM. An ephemeral program runs under
-/// no controller unit at all. A SEV / SEV-ES VM's controller is deliberately
-/// held down until its owner uploads the session certificates. And a VM in
-/// the middle of a reboot has a restart job in flight, which takes the unit
-/// down and back up with nothing stamped in between. All three report
-/// `Unknown`, which leaves the status exactly where it was before the dead
-/// unit arm existed.
-///
-/// The session blindness has a cost: a SEV / SEV-ES guest that dies after
-/// its session was uploaded is still not reported FAILED, because nothing
-/// distinguishes that from a VM that never got its session. SEV-SNP, which
-/// has no session and boots at create, is judged like any other VM.
+/// What an observed unit state says about `entry`'s guest. Three kinds of VM
+/// have a down unit for a reason of their own and report `Unknown` instead:
+/// a program runs under no unit, a SEV or SEV-ES controller is held down
+/// until the session certificates arrive, and a reboot has a job in flight.
 pub(crate) fn guest_liveness(entry: &VmEntry, unit: UnitLiveness) -> UnitLiveness {
     if entry.is_program || entry.restarting || awaiting_confidential_init(entry, unit.is_active()) {
         UnitLiveness::Unknown
@@ -1088,9 +1044,8 @@ impl Supervisor for SupervisorService {
             let unit = self.unit_liveness(entry.unit_name()).await?;
             (unit.is_active(), unit)
         };
-        // The snapshot above may predate a deliberate transition the unit
-        // answer already reflects, so a computed death is confirmed against
-        // a fresh entry before it is reported or announced.
+        // The snapshot above may predate a transition the unit answer
+        // already reflects, so a computed death is re-read before it stands.
         let info = self
             .observed_vm_info(&entry, running, unit, now_ns())
             .await
@@ -1144,10 +1099,8 @@ impl Supervisor for SupervisorService {
                     .unwrap_or(UnitLiveness::Unknown);
                 (unit.is_active(), unit)
             };
-            // A computed death is confirmed against a fresh entry (see
-            // get_vm): the snapshot above may predate a transition the unit
-            // answer already reflects. A VM deleted meanwhile is left out of
-            // the listing, which is what the next call would report anyway.
+            // A computed death is re-read before it stands (see get_vm); a
+            // VM deleted meanwhile is left out of the listing.
             if let Some(info) = self.observed_vm_info(entry, running, unit, now).await {
                 vms.push(info);
             }
@@ -2247,19 +2200,16 @@ mod tests {
         let info = vm_info_message(&empty_state(), &entry, true, UnitLiveness::Active, now_ns());
         assert_eq!(info.status, pb::VmStatus::Running as i32);
         assert_eq!(info.uptime_secs, 0, "no started_at was ever stamped");
-        // A dead unit under an entry the daemon never saw alive is not a
-        // death it can claim: the bus outage left started_at unstamped, so
-        // the status falls through to DEFINED rather than FAILED.
+        // The daemon never saw this VM alive (started_at unstamped), so a
+        // dead unit is not a death it can claim.
         let info = vm_info_message(&empty_state(), &entry, false, UnitLiveness::Dead, now_ns());
         assert_eq!(info.status, pb::VmStatus::Defined as i32);
     }
 
     #[test]
     fn a_running_adopted_vm_whose_unit_died_reports_failed() {
-        // The restore path sets neither starting_at nor stopped_at, so this
-        // entry used to fall through to DEFINED, which the agent's
-        // allocation reconciler counts as live: a guest whose QEMU exited on
-        // its own was never rebuilt. The unit state settles it instead.
+        // The restore path stamps neither starting_at nor stopped_at, so
+        // only the unit state can tell a dead guest from a DEFINED one.
         let entry = fixture_entry(test_fixtures::QEMU_HASH, true);
         let info = vm_info_message(&empty_state(), &entry, false, UnitLiveness::Dead, now_ns());
         assert_eq!(info.status, pb::VmStatus::Failed as i32);
@@ -2286,10 +2236,8 @@ mod tests {
 
     #[test]
     fn a_started_vm_whose_unit_died_reports_failed_instead_of_booting_for_ever() {
-        // The created-and-started shape: starting_at stamped, then
-        // started_at once the controller was confirmed ready. A unit that
-        // goes down afterwards without a StopVm is a guest that died, and
-        // reporting BOOTING for ever left the agent holding it live.
+        // The created-and-started shape: a unit that goes down afterwards
+        // with no StopVm is a dead guest, not a VM booting for ever.
         let mut entry = fixture_entry(test_fixtures::QEMU_HASH, true);
         entry.times.starting_at_ns = entry.times.prepared_at_ns;
         let info = vm_info_message(&empty_state(), &entry, false, UnitLiveness::Dead, now_ns());
@@ -2309,8 +2257,7 @@ mod tests {
     #[test]
     fn an_explicitly_stopped_vm_stays_stopped_under_a_dead_unit() {
         // The stop stamps come first: a VM the operator stopped has a dead
-        // unit by definition and must not be reported as a crash the agent
-        // rebuilds.
+        // unit by definition and is not a crash the agent should rebuild.
         let mut entry = fixture_entry(test_fixtures::QEMU_HASH, true);
         entry.times.stopping_at_ns = entry.times.started_at_ns + 1_000;
         let info = vm_info_message(&empty_state(), &entry, false, UnitLiveness::Dead, now_ns());
@@ -2322,9 +2269,8 @@ mod tests {
 
     #[test]
     fn a_confidential_vm_awaiting_its_session_is_never_reported_failed() {
-        // A SEV / SEV-ES controller is deliberately held down until the
-        // owner uploads the session certificates, so its unit is dead by
-        // design and says nothing about a guest.
+        // A SEV or SEV-ES controller is held down until the session
+        // certificates arrive, so its dead unit says nothing about a guest.
         let mut entry = fixture_entry(test_fixtures::CONFIDENTIAL_HASH, true);
         entry.times.starting_at_ns = entry.times.prepared_at_ns;
         let info = vm_info_message(&empty_state(), &entry, false, UnitLiveness::Dead, now_ns());
@@ -2334,8 +2280,8 @@ mod tests {
 
     #[test]
     fn an_ephemeral_program_ignores_the_unit_state() {
-        // A program runs under no controller unit; its times are the whole
-        // truth, and a stray unit lookup must not condemn it.
+        // A program runs under no controller unit, so a stray unit lookup
+        // must not condemn it.
         let mut entry = fixture_entry(test_fixtures::QEMU_HASH, true);
         entry.is_program = true;
         entry.times.starting_at_ns = entry.times.prepared_at_ns;
@@ -2787,10 +2733,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_list_that_finds_a_dead_unit_reports_failed_and_announces_it_once() {
-        // The whole point of the FAILED arm: the agent's allocation
-        // reconciler counts BOOTING and DEFINED as live, so a guest whose
-        // QEMU exited on its own used to sit in the supervisor's list for
-        // ever and never be rebuilt. ListVms is where the daemon notices.
+        // The agent's reconciler counts BOOTING and DEFINED as live, so a
+        // guest that exited on its own is never rebuilt unless a read says
+        // FAILED. ListVms is where the daemon notices.
         use crate::logs::StaticLogSource;
         use crate::units::FakeSystemd;
         let entry = fixture_entry(test_fixtures::QEMU_HASH, true);
@@ -2830,8 +2775,7 @@ mod tests {
         assert_eq!(event.old_status, pb::VmStatus::Running as i32);
         assert_eq!(event.new_status, pb::VmStatus::Failed as i32);
 
-        // A second list still reports FAILED, and says so without repeating
-        // the announcement: the agent polls this call.
+        // The agent polls this call, so a second list must not re-announce.
         let vms = list(&service).await;
         assert_eq!(vms[0].status, pb::VmStatus::Failed as i32);
         // GetVm agrees, and is not a second announcement either.
@@ -2843,8 +2787,7 @@ mod tests {
             .unwrap()
             .into_inner();
         assert_eq!(info.status, pb::VmStatus::Failed as i32);
-        // A sentinel proves the reads queued nothing behind the one death:
-        // the next event off the stream is this one, not a repeat.
+        // A sentinel proves nothing queued behind the one death.
         state
             .events
             .emit("sentinel", pb::VmStatus::Defined, pb::VmStatus::Running);
@@ -2853,9 +2796,7 @@ mod tests {
 
     /// A unit source that lets the world move between the moment a read
     /// clones an entry and the moment its unit query is answered. The read
-    /// paths hold no lock across that query, so nothing keeps a mutation out
-    /// of the gap on a real node: it is one D-Bus round trip at rest, and a
-    /// blocking pool queued behind lifecycle work stretches it.
+    /// paths hold no lock across that query, so a mutation can land there.
     struct RacingUnits {
         inner: Arc<crate::units::FakeSystemd>,
         race: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
@@ -2977,8 +2918,8 @@ mod tests {
             statuses
         }
 
-        /// Seed the hub with the VM alive, so a FAILED after it would be a
-        /// transition the hub announces, and leave the unit down.
+        /// Seed the hub with the VM alive, so a later FAILED is a transition
+        /// the hub announces, then take the unit down.
         async fn seed_alive_then_kill_the_unit(&mut self) {
             assert_eq!(
                 self.get().await.unwrap().status,
@@ -3000,12 +2941,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_get_whose_snapshot_predates_a_reboot_reports_booting() {
-        // The clone is taken before the reboot marks its window and the
-        // unit answer comes back after the restart job took the unit down,
-        // which is the dead-unit arm's exact shape on a stale entry. Read
-        // from the clone it says FAILED, and the hub announces a death that
-        // makes the agent retire and rebuild a VM that is rebooting as
-        // asked.
+        // The clone predates the reboot's marker while the unit answer
+        // postdates its restart job: read from the clone alone, that stale
+        // pair says FAILED for a VM rebooting as asked.
         let mut read = racing_read();
         read.seed_alive_then_kill_the_unit().await;
         let state = read.state.clone();
@@ -3026,10 +2964,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_list_whose_snapshot_predates_a_stop_reports_stopping() {
-        // The same race through ListVms, against the other window: the stop
-        // stamps stopping_at under the write lock before it issues the stop,
-        // so the re-read finds a VM on its way down rather than one that
-        // died.
+        // The same race through ListVms against the stop's window: the
+        // re-read finds a VM on its way down rather than one that died.
         let mut read = racing_read();
         read.seed_alive_then_kill_the_unit().await;
         let state = read.state.clone();
@@ -3052,9 +2988,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_read_that_races_nothing_still_reports_the_death_once() {
-        // The converse: the re-read must not blunt the arm. With no window
-        // opened while the query is in flight, the fresh entry is the stale
-        // one and the guest really did exit on its own.
+        // The converse: with no window opened during the query, the fresh
+        // entry is the stale one and the re-read must not blunt the arm.
         let mut read = racing_read();
         read.seed_alive_then_kill_the_unit().await;
 
@@ -3070,10 +3005,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_read_that_races_a_delete_reports_no_vm_and_no_death() {
-        // A VM deleted while the query was in flight has no status left to
-        // report and did not die: GetVm answers NOT_FOUND, as it would have
-        // a moment later, and nothing is announced against a hash whose
-        // entry is gone.
+        // A VM deleted while the query was in flight did not die and has no
+        // status left to report.
         let mut read = racing_read();
         read.seed_alive_then_kill_the_unit().await;
         let state = read.state.clone();
