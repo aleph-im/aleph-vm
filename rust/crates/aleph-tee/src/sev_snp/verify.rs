@@ -6,7 +6,9 @@ use openssl::x509::X509;
 use serde_json::json;
 use sev::certs::snp::builtin;
 
-use crate::pki::{asn1_now, check_cert_window, check_pinned_root_key, ecdsa_from_components};
+use crate::pki::{
+    asn1_now, check_cert_window, check_pinned_root_key, check_signed_by, ecdsa_from_components,
+};
 use crate::types::{AttestationReport, SevSnpRegisters, TeeType, VerificationResult};
 
 use super::certs::{CertChain, TcbParams, fetch_ca_chain, fetch_vcek};
@@ -217,39 +219,14 @@ pub(crate) fn verify_cert_chain_at(
     // its own: the pinning below is what actually ties the chain to AMD.
     verify_ark_identity(&ark).context("ARK identity verification failed")?;
 
-    // Verify ARK is self-signed
-    let ark_pubkey = ark
-        .public_key()
-        .context("failed to extract ARK public key")?;
-    if !ark
-        .verify(&ark_pubkey)
-        .context("failed to verify ARK self-signature")?
-    {
-        bail!("ARK certificate is not validly self-signed");
-    }
+    check_signed_by("ARK certificate", &ark, "its own key", &ark)?;
 
     // SECURITY-CRITICAL: pin the chain's ARK to AMD's genuine root.
     verify_ark_matches_pinned_root(&ark, pinned_ark_der)
         .context("ARK does not match the pinned AMD root")?;
 
-    // Verify ASK is signed by ARK
-    if !ask
-        .verify(&ark_pubkey)
-        .context("failed to verify ASK signature")?
-    {
-        bail!("ASK certificate is not signed by ARK");
-    }
-
-    // Verify VCEK is signed by ASK
-    let ask_pubkey = ask
-        .public_key()
-        .context("failed to extract ASK public key")?;
-    if !vcek
-        .verify(&ask_pubkey)
-        .context("failed to verify VCEK signature")?
-    {
-        bail!("VCEK certificate is not signed by ASK");
-    }
+    check_signed_by("ASK certificate", &ask, "ARK", &ark)?;
+    check_signed_by("VCEK certificate", &vcek, "ASK", &ask)?;
 
     // Reject expired or not-yet-valid certificates.
     let now = asn1_now(now)?;
@@ -780,8 +757,8 @@ mod tests {
 
         let err = verify_cert_chain(&chain, &pinned).unwrap_err().to_string();
         assert!(
-            err.contains("self-signed"),
-            "expected self-signed failure, got: {err}"
+            err.contains("ARK certificate is not signed by its own key"),
+            "expected self-signature failure, got: {err}"
         );
     }
 

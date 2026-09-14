@@ -7,7 +7,10 @@ use anyhow::{Context, Result, bail};
 use openssl::asn1::Asn1TimeRef;
 use openssl::x509::{CrlStatus, X509, X509Crl};
 
-use crate::pki::{asn1_now, check_cert_window, check_pinned_root, check_validity_window};
+use crate::pki::{
+    asn1_now, check_cert_window, check_crl_signed_by, check_pinned_root, check_signed_by,
+    check_validity_window,
+};
 
 use super::collateral::TdxCollateral;
 
@@ -49,15 +52,7 @@ fn check_crl(
 ) -> Result<()> {
     let crl = X509Crl::from_der(crl_der).with_context(|| format!("failed to parse {what}"))?;
 
-    let issuer_key = issuer
-        .public_key()
-        .with_context(|| format!("failed to extract the {what} issuer public key"))?;
-    if !crl
-        .verify(&issuer_key)
-        .with_context(|| format!("failed to check the {what} signature"))?
-    {
-        bail!("{what} signature does not verify under its issuer");
-    }
+    check_crl_signed_by(what, &crl, "its issuer", issuer)?;
 
     // A CRL without nextUpdate never expires; Intel's always carry one, so
     // treat its absence as an error rather than an open-ended pass.
@@ -112,24 +107,18 @@ pub(crate) fn verify_pck_chain(
     )?;
 
     // Signatures down the chain, and validity windows for all three.
-    let root_key = root
-        .public_key()
-        .context("failed to extract the root public key")?;
-    if !intermediate
-        .verify(&root_key)
-        .context("failed to check the intermediate signature")?
-    {
-        bail!("the intermediate CA certificate is not signed by the Intel root");
-    }
-    let intermediate_key = intermediate
-        .public_key()
-        .context("failed to extract the intermediate public key")?;
-    if !leaf
-        .verify(&intermediate_key)
-        .context("failed to check the PCK leaf signature")?
-    {
-        bail!("the PCK leaf certificate is not signed by the intermediate CA");
-    }
+    check_signed_by(
+        "the intermediate CA certificate",
+        intermediate,
+        "the Intel root",
+        root,
+    )?;
+    check_signed_by(
+        "the PCK leaf certificate",
+        leaf,
+        "the intermediate CA",
+        intermediate,
+    )?;
     check_cert_window("the root certificate", root, &now)?;
     check_cert_window("the intermediate certificate", intermediate, &now)?;
     check_cert_window("the PCK leaf certificate", leaf, &now)?;
@@ -184,20 +173,16 @@ pub(crate) fn verify_signer_chain(chain_pem: &[u8], now: SystemTime) -> Result<X
         &pinned,
     )?;
 
-    let pinned_key = pinned
-        .public_key()
-        .context("failed to extract the pinned root public key")?;
-    if !signer
-        .verify(&pinned_key)
-        .context("failed to check the signer signature")?
-    {
-        bail!("the collateral signer certificate is not signed by the Intel root");
-    }
+    check_signed_by(
+        "the collateral signer certificate",
+        signer,
+        "the Intel root",
+        &pinned,
+    )?;
     check_signer_identity(signer)?;
 
-    // The pinned copy's window rather than the presented root's, which is
-    // the same check: the two were just established to be the same bytes.
-    check_cert_window("the pinned root certificate", &pinned, &now)?;
+    // The pinned root's own window is a compile-time fact, asserted by the
+    // unit test rather than re-checked on every document.
     check_cert_window("the signer certificate", signer, &now)?;
     Ok(signer.to_owned())
 }
@@ -372,6 +357,8 @@ mod tests {
             root.verify(&key).expect("verify runs"),
             "pin must be self-signed"
         );
+        let now = asn1_now(SystemTime::now()).expect("clock converts");
+        check_cert_window(PINNED_ROOT_LABEL, &root, &now).expect("pin must still be in its window");
     }
 
     /// Compares the pin against the root CA Intel currently serves.
