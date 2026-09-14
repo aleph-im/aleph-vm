@@ -136,6 +136,48 @@ pub(crate) fn check_cert_window(what: &str, cert: &X509, now: &Asn1TimeRef) -> R
     check_validity_window(what, cert.not_before(), cert.not_after(), now)
 }
 
+/// A fresh P-256 key for the certificates tests fabricate.
+#[cfg(test)]
+pub(crate) fn test_p256_key() -> openssl::pkey::PKey<openssl::pkey::Private> {
+    let group = openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::X9_62_PRIME256V1).unwrap();
+    openssl::pkey::PKey::from_ec_key(openssl::ec::EcKey::generate(&group).unwrap()).unwrap()
+}
+
+/// A certificate carrying the Common Names given, self-signed unless an
+/// issuer name and signing key are supplied. For the tests that present an
+/// impostor where a pinned certificate belongs.
+#[cfg(test)]
+pub(crate) fn test_cert(
+    common_names: &[&str],
+    key: &openssl::pkey::PKeyRef<openssl::pkey::Private>,
+    issuer: Option<(&str, &openssl::pkey::PKeyRef<openssl::pkey::Private>)>,
+    not_before: &Asn1TimeRef,
+    not_after: &Asn1TimeRef,
+) -> X509 {
+    fn name(common_names: &[&str]) -> openssl::x509::X509Name {
+        let mut builder = openssl::x509::X509NameBuilder::new().unwrap();
+        for common_name in common_names {
+            builder.append_entry_by_text("CN", common_name).unwrap();
+        }
+        builder.build()
+    }
+
+    let (issuer_name, signer) = match issuer {
+        Some((issuer_cn, signer)) => (name(&[issuer_cn]), signer),
+        None => (name(common_names), key),
+    };
+    let mut builder = openssl::x509::X509Builder::new().unwrap();
+    builder.set_subject_name(&name(common_names)).unwrap();
+    builder.set_issuer_name(&issuer_name).unwrap();
+    builder.set_pubkey(key).unwrap();
+    builder.set_not_before(not_before).unwrap();
+    builder.set_not_after(not_after).unwrap();
+    builder
+        .sign(signer, openssl::hash::MessageDigest::sha256())
+        .unwrap();
+    builder.build()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

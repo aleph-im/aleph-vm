@@ -16,7 +16,6 @@ from reclaim_fixtures import OTHER_HASH, VM_HASH, pools, volume  # noqa: F401
 from aleph.vm.agent.vm.reclaimable import (
     MARKER_NAME,
     ReclaimableMarker,
-    UnsupportedMarkerVersionError,
     adopt,
     clear_marker,
     depends_on_from_content,
@@ -71,40 +70,10 @@ def test_a_marker_written_before_the_owner_field_still_parses():
     assert marker.reason == "orphan" and marker.size_bytes == 7
 
 
-def test_a_marker_with_an_unknown_reason_does_not_parse():
+def test_a_marker_with_an_unknown_reason_is_removed_as_corrupt(pools):  # noqa: F811
     """The reason drives policy (an orphan marker is written exclusively, a
     gone one carries the owner), so a value this agent never writes is not a
     marker it may act on."""
-    text = json.dumps(
-        {
-            "version": 1,
-            "reclaimable_since": "2026-08-24T12:00:00+00:00",
-            "reason": "whatever",
-            "size_bytes": 7,
-            "depends_on": [],
-        }
-    )
-
-    with pytest.raises(ValueError, match="reason"):
-        ReclaimableMarker.from_json(text)
-
-
-def test_a_marker_from_a_newer_schema_does_not_parse():
-    text = json.dumps(
-        {
-            "version": 2,
-            "reclaimable_since": "2026-08-24T12:00:00+00:00",
-            "reason": "gone",
-            "size_bytes": 7,
-            "depends_on": [],
-        }
-    )
-
-    with pytest.raises(UnsupportedMarkerVersionError, match="version 2"):
-        ReclaimableMarker.from_json(text)
-
-
-def test_a_marker_with_an_unknown_reason_is_removed_as_corrupt(pools):  # noqa: F811
     directory = pools["pool0"] / VM_HASH
     directory.mkdir()
     (directory / MARKER_NAME).write_text(

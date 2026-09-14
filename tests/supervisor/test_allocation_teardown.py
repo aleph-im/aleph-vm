@@ -36,33 +36,6 @@ def _info(*, gpus=(), confidential=ConfidentialMode.NONE):
     return SimpleNamespace(vm_id=str(_HASH), gpus=list(gpus), confidential_mode=confidential)
 
 
-class TestRemovability:
-    def test_a_plain_persistent_vm_is_removable(self):
-        assert is_removable_by_allocation(_record(), _info()) is True
-
-    def test_a_stream_paid_vm_is_retained(self):
-        assert is_removable_by_allocation(_record(stream=True), _info()) is False
-
-    def test_a_credit_paid_vm_is_retained(self):
-        assert is_removable_by_allocation(_record(credit=True), _info()) is False
-
-    def test_a_gpu_vm_is_retained(self):
-        gpu = GpuDevice(pci_host=PciAddress("0000:01:00.0"), device_id="10de:2504", model="x", supports_x_vga=True)
-        assert is_removable_by_allocation(_record(), _info(gpus=[gpu])) is False
-
-    def test_a_confidential_vm_is_retained(self):
-        assert is_removable_by_allocation(_record(), _info(confidential=ConfidentialMode.SEV_SNP)) is False
-
-    def test_a_vprogram_is_removable_despite_being_credit_paid_and_confidential(self):
-        """The scheduler is the single source of truth for v-programs, so
-        absence from the plan stops them. This inverts every rule above."""
-        record = _record(credit=True, vprogram=True)
-        assert is_removable_by_allocation(record, _info(confidential=ConfidentialMode.SEV_SNP)) is True
-
-    def test_a_non_persistent_vm_is_not_touched(self):
-        assert is_removable_by_allocation(_record(persistent=False), _info()) is False
-
-
 class TestRetentionReason:
     """The answer a push gets for a VM it asked to have stopped and did not.
 

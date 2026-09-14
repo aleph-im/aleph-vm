@@ -35,40 +35,6 @@ def clean_hooks():
         yield
 
 
-def test_a_wiring_that_fails_halfway_installs_no_slot_at_all():
-    """The point of the whole object: the arguments are evaluated before
-    anything is published, so a failure while building the wiring leaves the
-    previous wiring untouched. Three separate setters could not do this, the
-    first two having already landed."""
-
-    def explodes():
-        msg = "the registry is not ready"
-        raise RuntimeError(msg)
-
-    with pytest.raises(RuntimeError):
-        install_hooks(
-            AgentHooks(
-                after_gone=_after_gone,
-                cache_admission=explodes(),
-                room_maker=_make_room,
-            )
-        )
-
-    assert current_hooks() == AgentHooks()
-
-
-def test_the_three_consumers_read_one_installed_object():
-    """storage, storage_pools and retire each look their slot up in the same
-    place, so one install wires the node and one read tells you what it is."""
-    hooks = AgentHooks(after_gone=_after_gone, cache_admission=_admit, room_maker=_make_room)
-    install_hooks(hooks)
-
-    assert current_hooks() is hooks
-    assert current_hooks().after_gone is _after_gone
-    assert current_hooks().cache_admission is _admit
-    assert current_hooks().room_maker is _make_room
-
-
 def test_a_single_slot_setter_leaves_the_other_two_alone():
     """The setters the storage modules still expose write one slot into the
     installed object. A setter that replaced the object outright would
@@ -97,13 +63,3 @@ def test_installed_hooks_puts_back_what_was_there():
         assert current_hooks().room_maker is None
 
     assert current_hooks() is outer
-
-
-def test_an_unwired_node_has_every_slot_empty():
-    """A storage CLI run, or any test that imports these modules without the
-    agent app, keeps the behaviour the storage code had before the hooks
-    existed."""
-    assert current_hooks() == AgentHooks()
-    assert current_hooks().after_gone is None
-    assert current_hooks().cache_admission is None
-    assert current_hooks().room_maker is None

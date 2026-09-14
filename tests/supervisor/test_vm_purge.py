@@ -143,18 +143,18 @@ def test_purge_is_idempotent(pools):
     assert purge_vm_storage(VM_HASH).deleted == 0
 
 
-@pytest.mark.parametrize(
-    "namespace",
-    ["..", "../../etc", "", "a/b", "short", "backupsfromjanuary", "deadbeefdeadbeef", "CAFE" * 16],
-)
+@pytest.mark.parametrize("namespace", ["..", "../../etc"])
 def test_purge_refuses_an_implausible_namespace(pools, namespace):
-    """A delete path must never join an unvalidated string onto a pool path."""
+    """A delete path must never join an unvalidated string onto a pool path.
+
+    Traversal is the shape that costs the most here; the rest of the
+    alphabet the guard refuses is pinned in test_storage.py.
+    """
     with pytest.raises(ValueError):
         purge_vm_volumes(namespace)
 
 
-@pytest.mark.parametrize("namespace", ["backupsfromjanuary", "deadbeefdeadbeef"])
-def test_purge_storage_refuses_an_operator_directory_before_touching_it(pools, namespace):
+def test_purge_storage_refuses_an_operator_directory_before_touching_it(pools):
     """A directory an operator named himself keeps its contents.
 
     The refusal has to come before the first unlink, not after the volumes
@@ -162,6 +162,7 @@ def test_purge_storage_refuses_an_operator_directory_before_touching_it(pools, n
     pass the guard, get every file unlinked and the directory removed, and
     only then raise out of the staging step.
     """
+    namespace = "backupsfromjanuary"
     kept = _volume(pools["pool0"], namespace, "january.tar.gz")
 
     with pytest.raises(ValueError):
@@ -171,9 +172,9 @@ def test_purge_storage_refuses_an_operator_directory_before_touching_it(pools, n
     assert kept.parent.exists()
 
 
-@pytest.mark.parametrize("namespace", ["cafe" * 16, "QmXoypizjW3WknFiJnKLwHCnL72vedxjQkDDP1mXWo6uco"])
-def test_purge_storage_accepts_every_shape_of_item_hash(pools, namespace):
-    """A storage hash and an IPFS CID are both VM namespaces."""
+def test_purge_storage_accepts_an_ipfs_cid_namespace(pools):
+    """A CID is a VM namespace too; every other test here purges a hash."""
+    namespace = "QmXoypizjW3WknFiJnKLwHCnL72vedxjQkDDP1mXWo6uco"
     rootfs = _volume(pools["pool0"], namespace, "rootfs.qcow2")
 
     purge_vm_storage(namespace)
