@@ -140,6 +140,11 @@ impl From<UnitsError> for RpcError {
         RpcError::Internal(error.to_string())
     }
 }
+impl From<units::StopAndDisableError> for RpcError {
+    fn from(error: units::StopAndDisableError) -> Self {
+        RpcError::Internal(error.to_string())
+    }
+}
 impl From<world::WorldError> for RpcError {
     fn from(error: world::WorldError) -> Self {
         RpcError::Internal(error.to_string())
@@ -837,17 +842,17 @@ fn stop_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
     let stopping_before = entry.times.stopping_at_ns;
     with_entry_mut(state, vm_id, |entry| entry.times.stopping_at_ns = now_ns());
     if let Err(error) = units::stop_and_disable(&*state.units, &unit) {
-        // Either step can be the one that failed, and the disable can error
-        // with the unit already down: that VM is genuinely stopped, and
-        // putting the stamp back there would leave a unit that has settled
-        // under a VM with no stop recorded, which the read paths call a
-        // guest that died and announce as one. Ask what state the unit is
-        // in and keep the stamp when it has settled; a unit still up, or
-        // one a silent bus says nothing about, gets the pre-stop value
-        // back.
-        if UnitLiveness::from_active_state(&state.units.get_active_state(&unit))
-            != UnitLiveness::Dead
-        {
+        // Either step can be the one that failed, and only the step tells
+        // the two apart. A stop systemd refused queued no job and left the
+        // unit up, so the pre-stop value goes back and the VM does not sit
+        // in STOPPING for ever. A disable that failed after the stop went
+        // through leaves a unit down or on its way, and putting the stamp
+        // back there would hand the read paths a settling unit under a VM
+        // with no stop recorded, which they call a guest that died and
+        // announce as one. The unit's state cannot be asked instead:
+        // StopUnit returns as soon as the job is accepted, so a unit still
+        // active proves nothing about whether a stop is coming.
+        if !error.stop_went_through() {
             with_entry_mut(state, vm_id, |entry| {
                 entry.times.stopping_at_ns = stopping_before
             });
@@ -6719,13 +6724,23 @@ mod tests {
         drop(probe.probing);
     }
 
-    /// A systemd that refuses one of the two steps `stop_and_disable`
-    /// takes and performs the other. A refused stop leaves the unit up,
-    /// where the stop never happened; a refused disable arrives with the
-    /// unit already down, where it did.
+    /// One of the two steps `stop_and_disable` takes.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum StopStep {
+        Stop,
+        Disable,
+    }
+
+    /// A systemd that refuses one of the two steps `stop_and_disable` takes
+    /// and handles the other like the bus does. A refused stop queues no
+    /// job and leaves the unit active, where the stop never happened. An
+    /// accepted one leaves it `deactivating`: `StopUnit` returns the moment
+    /// systemd takes the job, and the guest's shutdown runs afterwards, so
+    /// a disable failing next to it finds a unit that is on its way down
+    /// rather than one that has settled.
     struct RefusingSystemd {
         inner: Arc<FakeSystemd>,
-        refuse: &'static str,
+        refuse: StopStep,
     }
 
     impl crate::units::UnitStateSource for RefusingSystemd {
@@ -6745,10 +6760,14 @@ mod tests {
             self.inner.start(unit)
         }
         fn stop(&self, unit: &str) -> Result<(), UnitsError> {
-            if self.refuse == "stop" {
+            if self.refuse == StopStep::Stop {
                 return Err(UnitsError::Unreachable);
             }
-            self.inner.stop(unit)
+            // Accepted, not finished: the unit sits in `deactivating` until
+            // the guest is done shutting down, which is up to 50 seconds of
+            // real time on a node.
+            self.inner.set_state(unit, "deactivating");
+            Ok(())
         }
         fn restart(&self, unit: &str) -> Result<(), UnitsError> {
             self.inner.restart(unit)
@@ -6757,7 +6776,7 @@ mod tests {
             self.inner.enable(unit)
         }
         fn disable(&self, unit: &str) -> Result<(), UnitsError> {
-            if self.refuse == "disable" {
+            if self.refuse == StopStep::Disable {
                 return Err(UnitsError::Unreachable);
             }
             self.inner.disable(unit)
@@ -6769,7 +6788,7 @@ mod tests {
 
     /// A daemon on the harness's world, talking to a systemd that refuses
     /// one step of the stop.
-    fn refusing_state(harness: &Harness, refuse: &'static str) -> Arc<DaemonState> {
+    fn refusing_state(harness: &Harness, refuse: StopStep) -> Arc<DaemonState> {
         let mut state = crate::service::DaemonState::hermetic(
             harness.state.host.clone(),
             world::WorldView::default(),
@@ -6786,27 +6805,41 @@ mod tests {
     }
 
     #[test]
-    fn a_stop_that_fails_with_the_unit_down_keeps_the_stop_recorded() {
+    fn a_disable_that_fails_after_a_queued_stop_keeps_the_stop_recorded() {
         // stop_and_disable can fail at its second step, with the stop job
-        // already issued and the unit settled. Putting the stopping stamp
-        // back there leaves a unit that is genuinely down under a VM with
-        // no stop recorded, which is the dead-unit arm's shape: the VM
-        // reads FAILED and the hub announces a death for a guest the
-        // operator deliberately stopped, waking the agent's reconciler
-        // against it.
+        // already accepted and the guest still shutting down. The unit is
+        // active or deactivating right there, so its state cannot tell this
+        // apart from a stop systemd refused; the failing step can. Putting
+        // the stopping stamp back leaves the queued job to settle the unit
+        // under a VM with no stop recorded, which is the dead-unit arm's
+        // shape: the VM reads FAILED and the hub announces a death for a
+        // guest the operator deliberately stopped, waking the agent's
+        // reconciler against it.
         let harness = harness();
-        let state = refusing_state(&harness, "disable");
+        let state = refusing_state(&harness, StopStep::Disable);
         let root = state.host.settings.execution_root.clone();
         let vm_id = hash('e');
         create_vm(&state, spec(&vm_id, &root)).unwrap();
 
         stop_vm(&state, &vm_id).expect_err("the disable is refused");
 
+        let unit = controller_unit_name(&vm_id);
+        assert_eq!(
+            harness.systemd.get_active_state(&unit),
+            "deactivating",
+            "the stop was taken, not finished"
+        );
         let entry = entry_snapshot(&state, &vm_id).unwrap();
         assert_ne!(
             entry.times.stopping_at_ns, 0,
-            "the stop that did happen stays recorded"
+            "the stop that was issued stays recorded"
         );
+        assert_eq!(status_snapshot(&state, &entry), pb::VmStatus::Stopping);
+
+        // And once the queued job finishes, which is where a restored stamp
+        // turned into a death.
+        harness.systemd.set_state(&unit, "inactive");
+        let entry = entry_snapshot(&state, &vm_id).unwrap();
         assert_eq!(status_snapshot(&state, &entry), pb::VmStatus::Stopping);
     }
 
@@ -6816,7 +6849,7 @@ mod tests {
         // running, and keeping the stamp there would park a live VM in
         // STOPPING for ever.
         let harness = harness();
-        let state = refusing_state(&harness, "stop");
+        let state = refusing_state(&harness, StopStep::Stop);
         let root = state.host.settings.execution_root.clone();
         let vm_id = hash('e');
         create_vm(&state, spec(&vm_id, &root)).unwrap();

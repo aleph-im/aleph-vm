@@ -154,17 +154,52 @@ pub trait UnitStateSource: Send + Sync {
 
 /// Python `SystemDManager.stop_and_disable`: stop gated on the actual
 /// ActiveState (never on enablement), then disable when enabled.
-pub fn stop_and_disable(units: &dyn UnitStateSource, unit: &str) -> Result<(), UnitsError> {
+///
+/// The error says which of the two steps failed, because the unit state
+/// afterwards cannot: see [`StopAndDisableError`].
+pub fn stop_and_disable(
+    units: &dyn UnitStateSource,
+    unit: &str,
+) -> Result<(), StopAndDisableError> {
     if !matches!(
         units.get_active_state(unit).as_str(),
         "inactive" | "failed" | "not-loaded"
     ) {
-        units.stop(unit)?;
+        units.stop(unit).map_err(StopAndDisableError::Stop)?;
     }
     if units.is_enabled(unit) {
-        units.disable(unit)?;
+        units.disable(unit).map_err(StopAndDisableError::Disable)?;
     }
     Ok(())
+}
+
+/// Which of [`stop_and_disable`]'s two steps failed.
+///
+/// `StopUnit` returns as soon as systemd accepts the job, and the unit then
+/// sits in `deactivating` for the whole of the guest's shutdown, so what the
+/// unit looks like when the disable fails says nothing about whether a stop
+/// was ever issued: it reads active, deactivating, or unknown on a silent
+/// bus, whether or not a job is on its way. The failing step does say. A
+/// caller that has recorded the stop before issuing it needs that answer to
+/// decide whether the record still stands.
+#[derive(Debug, thiserror::Error)]
+pub enum StopAndDisableError {
+    /// `StopUnit` was refused: no job was queued and the unit is still up.
+    #[error(transparent)]
+    Stop(UnitsError),
+
+    /// The stop step went through, by a job systemd accepted or because the
+    /// unit was already down, and `DisableUnitFiles` failed after it.
+    #[error(transparent)]
+    Disable(UnitsError),
+}
+
+impl StopAndDisableError {
+    /// Whether the unit is stopped or on its way: the stop job was accepted,
+    /// or the unit was already down and no job was needed.
+    pub fn stop_went_through(&self) -> bool {
+        matches!(self, Self::Disable(_))
+    }
 }
 
 /// Python `SystemDManager.enable_and_start`. The active probe mirrors
