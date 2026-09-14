@@ -112,12 +112,12 @@ from aleph.vm.agent.vm.reclaimable import (
     reclaimable_bytes,
 )
 from aleph.vm.agent.vm.reconciler import (
-    retention_budget,
     _startup_refusal,
     is_vm_namespace,
     live_hashes,
     reconcile_storage,
     release_cache_devices,
+    retention_budget,
     supervisor_hashes,
     teardown_orphan_devices,
 )
