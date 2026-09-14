@@ -25,9 +25,15 @@ bytes or nothing.
 The result is that the scheduler picks WHICH user messages run here and never
 WHAT they contain, which is the authority it already had.
 
+What verifying buys is the immediate answer, and only that. A verified message
+is what the push is sized and judged by inside the request, with no network
+round trip; the launch itself still loads the message from the CCN when the
+convergence loop gets to it, so nothing here is the copy a VM is built from.
+
 Only EVM signatures are checked. A chain we cannot verify, or a message with
-no inline content, is UNVERIFIABLE rather than REJECTED: the caller falls back
-to fetching it from the CCN, exactly as before this feature existed.
+no inline content, is UNVERIFIABLE rather than REJECTED: the entry is answered
+pending and judged once the loop has fetched its message, exactly as before
+this feature existed.
 
 There is deliberately no "amended message" in the payload. What
 ``update_message`` resolves is not a message-level amend but the ``use_latest``
@@ -39,7 +45,6 @@ authority this module exists to deny. The agent resolves those refs itself.
 
 import json
 import logging
-from copy import deepcopy
 from dataclasses import dataclass
 from enum import Enum
 
@@ -58,8 +63,9 @@ logger = logging.getLogger(__name__)
 
 # Chains whose signatures we currently recover, not every EVM chain aleph
 # supports. The enum also carries OP, ARB, POL, LINEA and more; a message on
-# one of those is UNVERIFIABLE, which costs a CCN fetch and nothing else, so
-# this set can grow whenever a chain is worth the fast path.
+# one of those is UNVERIFIABLE, which costs its VM an answer of "pending" and
+# a pass of the loop before it is sized, so this set can grow whenever a chain
+# is worth an immediate answer.
 VERIFIABLE_CHAINS = {"ETH", "AVAX", "BASE", "BSC"}
 
 
@@ -71,15 +77,16 @@ class VerificationOutcome(Enum):
 
 @dataclass(frozen=True)
 class VerifiedMessage:
-    """A message and an untouched copy of it.
+    """A message this node checked the signature of, and its own provenance.
 
-    ``original`` is a deep copy, not the same object: a caller that resolves
-    use_latest refs does so with update_message, which mutates the message in
-    place, and an aliased original would be rewritten along with it.
+    The type is the record that the message inside came out of item_content
+    under a signature we recovered, which a bare ExecutableMessage would not
+    say. It is read to size the VM for the immediate answer and for nothing
+    else: no launch path runs off it, so it carries no untouched copy against
+    a caller that would resolve refs in place.
     """
 
     message: ExecutableMessage
-    original: ExecutableMessage
 
 
 def verification_buffer(message: ExecutableMessage) -> bytes:
@@ -159,4 +166,4 @@ def verify_entry(entry: dict) -> tuple[VerificationOutcome, VerifiedMessage | No
         logger.warning("Embedded message %s is not signed by its sender", message.item_hash)
         return VerificationOutcome.REJECTED, None, "signature is invalid or not the sender's"
 
-    return VerificationOutcome.VERIFIED, VerifiedMessage(message=message, original=deepcopy(message)), ""
+    return VerificationOutcome.VERIFIED, VerifiedMessage(message=message), ""
