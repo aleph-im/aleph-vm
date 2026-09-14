@@ -100,6 +100,7 @@ from .views.operator import (
     operate_reboot,
     operate_reinstall,
     operate_restore,
+    operate_start,
     operate_stop,
     stream_logs,
 )
@@ -385,6 +386,7 @@ def setup_webapp(supervisor: Supervisor):
         web.get("/control/machine/{ref}/stream_logs", stream_logs),
         web.get("/control/machine/{ref}/logs", operate_logs_json),
         web.post("/control/machine/{ref}/expire", operate_expire),
+        web.post("/control/machine/{ref}/start", operate_start),
         web.post("/control/machine/{ref}/stop", operate_stop),
         web.post("/control/machine/{ref}/erase", operate_erase),
         web.post("/control/machine/{ref}/reboot", operate_reboot),
