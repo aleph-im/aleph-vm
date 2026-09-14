@@ -103,10 +103,7 @@ class AllocationReconciler:
         change underneath it in between.
         """
         self._desired = plan
-        for vm_hash in list(self._failures):
-            if vm_hash not in plan.entries:
-                self._forget(vm_hash)
-        for vm_hash in list(self._states):
+        for vm_hash in set(self._failures) | set(self._states):
             if vm_hash not in plan.entries:
                 self._forget(vm_hash)
         self._wakeup.set()

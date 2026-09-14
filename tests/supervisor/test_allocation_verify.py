@@ -40,7 +40,7 @@ def test_a_correctly_signed_message_is_verified(account, instance_content):
     outcome, verified, _ = verify_entry(entry)
 
     assert outcome is VerificationOutcome.VERIFIED
-    assert verified.message.content.resources.vcpus == 2
+    assert verified.content.resources.vcpus == 2
 
 
 def test_content_tampered_after_signing_is_rejected(account, instance_content):
@@ -126,7 +126,7 @@ def test_an_embedded_amended_message_is_ignored(account, instance_content):
     outcome, verified, _ = verify_entry(entry)
 
     assert outcome is VerificationOutcome.VERIFIED
-    assert verified.message.content.resources.vcpus == 2
+    assert verified.content.resources.vcpus == 2
 
 
 def test_a_content_field_diverging_from_the_signed_item_content_is_ignored(account, instance_content):
@@ -147,7 +147,7 @@ def test_a_content_field_diverging_from_the_signed_item_content_is_ignored(accou
     outcome, verified, _ = verify_entry(entry)
 
     assert outcome is VerificationOutcome.VERIFIED
-    assert verified.message.content.resources.vcpus == 2
+    assert verified.content.resources.vcpus == 2
 
 
 def test_a_message_that_is_not_an_object_is_rejected():
@@ -202,8 +202,8 @@ def test_a_real_network_message_verifies(signed_vprogram_message):
 
     assert outcome is VerificationOutcome.VERIFIED
     assert reason == ""
-    assert str(verified.message.item_hash) == signed_vprogram_message["item_hash"]
-    assert verified.message.sender == signed_vprogram_message["sender"]
+    assert str(verified.item_hash) == signed_vprogram_message["item_hash"]
+    assert verified.sender == signed_vprogram_message["sender"]
 
 
 def test_an_empty_message_is_rejected_not_treated_as_absent():

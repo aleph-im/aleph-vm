@@ -135,7 +135,7 @@ async def capacity_check(request: web.Request) -> web.Response:
                 **Refusal.for_code(AllocationFailureCode.MESSAGE_REQUIRED).as_dict(),
             }
             continue
-        candidates.append((vm_hash, requirements_from_message(planned.verified.message.content)))
+        candidates.append((vm_hash, requirements_from_message(planned.verified.content)))
     available_gpus = await capacity.available_gpus()
     for admission in capacity.simulate(candidates, available_gpus=available_gpus):
         results[str(admission.vm_hash)] = (

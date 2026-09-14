@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
 
-from aleph_message.models import ExecutableContent, ItemHash
+from aleph_message.models import ExecutableContent, ExecutableMessage, ItemHash
 
 from aleph.vm.agent.allocation.plan import (
     LIVE_STATUSES,
@@ -31,7 +31,6 @@ from aleph.vm.agent.allocation.refusal import AllocationFailureCode, Refusal, Re
 from aleph.vm.agent.allocation.teardown import retention_reason
 from aleph.vm.agent.allocation.verify import (
     VerificationOutcome,
-    VerifiedMessage,
     verify_entry,
 )
 from aleph.vm.agent.capacity import PlanAdmission, requirements_from_message
@@ -80,7 +79,7 @@ class JudgedEntry:
 
     vm_hash: ItemHash | None
     outcome: VerificationOutcome
-    verified: VerifiedMessage | None
+    verified: ExecutableMessage | None
     reason: str
 
 
@@ -295,7 +294,7 @@ def compute_verdict(
         if planned.verified is None:
             verdict.pending.append(vm_hash)
             continue
-        content = planned.verified.message.content
+        content = planned.verified.content
         required_node = _required_node_hash(content)
         if required_node and node_hash is None:
             # Not knowing our own hash yet is not the same answer as "you asked
