@@ -11,6 +11,8 @@ from aleph.vm.storage import (
     download_file,
     download_file_in_chunks,
     get_latest_amend,
+    is_vm_namespace,
+    vm_namespace,
 )
 
 ORIGINAL_HASH = "a" * 64
@@ -289,3 +291,40 @@ async def test_tune_with_recovery_propagates_when_zero_log_itself_fails(mocker):
 
     # Bailed after zero-log; did NOT loop trying btrfstune a third time.
     assert [cmd[:2] for cmd in calls] == [["btrfstune", "-m"], ["btrfs", "rescue"]]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "cafe" * 16,
+        "QmXoypizjW3WknFiJnKLwHCnL72vedxjQkDDP1mXWo6uco",
+    ],
+)
+def test_a_vm_namespace_is_a_storage_hash_or_an_ipfs_cid(name):
+    assert str(vm_namespace(name)) == name
+    assert is_vm_namespace(name)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "..",
+        "../../etc",
+        "",
+        "a/b",
+        "short",
+        "backupsfromjanuary",
+        "deadbeefdeadbeef",
+        "CAFE" * 16,
+        "cafe" * 15,
+    ],
+)
+def test_anything_else_is_no_vm_namespace(name):
+    """The guard every delete path asks before joining a name onto a pool.
+
+    Traversal, the wrong length and uppercase hex are all refused, and so is
+    an alphanumeric string of the right length: an operator's own directory
+    must never pass for a VM.
+    """
+    assert vm_namespace(name) is None
+    assert not is_vm_namespace(name)
