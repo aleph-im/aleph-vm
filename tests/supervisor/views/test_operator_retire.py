@@ -4,9 +4,10 @@ Split out of the old ``tests/supervisor/views/test_operator.py``, which was
 removed with the Python supervisor daemon: these cases only ever needed a
 ``Supervisor``, so they drive ``setup_webapp`` with a mock of that interface.
 
-Covers the erase/stop/reboot/reinstall paths converted to ``retire_vm`` and
-the erase of data the supervisor has forgotten (a retained ``.reclaimable``
-directory), whose owner is proven from the marker or the agent DB.
+Covers the erase/stop/start/reboot/reinstall paths converted to ``retire_vm``
+and the erase of data the supervisor has forgotten (a retained
+``.reclaimable`` directory), whose owner is proven from the marker or the
+agent DB.
 """
 
 from datetime import datetime, timezone
@@ -19,12 +20,14 @@ from aleph_message.models.execution.environment import TrustedExecutionEnvironme
 
 import aleph.vm.storage_pools as storage_pools_module
 from aleph.vm.agent import metrics
+from aleph.vm.agent.run import create_vm_execution_or_raise_http_error
 from aleph.vm.agent.supervisor import setup_webapp
 from aleph.vm.agent.views.operator import _security_aggregate_cache
 from aleph.vm.agent.vm.reclaimable import ReclaimableMarker, mark_reclaimable
 from aleph.vm.agent.vm.reconciler import creating
 from aleph.vm.agent.vm.retire import RetireReason
 from aleph.vm.conf import settings
+from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.storage import get_message
 from aleph.vm.storage_pools import MediaClass, StoragePool, reset_pools
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
@@ -594,3 +597,165 @@ async def test_operator_reinstall_tears_down_devices_before_purging(aiohttp_clie
 
     assert response.status == 200, await response.text()
     assert order == ["teardown", "purge"]
+
+
+async def _app_with_a_recorded_vm(aiohttp_client, mocker, *, status: VmStatus, sender: str | None = None):
+    """The stop/reboot harness above, parameterised on the status the
+    supervisor reports and on who signs the call."""
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.setup()
+
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+    mocker.patch(
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
+        return_value=sender or instance_message.sender,
+    )
+
+    app = setup_webapp(supervisor=_fake_supervisor())
+    app["vm_registry"].record(
+        vm_hash,
+        message=instance_message.content,
+        original=instance_message.content,
+        persistent=True,
+    )
+    fake_sup = _fake_supervisor(status)
+    app["supervisor"] = fake_sup
+    client: TestClient = await aiohttp_client(app)
+    return client, app, fake_sup, vm_hash
+
+
+@pytest.mark.asyncio
+async def test_operator_start_resumes_a_stopped_vm(aiohttp_client, mocker):
+    """The allocation loop leaves an owner-stopped VM alone, so the owner's
+    start is what brings it back, through the serialised start path."""
+    start = mocker.patch("aleph.vm.agent.views.operator.start_persistent_vm", new_callable=AsyncMock)
+    client, app, fake_sup, vm_hash = await _app_with_a_recorded_vm(aiohttp_client, mocker, status=VmStatus.STOPPED)
+
+    response = await client.post(f"/control/machine/{vm_hash}/start")
+
+    assert response.status == 200, await response.text()
+    assert await response.text() == f"Started VM with ref {vm_hash}"
+    start.assert_awaited_once_with(
+        vm_hash,
+        None,
+        supervisor=fake_sup,
+        registry=app["vm_registry"],
+        capacity=app["capacity"],
+        expiry=app["expiry"],
+        update_watcher=app["update_watcher"],
+        # The record still holds the memory and vCPUs, so this start is
+        # admitted as a rebuild.
+        recreate=True,
+        # A view rebuilds through the HTTP-mapping wrapper.
+        create=create_vm_execution_or_raise_http_error,
+    )
+
+
+@pytest.mark.asyncio
+async def test_operator_start_of_a_running_vm_does_not_restart_it(aiohttp_client, mocker):
+    """A start is not a reboot: a VM that is already up is left running."""
+    start = mocker.patch("aleph.vm.agent.views.operator.start_persistent_vm", new_callable=AsyncMock)
+    client, _app, _sup, vm_hash = await _app_with_a_recorded_vm(aiohttp_client, mocker, status=VmStatus.RUNNING)
+
+    response = await client.post(f"/control/machine/{vm_hash}/start")
+
+    assert response.status == 200
+    assert await response.text() == f"VM with ref {vm_hash} is already running"
+    start.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_operator_start_of_a_hash_this_node_does_not_hold_is_404(aiohttp_client, mocker):
+    """No registry record: the node holds nothing to start, like stop."""
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.setup()
+
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    instance_message = await get_message(ref=vm_hash)
+    mocker.patch(
+        "aleph.vm.agent.views.authentication.authenticate_jwk",
+        return_value=instance_message.sender,
+    )
+    start = mocker.patch("aleph.vm.agent.views.operator.start_persistent_vm", new_callable=AsyncMock)
+
+    app = setup_webapp(supervisor=_fake_supervisor())
+    app["supervisor"] = _fake_supervisor(VmStatus.STOPPED)
+    client: TestClient = await aiohttp_client(app)
+    response = await client.post(f"/control/machine/{vm_hash}/start")
+
+    assert response.status == 404
+    start.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_operator_start_by_a_stranger_is_refused_like_stop(aiohttp_client, mocker):
+    """Start is owner-only on the same terms as stop, delegation included."""
+    mocker.patch("aleph.vm.agent.views.operator.check_owner_permissions", new=AsyncMock(return_value=False))
+    start = mocker.patch("aleph.vm.agent.views.operator.start_persistent_vm", new_callable=AsyncMock)
+    client, _app, fake_sup, vm_hash = await _app_with_a_recorded_vm(
+        aiohttp_client,
+        mocker,
+        status=VmStatus.STOPPED,
+        sender="0x9999999999999999999999999999999999999999",
+    )
+
+    started = await client.post(f"/control/machine/{vm_hash}/start")
+    stopped = await client.post(f"/control/machine/{vm_hash}/stop")
+
+    assert started.status == 403
+    assert started.status == stopped.status
+    start.assert_not_awaited()
+    fake_sup.start_vm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_operator_start_without_a_signature_is_refused_like_stop(aiohttp_client, mocker):
+    """Unsigned: the auth decorator refuses both routes the same way, before
+    either handler runs."""
+    settings.ENABLE_QEMU_SUPPORT = True
+    settings.setup()
+
+    start = mocker.patch("aleph.vm.agent.views.operator.start_persistent_vm", new_callable=AsyncMock)
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+
+    app = setup_webapp(supervisor=_fake_supervisor())
+    app["supervisor"] = _fake_supervisor(VmStatus.STOPPED)
+    client: TestClient = await aiohttp_client(app)
+
+    started = await client.post(f"/control/machine/{vm_hash}/start")
+    stopped = await client.post(f"/control/machine/{vm_hash}/stop")
+
+    assert started.status >= 400
+    assert started.status == stopped.status
+    start.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_operator_reboot_of_a_stopped_vm_is_409(aiohttp_client, mocker):
+    """Reboot used to answer 200 "Starting VM (was not running)" having called
+    nothing; a stopped VM comes back through the start route instead."""
+    client, _app, fake_sup, vm_hash = await _app_with_a_recorded_vm(aiohttp_client, mocker, status=VmStatus.STOPPED)
+
+    response = await client.post(f"/control/machine/{vm_hash}/reboot")
+
+    assert response.status == 409
+    assert f"/control/machine/{vm_hash}/start" in await response.text()
+    fake_sup.reboot_vm.assert_not_awaited()
+    fake_sup.start_vm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_operator_start_maps_a_failed_rebuild_to_the_create_route_status(aiohttp_client, mocker):
+    """A rebuild the node cannot fit answers 503 like the create route, not the
+    bare 500 an unmapped exception out of the start path would give."""
+    mocker.patch("aleph.vm.agent.run.retire_vm", new_callable=AsyncMock)
+    mocker.patch(
+        "aleph.vm.agent.run.create_vm_execution",
+        new=AsyncMock(side_effect=InsufficientResourcesError("no room", required={}, available={})),
+    )
+    client, _app, _sup, vm_hash = await _app_with_a_recorded_vm(aiohttp_client, mocker, status=VmStatus.FAILED)
+
+    response = await client.post(f"/control/machine/{vm_hash}/start")
+
+    assert response.status == 503, await response.text()
