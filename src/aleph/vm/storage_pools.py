@@ -345,8 +345,7 @@ def _select_from(candidates: list[StoragePool], size_mib: int) -> StoragePool:
     required_bytes = size_mib * 1024 * 1024
     eligible = [pool for pool in candidates if pool.vm_eligible]
     # Measured once for the whole attempt: read again inside the sort key
-    # below, every pool would be interrogated twice per placement and a dead
-    # one would log its error twice as often.
+    # below, every pool would be interrogated twice per placement.
     free_by_pool = {pool: _pool_free_bytes(pool) for pool in eligible}
     best: StoragePool | None = None
     best_free = -1
@@ -359,10 +358,8 @@ def _select_from(candidates: list[StoragePool], size_mib: int) -> StoragePool:
     room_maker = current_hooks().room_maker
     if (best is None or best_free < required_bytes) and room_maker is not None:
         # Free-descending order asks the pool that needs the least eviction
-        # first. A pool whose free space could not be read sorts last and
-        # make_room refuses it outright, so the only pool the evictor can
-        # still turn into a home for this volume is one that answered and is
-        # merely full.
+        # first. A pool whose free space could not be read sorts last, and
+        # make_room refuses it outright.
         def known_free(pool: StoragePool) -> int:
             free = free_by_pool[pool]
             return -1 if free is None else free

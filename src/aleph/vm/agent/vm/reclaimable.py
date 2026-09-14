@@ -93,12 +93,9 @@ class ReclaimableMarker:
         owner = data.get("owner")
         since = datetime.fromisoformat(data["reclaimable_since"])
         if since.tzinfo is None:
-            # Everything this node writes carries an offset, but a marker an
-            # operator restored or edited by hand may not. Parsed naive it
-            # cannot be compared with the aware clock the rest of the agent
-            # uses: every subtraction raises TypeError, and one such marker
-            # would abort a whole listing or eviction pass. The writers all
-            # use UTC, so that is what a bare timestamp means.
+            # A hand-edited marker may carry no offset, and a naive timestamp
+            # raises TypeError against the agent's aware clock, aborting the
+            # whole pass. Every writer uses UTC, so a bare timestamp is UTC.
             since = since.replace(tzinfo=timezone.utc)
         return cls(
             reclaimable_since=since,
@@ -417,10 +414,8 @@ def restore_markers(adopted: Mapping[Path, ReclaimableMarker]) -> int:
     for directory, marker in adopted.items():
         if not directory.is_dir():
             continue
-        # size_bytes is a measurement of what the directory holds, and a
-        # create that failed part way may have left more or less than it
-        # found. The rest of the marker (since when, whose, what it is built
-        # on) is the record that has to survive unchanged.
+        # Only size_bytes is re-measured, since a create that failed part way
+        # may have left more or less; the rest of the marker is the record.
         current = replace(marker, size_bytes=directory_size_bytes(directory))
         if write_marker(directory, current, exclusive=True):
             logger.info("Restored the reclaimable marker in %s after a create that did not commit", directory)

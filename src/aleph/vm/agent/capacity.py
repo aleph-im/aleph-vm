@@ -63,11 +63,9 @@ class ResourceRequirements:
     # Whose VM this is, for the GPU ledger: a hold this address took is
     # available to it, the way resolve_gpus consumes an owner's own hold.
     owner: str | None = None
-    # The volumes the two disk figures above were summed from, when they came
-    # from a message. Kept so a caller that knows which VM this is can look up
-    # what it already holds and charge it only the difference; the figures
-    # themselves stay the declared ones, since a caller with no VM to name
-    # (the reserve endpoint) has nothing to discount against.
+    # The volumes the disk figures above were summed from, kept so a caller
+    # that knows which VM this is can charge it only the difference. The
+    # figures stay the declared ones for a caller with no VM to name.
     volumes: tuple[DeclaredVolume, ...] = ()
 
 

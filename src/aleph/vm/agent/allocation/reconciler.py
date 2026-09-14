@@ -7,21 +7,10 @@ boundary. This is the seam pull mode plugs into: replacing "the scheduler
 pushed a plan" with "the agent fetched a plan" is a change to submit()'s
 caller and nothing else.
 
-One asymmetry runs through the loop: a VM that is stopped and a VM that is
-dead are not the same thing. A stop is somebody's decision, the owner's
-through the operator API or the guest's own, and only its owner undoes it:
-the loop never starts a stopped VM, not on a down event, not on its own
-backstop interval, and not because a plan lists it. A VM that failed is
-nobody's decision, so the loop rebuilds it on the event, damped by the
-backoff. Without that split the owner could not keep a planned VM down at
-all, since the plan is level-triggered and re-pushed for as long as the VM is
-allocated here.
-
-What the scheduler is told about a stopped VM is that it is here: the plan
-naming it is answered "unchanged", and the node goes on committing its
-memory, vCPUs and disk for it, because the definition and the volumes are
-still allocated. Unallocating it stays the scheduler's own move, made by
-dropping the hash from the plan, which the loop reads as a teardown.
+A stopped VM and a dead one are not the same thing: only its owner restarts a
+stopped VM, so the loop never starts one, while a VM that failed is rebuilt on
+the event, damped by the backoff. A stopped VM is still allocated here, and
+unallocating it stays the scheduler's move, made by dropping it from the plan.
 """
 
 import asyncio
@@ -99,13 +88,9 @@ class AllocationReconciler:
         self._wakeup = asyncio.Event()
         self._failures: dict[ItemHash, FailureRecord] = {}
         self._states: dict[ItemHash, AllocationState] = {}
-        # The VMs whose teardown is running right now. A delete parks for as
-        # long as the VM takes to stop, and the supervisor keeps listing it
-        # meanwhile, so a push arriving in that window reads a VM that is up
-        # and is in fact on its way to GONE with its disks reaped. The pass
-        # re-reads the plan before it starts a teardown, so a push that gets
-        # there first is honoured; past that point the retire cannot be
-        # called off, and the answer has to say so.
+        # The VMs whose teardown is running right now. The supervisor keeps
+        # listing them meanwhile, so a push arriving in that window would read
+        # a VM that is up but is on its way to GONE with its disks reaped.
         self._removing: set[ItemHash] = set()
 
     # ── Public surface ──
@@ -130,10 +115,8 @@ class AllocationReconciler:
         """A VM went down. If the plan still wants it up, converge now.
 
         `status` is what the supervisor reported, or None when the VM is gone
-        from its list entirely. A stop is not a death: the loop has nothing to
-        do about a VM somebody stopped, so a stop does not wake it, while a VM
-        that failed or vanished is rebuilt at once rather than at the backstop
-        interval.
+        from its list entirely. A stop does not wake the loop; a VM that failed
+        or vanished is rebuilt at once rather than at the backstop interval.
         """
         if self._desired is None:
             return
@@ -181,10 +164,8 @@ class AllocationReconciler:
     def removing_hashes(self) -> frozenset[ItemHash]:
         """The VMs whose teardown is in flight, for the answer to a push.
 
-        A hash in here is one the supervisor still lists and this node is
-        already committed to destroying, so a push that re-adds it is asking
-        for the VM to be built again rather than left alone. Read by the
-        verdict, which must not answer "unchanged" for any of them.
+        The supervisor still lists these, but the node is committed to
+        destroying them, so the verdict must never answer "unchanged" for one.
         """
         return frozenset(self._removing)
 
@@ -229,16 +210,10 @@ class AllocationReconciler:
 
     async def _teardown_dropped(self, plan: AllocationPlan, known: dict[ItemHash, VmInfo]) -> None:
         for vm_hash, info in known.items():
-            # Torn down only if the push never named this VM. A hash the
-            # answer refused is named: the scheduler was told the VM was
-            # rejected, not that it was deleted, so it still believes the VM
-            # is here, while a teardown retires it GONE and reaps its disks.
-            # The set holds every refusal, transient or not. Most of them pass
-            # on their own (a full disk, a node hash not read back since the
-            # last restart), and one does not: a VM allocated to another node
-            # stays allocated to it. Waiting for a push to stop naming the VM
-            # is the safe reading either way, since the scheduler that placed
-            # it elsewhere is the one that will stop naming it here.
+            # Torn down only if the push never named this VM: a refused hash
+            # was still named, and the scheduler was told the VM was rejected,
+            # not deleted, so tearing it down would reap disks it still counts
+            # on. Waiting for a push to stop naming it is safe either way.
             if plan.lists(vm_hash) or info.status not in TEARDOWN_STATUSES:
                 continue
             # The plan is re-read here rather than taken from the pass, which
@@ -254,10 +229,8 @@ class AllocationReconciler:
             if record is None or not is_removable_by_allocation(record, info):
                 continue
             logger.info("Plan %s dropped %s; tearing it down", current.plan_id, vm_hash)
-            # Marked before the await and cleared however it ends, including
-            # on a delete the supervisor refuses: that one is retried on the
-            # next pass, and a hash left behind here would have every later
-            # push answered as a rebuild of a VM that is up and staying up.
+            # Marked before the await and cleared however it ends: a hash left
+            # behind here would have every later push answered as a rebuild.
             self._removing.add(vm_hash)
             try:
                 await teardown_vm(vm_hash, supervisor=self.supervisor, registry=self.registry)
@@ -284,27 +257,18 @@ class AllocationReconciler:
                 continue
             info = known.get(vm_hash)
             if info is not None and info.status in STOPPED_STATUSES:
-                # Somebody stopped this VM, so it stays stopped: the plan
-                # listing it says the scheduler still holds it here, not that
-                # the node should overrule the owner. What the agent still has
-                # to report is whether its last attempt failed: a stop is not
-                # the agent's news to tell, since the supervisor already says
-                # STOPPED, but a start the node was asked to make and could
-                # not is. Only the phase is cleared, and the failure record is
-                # deliberately left standing: it is the attempt history, and a
-                # VM that failed twice, sat stopped a while and then crashed
-                # should climb the ladder from where it was rather than from
-                # the bottom. _forget_settled drops it once the VM has been up
-                # long enough to call healthy.
+                # Somebody stopped this VM, so it stays stopped: a plan listing
+                # it does not overrule the owner. The phase is cleared but the
+                # failure record stands, so a VM that failed, sat stopped and
+                # then crashed climbs the backoff ladder from where it was.
                 if vm_hash in self._failures:
                     self._states[vm_hash] = AllocationState.FAILED
                 else:
                     self._states.pop(vm_hash, None)
                 continue
             if not self._retry_due(vm_hash, now):
-                # Down and waiting out its backoff. Saying so is what lets the
-                # executions list report the wait and the time it ends, rather
-                # than a dead VM the agent appears to have no opinion about.
+                # Down and waiting out its backoff: recorded so the executions
+                # list can report the wait and when it ends.
                 self._states[vm_hash] = AllocationState.FAILED
                 continue
             todo.append(vm_hash)
@@ -328,12 +292,9 @@ class AllocationReconciler:
     def _forget_settled(self, live: set[ItemHash], now: datetime) -> None:
         """Drop the record of a VM that has been up long enough to call healthy.
 
-        A rebuild after a death counts as an attempt, so the record has to
-        outlive the successful start that follows it, or nothing would gate
-        the next rebuild. It cannot be immortal either: a VM that crashed once
-        a month ago deserves its rebuild at once, not at the capped wait. The
-        longest wait the backoff can impose is the threshold, past which the
-        next death is a new problem rather than the tail of the old one.
+        The record has to outlive the successful start that follows a rebuild,
+        or nothing would gate the next one. The threshold is the longest wait
+        the backoff can impose, past which a death is a new problem.
         """
         settled = timedelta(seconds=settings.ALLOCATION_RETRY_MAX_INTERVAL)
         for vm_hash, failure in list(self._failures.items()):
@@ -345,17 +306,10 @@ class AllocationReconciler:
 
         `down` is what the supervisor holds for it when it already has one,
         which makes this start a rebuild and charges it on the backoff ladder.
-        Only a VM the supervisor holds FAILED reaches here with one: a live VM
-        needs nothing done to it, and one that is stopped or stopping is left
-        alone by _start_missing, since nobody but its owner restarts it.
-
-        The start is marked as a rebuild for admission, which skips the memory
-        and vCPU checks when this node already holds a record for the hash.
-        Those resources were reserved when the VM was first admitted and the
-        record has held them ever since, so charging the rebuild for them
-        again strands the VM on a node that is over its caps. The backoff
-        ladder above is what bounds a rebuild the node cannot really run: it
-        dies again and the next attempt waits longer.
+        Only a VM the supervisor holds FAILED reaches here with one; a stopped
+        VM is left to its owner. The start is marked as a rebuild, so admission
+        skips the memory and vCPU checks its record already covers; the backoff
+        ladder bounds a rebuild the node cannot really run.
         """
         self._states[vm_hash] = AllocationState.DOWNLOADING
         try:
@@ -382,18 +336,14 @@ class AllocationReconciler:
             return
         if down is None or self._desired is None or vm_hash not in self._desired.entries:
             # A first create, or one the plan dropped while it was in flight:
-            # submit() has already pruned that VM's records, and putting one
-            # back would leave state_for reporting on something nothing will
-            # retry until the next push clears it again.
+            # submit() already pruned that VM's records, and putting one back
+            # would leave state_for reporting on something nothing will retry.
             self._forget(vm_hash)
             return
         # The rebuild of a VM the supervisor held dead counts as a failed
-        # attempt, on the same backoff a failing create climbs. Otherwise a
-        # guest that panics seconds after boot is rebuilt from scratch, disks
-        # and all, at boot speed: the successful start erases the record, the
-        # down event wakes the loop, and nothing gates the next pass. The
-        # record deliberately outlives this successful start, and is dropped
-        # once the VM has stayed up (see _forget_settled).
+        # attempt on the same backoff a failing create climbs, or a guest that
+        # panics seconds after boot would be rebuilt at boot speed for ever.
+        # The record outlives this successful start; _forget_settled drops it.
         record = self._note_attempt(vm_hash, code=AllocationFailureCode.VM_FAILED)
         logger.warning(
             "Rebuilt %s after the supervisor reported it %s (attempt %d, next rebuild not before %s)",
@@ -413,10 +363,8 @@ class AllocationReconciler:
     def _record_failure(self, vm_hash: ItemHash, error: Exception) -> None:
         code = classify_start_failure(error)
         record = self._note_attempt(vm_hash, code=code)
-        # The only place the exception's own text is kept. The record the
-        # executions list publishes carries the code and no more: that
-        # endpoint answers anyone, and a create failure quotes the paths, the
-        # URLs and the host figures it was working with.
+        # The only place the exception's own text is kept: the executions list
+        # answers anyone, and a create failure quotes host paths and figures.
         logger.warning(
             "Starting %s failed (attempt %d, published as %s): %s",
             vm_hash,

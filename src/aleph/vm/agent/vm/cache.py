@@ -101,18 +101,11 @@ def record_live_snapshot(live: Collection[str]) -> None:
 def forget_live(namespace: str) -> None:
     """Drop a VM the agent has just retired from the live set.
 
-    A retire quiesces the VM in the supervisor and forgets its registry
-    record, so the two halves the pass reconciles both stop naming it. Until
-    the next pass republishes the set, a hash left here reads to admission as
-    a live VM with no record, which is precisely the doubt that stops it
-    evicting anything: every download then logs an error and one that does
-    not fit is refused with the cache full of evictable entries. Retiring
-    under the retention that keeps volumes runs a pass straight after, but
-    reaping does not, and the periodic pass can be an hour away.
+    A hash left here until the next pass reads to admission as a live VM with
+    no record, and that doubt stops it evicting anything at all.
 
-    An unset snapshot stays unset: "no pass has run yet" is a different
-    answer from "nothing is live", and only the pass may turn one into the
-    other.
+    An unset snapshot stays unset: "no pass has run yet" is a different answer
+    from "nothing is live", and only the pass may turn one into the other.
     """
     global _live_snapshot  # noqa: PLW0603
     if _live_snapshot is None:
@@ -187,12 +180,9 @@ def in_flight_bytes(root: Path, *, count_ceilings: bool = True) -> int:
     bigger of the two is the honest figure, never their sum.
 
     ``count_ceilings`` separates a reservation made from a ``Content-Length``
-    from one made from a cap. Both hold room against the next admission, since
-    a body nobody measured still has to be paid for if it turns out to be that
-    big. Only a measured one may cost an entry its place: a caller deciding
-    how much to evict passes ``count_ceilings=False``, and a ceiling then
-    counts only the bytes it has actually written, which is the part of it
-    that is a measurement.
+    from one made from a cap. Both hold room against the next admission, but
+    only a measured one may cost an entry its place, so a caller deciding how
+    much to evict passes ``count_ceilings=False``.
     """
     reserved = reserved_downloads()
     total = 0
@@ -371,11 +361,9 @@ def parent_refs_of(evicted: list[Path]) -> list[str]:
 def _iter_loop_backings() -> Iterator[tuple[str, str]]:
     """``(loop device, backing file)`` for every loop device the kernel lists.
 
-    Read from sysfs rather than with ``losetup -j``, which has to stat the
-    backing file: an evicted cache entry is already unlinked, and the loop
-    that still pins its blocks is exactly the one that has to go. sysfs keeps
-    the path of an unlinked file, marked " (deleted)", and the marker is left
-    on the string here because it is what tells the two callers apart.
+    Read from sysfs rather than with ``losetup -j``, which stats the backing
+    file: an evicted entry is already unlinked, and sysfs still names it,
+    marked " (deleted)". The marker is left on the string: callers use it.
     """
     try:
         backing_files = sorted(SYS_BLOCK.glob("loop*/loop/backing_file"))
@@ -498,9 +486,8 @@ class _RootBudget:
     budget: int
     usage: int
     evicted: list[Path]
-    # Namespace to the bytes its retained volumes gave back, for the caller's
-    # report: reclaiming a VM to free its parent image deletes disks, and a
-    # pass that does not say so reports only the cache entries it unlinked.
+    # Namespace to the bytes its retained volumes gave back: reclaiming a VM to
+    # free its parent image deletes disks, and the report has to say so.
     reclaimed_bytes: dict[str, int]
     live_only: set[str]
     is_live: Callable[[str], bool]
@@ -560,11 +547,8 @@ def evict_caches(
         state = _RootBudget(
             root=root,
             budget=budget,
-            # A download whose size nobody stated holds room, but the figure it
-            # holds is a guess: unlinking a real entry to honour it would trade
-            # something the node has for something it may never need. Only the
-            # bytes such a download has actually written count here, so the
-            # eviction it does cause is the one its own body earned.
+            # An unmeasured download holds a guessed figure, so only the bytes
+            # it has really written may cost a real entry its place.
             usage=_root_usage(root, entries, count_ceilings=False) + needed.get(root, 0),
             evicted=evicted,
             reclaimed_bytes=reclaimed_bytes,
@@ -769,12 +753,8 @@ def admit_download(
     may be fetched, and only a load that would stay over the budget with
     everything safely evictable gone is refused.
 
-    The refusal is decided before any of it, against what a full eviction
-    would leave. Deciding it afterwards meant measuring two different things:
-    the eviction stops as soon as the bytes really on disk fit, while the
-    refusal also counts the room an unmeasured download is holding, so a
-    download could take entries with it on the way to being refused. Nothing
-    is evicted for a download that is not admitted.
+    The refusal is decided before any of it, against what a full eviction would
+    leave, so nothing is evicted for a download that is not admitted.
 
     An admitted download is then charged to its ``.part`` path until
     ``download_file`` releases it, so the next admission sees the room this
@@ -803,8 +783,7 @@ def admit_download(
         return
     try:
         # Read once and carried down: everything below is a share of this
-        # figure, and a second read is a second chance to fail on a question
-        # already answered.
+        # figure, and a second read is a second chance to fail.
         total = cache_disk_total(root)
     except OSError:
         logger.warning("Cache directory %s is not accessible; admitting the download", root, exc_info=True)
@@ -818,17 +797,12 @@ def admit_download(
     entries = cache_entries(root)
     usage = _root_usage(root, entries) + content_length
     may_evict = _may_evict_for_admission(registry)
-    # Only asked when the answer can change anything: a root already inside
-    # its budget cannot be refused whatever is evictable, and the estimate
-    # costs a walk of every pool's markers plus a sysfs stat per runtime
-    # entry, on the event loop, inside the download.
+    # Only asked when the answer can change anything: the estimate walks every
+    # pool's markers on the event loop, inside the download.
     evictable = _evictable_bytes(registry, entries) if may_evict and usage > budget else 0
     if usage - evictable > budget:
-        # Decided before anything is unlinked. The eviction below stops as
-        # soon as the bytes really on disk fit, while this total also counts
-        # the room an unmeasured download is holding, so a refusal taken
-        # after the eviction could leave entries gone and the download failed
-        # all the same. Nothing is evicted for a download that cannot fit.
+        # Decided before anything is unlinked, so a download that cannot fit
+        # never costs an entry on its way to being refused.
         free = max(budget - (usage - content_length), 0)
         msg = f"Cache {root} cannot hold a {content_length} byte download within CACHE_BUDGET"
         raise InsufficientResourcesError(
@@ -857,16 +831,10 @@ def _admit_unknown_length(tmp_path: Path, root: Path, total: int, budget: int, m
     So: never evict for a figure that is only a ceiling, and refuse only what
     a root that is already over its budget cannot start at all.
 
-    What is charged is a modest, deliberately arbitrary figure,
-    ``UNKNOWN_LENGTH_RESERVE`` (2 GiB by default), and never more than this
-    download's own cap nor than the whole budget. Charging the budget itself,
-    as this used to, made one chunked response hold the entire root: every
-    other download on it was refused for as long as that one ran, whatever
-    its real size turned out to be. A reserve leaves room beside it, is still
-    charged against the next admission so a stream of unknown-length
-    downloads ends in a refusal, and is reconciled against the truth as the
-    body lands, since the bytes on disk are counted the moment they are
-    written and outgrow the reserve when the body is bigger than it.
+    What is charged is ``UNKNOWN_LENGTH_RESERVE`` (2 GiB by default), never
+    more than this download's own cap nor than the whole budget, so one
+    chunked response cannot hold the entire root. The bytes on disk are
+    counted as they land and outgrow the reserve when the body is bigger.
     """
     usage = _root_usage(root, cache_entries(root))
     if usage > budget:
@@ -883,11 +851,8 @@ def _unknown_length_charge(total: int, budget: int, max_bytes: int | None) -> in
     """The room to hold for a body nobody measured: the smallest of the
     reserve, this download's own cap and the budget.
 
-    ``total`` is the size of the cache disk, which the caller has already
-    read: the reserve may be a percentage of it. It used to be read a second
-    time here, with a fallback for a failure that cannot happen, since the
-    caller's own read of the very same disk had just succeeded. One reading,
-    one answer, and no unreachable branch left to reason about."""
+    ``total`` is the size of the cache disk, passed in because the reserve may
+    be a percentage of it and the caller has already read it."""
     reserve = parse_budget(settings.UNKNOWN_LENGTH_RESERVE, total)
     figures = [reserve, budget] if max_bytes is None else [reserve, budget, max_bytes]
     return min(figures)

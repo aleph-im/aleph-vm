@@ -21,9 +21,8 @@ from .custom_logs import setup_handlers
 logger = logging.getLogger(__name__)
 
 
-# Validated against --loglevel, here and on the storage subcommand: an
-# unknown name must be a clean argparse usage error (exit 2), not a raw
-# ValueError traceback out of logging.Logger.setLevel further down.
+# Validated against --loglevel here and on the storage subcommand, so an
+# unknown name is an argparse usage error rather than a later traceback.
 LOG_LEVEL_NAMES = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 
 
@@ -134,9 +133,8 @@ def parse_args(args):
         dest="loglevel",
         type=str.upper,
         choices=LOG_LEVEL_NAMES,
-        # -v/--verbose is registered first and already supplies the default,
-        # so this one must not offer a second one: argparse would keep the
-        # first anyway, and SUPPRESS says so out loud.
+        # -v/--verbose already supplies the default, so this must not offer a
+        # second one.
         default=argparse.SUPPRESS,
         help="Log level by name (DEBUG, INFO, WARNING, ERROR, CRITICAL)",
     )
