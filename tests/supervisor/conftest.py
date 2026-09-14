@@ -180,8 +180,7 @@ def reset_agent_state() -> None:
     evictor and its cleanup would leave later placements evicting into that
     test's tree, which is exactly the class of leak this closes for the state.
 
-    ``clean_agent_state`` calls this around every test; a test may call it
-    directly to pin that it does.
+    ``clean_agent_state`` calls this around every test.
     """
     import aleph.vm.agent.vm.cache as cache_module
     import aleph.vm.agent.vm.reclaimable as reclaimable_module
