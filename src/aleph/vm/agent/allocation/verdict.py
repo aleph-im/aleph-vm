@@ -248,36 +248,40 @@ def compute_verdict(
 
     for vm_hash, info in known.items():
         if vm_hash in plan.entries:
-            # A VM this node already holds, up or stopped, is acknowledged
-            # rather than sized: what the answer reports is that the
-            # scheduler's belief the VM is allocated here still holds. A
-            # stopped VM stays that way until its owner starts it, and its
-            # registry record goes on committing its memory and vCPUs, so
-            # sizing it as a candidate would let a node that is tight on room
-            # refuse a VM it is already holding, and a refusal is what takes
-            # the VM out of the plan the loop converges on.
+            # A VM this node already holds is acknowledged rather than sized,
+            # whatever state it is in. What the answer reports is that the
+            # scheduler's belief the VM is allocated here still holds, and it
+            # does: a registry record means the node reserved this VM's memory
+            # and vCPUs and has never given them back, a stopped VM stays
+            # stopped until its owner starts it, and one the supervisor holds
+            # dead is rebuilt out of that same reservation. Sizing any of them
+            # would charge the VM twice and let a node that is tight on room
+            # refuse a VM it is already holding, which is what takes the VM out
+            # of the plan the loop converges on. Only a hash this node holds
+            # nothing for is a candidate.
             #
             # A VM whose teardown is already running is the exception, however
             # alive or however stopped the supervisor says it is: the retire is
             # past the point where a push can call it off, so the VM is going
-            # away with its disks and this node will have to build it again.
-            # Judged as a candidate instead, it is answered accepted, or
-            # pending while the push carried no message to size it by, which is
-            # what the loop will actually do about it on the pass after the
-            # delete returns.
+            # away with its disks, its record with them, and this node will
+            # have to find room for it from nothing. Judged as a candidate
+            # instead, it is answered accepted, or pending while the push
+            # carried no message to size it by, which is what the loop will
+            # actually do about it on the pass after the delete returns.
+            held = registry.get(vm_hash) is not None
             if (
-                info.status in LIVE_STATUSES or info.status in STOPPED_STATUSES or info.awaiting_confidential_init
+                held
+                or info.status in LIVE_STATUSES
+                or info.status in STOPPED_STATUSES
+                or info.awaiting_confidential_init
             ) and vm_hash not in removing_now:
                 unchanged.add(vm_hash)
                 verdict.unchanged.append(vm_hash)
-            # A planned VM the supervisor holds dead is about to be created
-            # again, and its stale record still counts as committed, but that
-            # is simulate's business: it leaves every candidate's own record
-            # out of the sums the way check_capacity's exclude_vm_hash does.
-            # Listing it as released here would credit that memory to the
-            # other candidates too, and for one still waiting on its message
-            # or refused for another node it would credit memory nobody is
-            # freeing at all.
+            # A candidate that does have a record here, the one being torn
+            # down, is not listed as released either: simulate leaves every
+            # candidate's own record out of the sums the way check_capacity's
+            # exclude_vm_hash does, while listing it here would credit that
+            # memory to the other candidates too.
             continue
         record = registry.get(vm_hash)
         # A VM the supervisor runs that we hold no record for is left alone
