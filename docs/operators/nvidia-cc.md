@@ -140,10 +140,15 @@ If `nvidia_cc` is absent from `/about/capability` while
   plain `gpu_device_id` shortage (`resolve_confidential_gpus`,
   `src/aleph/vm/agent/capacity.py`), so the log and the scheduler can tell
   a confidential-GPU shortage from an ordinary one.
-- **`VmSetupError ... asks for N GPUs; this CRN attaches one confidential
-  GPU per VM`.** The schema allows up to eight cards, but only single-GPU
-  passthrough is validated on the RTX PRO 6000 Blackwell Server Edition.
-  The scheduler should not have placed a multi-GPU V-PROGRAM here.
+- **A multi-card V-PROGRAM boots but the driver refuses one or more
+  cards.** The CRN attaches as many CC-mode cards as the message's `count`
+  names (up to the schema's eight), and every stage is per card. What is
+  not per card is NVIDIA's validation: multi-GPU confidential computing is
+  validated on HGX B200/B300 with driver R590 or newer over encrypted
+  NVLink, Hopper is one card per VM, and the RTX PRO 6000 Blackwell Server
+  Edition lists it as not yet validated. The guest's `swiotlb` reservation
+  is also sized per VM, not per card. Until a multi-card host has run the
+  hardware pass, expect a two-card V-PROGRAM to be an experiment.
 
 ## 6. What the CRN never does
 

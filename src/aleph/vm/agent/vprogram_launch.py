@@ -192,13 +192,10 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
 
     gpu = content.gpu
     if gpu is not None:
-        # The schema allows up to eight cards, the ceiling of NVIDIA's
-        # multi-GPU CC mode. One card per VM is the configuration this CRN
-        # validates: single-GPU passthrough on the RTX PRO 6000 Blackwell
-        # Server Edition, with no encrypted-NVLink topology to speak of.
-        if gpu.count > 1:
-            msg = f"V-PROGRAM {vm_hash} asks for {gpu.count} GPUs; this CRN attaches one confidential GPU per VM"
-            raise VmSetupError(msg)
+        # The count is the capacity resolver's business: every stage below
+        # (the daemon's per-card gate, the summed MMIO window, the guest's
+        # per-card device nodes and evidence) takes as many cards as the
+        # message names, up to the schema's ceiling of eight.
         if manifest.gpu is None:
             msg = f"V-PROGRAM {vm_hash} declares a GPU but runtime {content.runtime.ref} has no gpu block"
             raise VmSetupError(msg)
