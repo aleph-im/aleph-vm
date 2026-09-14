@@ -29,10 +29,10 @@ pub struct GpuDevice {
     pub pci_host: String,
     /// vendor:device ids, e.g. "10de:2b85".
     pub device_id: String,
-    /// NVIDIA confidential-computing mode, probed from BAR0 for idle
-    /// NVIDIA cards (gpu_cc.rs); `None` when not NVIDIA, not probed yet, or
-    /// the probe failed. Skipped when absent so a fleet without CC cards
-    /// keeps today's inventory bytes.
+    /// NVIDIA confidential-computing mode, read from the card's BAR0 register
+    /// (`gpu_cc.rs`) and not from lspci: the parser always leaves it `None`
+    /// and the host info fills it in on its own clone. Skipped when absent, so
+    /// a fleet with no CC-capable card keeps today's inventory bytes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cc_mode: Option<crate::gpu_cc::CcMode>,
     /// NVIDIA architecture family derived from the device id (gpu_cc.rs);
@@ -75,14 +75,15 @@ fn is_kernel_enabled_gpu(pci_host: &str) -> Result<bool, DaemonError> {
     let output = Command::new("lspci")
         .args(["-s", pci_host, "-nnk"])
         .output()
-        .map_err(|error| {
-            DaemonError::Lspci(format!("failed to run lspci -s {pci_host} -nnk: {error}"))
+        .map_err(|source| DaemonError::LspciSpawn {
+            arguments: format!("-s {pci_host} -nnk"),
+            source,
         })?;
     if !output.status.success() {
-        return Err(DaemonError::Lspci(format!(
-            "lspci -s {pci_host} -nnk exited with {}",
-            output.status
-        )));
+        return Err(DaemonError::LspciStatus {
+            arguments: format!("-s {pci_host} -nnk"),
+            status: output.status,
+        });
     }
     let details = String::from_utf8_lossy(&output.stdout);
     Ok(details
@@ -97,7 +98,9 @@ pub fn parse_gpu_device_info(
     line: &str,
     is_kernel_enabled_gpu: &mut dyn FnMut(&str) -> Result<bool, DaemonError>,
 ) -> Result<Option<GpuDevice>, DaemonError> {
-    let malformed = || DaemonError::Lspci(format!("unparseable lspci -mmnnn line: {line:?}"));
+    let malformed = || DaemonError::LspciLine {
+        line: line.to_string(),
+    };
 
     // pci_host, device = line.split(' "', maxsplit=1)
     let (pci_host, device) = line.split_once(" \"").ok_or_else(malformed)?;
@@ -168,12 +171,15 @@ pub fn get_gpu_devices() -> Result<Vec<GpuDevice>, DaemonError> {
     let output = Command::new("lspci")
         .arg("-mmnnn")
         .output()
-        .map_err(|error| DaemonError::Lspci(format!("failed to run lspci -mmnnn: {error}")))?;
+        .map_err(|source| DaemonError::LspciSpawn {
+            arguments: "-mmnnn".to_string(),
+            source,
+        })?;
     if !output.status.success() {
-        return Err(DaemonError::Lspci(format!(
-            "lspci -mmnnn exited with {}",
-            output.status
-        )));
+        return Err(DaemonError::LspciStatus {
+            arguments: "-mmnnn".to_string(),
+            status: output.status,
+        });
     }
     let listing = String::from_utf8_lossy(&output.stdout);
     parse_lspci_output(&listing, &mut is_kernel_enabled_gpu)
@@ -266,6 +272,7 @@ mod tests {
         // surface as a clean parse error.
         let truncated_class = "06:00.0 \"VGA compatible controller [030é\" \"NVIDIA Corporation [10de]\" \"GB202 [2b85]\" -ra1";
         let error = parse_gpu_device_info(truncated_class, &mut vfio_everywhere).unwrap_err();
+        assert!(matches!(error, DaemonError::LspciLine { .. }), "{error:?}");
         assert!(error.to_string().contains("unparseable"));
 
         let truncated_model = "06:00.0 \"VGA compatible controller [0300]\" \"NVIDIA Corporation [10de]\" \"GB202 [2b8\u{FFFD}\" -ra1";
@@ -299,6 +306,7 @@ mod tests {
         let device = parse_gpu_device_info(NVIDIA_VGA_LINE, &mut vfio_everywhere)
             .unwrap()
             .unwrap();
+        // The parser never fills the mode; only the host info does.
         assert_eq!(device.cc_mode, None);
         assert_eq!(device.arch, None);
         let json = serde_json::to_string(&device).unwrap();

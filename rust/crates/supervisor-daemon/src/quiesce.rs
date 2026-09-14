@@ -1,6 +1,6 @@
 //! Guest quiescence (FreezeGuest / ThawGuest), the supervisor's only part in
-//! a backup, a port of `LocalSupervisor.freeze_guest` / `thaw_guest`
-//! (src/aleph/vm/supervisor/local.py).
+//! a backup, a port of the Python `LocalSupervisor.freeze_guest` /
+//! `thaw_guest`.
 //!
 //! The agent owns the archives: it created the disks, so it copies, stores,
 //! expires and restores them. What it cannot do from outside the VM is

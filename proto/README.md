@@ -4,9 +4,11 @@ This directory holds `supervisor.proto`, the single source of truth for
 the contract between **network-agent** (Aleph orchestration) and
 **supervisor** (infra-only VM management) inside aleph-vm.
 
-Design reference:
-`docs/plans/2026-05-28-aleph-vm-architecture-backport-design.md` (mirror
-of the same file in the aleph-cvm repo).
+The split is deliberate: the agent owns everything Aleph-specific
+(messages, payments, allocations, the CRN's HTTP API) and the supervisor
+owns everything infrastructural (controllers, hypervisors, networking,
+systemd units). Agent and supervisor run on the same host and share a
+filesystem, so every path in the contract is exchanged by reference.
 
 ## Regenerating Python bindings
 
@@ -31,7 +33,7 @@ the script on every PR and fails if the generated files drift from
 gRPC's status codes (`grpc.StatusCode`) are too coarse to map back to
 the aleph-vm HTTP API faithfully. Today's views catch
 backend-internal exception types directly (`FileTooLargeError`,
-`MicroVMFailedInitError`, ...; see Annex A.6 of the design doc). The
+`MicroVMFailedInitError`, ...). The
 `ErrorCode` enum + `ErrorDetail` message let the supervisor surface
 those distinctions across the wire without exporting Python types.
 

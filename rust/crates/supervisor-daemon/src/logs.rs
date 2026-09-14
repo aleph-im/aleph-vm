@@ -7,21 +7,20 @@
 //! timestamp (`whole seconds * 1e9 + microseconds * 1000`, i.e. the entry's
 //! `__REALTIME_TIMESTAMP` in microseconds times 1000).
 //!
-//! Implementation choice (design doc section 11 left it open): a
+//! Implementation choice, deliberately left open by the port: a
 //! `journalctl -o json` subprocess rather than a native sd-journal binding.
 //! Rationale: no C library dependency in the daemon (the binary stays
 //! self-contained and buildable in minimal containers), and the daemon sees
 //! exactly what operators see when they debug with journalctl, so any
 //! filtering discrepancy is reproducible with the standard tool. Matches on
 //! the same field are OR-ed by journalctl, exactly like consecutive
-//! `add_match` calls on one sd-journal reader. Recorded in
-//! docs/plans/rust-port-divergences.md.
+//! `add_match` calls on one sd-journal reader.
 //!
 //! Memory bound: the caller passes `last_lines` (journalctl `-n`) whenever
 //! it only needs the tail, so the subprocess output is bounded at the
 //! source instead of buffering the full history; the GetLogs handler adds a
-//! Rust-only server cap for "unlimited" requests (ledger entry 16 in
-//! docs/plans/rust-port-divergences.md).
+//! server cap for "unlimited" requests that the Python daemon never had:
+//! unbounded journal output is a memory exhaustion of the daemon.
 //!
 //! The trait seam keeps cargo tests hermetic: production uses
 //! [`JournalctlLogSource`], tests use [`StaticLogSource`].

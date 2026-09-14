@@ -8,8 +8,9 @@ Aleph VM Supervisor contract.
 This service is the infra-only boundary between the network-agent
 (Aleph orchestration: HTTP CRN API, messages, payments, allocations)
 and the supervisor (controllers, hypervisors, networking, systemd).
-Reference: docs/plans/2026-05-28-aleph-vm-architecture-
-backport-design.md.
+Nothing about accounts, messages, payments or the CRN's HTTP surface
+crosses it: the supervisor is handed resolved paths and figures, and
+answers about the VMs it runs.
 
 SAME-HOST INVARIANT: this is a process boundary, not a network
 boundary. Agent and supervisor share a filesystem; every path in this

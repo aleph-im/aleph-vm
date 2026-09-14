@@ -1,6 +1,5 @@
-//! aleph-vm-controller entry point: the process lifecycle port of
-//! `src/aleph/vm/supervisor/controllers/__main__.py` for the non-confidential
-//! persistent QEMU path.
+//! aleph-vm-controller entry point: the per-VM process the supervisor's
+//! systemd unit runs, for the non-confidential persistent QEMU path.
 //!
 //! Arg parse (`--config`, `--print-settings`, `-vv`), validate the one
 //! settings field Network cannot default (`NETWORK_INTERFACE`), wait for the
@@ -121,10 +120,8 @@ fn main() -> ExitCode {
     }
 }
 
-/// The controller's fallible body: the port of `__main__.main` after logging
-/// setup. Each `?` is one of Python's `exit(1)` sites. Like Python (which
-/// returns after `asyncio.run` regardless of QEMU's return code), the QEMU
-/// exit code is not propagated: a VM that boots and later exits, cleanly or
+/// The controller's fallible body, everything after logging setup. QEMU's own
+/// exit code is NOT propagated: a VM that boots and later exits, cleanly or
 /// not, is still a successful controller run.
 ///
 /// `ControllerError` stays the typed mid-layer (tests downcast into it); this

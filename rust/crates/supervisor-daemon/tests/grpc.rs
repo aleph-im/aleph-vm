@@ -186,8 +186,8 @@ async fn serves_health_and_host_info_on_a_unix_socket() {
         "Firecracker spec VMs require a guest_channel"
     );
 
-    // Persistent Firecracker programs are not ported (they boot under
-    // systemd controller units; ledgered).
+    // A persistent Firecracker VM is refused outright: the Firecracker path
+    // runs the microVM in-process, with no unit to adopt or restart through.
     let status = client
         .create_vm(pb::VmSpec {
             backend: pb::Backend::Firecracker as i32,
