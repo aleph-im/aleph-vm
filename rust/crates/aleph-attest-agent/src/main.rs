@@ -165,7 +165,7 @@ async fn main() -> Result<()> {
             Some(Arc::new(GpuState {
                 source: Box::new(source),
                 boot_claims,
-                lock: tokio::sync::Mutex::new(()),
+                lock: Arc::new(tokio::sync::Mutex::new(())),
                 lock_wait: proxy::GPU_LOCK_WAIT,
             }))
         }
