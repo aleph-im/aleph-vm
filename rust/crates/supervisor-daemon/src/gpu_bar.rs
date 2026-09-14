@@ -175,9 +175,8 @@ pub fn gpu_mmio64_mb_under(devices_dir: &Path, pci_hosts: &[&str]) -> Result<u64
                 path: path.clone(),
                 source,
             })?;
-        // Saturating here would quietly under-size the window, which is the
-        // failure this module exists to prevent: the guest would enumerate
-        // the card and find its BARs unassigned.
+        // Saturating would quietly under-size the window and leave the guest's
+        // BARs unassigned, the failure this module exists to prevent.
         total = total
             .checked_add(parse_resource_file(&contents)?)
             .ok_or_else(|| DaemonError::GpuBarTotal {
@@ -251,9 +250,8 @@ mod tests {
 
     #[test]
     fn a_bar_total_across_cards_that_overflows_is_an_error() {
-        // Two cards whose BARs each fill half the address space: the per-card
-        // parse succeeds and only the sum overflows, so the guard has to sit
-        // in the loop over the cards, not just inside one resource file.
+        // Each per-card parse succeeds and only the sum overflows, so the
+        // guard has to sit in the loop, not inside one resource file.
         let dir = tempfile::tempdir().unwrap();
         let half = "0x0000000000000000 0x7fffffffffffffff 0x000000000014220c\n";
         for name in ["0000:06:00.0", "0000:07:00.0"] {
@@ -283,9 +281,8 @@ mod tests {
 
     #[test]
     fn malformed_lines_are_errors() {
-        // Each failure names what it saw, and carries the offending text in a
-        // field rather than in a pre-formatted string, so a caller can log the
-        // line or the field without re-parsing the message.
+        // Each failure carries the offending text in a field, not baked into a
+        // pre-formatted message.
         let short = parse_resource_file("0x1 0x2\n").unwrap_err();
         assert!(
             matches!(&short, DaemonError::GpuResourceLine { line } if line == "0x1 0x2"),

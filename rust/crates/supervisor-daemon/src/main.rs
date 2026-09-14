@@ -138,8 +138,7 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
     };
 
     // The world view is rebuilt before the socket exists, like the Python
-    // daemon's load_persistent_executions before serve_unix; the nftables
-    // and ndppd reconcile follows it.
+    // daemon's load_persistent_executions before serve_unix.
     // Blocking on purpose: no runtime is up yet, and the sources (files,
     // one D-Bus round trip, sqlite) are all local.
     let units = Arc::new(ZbusUnitStates::new());

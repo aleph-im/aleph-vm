@@ -1,10 +1,8 @@
 //! Daemon-level error type.
 //!
 //! The failures the daemon itself produces, as opposed to the closed
-//! vocabulary the RPC boundary answers with (`RpcError` in lifecycle.rs,
-//! which carries the wire ErrorCode). Anything here that escapes to a
-//! handler becomes the INTERNAL catch-all, the way the Python
-//! `translating_errors()` wrapper did.
+//! vocabulary the RPC boundary answers with (`RpcError` in lifecycle.rs).
+//! Anything here that escapes to a handler becomes the INTERNAL catch-all.
 
 use std::path::PathBuf;
 

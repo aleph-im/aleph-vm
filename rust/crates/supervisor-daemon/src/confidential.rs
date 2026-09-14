@@ -2,9 +2,9 @@
 //! `LocalSupervisor.initialize_confidential` / `get_measurement` /
 //! `inject_secret`.
 //!
-//! Scope: the daemon does the non-hardware work exactly as Python does. `initialize_confidential`
-//! writes the owner's SEV session certificates and starts the controller
-//! unit (no SEV hardware involved). `get_measurement` and `inject_secret` are
+//! Scope: the daemon does the non-hardware work exactly as Python does.
+//! `initialize_confidential` writes the owner's SEV session certificates and
+//! starts the controller unit. `get_measurement` and `inject_secret` are
 //! QMP passthrough to a running confidential QEMU: the protocol is ported
 //! (src/qmp.rs), but the SEV data path only answers on an SEV host, so those
 //! two are HARDWARE-GATED like the Python Tier-2 path. The real attestation

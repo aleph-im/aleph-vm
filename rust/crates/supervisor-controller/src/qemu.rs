@@ -694,20 +694,17 @@ pub fn build_snp_argv(config: &QemuConfig, sev: SevHostInfo) -> Vec<String> {
     args
 }
 
-/// Build the argv for a non-confidential persistent VM, spawn qemu and
-/// supervise it: block on the child, and on SIGTERM run the graceful-stop
-/// escalation rather than letting systemd's SIGKILL reach a VM with dirty
-/// caches.
+/// Build the argv for a non-confidential persistent VM, spawn qemu and block
+/// on it. SIGTERM runs the graceful-stop escalation rather than letting
+/// systemd's SIGKILL reach a VM with dirty caches.
 pub async fn run(vm_hash: &str, config: &QemuConfig) -> Result<i32, QemuError> {
     let argv = build_argv(config);
     spawn_and_supervise(vm_hash, config, argv).await
 }
 
-/// Launch an existing SEV / SEV-ES confidential VM, behind two pre-launch
-/// guards (the host is an SEV platform, and the config carries the four
-/// confidential fields). The VM starts paused (`-S`); this controller does
-/// NOT inject the launch secret or resume the CPU, which is the supervisor's
-/// session flow.
+/// Launch an existing SEV / SEV-ES confidential VM. It starts paused (`-S`);
+/// this controller does NOT inject the launch secret or resume the CPU, which
+/// is the supervisor's session flow.
 pub async fn run_confidential(vm_hash: &str, config: &QemuConfig) -> Result<i32, QemuError> {
     // Read the host SEV info, then run the two pre-launch guards (factored into
     // `confidential_prelaunch_check` so they are unit-testable off-SEV). The
@@ -1216,12 +1213,9 @@ mod tests {
         );
     }
 
-    /// The rootfs `-drive` token has no `aleph-tee` oracle: that crate's
-    /// launch-argv generator emits the CPU, machine, TEE objects and
-    /// firmware and never a disk line at all, `encrypted` field or not. So
-    /// these two shapes are asserted as this repo's own documented contract
-    /// instead of a cross-crate parity check. Default (both keys absent)
-    /// stays the read-only raw verity token.
+    /// Pins the default rootfs `-drive` token (both override keys absent) as
+    /// this repo's own contract: `aleph-tee` never emits a disk line, so there
+    /// is no cross-crate oracle for it.
     #[test]
     fn snp_rootfs_drive_defaults_to_the_readonly_raw_verity_token_when_the_override_is_absent() {
         let argv = build_snp_argv(&snp_config_with_rootfs_override(None), epyc_sev_host_info());

@@ -2,8 +2,7 @@
 //!
 //! Same lifecycle as the Python daemon: mkdir the socket parent, unlink a
 //! stale socket, serve, unlink on exit.
-//! Day-one improvements over Python, taken on the first day of the port
-//! rather than deferred:
+//! Day-one improvements over Python:
 //! - the socket is bound under umask 0o077, so it is never observable with
 //!   permissive modes, and chmod 0700 afterwards as a backstop; the agent
 //!   runs as root too and nothing else may connect.

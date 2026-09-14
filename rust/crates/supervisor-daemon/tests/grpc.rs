@@ -186,10 +186,8 @@ async fn serves_health_and_host_info_on_a_unix_socket() {
         "Firecracker spec VMs require a guest_channel"
     );
 
-    // A persistent Firecracker VM is refused outright. Persistence means a
-    // per-VM systemd controller unit, and the Firecracker path here runs the
-    // microVM in-process for the length of one request instead; there is no
-    // unit for a persistent one to be adopted from or restarted through.
+    // A persistent Firecracker VM is refused outright: the Firecracker path
+    // runs the microVM in-process, with no unit to adopt or restart through.
     let status = client
         .create_vm(pb::VmSpec {
             backend: pb::Backend::Firecracker as i32,

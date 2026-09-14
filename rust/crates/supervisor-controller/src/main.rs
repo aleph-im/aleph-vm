@@ -120,11 +120,9 @@ fn main() -> ExitCode {
     }
 }
 
-/// The controller's fallible body, everything after logging setup. Each `?`
-/// aborts the run with a non-zero exit. QEMU's own exit code is NOT
-/// propagated: a VM that boots and later exits, cleanly or not, is still a
-/// successful controller run, and the supervisor decides what a dead guest
-/// means from the unit state.
+/// The controller's fallible body, everything after logging setup. QEMU's own
+/// exit code is NOT propagated: a VM that boots and later exits, cleanly or
+/// not, is still a successful controller run.
 ///
 /// `ControllerError` stays the typed mid-layer (tests downcast into it); this
 /// signature is `anyhow::Result` only so `main` has one uniform sink.

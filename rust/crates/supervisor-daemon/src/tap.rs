@@ -6,8 +6,7 @@
 //! [`TapAssignment`] and the kernel edge behind the [`TapBackend`] seam.
 //! The production backend shells out to `ip(8)` where Python drives
 //! netlink through pyroute2: same kernel operations, same tolerance for
-//! already-existing devices and addresses. The difference is how the
-//! request reaches the kernel, not what it asks for.
+//! already-existing devices and addresses.
 
 use std::process::Command;
 

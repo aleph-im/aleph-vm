@@ -15,11 +15,9 @@
 //! (option 6). The aleph-cvm donor
 //! (aleph-compute-node/src/network/tap.rs) reserves the IP by MAC through a
 //! shared dnsmasq's `--dhcp-hostsdir`; the SNP NIC here has no fixed MAC
-//! (the launch carries no `mac=`, matching this repo's other QEMU paths
-//! rather than the donor), so a SINGLE-address `--dhcp-range` is how the
-//! guest deterministically gets the right address instead. Only the SNP
-//! path uses this; plain and SEV/SEV-ES VMs keep the cloud-init static
-//! config, untouched.
+//! (the launch carries no `mac=`), so a SINGLE-address `--dhcp-range` is how
+//! the guest deterministically gets the right address instead. Only the SNP
+//! path uses this; plain and SEV/SEV-ES VMs keep the cloud-init static config.
 //!
 //! The kernel/systemd edge lives behind the [`DhcpBackend`] seam, mirroring
 //! [`crate::tap::TapBackend`], so cargo tests assert the derived dnsmasq

@@ -119,8 +119,7 @@ pub struct DaemonState {
     pub logs: Arc<dyn LogSource>,
     pub nft: Arc<dyn crate::nft::NftExecutor>,
     pub taps: Arc<dyn crate::tap::TapBackend>,
-    /// Per-tap DHCP for SEV-SNP measured VMs: the measured image DHCPs
-    /// (nix/init.sh udhcpc) and its
+    /// Per-tap DHCP for SEV-SNP measured VMs: the measured image DHCPs and its
     /// cmdline omits `ip=` for measurement determinism, so the daemon serves
     /// the guest its allocated IPv4 over a single-address dnsmasq on the tap.
     /// Only the SNP path uses this; plain and SEV VMs keep cloud-init static
@@ -292,11 +291,8 @@ impl SupervisorService {
     async fn host_info(&self) -> Result<pb::HostInfo, DaemonError> {
         let (kernel_version, hostname) = host::uname_release_and_nodename()?;
         // Available = inventory minus the GPUs the world view's controller
-        // configs attach. Post-#1023 Python rebuilds the attachments for
-        // VMs adopted running; the config union here also withholds
-        // adopted-STOPPED VMs' cards, which Python destroys at startup and
-        // this daemon keeps. Reporting an attached card as available is how
-        // a restart invites a double attachment.
+        // configs attach, adopted-STOPPED VMs included: reporting an attached
+        // card as available is how a restart invites a double attachment.
         let attached: HashSet<String> = {
             let world = self.state.world.read().await;
             attached_gpus(&world)
@@ -500,20 +496,11 @@ fn gpu_json(gpus: &[GpuDevice]) -> Result<String, DaemonError> {
 }
 
 /// Every GPU the world view's controller configs attach, each paired with
-/// whether a live confidential guest vouches for its CC mode. Two callers
-/// need the same walk: the inventory subtracts these cards from what it
-/// advertises as available, and the CC refresh skips them, taking the
-/// create gate's answer for the vouched ones.
+/// whether a live confidential guest vouches for its CC mode.
 ///
-/// The flag needs the VM to be confidential AND live, a start with no stop
-/// after it. A stopped VM's QEMU is gone, so its card is idle hardware an
-/// operator can re-mode and the gate's reading no longer holds; the card is
-/// still attached, so it is still subtracted and still never read. "Live"
-/// is not just the absence of a stop: an entry that was never started (a
-/// Defined one, or one adopted while the systemd bus was unreachable, where
-/// no stage timestamp but defined_at is set) has no guest holding its card
-/// either, and the adopted case is precisely where the daemon cannot tell
-/// whether the guest is alive.
+/// Vouched means confidential AND live, a start with no stop after it: a
+/// stopped or never-started VM holds no card, so the create gate's reading no
+/// longer holds even though the card stays attached.
 fn attached_gpus(world: &WorldView) -> impl Iterator<Item = (&str, bool)> {
     world.entries.values().flat_map(|entry| {
         let live = entry.times.started_at_ns != 0 && entry.times.stopped_at_ns == 0;
@@ -629,9 +616,7 @@ fn refresh_cc_modes_with(
     // of the card at every boot) or the VM is deleted and the card is read
     // as free.
     //
-    // What counts as live is `attached_gpus`'s rule: a start with no stop
-    // after it, so a never-started or bus-unreachable adopted entry is not
-    // seeded either.
+    // What counts as live is `attached_gpus`'s rule.
     let mut known_cc_on: HashSet<String> = HashSet::new();
     for (pci_host, vouched_cc_on) in attached_gpus(&world) {
         attached.insert(pci_host.to_string());
@@ -825,10 +810,9 @@ pub fn vm_info_message(
         stopping_at_ns: times.stopping_at_ns,
         stopped_at_ns: times.stopped_at_ns,
         confidential_mode: confidential_mode as i32,
-        // `_to_vm_info` maps execution.gpus: rebuilt at adoption for
-        // running VMs (post-#1023 Python) and set
-        // from the validated request at create. `model` rides empty: the
-        // Python HostGPU carries model=None on both paths.
+        // `_to_vm_info` maps execution.gpus: rebuilt at adoption for running
+        // VMs and set from the validated request at create. `model` rides
+        // empty because the Python HostGPU carries model=None on both paths.
         gpus: entry
             .gpus
             .iter()
@@ -992,9 +976,8 @@ fn port_forward_messages(entry: &VmEntry) -> Vec<pb::PortForwardInfo> {
 }
 
 /// Server cap on GetLogs history: the proto documents max_lines 0 as
-/// "unlimited (subject to server cap)"; Python has no cap today and buffers
-/// the whole journal, which an operator can turn into a memory exhaustion
-/// of the daemon with one request.
+/// "unlimited (subject to server cap)". Python has no cap and buffers the
+/// whole journal, a memory exhaustion one request wide.
 const GET_LOGS_SERVER_CAP: u32 = 10_000;
 
 /// The `-n` bound handed to journalctl. `-n` keeps the LAST n entries, so
@@ -1542,9 +1525,8 @@ impl Supervisor for SupervisorService {
         if let crate::quiesce::FreezeOutcome::Frozen(generation) = outcome {
             // The freeze deadline: an agent that dies mid-copy must not
             // leave a guest with its filesystems frozen. Clamped like the
-            // other float-seconds settings, so a crafted value cannot
-            // panic Duration::from_secs_f64 and instead never fires, the
-            // way asyncio.wait_for treats it.
+            // other float-seconds settings so a crafted value cannot panic
+            // Duration::from_secs_f64.
             let timeout_secs = state.host.settings.guest_freeze_timeout;
             let timeout = std::time::Duration::from_secs_f64(timeout_secs.clamp(0.0, 3.15e9));
             tokio::spawn(async move {

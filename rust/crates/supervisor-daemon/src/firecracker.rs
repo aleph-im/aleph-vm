@@ -409,8 +409,7 @@ fn jailman_ids() -> Result<(u32, u32), FirecrackerError> {
 /// enable_kernel and enable_file_rootfs catch FileExistsError, and
 /// enable_drive's bare `except OSError` swallows EEXIST too, so a duplicate
 /// basename silently aliases the earlier staged file in both daemons (a
-/// shared wart: the collision should be refused on both sides together,
-/// not on one). `exdev_copies` selects the cross-device
+/// shared wart). `exdev_copies` selects the cross-device
 /// behavior: enable_file_rootfs and enable_drive fall back to a copy on
 /// EXDEV, enable_kernel catches only FileExistsError and propagates EXDEV.
 fn stage_into_jail(
@@ -712,8 +711,7 @@ impl FirecrackerLauncher {
         // enable_kernel / enable_rootfs / enable_drive: stage files into
         // the chroot when jailed, pass host paths through otherwise. Block
         // device rootfs (the Python device-mapper branch) is not ported:
-        // the spec path only ever stages regular files, so porting live
-        // dmsetup semantics would be untestable dead weight.
+        // the spec path only ever stages regular files.
         // Python enable_rootfs: is_file() and is_block_device() both answer
         // False for a missing path, so the ValueError message is the bare
         // path, without any OS error appended.

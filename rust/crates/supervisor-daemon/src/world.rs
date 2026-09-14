@@ -1,8 +1,6 @@
 //! The daemon's world view: every VM the host defines, rebuilt from disk,
-//! systemd and sqlite at boot. This module is the first four adoption
-//! steps (read the controller configs, batch-query systemd, rebuild an
-//! entry per config, derive its addresses); the fifth, the nftables and
-//! ndppd reconcile, runs right after in lifecycle::reconcile_boot.
+//! systemd and sqlite at boot. The nftables and ndppd reconcile that follows
+//! it lives in lifecycle::reconcile_boot.
 //!
 //! Python parity notes. The oracle is the restarted Python daemon
 //! (`VmPool.load_persistent_executions`): it scans
@@ -17,10 +15,9 @@
 //!
 //! - A config whose controller unit is NOT active is kept and reported
 //!   STOPPED (with `stopped_at` = the adoption instant), where Python stops
-//!   and disables the unit and deletes the config. A daemon that adopts
-//!   must not destroy state: the sweep also destroyed confidential VMs
-//!   still waiting for their owner to upload a session. Duplicate
-//!   vm_index claims get the same treatment, not adopted but never
+//!   and disables the unit and deletes the config. That sweep also destroyed
+//!   confidential VMs still waiting for their owner to upload a session.
+//!   Duplicate vm_index claims get the same treatment: not adopted, never
 //!   deleted.
 //! - An unparseable, oversized or non-regular-file config is logged and
 //!   skipped, where Python's startup aborts (the crash-loop lesson) or, for
@@ -35,9 +32,8 @@
 //!   to the live per-RPC unit queries until the bus answers.
 //! - A per-VM IP-derivation failure hides the VM (skipped with a WARN),
 //!   like a failed Python reattach that excludes the VM from ListVms via
-//!   the retry queue. A negative vm_index is one such failure: Python's
-//!   list indexing would silently serve the pool's LAST subnet for it,
-//!   aliasing a valid subnet between two VMs.
+//!   the retry queue. A negative vm_index is one such failure: Python's list
+//!   indexing serves the pool's LAST subnet for it, aliasing two VMs.
 //!
 //! A controller unit without a config file gets a WARN and is left alone.
 //!
@@ -283,8 +279,8 @@ pub struct VmEntry {
     /// until StartVm reloads it from the database).
     pub port_forwards: Vec<PortForward>,
     /// The `execution.gpus` attachments `_to_vm_info` reports: rebuilt from
-    /// the inventory for VMs adopted running (post-#1023 Python) and set
-    /// from the validated request at create.
+    /// the inventory for VMs adopted running, set from the validated request
+    /// at create.
     pub gpus: Vec<AttachedGpu>,
     /// The original VmSpec for VMs created through CreateVm on this daemon
     /// instance: the exact idempotency comparand and GetVmSpec payload,
@@ -748,11 +744,9 @@ pub fn build_world_view(
             }
         }
 
-        // Post-#1023 Python rebuilds execution.gpus for VMs adopted
-        // running, and so does this daemon: reporting an attached card as
-        // available invites a double attachment after every restart.
-        // Stopped entries keep an empty list until StartVm, like a Python
-        // execution that never reattached.
+        // execution.gpus is rebuilt for VMs adopted running: reporting an
+        // attached card as available invites a double attachment after every
+        // restart. Stopped entries keep an empty list until StartVm.
         let gpus = if running == Some(true) {
             rebuild_attached_gpus(&qemu.gpus, gpu_inventory)
         } else {

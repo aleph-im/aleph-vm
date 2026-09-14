@@ -289,11 +289,9 @@ fn with_entry_mut<R>(
 
 /// Choose a NUMA node for a new VM and reserve its vCPUs in the ledger.
 ///
-/// A spec that names a `numa_node` is honoured on that node or refused;
-/// the daemon never quietly places such a VM elsewhere, because the caller
-/// asked for that node for a reason it does not share (a device on the
-/// node's PCI root, a measurement of the placement). A spec that names
-/// none is packed onto the first node (node 0, then 1, ...) with room.
+/// A spec that names a `numa_node` is honoured on that node or refused, never
+/// quietly placed elsewhere; one that names none is packed onto the first node
+/// (node 0, then 1, ...) with room.
 /// Returns `Ok(None)` when placement is inert (fewer than two nodes). The
 /// ledger mutation is serialized by the caller's creation lock.
 fn place_vm_numa(
@@ -1168,12 +1166,9 @@ fn start_vm_execution_marked(
         // Even when the interface survived, the nftables rules may have
         // been flushed; always re-apply (create-if-absent).
         nft_setup_vm(state, entry.vm_index, &tap.device_name)?;
-        // Stop tore the SNP per-tap DHCP server down with the tap and nft
-        // rules; recreate it with them, or the rebooting measured guest
-        // (whose cmdline has no `ip=`, by measurement design) can never
-        // lease its IP and attestation is unreachable.
-        // `DhcpBackend::start` replaces a leftover unit, so a partial stop
-        // cannot fail this start.
+        // Stop tore the SNP per-tap DHCP server down with the tap; recreate it,
+        // or the rebooting measured guest (whose cmdline has no `ip=`) never
+        // leases its IP. `DhcpBackend::start` replaces a leftover unit.
         if entry.config.snp().is_some() {
             let config = dhcp::DhcpConfig::for_snp(
                 vm_id,
@@ -1431,12 +1426,10 @@ pub fn delete_vm(
             }
         }
     }
-    // A still-live SNP VM whose adoption failed ran a per-tap DHCP server
-    // for its guest. The tracked teardown paths stop it, but this
-    // discard path did not, orphaning aleph-vm-dhcp-<hash>.service (and leaking
-    // its lease file) on every failed-adoption delete of a live SNP VM. Stop it
-    // here too, gated on the parsed config being SNP so plain/SEV VMs (which
-    // never started one) are untouched. Best-effort, like the controller stop.
+    // A still-live SNP VM whose adoption failed ran a per-tap DHCP server, and
+    // this discard path is a teardown like any other: without the stop,
+    // aleph-vm-dhcp-<hash>.service and its lease file are orphaned. Gated on
+    // the parsed config being SNP so plain/SEV VMs are untouched.
     if discarded_is_snp
         && let Err(dhcp_error) = state
             .dhcp
@@ -1757,9 +1750,8 @@ fn same_spec_or_conflict(entry: &VmEntry, request: &pb::VmSpec) -> Result<VmEntr
     }
 }
 
-/// The host inventory entry for a pci address, if the host has such a
-/// card. The inventory is the lspci listing collected once at startup, so
-/// this is a lookup over a handful of entries, not a probe.
+/// The host inventory entry for a pci address, if the host has such a card.
+/// A lookup over the startup lspci listing, not a probe.
 fn inventory_gpu<'a>(
     state: &'a DaemonState,
     pci_host: &str,
@@ -2391,9 +2383,8 @@ fn snp_config_slice_with(
     // (`rootfs.ext4.roothash` / `rootfs.ext4.verity`) and the aleph-cvm donor's
     // `ensure_verity` uses. With no agent cmdline, the measured cmdline is
     // DERIVED here from the roothash, exactly as the donor's
-    // `build_kernel_cmdline` does. There is no Python oracle for SNP: its
-    // controller never emitted an SNP guest object, so the donor and the
-    // measured image are the reference here.
+    // `build_kernel_cmdline` does. There is no Python oracle for SNP, so the
+    // donor and the measured image are the reference here.
     // Bound the sidecar read: a real dm-verity roothash is ~64 hex chars, so a
     // 4 KiB cap is generous. A pathological sidecar (the node builds its own
     // image, but defense in depth) cannot then load unbounded into RAM; an
@@ -3058,13 +3049,9 @@ fn create_vm_inner(
             // Set below once the NUMA placement is chosen (increment C1).
             numa_node: None,
         };
-        // Create starts the per-tap DHCP server on the request predicate
-        // `snp`, while every teardown path keys DHCP
-        // cleanup on `config.snp().is_some()`. They must agree, or a started
-        // server leaks. The two predicates are derived independently (request
-        // TEE backend vs the written-then-parsed config), so assert here that
-        // the freshly built config reaches the same SNP verdict; if this ever
-        // trips, create's predicate stopped being a superset of `snp()`.
+        // Create starts the per-tap DHCP server on the request predicate `snp`
+        // and every teardown path keys the cleanup on `config.snp().is_some()`.
+        // The two must agree, or a started server leaks.
         debug_assert_eq!(
             entry.config.snp().is_some(),
             snp,
@@ -3157,13 +3144,9 @@ fn create_vm_inner(
                     ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
                 }
                 nft_setup_vm(state, vm_index, &tap.device_name)?;
-                // SNP measured VMs get their IPv4 via a per-tap DHCP server, not
-                // cloud-init static config: the measured image DHCPs and its
-                // cmdline omits `ip=` so the launch measurement stays
-                // host-independent. The tap already carries the gateway
-                // address (create_tap added host_ipv4_cidr), so dnsmasq can
-                // bind and route. Plain and SEV VMs skip this and keep their
-                // cloud-init static config.
+                // SNP measured VMs get their IPv4 by DHCP, not cloud-init: the
+                // measured cmdline omits `ip=` so the launch measurement stays
+                // host-independent. Plain and SEV VMs keep the static config.
                 if snp {
                     let config = dhcp::DhcpConfig::for_snp(
                         &vm_id,
@@ -3623,11 +3606,9 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
                 .map(|unit| (unit.clone(), false))
                 .collect()
         });
-    // Rederive missing IP assignments before filtering: entries adopted
-    // during a bus outage carry no derived IPs (world.rs stamps nothing when
-    // unit states are unknown), and without this an operator could not heal
-    // their chains through RecreateNetwork. tap_assignment derives from
-    // vm_index/vm_hash (both known) and stores the result on the entry.
+    // Rederive missing IP assignments before filtering: entries adopted during
+    // a bus outage carry no derived IPs, and without this an operator could
+    // not heal their chains through RecreateNetwork.
     let mut entries = entries;
     for entry in &mut entries {
         if entry.ipv4.is_some()
@@ -4254,10 +4235,8 @@ mod tests {
             "no enable/start for a confidential VM, got {:?}",
             harness.systemd.actions()
         );
-        // Only the SNP measured image DHCPs; a SEV-ES VM keeps its cloud-init
-        // static config, so no per-tap DHCP server is stood up (this guards the
-        // startup predicate against being loosened from `snp` to
-        // `confidential`).
+        // Pins the startup predicate at `snp`, not `confidential`: only the
+        // measured image DHCPs.
         assert!(
             harness.dhcp.started().is_empty(),
             "a SEV-ES VM uses cloud-init static config, no DHCP server"
@@ -4740,12 +4719,9 @@ mod tests {
 
     #[test]
     fn create_snp_allocates_the_v_program_ipv6_hextet() {
-        // The static IPv6 scheme keys a vm-type hextet into the /124
-        // (world::VmType::prefix). SEV-SNP is the V-PROGRAM's exclusive
-        // launch path, so an SNP create must get the 0x4 nibble (Python
-        // VmType.v_program / scheduler VmType::ipv6_value()), not the
-        // plain-instance 0x3 it used to get before VmType::VProgram
-        // existed.
+        // SEV-SNP is the V-PROGRAM's exclusive launch path, so an SNP create
+        // must key the 0x4 vm-type nibble into its /124, not the
+        // plain-instance 0x3.
         let harness = harness();
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -4953,10 +4929,8 @@ mod tests {
 
     #[test]
     fn deleting_a_plain_vm_stops_no_dhcp_server() {
-        // A plain VM never started a per-tap DHCP server, so its teardown must
-        // NOT call dhcp.stop (this guards the `snp().is_some()` teardown gate
-        // against being removed, which would spuriously stop a nonexistent
-        // server for every plain VM delete).
+        // Pins the `snp().is_some()` teardown gate: a plain VM never started a
+        // server, so its teardown must not call dhcp.stop.
         let harness = harness();
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -5036,10 +5010,8 @@ mod tests {
 
     #[test]
     fn discarding_an_untracked_snp_vm_tears_down_the_dhcp_server() {
-        // A live SNP VM whose adoption failed (untracked, config still on disk)
-        // ran a per-tap DHCP server. The discard_failed_reattach delete path
-        // must stop it too, or aleph-vm-dhcp-<hash>.service (and its lease file)
-        // is orphaned.
+        // The discard_failed_reattach delete path must stop the DHCP server
+        // too, or aleph-vm-dhcp-<hash>.service and its lease file are orphaned.
         let harness = harness();
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -6873,8 +6845,7 @@ mod tests {
         // C14: Python's reboot_vm restarts the unit and stamps started_at
         // but never clears stopped_at/stopping_at nor reloads
         // mapped_ports, so a rebooted stopped VM still reports STOPPED
-        // with no forwards (a shared wart: both daemons should either
-        // refuse the reboot or run the full start path).
+        // with no forwards (a shared wart).
         let harness = harness();
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();

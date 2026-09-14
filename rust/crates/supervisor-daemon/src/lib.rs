@@ -14,9 +14,8 @@
 //! removed in 2026-08 once this daemon became the only implementation) after
 //! a restart: same `ALEPH_VM_*` configuration, same socket lifecycle, same
 //! field-level behavior, with the world rebuilt from disk/systemd/sqlite the
-//! way its `load_persistent_executions` rebuilt it: from the controller
-//! configs on disk, the units systemd reports and the port-forward store,
-//! so nothing a restart could lose is held in the process. The
+//! way its `load_persistent_executions` rebuilt it, so nothing a restart could
+//! lose is held in the process. The
 //! `LocalSupervisor` / `VmPool` references throughout this crate name that
 //! donor code; the committed fixtures and tests/conformance are what remain
 //! of it. Where this daemon deliberately behaves differently from the

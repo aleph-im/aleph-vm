@@ -144,7 +144,7 @@ fn qga_command(socket_path: &Path, command: &str) -> Result<Value, QmpError> {
         .map_err(|source| QmpError::QgaReadTimeout { source })?;
     // A write timeout matching the read timeout: a guest agent that never
     // drains its socket must not block write_all forever, parking this
-    // blocking-pool thread. Python's blocking client sets no such bound.
+    // blocking-pool thread.
     stream
         .set_write_timeout(Some(QGA_TIMEOUT))
         .map_err(|source| QmpError::QgaWriteTimeout { source })?;
@@ -211,8 +211,7 @@ impl QmpClient {
             .map_err(|source| QmpError::ReadTimeout { source })?;
         // A write timeout matching the read timeout: a monitor socket that
         // never drains must not block write_all forever, parking this
-        // blocking-pool thread. Python's blocking client sets no such
-        // bound.
+        // blocking-pool thread.
         stream
             .set_write_timeout(Some(QMP_TIMEOUT))
             .map_err(|source| QmpError::WriteTimeout { source })?;
