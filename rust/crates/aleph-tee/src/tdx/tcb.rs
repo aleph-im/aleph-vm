@@ -159,18 +159,20 @@ struct TcbLevel {
     advisory_i_ds: Vec<String>,
 }
 
+/// One rung of an ISVSVN ladder, the shape both the TDX module identities
+/// and the QE Identity publish.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct TdxModuleTcbLevel {
-    tcb: TdxModuleTcb,
+struct IsvsvnTcbLevel {
+    tcb: IsvsvnTcb,
     tcb_status: String,
     #[serde(default)]
     advisory_i_ds: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct TdxModuleTcb {
-    isvsvn: u8,
+struct IsvsvnTcb {
+    isvsvn: u16,
 }
 
 #[derive(Debug, Deserialize)]
@@ -180,7 +182,7 @@ struct TdxModuleIdentity {
     mrsigner: String,
     attributes: String,
     attributes_mask: String,
-    tcb_levels: Vec<TdxModuleTcbLevel>,
+    tcb_levels: Vec<IsvsvnTcbLevel>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -217,21 +219,7 @@ struct QeIdentity {
     attributes_mask: String,
     miscselect: String,
     miscselect_mask: String,
-    tcb_levels: Vec<QeTcbLevel>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct QeTcbLevel {
-    tcb: QeTcb,
-    tcb_status: String,
-    #[serde(default)]
-    advisory_i_ds: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct QeTcb {
-    isvsvn: u16,
+    tcb_levels: Vec<IsvsvnTcbLevel>,
 }
 
 // --- Signature verification of the signed JSON documents ---
@@ -529,7 +517,7 @@ fn tdx_module_status(
     let mut expected_attributes: [u8; 8] = hex_fixed("tdxModule.attributes", &base.attributes)?;
     let mut attributes_mask: [u8; 8] =
         hex_fixed("tdxModule.attributesMask", &base.attributes_mask)?;
-    let mut identity_levels: Option<&[TdxModuleTcbLevel]> = None;
+    let mut identity_levels: Option<&[IsvsvnTcbLevel]> = None;
 
     if module_version > 0 && !tcb_info.tdx_module_identities.is_empty() {
         let wanted = format!("TDX_{module_version:02X}");
@@ -565,19 +553,27 @@ fn tdx_module_status(
     let Some(levels) = identity_levels else {
         return Ok(None);
     };
-    // Highest ISVSVN first, like the platform walk: never trust the
-    // document order.
-    let mut levels: Vec<&TdxModuleTcbLevel> = levels.iter().collect();
+    walk_isvsvn_ladder("the TDX module SVN", levels, u16::from(module_svn)).map(Some)
+}
+
+/// The status the reported SVN earns on an ISVSVN ladder: the highest rung it
+/// meets, taking the document's order on trust nowhere.
+fn walk_isvsvn_ladder(
+    what: &str,
+    levels: &[IsvsvnTcbLevel],
+    have: u16,
+) -> Result<(TcbStatus, Vec<String>)> {
+    let mut levels: Vec<&IsvsvnTcbLevel> = levels.iter().collect();
     levels.sort_by_key(|level| std::cmp::Reverse(level.tcb.isvsvn));
     for level in levels {
-        if module_svn >= level.tcb.isvsvn {
-            return Ok(Some((
+        if have >= level.tcb.isvsvn {
+            return Ok((
                 TcbStatus::parse(&level.tcb_status)?,
                 level.advisory_i_ds.clone(),
-            )));
+            ));
         }
     }
-    bail!("the TDX module SVN is below every level in its identity")
+    bail!("{what} is below every level in its identity")
 }
 
 // --- QE Identity appraisal ---
@@ -623,19 +619,7 @@ fn qe_identity_status(qe: &QeIdentity, qe_report: &[u8; 384]) -> Result<(TcbStat
     }
 
     let isv_svn = u16::from_le_bytes([qe_report[QE_ISV_SVN], qe_report[QE_ISV_SVN + 1]]);
-    // Highest ISVSVN first, like the platform walk: never trust the
-    // document order.
-    let mut levels: Vec<&QeTcbLevel> = qe.tcb_levels.iter().collect();
-    levels.sort_by_key(|level| std::cmp::Reverse(level.tcb.isvsvn));
-    for level in levels {
-        if isv_svn >= level.tcb.isvsvn {
-            return Ok((
-                TcbStatus::parse(&level.tcb_status)?,
-                level.advisory_i_ds.clone(),
-            ));
-        }
-    }
-    bail!("the QE ISVSVN is below every level in the QE Identity")
+    walk_isvsvn_ladder("the QE ISVSVN", &qe.tcb_levels, isv_svn)
 }
 
 // --- Platform gates ---
@@ -1085,7 +1069,7 @@ mod tests {
     /// so the module gate turns on the SVN ladder alone.
     fn tcb_info_with_module_identities(
         levels: &[([u8; 16], &str, &[&str])],
-        module_identities: &[(&str, &[(u8, &str)])],
+        module_identities: &[(&str, &[(u16, &str)])],
     ) -> TcbInfo {
         let zeros = vec![serde_json::json!({"svn": 0}); 16];
         let levels: Vec<serde_json::Value> = levels
