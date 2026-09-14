@@ -26,7 +26,7 @@ from aleph_message.models import ExecutableContent, ItemHash, VerifiableProgramC
 from aleph_message.models.execution.instance import InstanceContent
 
 from aleph.vm import storage_pools
-from aleph.vm.agent.vm.purge import ROOTFS_STEM, _checked_namespace
+from aleph.vm.agent.vm.purge import ROOTFS_STEM, checked_namespace
 from aleph.vm.agent.vm.reclaimable import (
     MARKER_NAME,
     file_size_bytes,
@@ -228,7 +228,7 @@ def existing_volume_files(vm_hash: ItemHash | str) -> dict[str, Path]:
     Symlinks and the marker are skipped, and pools are walked in order with
     the first match winning, so the result does not depend on iteration luck.
     """
-    namespace = _checked_namespace(vm_hash)
+    namespace = checked_namespace(vm_hash)
     files: dict[str, Path] = {}
     for directory in storage_pools.iter_namespace_dirs(namespace):
         try:
