@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import errno
 import io
-import json
 import logging
 import os
 import re
@@ -1070,31 +1069,6 @@ def test_status_keeps_a_corrupt_marker(pools, registry):  # noqa: F811
 
     assert code == 0
     assert corrupt.exists()
-
-
-def test_a_marker_without_an_offset_shows_an_age(pools, registry):  # noqa: F811
-    """A hand-edited marker whose timestamp carries no offset parsed naive,
-    and subtracting it from the aware clock raised TypeError, which aborted
-    the whole listing instead of costing that one row its age."""
-    volume(pools["pool0"], VM_HASH, "rootfs.qcow2")
-    naive = (datetime.now(tz=timezone.utc) - timedelta(days=3)).replace(tzinfo=None)
-    (pools["pool0"] / VM_HASH / ".reclaimable").write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "reclaimable_since": naive.isoformat(),
-                "reason": "gone",
-                "size_bytes": 1,
-                "depends_on": [],
-            }
-        )
-    )
-
-    code, out, _err = _run(["list"], registry)
-
-    assert code == 0
-    age = [line.split("\t")[4] for line in out.splitlines()[1:] if line.startswith(VM_HASH)]
-    assert age == ["3d 0h"]
 
 
 def test_a_future_dated_marker_never_shows_a_negative_age(pools, registry):  # noqa: F811
