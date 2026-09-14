@@ -8,11 +8,10 @@ downloads, or the reverse.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
-import aleph.vm.agent.vm.retire as retire_module
-import aleph.vm.storage as storage_module
-import aleph.vm.storage_pools as storage_pools_module
 from aleph.vm.hooks import AgentHooks, current_hooks, install_hooks, installed_hooks
 
 
@@ -35,19 +34,18 @@ def clean_hooks():
         yield
 
 
-def test_a_single_slot_setter_leaves_the_other_two_alone():
-    """The setters the storage modules still expose write one slot into the
-    installed object. A setter that replaced the object outright would
-    silently unwire the other two hooks whenever a test used one."""
+def test_rewiring_one_slot_leaves_the_other_two_alone():
+    """A slot changes by installing a replaced copy of the whole object, never
+    by writing into the installed one, so the other two hooks ride along."""
     install_hooks(AgentHooks(after_gone=_after_gone, cache_admission=_admit, room_maker=_make_room))
 
-    storage_pools_module.set_room_maker(None)
+    install_hooks(replace(current_hooks(), room_maker=None))
     assert current_hooks() == AgentHooks(after_gone=_after_gone, cache_admission=_admit, room_maker=None)
 
-    storage_module.set_cache_admission(None)
+    install_hooks(replace(current_hooks(), cache_admission=None))
     assert current_hooks() == AgentHooks(after_gone=_after_gone, cache_admission=None, room_maker=None)
 
-    retire_module.set_after_gone_hook(None)
+    install_hooks(replace(current_hooks(), after_gone=None))
     assert current_hooks() == AgentHooks()
 
 

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from aleph.vm.hooks import AgentHooks, installed_hooks
 from aleph.vm.storage import download_file, download_file_in_chunks
 from aleph.vm.supervisor_interface.errors import FileTooLargeError
 
@@ -185,16 +186,15 @@ async def test_getters_pass_their_caps(mocker, tmp_path):
 
 @pytest.mark.asyncio
 async def test_cache_admission_hook_runs_before_writing(tmp_path):
-    import aleph.vm.storage as storage_module
-
     seen = []
-    storage_module.set_cache_admission(lambda path, length, cap: seen.append((path, length, cap)))
     session, _ = _session([b"x" * 4], content_length=4)
-    try:
+
+    def admit(path, length, cap):
+        seen.append((path, length, cap))
+
+    with installed_hooks(AgentHooks(cache_admission=admit)):
         with patch("aleph.vm.storage.aiohttp.ClientSession", return_value=session):
             await download_file_in_chunks("http://x/f", tmp_path / "f.part")
-    finally:
-        storage_module.set_cache_admission(None)
     assert seen == [(tmp_path / "f.part", 4, None)]
 
 
@@ -206,13 +206,16 @@ async def test_a_download_without_a_content_length_reports_its_cap_as_a_cap(tmp_
     import aleph.vm.storage as storage_module
 
     seen = []
-    storage_module.set_cache_admission(lambda path, length, cap: seen.append((path, length, cap)))
     session, _ = _session([b"x" * 4], content_length=None)
+
+    def admit(path, length, cap):
+        seen.append((path, length, cap))
+
     try:
-        with patch("aleph.vm.storage.aiohttp.ClientSession", return_value=session):
-            await download_file_in_chunks("http://x/f", tmp_path / "f.part", max_bytes=999)
+        with installed_hooks(AgentHooks(cache_admission=admit)):
+            with patch("aleph.vm.storage.aiohttp.ClientSession", return_value=session):
+                await download_file_in_chunks("http://x/f", tmp_path / "f.part", max_bytes=999)
     finally:
-        storage_module.set_cache_admission(None)
         storage_module.release_download(tmp_path / "f.part")
     assert seen == [(tmp_path / "f.part", None, 999)]
 
@@ -239,20 +242,16 @@ async def test_an_admitted_download_is_reserved_until_the_part_is_gone(tmp_path)
 
 @pytest.mark.asyncio
 async def test_a_refusing_cache_admission_writes_nothing(tmp_path):
-    import aleph.vm.storage as storage_module
     from aleph.vm.resources import InsufficientResourcesError
 
     def refuse(path, length, cap):
         raise InsufficientResourcesError("no room", required={}, available={})
 
-    storage_module.set_cache_admission(refuse)
     session, resp = _session([b"x" * 4], content_length=4)
-    try:
+    with installed_hooks(AgentHooks(cache_admission=refuse)):
         with patch("aleph.vm.storage.aiohttp.ClientSession", return_value=session):
             with pytest.raises(InsufficientResourcesError):
                 await download_file_in_chunks("http://x/f", tmp_path / "f.part")
-    finally:
-        storage_module.set_cache_admission(None)
     resp.content.read.assert_not_called()
     assert not (tmp_path / "f.part").exists()
 

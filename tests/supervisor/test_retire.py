@@ -20,6 +20,7 @@ from aleph.vm.agent.vm.reclaimable import MARKER_NAME, read_marker
 from aleph.vm.agent.vm.retire import RetireReason, retire_vm
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
+from aleph.vm.hooks import AgentHooks, installed_hooks
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
 from aleph.vm.supervisor_interface.types import VmId
 
@@ -175,11 +176,8 @@ async def test_gone_under_keep_runs_the_after_gone_hook(env, monkeypatch):
     reclaimable, not only at the next periodic pass."""
     monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
     hook = AsyncMock()
-    retire_module.set_after_gone_hook(hook)
-    try:
+    with installed_hooks(AgentHooks(after_gone=hook)):
         await retire_vm(VM_HASH, RetireReason.GONE, supervisor=env["supervisor"], registry=env["registry"])
-    finally:
-        retire_module.set_after_gone_hook(None)
 
     hook.assert_awaited_once()
 
@@ -190,11 +188,8 @@ async def test_gone_under_reap_does_not_run_the_after_gone_hook(env, monkeypatch
     no budget to enforce."""
     monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
     hook = AsyncMock()
-    retire_module.set_after_gone_hook(hook)
-    try:
+    with installed_hooks(AgentHooks(after_gone=hook)):
         await retire_vm(VM_HASH, RetireReason.GONE, supervisor=env["supervisor"], registry=env["registry"])
-    finally:
-        retire_module.set_after_gone_hook(None)
 
     hook.assert_not_awaited()
 
@@ -203,11 +198,8 @@ async def test_gone_under_reap_does_not_run_the_after_gone_hook(env, monkeypatch
 async def test_erase_does_not_run_the_after_gone_hook(env, monkeypatch):
     monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
     hook = AsyncMock()
-    retire_module.set_after_gone_hook(hook)
-    try:
+    with installed_hooks(AgentHooks(after_gone=hook)):
         await retire_vm(VM_HASH, RetireReason.ERASE, supervisor=env["supervisor"], registry=env["registry"])
-    finally:
-        retire_module.set_after_gone_hook(None)
 
     hook.assert_not_awaited()
 
@@ -237,12 +229,9 @@ async def test_a_failing_after_gone_hook_does_not_break_the_retire(env, monkeypa
     without a local try: a reconcile pass that raises must not take the rest
     of the sweep down with it."""
     monkeypatch.setattr(settings, "VOLUME_RETENTION", "keep")
-    retire_module.set_after_gone_hook(AsyncMock(side_effect=RuntimeError("pool on fire")))
-    try:
+    with installed_hooks(AgentHooks(after_gone=AsyncMock(side_effect=RuntimeError("pool on fire")))):
         with caplog.at_level("WARNING"):
             await retire_vm(VM_HASH, RetireReason.GONE, supervisor=env["supervisor"], registry=env["registry"])
-    finally:
-        retire_module.set_after_gone_hook(None)
 
     # The retire itself completed: the volumes are marked, not lost.
     assert read_marker(env["rootfs"].parent) is not None

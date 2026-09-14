@@ -15,6 +15,7 @@ import pytest
 
 import aleph.vm.storage_pools as storage_pools_module
 from aleph.vm.conf import settings
+from aleph.vm.hooks import AgentHooks, install_hooks, installed_hooks
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.storage_pools import MediaClass, StoragePool, reset_pools, select_pool
 
@@ -66,8 +67,8 @@ def _fake_disk_usage(monkeypatch, free_by_path: dict[Path, int], total: int = 10
 def room_maker():
     """Register an evictor for one test, and always unregister it: the hook is
     module state, and a leaked one would evict from every later test."""
-    yield storage_pools_module.set_room_maker
-    storage_pools_module.set_room_maker(None)
+    with installed_hooks(AgentHooks()):
+        yield lambda fn: install_hooks(AgentHooks(room_maker=fn))
 
 
 class TestRoomMaker:

@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import replace
 from enum import Enum
 from pathlib import Path
 
@@ -40,7 +39,7 @@ from aleph.vm.agent.vm.purge import (
 from aleph.vm.agent.vm.reclaimable import depends_on_from_content, mark_reclaimable
 from aleph.vm.agent.vm_registry import AgentVmRecord, AgentVmRegistry
 from aleph.vm.conf import settings
-from aleph.vm.hooks import AfterGoneHook, current_hooks, install_hooks
+from aleph.vm.hooks import current_hooks
 from aleph.vm.storage import (
     DEVICE_MAPPER_DIRECTORY,
     remove_base_device,
@@ -58,19 +57,6 @@ class RetireReason(Enum):
     GONE = "gone"  # positive knowledge it will not return: forgotten, unpaid, deallocated, migrated away
     ERASE = "erase"  # the owner asked for a wipe
     FAILED_CREATE = "failed_create"  # a create that never committed and allocated nothing pre-existing
-
-
-def set_after_gone_hook(hook: AfterGoneHook | None) -> None:
-    """Set the after-GONE slot on its own, leaving the other hooks alone.
-
-    The app registers a reconcile pass there; it runs after every GONE under
-    VOLUME_RETENTION=keep so the budget is enforced right away. This module
-    cannot import the reconciler (the reconciler purges through the same
-    helpers and the agent wires both at startup), and a retention budget that
-    is only enforced once an hour is a budget an attacker can burst through:
-    create, forget, repeat.
-    """
-    install_hooks(replace(current_hooks(), after_gone=hook))
 
 
 async def teardown_namespace_devices(namespace: str) -> None:
