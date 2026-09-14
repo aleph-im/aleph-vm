@@ -629,7 +629,7 @@ def _sweep_side_dirs(
             report.side_dirs_removed += 1
 
 
-def _retention_budget(pool: StoragePool) -> int | None:
+def retention_budget(pool: StoragePool) -> int | None:
     """Bytes of retained data ``pool`` may hold, or ``None`` when its size
     cannot be read and the budget therefore cannot be worked out.
 
@@ -699,7 +699,7 @@ def _enforce_retention_budget(
         entries = reclaimable_entries(pool.path)
         if not entries:
             continue
-        budget = _retention_budget(pool)
+        budget = retention_budget(pool)
         if budget is None:
             # A budget is a share of the pool's size, so an unreadable size
             # would allow zero bytes and delete every marked directory here.

@@ -112,7 +112,7 @@ from aleph.vm.agent.vm.reclaimable import (
     reclaimable_bytes,
 )
 from aleph.vm.agent.vm.reconciler import (
-    _retention_budget,
+    retention_budget,
     _startup_refusal,
     is_vm_namespace,
     live_hashes,
@@ -527,7 +527,7 @@ def _status(registry: AgentVmRegistry, out: TextIO) -> int:
             logger.warning("Could not read the usage of %s", pool.path)
         out.write(
             f"{pool.path}\t{_human(live_bytes)}\t{_human(reclaimable_bytes(pool.path, repair=False))}\t"
-            f"{_figure(_retention_budget(pool))}\t{_figure(usage.free if usage else None)}\n"
+            f"{_figure(retention_budget(pool))}\t{_figure(usage.free if usage else None)}\n"
         )
     out.write("CACHE\tUSED\tBUDGET\n")
     for root in cache_roots():
