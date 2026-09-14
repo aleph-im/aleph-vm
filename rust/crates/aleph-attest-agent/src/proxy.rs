@@ -407,14 +407,18 @@ mod tests {
         })
     }
 
+    async fn gpu_attest_response(state: web::Data<AppState>, nonce: &str) -> HttpResponse {
+        let query = web::Query(AttestationQuery {
+            nonce: nonce.to_string(),
+        });
+        gpu_attestation_endpoint(state, query).await
+    }
+
     async fn gpu_attest(
         state: web::Data<AppState>,
         nonce: &str,
     ) -> (StatusCode, serde_json::Value) {
-        let query = web::Query(AttestationQuery {
-            nonce: nonce.to_string(),
-        });
-        let resp = gpu_attestation_endpoint(state, query).await;
+        let resp = gpu_attest_response(state, nonce).await;
         let status = resp.status();
         let body = to_bytes(resp.into_body()).await.unwrap();
         (status, serde_json::from_slice(&body).unwrap())
@@ -474,8 +478,15 @@ mod tests {
             lock_wait: Duration::from_millis(50),
         });
         let held = gpu.lock.lock().await;
-        let (status, body) = gpu_attest(gpu_state(Some(Arc::clone(&gpu))), "00").await;
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        let resp = gpu_attest_response(gpu_state(Some(Arc::clone(&gpu))), "00").await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            resp.headers().get("Retry-After").unwrap(),
+            "1",
+            "the header must follow the 50 ms lock_wait, not a constant"
+        );
+        let body = to_bytes(resp.into_body()).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["error"], "gpu attestation busy");
         drop(held);
         let (status, _) = gpu_attest(gpu_state(Some(gpu)), "00").await;
@@ -484,35 +495,14 @@ mod tests {
 
     /// The retry the busy answer advertises follows the configured wait, so
     /// a deployment that tunes the wait does not advertise a stale number.
-    #[actix_web::test]
-    async fn the_busy_answer_advertises_the_configured_wait() {
-        let gpu = Arc::new(GpuState {
-            source: Box::new(FakeGpu),
-            boot_claims: serde_json::Value::Null,
-            lock: Arc::new(tokio::sync::Mutex::new(())),
-            lock_wait: Duration::from_secs(3),
-        });
-        let held = gpu.lock.lock().await;
-        let resp = gpu_attestation_endpoint(
-            gpu_state(Some(Arc::clone(&gpu))),
-            web::Query(AttestationQuery {
-                nonce: "00".to_string(),
-            }),
-        )
-        .await;
-        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(
-            resp.headers().get("Retry-After").unwrap(),
-            "3",
-            "the header must follow lock_wait, not a constant"
-        );
-        drop(held);
-
+    #[test]
+    fn the_advertised_retry_rounds_the_wait_up_to_a_whole_second() {
         // A sub-second wait still asks for a whole second: the header has no
         // finer unit, and zero would send the client straight back.
         assert_eq!(retry_after_secs(Duration::from_millis(50)), 1);
         assert_eq!(retry_after_secs(Duration::ZERO), 1);
         assert_eq!(retry_after_secs(Duration::from_millis(2500)), 3);
+        assert_eq!(retry_after_secs(Duration::from_secs(3)), 3);
         assert_eq!(retry_after_secs(GPU_LOCK_WAIT), 10);
     }
 
