@@ -479,11 +479,8 @@ def _log_lost_create_race(vm_hash: ItemHash, what: str) -> None:
     """Say that this create found the VM already there.
 
     The supervisor refuses a create for an id it already holds, which means
-    another start path built this VM while this one was downloading. That VM
-    is the live one: this create has nothing left to do, and must not treat
-    the refusal as its own failure. The teardown that would follow deletes
-    the VM the other caller just brought up, drops its record and, when the
-    disks were fresh, purges its volumes.
+    another start path built this VM while this one was downloading. Treating
+    that as a failure would tear down the VM the other caller just brought up.
     """
     logger.info("%s %s already exists: another start built it, leaving it alone", what, vm_hash)
 
@@ -1157,19 +1154,12 @@ async def start_persistent_vm(
 ) -> None:
     """Bring a scheduled VM up, whatever state this node holds it in.
 
-    ``recreate`` is passed through to the create: it says the caller is
-    building again a VM this node already holds a record for, whose memory and
-    vCPUs are still committed to it, so admission judges only the disk it does
-    not already hold. The convergence loop sets it; the legacy allocation
-    endpoints do not.
+    ``recreate`` says the caller is rebuilding a VM this node already holds a
+    record for, so admission judges only the disk it does not hold yet.
 
-    Serialised per hash. Every start path runs the same read, record,
-    download, create sequence, and the download between the read and the
-    create lasts seconds: two of them running at once both read "this node
-    does not have it" and both built it. The second create was then refused
-    by the supervisor, and the teardown that followed deleted the VM the
-    first one had just brought up. Taking the lock here rather than at the
-    call sites means a new caller cannot forget it.
+    Serialised per hash: the download sits between the read and the create, so
+    two concurrent starts would both read "this node does not have it" and
+    build it. The lock lives here so a new caller cannot forget it.
     """
     async with vm_create_lock(str(vm_hash)):
         vm_id = VmId(str(vm_hash))

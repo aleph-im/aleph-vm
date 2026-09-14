@@ -237,10 +237,8 @@ async def watch_supervisor_events(app: web.Application) -> None:
             async for event in supervisor.watch_events():
                 if event.new_status in (VmStatus.STOPPED, VmStatus.FAILED):
                     await _drop_vm_state(app, event.vm_id)
-                    # If the plan still wants this VM up, converge now rather
-                    # than waiting out the reconciler's backstop interval. The
-                    # new status decides whether it does: a VM somebody
-                    # stopped waits for its owner to start it again.
+                    # Converge now rather than at the backstop interval, unless
+                    # the new status says somebody stopped the VM.
                     app["allocation_reconciler"].notify_vm_down(event.vm_id, event.new_status)
         except NotImplementedSupervisorError:
             logger.info("Supervisor does not implement WatchEvents; agent state relies on its own reaps only")

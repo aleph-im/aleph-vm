@@ -248,26 +248,12 @@ def compute_verdict(
 
     for vm_hash, info in known.items():
         if vm_hash in plan.entries:
-            # A VM this node already holds is acknowledged rather than sized,
-            # whatever state it is in. What the answer reports is that the
-            # scheduler's belief the VM is allocated here still holds, and it
-            # does: a registry record means the node reserved this VM's memory
-            # and vCPUs and has never given them back, a stopped VM stays
-            # stopped until its owner starts it, and one the supervisor holds
-            # dead is rebuilt out of that same reservation. Sizing any of them
-            # would charge the VM twice and let a node that is tight on room
-            # refuse a VM it is already holding, which is what takes the VM out
-            # of the plan the loop converges on. Only a hash this node holds
-            # nothing for is a candidate.
-            #
-            # A VM whose teardown is already running is the exception, however
-            # alive or however stopped the supervisor says it is: the retire is
-            # past the point where a push can call it off, so the VM is going
-            # away with its disks, its record with them, and this node will
-            # have to find room for it from nothing. Judged as a candidate
-            # instead, it is answered accepted, or pending while the push
-            # carried no message to size it by, which is what the loop will
-            # actually do about it on the pass after the delete returns.
+            # A VM this node already holds, up, stopped or dead, is acknowledged
+            # rather than sized: its record already commits its memory, so
+            # sizing it again would let a tight node refuse a VM it is holding.
+            # A teardown already in flight is the exception: it is past the
+            # point where a push can call it off, so the VM is judged as a
+            # candidate for the rebuild that follows.
             held = registry.get(vm_hash) is not None
             if (
                 held
@@ -289,15 +275,10 @@ def compute_verdict(
         # it is owed, and an allocation push is not the place to find out.
         if record is None or info.status is not VmStatus.RUNNING:
             continue
-        # A hash the push named and this node refused is out of the entries but
-        # is not a hash the push took away, and the loop keeps its VM for
-        # exactly that reason. The answer has to say the same thing, or the two
-        # halves of the refusal protection contradict each other: a scheduler
-        # told the VM is going away stops naming it, and the next push, naming
-        # it nowhere, is the deletion that carrying the refusals forward exists
-        # to prevent. Nothing is freeing that memory either, so it must not go
-        # on to simulate as capacity the other candidates can be admitted
-        # against.
+        # A hash the push named and this node refused is not a hash the push
+        # took away, and the loop keeps its VM for that reason, so the answer
+        # has to say the same. Nothing is freeing that memory either, so it
+        # must not simulate as capacity for the other candidates.
         if plan.lists(vm_hash):
             verdict.retained[vm_hash] = "refused"
             continue

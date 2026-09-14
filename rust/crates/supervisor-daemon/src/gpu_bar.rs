@@ -18,41 +18,19 @@ const IORESOURCE_MEM_64: u64 = 0x0010_0000;
 /// prefetchable memory.
 const WANTED_FLAGS: u64 = IORESOURCE_MEM | IORESOURCE_PREFETCH | IORESOURCE_MEM_64;
 const MIN_WINDOW_MB: u64 = 1024;
-/// The largest window the daemon will ever ask OVMF for, in MiB (4 TiB). The
-/// doubling above is unbounded on its own, so a card (or a kernel that
-/// reports nonsense in its `resource` file) with absurd BARs would otherwise
-/// hand fw_cfg a window no firmware can lay out, and the VM would fail deep
-/// inside OVMF instead of here. Far above any real card: today's largest is
-/// 128 GiB of BAR1, which asks for 512 GiB.
-///
-/// This caps the number handed to fw_cfg; it is not a statement about what a
-/// guest can reach. `check_mmio64_budget` is the tighter and later gate: it
-/// refuses anything the guest's own address space cannot hold, which today
-/// is a quarter of this. A window that reaches this clamp is therefore
-/// refused rather than launched, and the clamp is there so the arithmetic
-/// stays sane on the way to that refusal.
+/// The largest window the daemon will ever ask OVMF for, in MiB (4 TiB), so
+/// absurd BARs cannot hand fw_cfg a window no firmware can lay out. It only
+/// keeps the arithmetic sane: `check_mmio64_budget` is the tighter gate.
 const MAX_WINDOW_MB: u64 = 4 * 1024 * 1024;
 
-/// Guest physical address space, in MiB. A confidential VM launches with
-/// `-cpu EPYC-v4` unless the spec names another model, and that model's
-/// default physical address width is 40 bits, so the firmware has 1 TiB to
-/// place everything in.
-///
-/// A spec-supplied `cpu_model` does not move this figure. The confidential
-/// argv passes the model name on its own, with no `phys-bits` and no
-/// `host-phys-bits`, and QEMU's own default for a named x86 model is 40
-/// bits whichever model it is: the width follows the option, not the model.
-/// Should a future argv widen it, the only effect here is that this check
-/// refuses a window the guest could in fact have addressed, which fails a
-/// create that would have worked rather than booting a card into a guest
-/// that cannot reach it.
+/// Guest physical address space, in MiB. The confidential argv names a CPU
+/// model with no `phys-bits`, and QEMU defaults a named x86 model to 40 bits
+/// whichever model it is, so the firmware has 1 TiB to place everything in.
 const GUEST_PHYS_MB: u64 = 1 << 20;
 
-/// What sits below the guest's RAM and is not counted in the RAM figure:
-/// the 32-bit MMIO hole under 4 GiB that QEMU makes the RAM skip over, plus
-/// the firmware's own reservations and the ACPI tables. Added to the RAM
-/// before the window is aligned, so a VM whose RAM stops just short of an
-/// alignment boundary is not sized as if the window could start there.
+/// What sits below the guest's RAM and is not counted in the RAM figure: the
+/// 32-bit MMIO hole under 4 GiB, the firmware's reservations and the ACPI
+/// tables. Added before the window is aligned, never after.
 const GUEST_LOW_RESERVED_MB: u64 = 4 * 1024;
 
 /// Sum the sizes of the 64-bit prefetchable memory BARs listed in a sysfs
@@ -79,11 +57,9 @@ pub fn parse_resource_file(contents: &str) -> Result<u64, DaemonError> {
         if flags & WANTED_FLAGS != WANTED_FLAGS {
             continue;
         }
-        // Only the BARs that count are validated: an unused or 32-bit BAR
-        // contributes nothing, so whatever it holds cannot mis-size the
-        // window. A counted BAR that is reversed or spans the whole address
-        // space is a corrupt read, and silently dropping it would under-size
-        // the window and leave the card's BARs unassigned in the guest.
+        // Only the BARs that count are validated, and a corrupt one is an
+        // error: dropping it would under-size the window and leave the card's
+        // BARs unassigned in the guest.
         let size = end
             .checked_sub(start)
             .ok_or_else(|| DaemonError::GpuBarRange {
@@ -107,19 +83,11 @@ pub fn parse_resource_file(contents: &str) -> Result<u64, DaemonError> {
 
 /// Refuse a window the guest could not address.
 ///
-/// The firmware places the 64-bit window above the guest's RAM, on a
-/// boundary of the window's own size (`mmio64_window_mb` always returns a
-/// power of two, and the alignment matches it), so the window ends at
-/// `align_up(top_of_ram, window) + window`. That has to stay inside the
-/// address space the guest's physical address width gives it, or the
-/// firmware assigns no window at all and the guest finds the card's BARs
-/// unassigned: a device that enumerates and then does nothing.
-///
-/// The placement model above is OVMF's, in `OvmfPkg/Library/PlatformInitLib`
-/// (`PlatformDynamicMmioWindow` and `PlatformAddressWidthFromCpuid`): it
-/// derives the address width from CPUID, puts the 64-bit PCI MMIO aperture
-/// above the top of low and high RAM, and aligns the aperture to its own
-/// size. Re-read that code before changing anything here.
+/// OVMF places the 64-bit aperture above the top of RAM, aligned to its own
+/// size, so the window ends at `align_up(top_of_ram, window) + window`; past
+/// the guest's address width it assigns no window at all and the card's BARs
+/// stay unassigned. The model is OVMF's `PlatformDynamicMmioWindow` in
+/// `OvmfPkg/Library/PlatformInitLib`; re-read it before changing this.
 pub fn check_mmio64_budget(window_mb: u64, guest_ram_mb: u64) -> Result<(), DaemonError> {
     let top_of_ram_mb = guest_ram_mb.saturating_add(GUEST_LOW_RESERVED_MB);
     let base_mb = top_of_ram_mb
@@ -298,9 +266,8 @@ mod tests {
 
     #[test]
     fn a_reversed_bar_range_is_an_error() {
-        // A region whose end is below its start is not a BAR any window can
-        // be sized from. Skipping it silently would under-size the window,
-        // and the guest would find the card's BARs unassigned.
+        // Skipping a reversed range silently would under-size the window and
+        // leave the card's BARs unassigned in the guest.
         let line = "0x0000004000000000 0x0000002000000000 0x000000000014220c\n";
         let error = parse_resource_file(line).unwrap_err();
         assert!(error.to_string().contains("below its start"), "{error}");
@@ -350,10 +317,8 @@ mod tests {
 
     #[test]
     fn a_window_that_hits_the_clamp_is_refused_by_the_budget() {
-        // The two ceilings are not alternatives: the clamp keeps the number
-        // handed to fw_cfg finite, and the budget is what actually refuses
-        // the create. A card absurd enough to reach the clamp must not be
-        // launched just because the clamp made its window representable.
+        // The clamp only keeps the fw_cfg number finite; the budget is what
+        // refuses the create, so reaching the clamp must not mean a launch.
         let clamped = mmio64_window_mb(u64::MAX);
         assert_eq!(clamped, MAX_WINDOW_MB);
         assert!(check_mmio64_budget(clamped, 2048).is_err());

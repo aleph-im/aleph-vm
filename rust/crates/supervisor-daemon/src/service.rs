@@ -174,38 +174,23 @@ pub struct DaemonState {
     /// tracking for `AllowedCPUs` pinning. In-memory; rebuilt at boot from
     /// each adopted VM's effective placement (its `AllowedCPUs` drop-in).
     pub numa_ledger: std::sync::Mutex<crate::numa::NumaAllocator>,
-    /// The last CC mode probe of each card, keyed by pci_host. Populated
-    /// at startup and by `refresh_cc_modes` (called from `get_host_info`)
-    /// for every NVIDIA card no VM currently owns, and by the SEV-SNP GPU
-    /// gate when a create probes its cards. A card an adopted confidential
-    /// VM owns is entered as CC-on without a read, on the gate's word. A
-    /// card never probed has no entry; a card whose last probe failed has
-    /// an entry with no mode, which advertises nothing and holds the retry
-    /// off until the entry goes stale, which happens sooner than it does
-    /// for a decoded mode (see `gpu_cc::CcCacheWindows`).
+    /// The last CC mode probe of each card, keyed by pci_host. A card with no
+    /// entry, or an entry with no mode, advertises nothing.
     pub gpu_cc_modes: std::sync::Mutex<HashMap<String, crate::gpu_cc::ProbedCcMode>>,
     /// How a card's CC mode is read: the BAR0 register in production,
     /// `gpu_cc::no_probe` on hermetic state so tests never open sysfs.
     pub gpu_cc_probe: crate::gpu_cc::CcProbe,
-    /// What the last CC-mode sweep ran against and when, so `GetHostInfo`
-    /// (reachable from the public `/about` endpoints) cannot drive an
-    /// unbounded rate of register reads: see `refresh_cc_modes`.
+    /// What the last CC-mode sweep ran against and when, so the publicly
+    /// reachable `GetHostInfo` cannot drive an unbounded rate of register reads.
     pub gpu_cc_sweep: std::sync::Mutex<CcSweep>,
-    /// Held for the length of one CC mode refresh pass, so a burst of
-    /// GetHostInfo calls costs one pass and the callers behind it read
-    /// what it wrote. Two passes running at once would also corrupt the
-    /// host's runtime-PM setting: both can read `power/control` before
-    /// either writes it, and the second would then restore "on".
+    /// Serializes CC mode refresh passes: two at once can both read
+    /// `power/control` before either writes it, pinning the card awake.
     pub gpu_cc_refresh: std::sync::Mutex<()>,
 }
 
-/// The attached set the last CC-mode sweep saw, and when it ran. A sweep
-/// against an unchanged set within the shortest of the cache windows
-/// (`gpu_cc::CcCacheWindows::shortest`) is skipped whole, which is the
-/// cheap outer gate over the per-card freshness check inside. It is the
-/// shortest window and not the longest because one decision covers every
-/// card here, so it must not outlive the tier of the card that ages out
-/// first.
+/// The attached set the last CC-mode sweep saw, and when it ran. The skip
+/// window is the shortest cache tier, since one decision here covers every
+/// card and must not outlive the card that ages out first.
 #[derive(Debug, Default)]
 pub struct CcSweep {
     pub attached: HashSet<String>,
@@ -299,21 +284,10 @@ impl SupervisorService {
                 .map(|(pci_host, _)| pci_host.to_string())
                 .collect()
         };
-        // Refresh every unattached NVIDIA card whose CC mode has gone
-        // stale before reporting the inventory, so a freshly-idled card's
-        // mode is current. Cards answered within the freshness window are
-        // served from the cache and not read at all, which matters because
-        // the agent calls this for every unauthenticated capability
-        // request. mmap of a BAR is a blocking syscall; run it off the
-        // tokio worker.
-        // refresh_cc_modes takes its own world read guard and keeps it for
-        // the whole probe: the `attached` snapshot above can go stale the
-        // moment a concurrent CreateVm registers a card, and the probe gate
-        // must never trust a snapshot it no longer holds the lock for. It
-        // also skips the sweep when nothing changed hands within the
-        // freshness window, and reads no card whose own answer is still
-        // fresh, so a public poller cannot turn every request into a
-        // register read.
+        // Refresh stale CC modes before reporting the inventory. mmap of a BAR
+        // is a blocking syscall, so it runs off the tokio worker; the probe
+        // takes its own world read guard rather than trusting the `attached`
+        // snapshot above, which a concurrent CreateVm can invalidate.
         {
             let state = self.state.clone();
             tokio::task::spawn_blocking(move || refresh_cc_modes(&state))
@@ -383,42 +357,20 @@ impl SupervisorService {
         })
     }
 
-    /// The VmInfo a mutation RPC answers with. The mutation settled the
-    /// unit itself (started it and waited for it to be ready, stopped it,
-    /// or deliberately left it down until the owner uploads the session
-    /// certificates), so it hands the mapping no unit observation: a fresh
-    /// query would only repeat what the path already knows, and spontaneous
-    /// death is what the read paths (GetVm, ListVms) are there to notice.
+    /// The VmInfo a mutation RPC answers with. The mutation settled the unit
+    /// itself, so it passes no unit observation: spotting a spontaneous death
+    /// is the read paths' job.
     fn mutated_vm_info(&self, entry: &VmEntry, running: bool) -> pb::VmInfo {
         vm_info_message(&self.state, entry, running, UnitLiveness::Unknown, now_ns())
     }
 
-    /// The VmInfo a read path reports for one entry, with the dead-unit arm
-    /// confirmed against the world before anyone believes it.
+    /// The VmInfo a read path reports for one entry, re-reading the entry
+    /// before a computed death stands.
     ///
-    /// A read clones the entry and releases the world lock before it asks
-    /// systemd, so the clone can predate a stop, a reboot or a start whose
-    /// unit job the answer already reflects. Such a clone carries a start
-    /// stamped, no stop and no restarting marker, which is the dead-unit
-    /// arm's exact shape, and believing it announces a death against a VM
-    /// that is doing what it was asked. The gap is one D-Bus round trip at
-    /// rest, but a blocking pool queued behind lifecycle work stretches it
-    /// well past the point where a mutation marks its window.
-    ///
-    /// Every mutation sets its marker or its stamps under the world write
-    /// lock before it touches systemd, so an entry re-read after the unit
-    /// was observed dead necessarily sees the window. Recomputing from a
-    /// fresh entry therefore tells a guest that died from a transition under
-    /// way, and it costs one uncontended read lock on the only arm that
-    /// announces anything. The unit observation is carried over untouched:
-    /// what went stale is the entry, not what systemd said. `running` comes
-    /// from that same observation for every VM the arm can fire on (a
-    /// program's comes from its times, and a program is never judged dead).
-    ///
-    /// `None` means the VM left the world while the query was in flight, a
-    /// delete. That is not a death and there is no status left to report, so
-    /// GetVm answers NOT_FOUND, as it would have a moment later, and ListVms
-    /// leaves the VM out of the listing.
+    /// No world lock is held across the unit query, so the clone can predate
+    /// a mutation the unit answer already reflects; every mutation marks its
+    /// window under the write lock first, so the fresh entry settles it.
+    /// `None` is a VM deleted meanwhile, which is not a death.
     async fn observed_vm_info(
         &self,
         entry: &VmEntry,
@@ -438,10 +390,8 @@ impl SupervisorService {
 
     /// Live state of one entry's controller unit, off the runtime threads
     /// (the Python `_is_running` D-Bus query equivalent). A bus failure
-    /// degrades to `Unknown`: it stays "not running" like the Python
-    /// `get_services_active_states` parity behavior, and
-    /// it must never read as death, which is a claim only an answering bus
-    /// can support.
+    /// degrades to `Unknown`: still "not running" for Python parity (ledger
+    /// entry 13), but never death, which needs an answering bus.
     async fn unit_liveness(&self, unit: String) -> Result<UnitLiveness, Status> {
         let units = self.state.units.clone();
         tokio::task::spawn_blocking(
@@ -524,14 +474,8 @@ pub fn cc_mode_of(state: &DaemonState, pci_host: &str) -> Option<crate::gpu_cc::
 }
 
 /// Probe every NVIDIA card no VM owns whose last answer has gone stale, and
-/// remember what it said. A card that becomes attached keeps its last value
-/// (the register is never read under a guest). A probe that errors, or that
-/// reads a register encoding with no mode, replaces the card's answer with
-/// "no mode": whatever it advertised before is no longer known to be true,
-/// and an unknown card advertises nothing. A card a confidential guest owns
-/// gets its mode from the create gate that admitted it, with no read at
-/// all. Runs on the blocking pool: mmap of a BAR is a syscall against
-/// device memory.
+/// remember what it said. A failed or undecodable probe clears the card's
+/// mode, so a card that is no longer known to be CC-on advertises nothing.
 pub fn refresh_cc_modes(state: &DaemonState) {
     let windows = crate::gpu_cc::CcCacheWindows::with_mode_ttl(std::time::Duration::from_secs(
         state.host.settings.gpu_cc_mode_ttl,
@@ -540,52 +484,17 @@ pub fn refresh_cc_modes(state: &DaemonState) {
 }
 
 /// `refresh_cc_modes` over an explicit probe and explicit cache windows, so
-/// unit tests can hand in a closure that records what was probed and decide
-/// whether the last sweep and each card's last answer count as fresh.
+/// tests can decide what counts as fresh.
 ///
-/// One pass at a time. The pass lock is taken before the world guard (a
-/// waiter must not sit on a read guard), so a burst of GetHostInfo calls
-/// costs one pass and the callers behind it find the entries it wrote.
-/// Overlapping passes would be worse than wasteful: both can read
-/// `power/control` before either writes it, and the second would then
-/// remember "on" as the value to put back, pinning the card awake for
-/// good.
+/// Lock order: the pass lock before the world guard, and that guard is held
+/// across the whole loop, since CreateVm registers a VM's cards under the
+/// write lock before it boots. That is what makes "never read the register
+/// under a guest" hold, so the probes cannot move outside the guard.
 ///
-/// The world read guard is held across the whole loop, not just while the
-/// attached set is collected: CreateVm registers a VM's cards in the world
-/// view under the write lock before it boots anything, so under this guard
-/// a card is either already attached (and skipped) or cannot become
-/// attached until the probe is done. That is what makes "never read under
-/// a guest" hold rather than merely likely, and it is why the probes
-/// cannot be moved outside the guard.
-///
-/// The guard is not cheap to hold any more: resuming a runtime-suspended
-/// card costs up to the 200 ms resume budget, so a pass can hold it for
-/// (stale suspended cards) x 200 ms, and tokio's RwLock is
-/// write-preferring, so a CreateVm arriving mid-pass waits that long. What
-/// keeps that off the hot path is the freshness window below: a given card
-/// is read at most once per the window its own last answer falls under,
-/// whatever the request rate.
-///
-/// Two gates, over different windows. The outer one skips the sweep whole
-/// when it last ran against the same attached set less than
-/// `windows.shortest()` ago. It is one decision for every card at once, so
-/// it cannot be allowed to outlive the shortest tier any of them is held
-/// under: gated on the long window instead, a card cached as unreadable
-/// would sit behind the pass gate for an hour, and the short tier that is
-/// meant to bring it back within the minute would never be reached. The
-/// inner one skips any single card whose own last answer is fresh under
-/// its own tier, and that is where the long window for a decoded mode
-/// actually pays. Walking the cache to check every entry against its own
-/// tier before skipping the pass would be equally correct and buy nothing
-/// back, since the per-card gate walks the same cards anyway; the price of
-/// the short outer gate is one walk over the inventory with no register
-/// reads per short window. Host info is served on an unauthenticated path,
-/// and reading device memory once per request is both a needless cost and
-/// a lever an outsider gets to pull; both windows bound that the same way,
-/// and the mode itself only changes when an operator runs NVIDIA's tool
-/// against an idle card, which no request can do. Neither the create gate
-/// nor the start comes through here: both always read the card.
+/// Two freshness gates, the whole sweep then each card, keep an
+/// unauthenticated host-info poller from turning every request into a
+/// register read. The create gate does not come through here: it always
+/// reads the card.
 fn refresh_cc_modes_with(
     state: &DaemonState,
     probe: impl Fn(&str, &str) -> Result<Option<crate::gpu_cc::CcMode>, DaemonError>,
@@ -597,26 +506,11 @@ fn refresh_cc_modes_with(
         .expect("gpu_cc_refresh poisoned");
     let world = state.world.blocking_read();
     let mut attached: HashSet<String> = HashSet::new();
-    // The subset a live confidential guest owns. Those cards have a known
-    // mode without any read: a card enters an SEV-SNP VM only after the
-    // create gate or the start has read CC-on from it, and the mode cannot
-    // change while the guest holds the card (switching it takes a reset of a
-    // free card).
-    // A daemon that adopts such a VM at boot has an empty cache and will
-    // never probe the card, so without this its mode would stay empty for
-    // the VM's whole life. Plain passthrough VMs went through no gate and
-    // get nothing.
-    //
-    // A stopped VM gets nothing either, even an SEV-SNP one: its QEMU is
-    // gone, so the card is idle hardware an operator can re-mode, and the
-    // gate's word about it has expired. The card stays out of the sweep
-    // (it is still in `attached`, the config still claims it), and the
-    // stop itself dropped whatever the cache held about it, so a stopped
-    // VM's card advertises nothing until it is started again or the VM is
-    // deleted and the card is read as free. The start re-reads the hardware
-    // itself, so the seed below only ever restates the start's own answer.
-    //
-    // What counts as live is `attached_gpus`'s rule.
+    // The subset a live confidential guest owns: the create gate read CC-on
+    // from those cards and the mode cannot change while the guest holds them,
+    // so they are seeded without a read. "Live" is a start with no stop after
+    // it, since a stopped or never-started entry has no guest holding its
+    // card and an operator can re-mode idle hardware.
     let mut known_cc_on: HashSet<String> = HashSet::new();
     for (pci_host, vouched_cc_on) in attached_gpus(&world) {
         attached.insert(pci_host.to_string());
@@ -630,10 +524,8 @@ fn refresh_cc_modes_with(
             && sweep.attached == attached
             && at.elapsed() < windows.shortest()
         {
-            // Nothing changed hands since that sweep, so it already seeded
-            // every confidential VM's cards and read every free one, and no
-            // card's answer can have aged out of even the shortest window
-            // in between.
+            // Nothing changed hands since that sweep and no answer can have
+            // aged out of even the shortest window in between.
             return;
         }
     }
@@ -684,18 +576,10 @@ fn refresh_cc_modes_with(
 // ── World view to wire mapping ──────────────────────────────────────────
 
 /// `_status_of`: the times short-circuit the live flag, plus the FAILED arm
-/// the Python daemon never had.
-///
-/// `unit` is what systemd last said about the VM's controller, and it is
-/// only ever [`UnitLiveness::Dead`] when the daemon positively observed the
-/// unit down; every caller that cannot judge (an ephemeral program runs no
-/// unit, a confidential VM waits for its owner's session before one is
-/// started, the bus did not answer) passes `Unknown`. A VM the daemon has
-/// seen alive (`started_at_ns` is stamped once the controller is confirmed
-/// ready, and at adoption for a VM already running) whose unit is now down
-/// without anyone stopping it is a guest that died on its own: reporting it
-/// BOOTING for ever, as the port did, leaves the agent's reconciler holding
-/// it live and never rebuilding it.
+/// the Python daemon never had. `unit` must be [`UnitLiveness::Dead`] only
+/// where the daemon positively observed the unit down: under a VM it has seen
+/// alive, with no stop stamped, that is a guest that died on its own, and
+/// callers that cannot judge pass `Unknown`.
 pub(crate) fn vm_status(times: &VmTimes, running: bool, unit: UnitLiveness) -> pb::VmStatus {
     if times.stopped_at_ns != 0 {
         pb::VmStatus::Stopped
@@ -712,10 +596,9 @@ pub(crate) fn vm_status(times: &VmTimes, running: bool, unit: UnitLiveness) -> p
     }
 }
 
-/// `is_awaiting_confidential_init`, ported literally: confidential (SEV /
-/// SEV-ES only, via the session/godh slot), persistent (every adopted VM
-/// is), started but neither stopping nor observed running. SNP has no
-/// session handshake, so it is never awaiting: it starts at create.
+/// `is_awaiting_confidential_init`, ported literally: confidential (SEV and
+/// SEV-ES only, via the session/godh slot), started but neither stopping nor
+/// observed running. SNP has no session handshake and starts at create.
 pub(crate) fn awaiting_confidential_init(entry: &VmEntry, running: bool) -> bool {
     entry.config.confidential().is_some()
         && entry.times.started_at_ns != 0
@@ -723,21 +606,10 @@ pub(crate) fn awaiting_confidential_init(entry: &VmEntry, running: bool) -> bool
         && !running
 }
 
-/// What an observed unit state says about `entry`'s guest.
-///
-/// Three kinds of VM have a down unit for a reason of their own, and reading
-/// death into it would condemn a healthy VM. An ephemeral program runs under
-/// no controller unit at all. A SEV / SEV-ES VM's controller is deliberately
-/// held down until its owner uploads the session certificates. And a VM in
-/// the middle of a reboot has a restart job in flight, which takes the unit
-/// down and back up with nothing stamped in between. All three report
-/// `Unknown`, which leaves the status exactly where it was before the dead
-/// unit arm existed.
-///
-/// The session blindness has a cost: a SEV / SEV-ES guest that dies after
-/// its session was uploaded is still not reported FAILED, because nothing
-/// distinguishes that from a VM that never got its session. SEV-SNP, which
-/// has no session and boots at create, is judged like any other VM.
+/// What an observed unit state says about `entry`'s guest. Three kinds of VM
+/// have a down unit for a reason of their own and report `Unknown` instead:
+/// a program runs under no unit, a SEV or SEV-ES controller is held down
+/// until the session certificates arrive, and a reboot has a job in flight.
 pub(crate) fn guest_liveness(entry: &VmEntry, unit: UnitLiveness) -> UnitLiveness {
     if entry.is_program || entry.restarting || awaiting_confidential_init(entry, unit.is_active()) {
         UnitLiveness::Unknown
@@ -1172,9 +1044,8 @@ impl Supervisor for SupervisorService {
             let unit = self.unit_liveness(entry.unit_name()).await?;
             (unit.is_active(), unit)
         };
-        // The snapshot above may predate a deliberate transition the unit
-        // answer already reflects, so a computed death is confirmed against
-        // a fresh entry before it is reported or announced.
+        // The snapshot above may predate a transition the unit answer
+        // already reflects, so a computed death is re-read before it stands.
         let info = self
             .observed_vm_info(&entry, running, unit, now_ns())
             .await
@@ -1228,10 +1099,8 @@ impl Supervisor for SupervisorService {
                     .unwrap_or(UnitLiveness::Unknown);
                 (unit.is_active(), unit)
             };
-            // A computed death is confirmed against a fresh entry (see
-            // get_vm): the snapshot above may predate a transition the unit
-            // answer already reflects. A VM deleted meanwhile is left out of
-            // the listing, which is what the next call would report anyway.
+            // A computed death is re-read before it stands (see get_vm); a
+            // VM deleted meanwhile is left out of the listing.
             if let Some(info) = self.observed_vm_info(entry, running, unit, now).await {
                 vms.push(info);
             }
@@ -1872,11 +1741,8 @@ mod tests {
 
     #[test]
     fn refresh_cc_modes_repeats_a_sweep_only_when_a_card_changed_hands_or_the_ttl_passed() {
-        // A public poller hitting GetHostInfo must not turn every request
-        // into a register read: a sweep against the same attached set
-        // within the shortest window is skipped whole, before any card is
-        // looked at. A card changing hands, or the windows passing, brings
-        // the next sweep back.
+        // A sweep against the same attached set within the shortest window is
+        // skipped whole; a card changing hands brings the next sweep back.
         let state = two_free_cards();
         let probes = std::sync::atomic::AtomicUsize::new(0);
         let counting = |_: &str, _: &str| {
@@ -1892,9 +1758,8 @@ mod tests {
             "the second sweep inside the pass window against the same attached set is skipped"
         );
 
-        // A card changes hands: the sweep runs again, over the free card
-        // only, and that card's own answer is a decoded mode, fresh for
-        // the long window, so nothing is read.
+        // A card changes hands: the sweep runs again over the free card only,
+        // whose decoded mode is still fresh, so nothing is read.
         let mut entry = fixture_entry(test_fixtures::QEMU_HASH, true);
         entry.config.gpus = vec![crate::controller_config::QemuGpu {
             pci_host: "06:00.0".to_string(),
@@ -1911,14 +1776,9 @@ mod tests {
 
     #[test]
     fn refresh_cc_modes_serves_a_fresh_answer_without_reading_the_card() {
-        // GetHostInfo refreshes on every call and the agent calls it for
-        // every unauthenticated /about/capability request. Without a TTL
-        // any internet client could make the host mmap the BAR of every
-        // idle NVIDIA card it has, as often as it likes. A probe that
-        // failed is remembered too: a card that cannot be read must not be
-        // retried on every request either. The per-card window is what
-        // holds when the sweep gate lets a pass through, so the sweep is
-        // forced to run every time here.
+        // Without a per-card TTL an unauthenticated caller could make the host
+        // mmap every idle card's BAR as often as it likes. Failures are cached
+        // too; the sweep gate is forced open so only that window is under test.
         let state = two_free_cards();
 
         let probed: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -1957,15 +1817,13 @@ mod tests {
     }
 
     /// Drop the record of the last sweep so the next `refresh_cc_modes_with`
-    /// walks the cards whatever its windows are, leaving only the per-card
-    /// freshness check between a card and its register.
+    /// walks the cards, leaving only the per-card freshness check.
     fn force_next_sweep(state: &DaemonState) {
         state.gpu_cc_sweep.lock().unwrap().at = None;
     }
 
-    /// The windows a daemon runs with out of the box: the default long
-    /// tier for a decoded mode, the fixed short one for an answer with no
-    /// mode.
+    /// The windows a daemon runs with out of the box: the long tier for a
+    /// decoded mode, the short one for an answer with no mode.
     fn default_windows() -> crate::gpu_cc::CcCacheWindows {
         crate::gpu_cc::CcCacheWindows::with_mode_ttl(std::time::Duration::from_secs(
             crate::gpu_cc::DEFAULT_CC_MODE_TTL_SECS,
@@ -1996,14 +1854,9 @@ mod tests {
 
     #[test]
     fn a_pass_rereads_the_unreadable_card_and_leaves_the_known_one_alone() {
-        // The point of the two tiers. Both cards were last read a minute
-        // and a second ago: the one that answered with a mode is still
-        // good for the rest of the long window, while the one that could
-        // not be read (a card being reset reads all ones) has aged out of
-        // the short one and must be tried again, rather than staying
-        // hidden until the long window passes. The pass gate has to let
-        // this sweep through for that to be reachable, which is why it
-        // runs on the shortest window.
+        // The point of the two tiers: at a minute and a second old, the card
+        // that answered with a mode is still fresh while the unreadable one
+        // has aged out of the short window and must be tried again.
         let state = two_free_cards();
         let age = std::time::Duration::from_secs(61);
         {
@@ -2047,22 +1900,15 @@ mod tests {
         );
     }
 
-    /// An adopted VM holding one card: SNP (measured-boot slice present)
-    /// or plain QEMU passthrough, which is the distinction the seeding
-    /// turns on.
     #[test]
     fn concurrent_refreshes_read_a_card_once_and_leave_its_power_setting_alone() {
-        // Two GetHostInfo calls landing together used to run two full
-        // passes over the same cards. Both could read power/control before
-        // either wrote it, so the second remembered "on" as the value to
-        // restore and the card stayed pinned awake after the probes, with
-        // the host's own runtime-PM setting lost.
+        // Overlapping passes can both read power/control before either writes
+        // it, leaving the card pinned awake with the host's setting lost.
         let sysfs = tempfile::tempdir().unwrap();
         let device_dir = sysfs.path().join("0000:06:00.0");
         std::fs::create_dir_all(device_dir.join("power")).unwrap();
-        // The fixture card never actually resumes, so a probe holds the
-        // pass for its whole (short) resume budget: plenty of overlap for
-        // a second pass to start if anything let it.
+        // The fixture card never resumes, so a probe holds the pass for its
+        // whole resume budget: ample overlap for a second pass to start.
         std::fs::write(device_dir.join("power/runtime_status"), "suspended\n").unwrap();
         std::fs::write(device_dir.join("power/control"), "auto\n").unwrap();
         let mut bytes = vec![0u8; 0x1000];
@@ -2158,14 +2004,9 @@ mod tests {
 
     #[test]
     fn an_adopted_snp_vms_card_reports_cc_on_without_reading_the_card() {
-        // A restart leaves the cache empty, and a card a guest owns is
-        // never probed (its register belongs to the guest), so a
-        // confidential VM adopted at boot used to report no cc_mode for
-        // the rest of its life. It does not need a probe: the create gate
-        // admits a card into an SNP VM only after reading CC-on from it,
-        // and nothing can change the mode while the guest holds the card.
-        // A plain passthrough VM went through no such gate, so its card
-        // stays unknown.
+        // A card a guest owns is never probed, so an adopted SNP VM's card is
+        // seeded from the create gate's reading instead. A plain passthrough
+        // VM went through no such gate, so its card stays unknown.
         let host = HostState {
             settings: crate::config::Settings::from_vars(std::iter::empty()).unwrap(),
             host_ipv4: String::new(),
@@ -2225,13 +2066,9 @@ mod tests {
 
     #[test]
     fn a_stopped_snp_vms_card_is_not_seeded_cc_on() {
-        // The seed rests on the card being under a live guest: nothing can
-        // switch its mode there, so the create gate's reading still holds.
-        // A stopped VM's QEMU is gone and the card is idle hardware an
-        // operator can re-mode, so the gate's word has expired and the
-        // card must advertise nothing rather than a mode the host cannot
-        // vouch for. It is still claimed by the entry's config, so it is
-        // not read either.
+        // A stopped VM's QEMU is gone, so the card is idle hardware an operator
+        // can re-mode: the gate's word has expired and the card must advertise
+        // nothing. The entry's config still claims it, so it is not read either.
         let mut snp_entry = adopted_entry_holding(test_fixtures::QEMU_HASH, "06:00.0", true);
         snp_entry.times.started_at_ns = 0;
         snp_entry.times.stopped_at_ns = snp_entry.times.defined_at_ns;
@@ -2268,11 +2105,9 @@ mod tests {
 
     #[test]
     fn a_never_started_snp_vms_card_is_not_seeded_cc_on() {
-        // An entry adopted while the systemd bus was unreachable carries no
-        // stop stamp, but no start either, and the daemon does not know
-        // whether its guest is alive. A never-started Defined entry looks
-        // the same. Neither is proof that a guest is holding the card's
-        // mode still, so neither gets the seed.
+        // An entry with no start stamp (Defined, or adopted while the systemd
+        // bus was unreachable) is no proof a guest still holds the card's
+        // mode, so it gets no seed.
         let mut snp_entry = adopted_entry_holding(test_fixtures::QEMU_HASH, "06:00.0", true);
         snp_entry.times = crate::world::VmTimes {
             defined_at_ns: snp_entry.times.defined_at_ns,
@@ -2365,19 +2200,16 @@ mod tests {
         let info = vm_info_message(&empty_state(), &entry, true, UnitLiveness::Active, now_ns());
         assert_eq!(info.status, pb::VmStatus::Running as i32);
         assert_eq!(info.uptime_secs, 0, "no started_at was ever stamped");
-        // A dead unit under an entry the daemon never saw alive is not a
-        // death it can claim: the bus outage left started_at unstamped, so
-        // the status falls through to DEFINED rather than FAILED.
+        // The daemon never saw this VM alive (started_at unstamped), so a
+        // dead unit is not a death it can claim.
         let info = vm_info_message(&empty_state(), &entry, false, UnitLiveness::Dead, now_ns());
         assert_eq!(info.status, pb::VmStatus::Defined as i32);
     }
 
     #[test]
     fn a_running_adopted_vm_whose_unit_died_reports_failed() {
-        // The restore path sets neither starting_at nor stopped_at, so this
-        // entry used to fall through to DEFINED, which the agent's
-        // allocation reconciler counts as live: a guest whose QEMU exited on
-        // its own was never rebuilt. The unit state settles it instead.
+        // The restore path stamps neither starting_at nor stopped_at, so
+        // only the unit state can tell a dead guest from a DEFINED one.
         let entry = fixture_entry(test_fixtures::QEMU_HASH, true);
         let info = vm_info_message(&empty_state(), &entry, false, UnitLiveness::Dead, now_ns());
         assert_eq!(info.status, pb::VmStatus::Failed as i32);
@@ -2404,10 +2236,8 @@ mod tests {
 
     #[test]
     fn a_started_vm_whose_unit_died_reports_failed_instead_of_booting_for_ever() {
-        // The created-and-started shape: starting_at stamped, then
-        // started_at once the controller was confirmed ready. A unit that
-        // goes down afterwards without a StopVm is a guest that died, and
-        // reporting BOOTING for ever left the agent holding it live.
+        // The created-and-started shape: a unit that goes down afterwards
+        // with no StopVm is a dead guest, not a VM booting for ever.
         let mut entry = fixture_entry(test_fixtures::QEMU_HASH, true);
         entry.times.starting_at_ns = entry.times.prepared_at_ns;
         let info = vm_info_message(&empty_state(), &entry, false, UnitLiveness::Dead, now_ns());
@@ -2427,8 +2257,7 @@ mod tests {
     #[test]
     fn an_explicitly_stopped_vm_stays_stopped_under_a_dead_unit() {
         // The stop stamps come first: a VM the operator stopped has a dead
-        // unit by definition and must not be reported as a crash the agent
-        // rebuilds.
+        // unit by definition and is not a crash the agent should rebuild.
         let mut entry = fixture_entry(test_fixtures::QEMU_HASH, true);
         entry.times.stopping_at_ns = entry.times.started_at_ns + 1_000;
         let info = vm_info_message(&empty_state(), &entry, false, UnitLiveness::Dead, now_ns());
@@ -2440,9 +2269,8 @@ mod tests {
 
     #[test]
     fn a_confidential_vm_awaiting_its_session_is_never_reported_failed() {
-        // A SEV / SEV-ES controller is deliberately held down until the
-        // owner uploads the session certificates, so its unit is dead by
-        // design and says nothing about a guest.
+        // A SEV or SEV-ES controller is held down until the session
+        // certificates arrive, so its dead unit says nothing about a guest.
         let mut entry = fixture_entry(test_fixtures::CONFIDENTIAL_HASH, true);
         entry.times.starting_at_ns = entry.times.prepared_at_ns;
         let info = vm_info_message(&empty_state(), &entry, false, UnitLiveness::Dead, now_ns());
@@ -2452,8 +2280,8 @@ mod tests {
 
     #[test]
     fn an_ephemeral_program_ignores_the_unit_state() {
-        // A program runs under no controller unit; its times are the whole
-        // truth, and a stray unit lookup must not condemn it.
+        // A program runs under no controller unit, so a stray unit lookup
+        // must not condemn it.
         let mut entry = fixture_entry(test_fixtures::QEMU_HASH, true);
         entry.is_program = true;
         entry.times.starting_at_ns = entry.times.prepared_at_ns;
@@ -2905,10 +2733,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_list_that_finds_a_dead_unit_reports_failed_and_announces_it_once() {
-        // The whole point of the FAILED arm: the agent's allocation
-        // reconciler counts BOOTING and DEFINED as live, so a guest whose
-        // QEMU exited on its own used to sit in the supervisor's list for
-        // ever and never be rebuilt. ListVms is where the daemon notices.
+        // The agent's reconciler counts BOOTING and DEFINED as live, so a
+        // guest that exited on its own is never rebuilt unless a read says
+        // FAILED. ListVms is where the daemon notices.
         use crate::logs::StaticLogSource;
         use crate::units::FakeSystemd;
         let entry = fixture_entry(test_fixtures::QEMU_HASH, true);
@@ -2948,8 +2775,7 @@ mod tests {
         assert_eq!(event.old_status, pb::VmStatus::Running as i32);
         assert_eq!(event.new_status, pb::VmStatus::Failed as i32);
 
-        // A second list still reports FAILED, and says so without repeating
-        // the announcement: the agent polls this call.
+        // The agent polls this call, so a second list must not re-announce.
         let vms = list(&service).await;
         assert_eq!(vms[0].status, pb::VmStatus::Failed as i32);
         // GetVm agrees, and is not a second announcement either.
@@ -2961,8 +2787,7 @@ mod tests {
             .unwrap()
             .into_inner();
         assert_eq!(info.status, pb::VmStatus::Failed as i32);
-        // A sentinel proves the reads queued nothing behind the one death:
-        // the next event off the stream is this one, not a repeat.
+        // A sentinel proves nothing queued behind the one death.
         state
             .events
             .emit("sentinel", pb::VmStatus::Defined, pb::VmStatus::Running);
@@ -2971,9 +2796,7 @@ mod tests {
 
     /// A unit source that lets the world move between the moment a read
     /// clones an entry and the moment its unit query is answered. The read
-    /// paths hold no lock across that query, so nothing keeps a mutation out
-    /// of the gap on a real node: it is one D-Bus round trip at rest, and a
-    /// blocking pool queued behind lifecycle work stretches it.
+    /// paths hold no lock across that query, so a mutation can land there.
     struct RacingUnits {
         inner: Arc<crate::units::FakeSystemd>,
         race: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
@@ -3095,8 +2918,8 @@ mod tests {
             statuses
         }
 
-        /// Seed the hub with the VM alive, so a FAILED after it would be a
-        /// transition the hub announces, and leave the unit down.
+        /// Seed the hub with the VM alive, so a later FAILED is a transition
+        /// the hub announces, then take the unit down.
         async fn seed_alive_then_kill_the_unit(&mut self) {
             assert_eq!(
                 self.get().await.unwrap().status,
@@ -3118,12 +2941,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_get_whose_snapshot_predates_a_reboot_reports_booting() {
-        // The clone is taken before the reboot marks its window and the
-        // unit answer comes back after the restart job took the unit down,
-        // which is the dead-unit arm's exact shape on a stale entry. Read
-        // from the clone it says FAILED, and the hub announces a death that
-        // makes the agent retire and rebuild a VM that is rebooting as
-        // asked.
+        // The clone predates the reboot's marker while the unit answer
+        // postdates its restart job: read from the clone alone, that stale
+        // pair says FAILED for a VM rebooting as asked.
         let mut read = racing_read();
         read.seed_alive_then_kill_the_unit().await;
         let state = read.state.clone();
@@ -3144,10 +2964,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_list_whose_snapshot_predates_a_stop_reports_stopping() {
-        // The same race through ListVms, against the other window: the stop
-        // stamps stopping_at under the write lock before it issues the stop,
-        // so the re-read finds a VM on its way down rather than one that
-        // died.
+        // The same race through ListVms against the stop's window: the
+        // re-read finds a VM on its way down rather than one that died.
         let mut read = racing_read();
         read.seed_alive_then_kill_the_unit().await;
         let state = read.state.clone();
@@ -3170,9 +2988,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_read_that_races_nothing_still_reports_the_death_once() {
-        // The converse: the re-read must not blunt the arm. With no window
-        // opened while the query is in flight, the fresh entry is the stale
-        // one and the guest really did exit on its own.
+        // The converse: with no window opened during the query, the fresh
+        // entry is the stale one and the re-read must not blunt the arm.
         let mut read = racing_read();
         read.seed_alive_then_kill_the_unit().await;
 
@@ -3188,10 +3005,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_read_that_races_a_delete_reports_no_vm_and_no_death() {
-        // A VM deleted while the query was in flight has no status left to
-        // report and did not die: GetVm answers NOT_FOUND, as it would have
-        // a moment later, and nothing is announced against a hash whose
-        // entry is gone.
+        // A VM deleted while the query was in flight did not die and has no
+        // status left to report.
         let mut read = racing_read();
         read.seed_alive_then_kill_the_unit().await;
         let state = read.state.clone();

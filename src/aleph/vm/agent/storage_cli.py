@@ -132,36 +132,26 @@ from aleph.vm.supervisor_interface.abc import Supervisor
 # sit through a 30 second RPC deadline just to learn the daemon is down.
 SUPERVISOR_CONNECT_TIMEOUT_SECS = 3.0
 
-# How long to wait for the agent's own bind address. Shorter still: it is a
-# loopback connect, and a node that does not answer it in two seconds is a
-# node this command must assume is alive anyway.
+# How long to wait for the agent's own bind address, a loopback connect. A
+# node that does not answer in time is assumed alive.
 AGENT_PROBE_TIMEOUT_SECS = 2.0
 
-# Exit code for a reconcile that did not reconcile: it was refused because
-# the agent is running (its own pass covers the node), or it silently
-# downgraded to a dry run because the supervisor could not be asked and
-# --trust-registry was not given. Distinct from an explicit --dry-run, which
-# is a success (exit 0): nothing was refused or downgraded, the caller asked
-# for a preview and got one. Not 2, which argparse uses for a usage error: a
-# wrapper script must be able to tell a pass that did not run from a bad
-# argument without parsing stderr.
+# Exit code for a reconcile that was refused or downgraded to a dry run. An
+# explicit --dry-run is a success instead, and 2 is argparse's usage error, so
+# a wrapper can tell a pass that did not run from a bad argument.
 DEGRADED_EXIT_CODE = 3
 
-# The systemd units hand the daemon its configuration with
-# EnvironmentFile=; nothing hands it to an operator's shell, so a hand-run
-# command reads the same file itself or runs on the built-in defaults.
+# The systemd units hand the daemon its configuration with EnvironmentFile=,
+# so a hand-run command reads the same file itself.
 DEFAULT_ENV_FILE = Path("/etc/aleph-vm/supervisor.env")
 ENV_FILE_VARIABLE = "ALEPH_VM_ENV_FILE"
 
-# Verbs that only read. They must not bring an agent database into
-# existence: an operator who ran the command with the wrong execution root
-# has to see a refusal, not an empty listing backed by a file this very
-# process just created.
+# Verbs that only read: they must not bring an agent database into existence,
+# or a wrong execution root would read as an empty listing instead of an error.
 READ_ONLY_COMMANDS = frozenset({"status", "list"})
 
-# Name given to the handler this CLI installs on the root logger, so a
-# second call in the same process replaces it instead of doubling every
-# line.
+# Name of the handler this CLI installs on the root logger, so a second call
+# in the same process replaces it instead of doubling every line.
 _LOG_HANDLER_NAME = "aleph-vm-storage-cli"
 
 logger = logging.getLogger(__name__)
@@ -184,10 +174,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         dest="loglevel",
         type=str.upper,
         choices=LOG_LEVEL_NAMES,
-        # SUPPRESS, not a real default: this parser also runs as a subparser
-        # of the agent CLI, whose own --loglevel and -v/-vv write the same
-        # destination, and a subparser default overwrites what the parent
-        # already parsed.
+        # SUPPRESS, not a real default: as a subparser of the agent CLI, a
+        # default here would overwrite what the parent already parsed.
         default=argparse.SUPPRESS,
         help="Log level by name (DEBUG, INFO, WARNING, ERROR, CRITICAL); INFO by default",
     )
@@ -261,9 +249,7 @@ def _human(size: int) -> str:
 
 def _age(since: datetime) -> str:
     delta = datetime.now(tz=timezone.utc) - since
-    # Clamped at zero: a marker dated in the future (a node whose clock went
-    # backwards, a marker copied from another host) would otherwise print an
-    # age like "-1d 23h", which reads as a parsing bug to whoever sees it.
+    # Clamped at zero so a marker dated in the future does not print "-1d 23h".
     seconds = max(int(delta.total_seconds()), 0)
     days, rem = divmod(seconds, 86400)
     hours = rem // 3600
@@ -300,27 +286,21 @@ class AgentProbe:
     def may_be_running(self) -> bool:
         """Fail closed: only a refused connection rules the agent out.
 
-        Everything a wrong answer here costs is asymmetric. Calling a
-        stopped agent running costs an operator one refused command on a
-        node they can then look at; calling a running agent stopped purges
-        the disks of a VM it is at that moment creating.
+        Calling a stopped agent running costs one refused command; calling a
+        running agent stopped purges the disks of a VM it is creating.
         """
         return self.reach is not AgentReach.STOPPED
 
 
-# Hosts that name no address to connect to. A wildcard bind is probed on
-# both loopbacks, never on one: asyncio's server sets IPV6_V6ONLY on an
-# AF_INET6 socket, so an agent bound to "::" accepts on ::1 and refuses on
-# 127.0.0.1, and a probe that asked only the IPv4 loopback would call a
-# running agent stopped and purge behind it.
+# Hosts that name no address to connect to. A wildcard bind is probed on both
+# loopbacks, never on one: asyncio sets IPV6_V6ONLY, so an agent bound to "::"
+# refuses on 127.0.0.1 and a single-family probe would call it stopped.
 _WILDCARD_HOSTS = frozenset({"", "*", "0.0.0.0", "::", "::0"})  # noqa: S104
 _LOOPBACKS = ("127.0.0.1", "::1")
 
-# Errnos that say the address family itself is unusable on this host rather
-# than that the agent is up. Nothing can be serving on a loopback the kernel
-# cannot reach, so these count with the refusals: without that, the probe on
-# an IPv4-only node would answer "cannot tell" for ever and the command
-# would refuse every purge on a node that has none of the risk.
+# Errnos that say the address family is unusable on this host. Nothing can be
+# serving on a loopback the kernel cannot reach, so these count as refusals;
+# otherwise an IPv4-only node would answer "cannot tell" for ever.
 _FAMILY_UNAVAILABLE = frozenset(
     {errno.EAFNOSUPPORT, errno.EPFNOSUPPORT, errno.ENETUNREACH, errno.EHOSTUNREACH, errno.EADDRNOTAVAIL}
 )
@@ -400,9 +380,8 @@ class LiveSet:
 
     hashes: frozenset[str]
     supervisor: SupervisorAnswer
-    # The daemon's own reason to distrust its live set, when the supervisor
-    # answered. None when it did not answer: the "unanswered" half of that
-    # verdict is what the --trust-registry gate already covers.
+    # The daemon's own reason to distrust its live set, when it answered. None
+    # when it did not: --trust-registry already covers that half.
     refusal: str | None
 
 
@@ -425,9 +404,8 @@ def _socket_reach(path: Path | None) -> SupervisorReach:
     """
     if path is None:
         return SupervisorReach.UNKNOWN
-    # os.stat rather than Path.exists(), which turns every error into a
-    # plain False: a socket this user may not stat would then be reported as
-    # a stopped daemon, which is the one mistake this function must not make.
+    # os.stat rather than Path.exists(), which turns every error into False: a
+    # socket this user may not stat would then read as a stopped daemon.
     try:
         os.stat(path)
     except FileNotFoundError:
@@ -482,11 +460,8 @@ async def _ask_supervisor(timeout: float = SUPERVISOR_CONNECT_TIMEOUT_SECS) -> S
     supervisor = _open_supervisor()
     try:
         running = await asyncio.wait_for(supervisor_hashes(supervisor), timeout=timeout)
-    # Broad on purpose: every way this can fail (a transport error, a
-    # deadline, a reply that does not parse) means the same thing here, that
-    # there is no answer to union in, and the caller must fail closed. What
-    # differs is only what the operator is told, which is why the exception
-    # is kept rather than swallowed.
+    # Broad on purpose: every failure means the same thing here, no answer to
+    # union in, and the caller must fail closed. Only the message differs.
     except Exception as error:
         logger.debug("The supervisor could not be asked which VMs it runs", exc_info=True)
         return SupervisorAnswer(
@@ -593,19 +568,14 @@ def _status(registry: AgentVmRegistry, out: TextIO) -> int:
 
 
 def _list(registry: AgentVmRegistry, out: TextIO, *, reclaimable_only: bool) -> int:
-    # REASON is the marker's reason for a reclaimable directory. An unmarked
-    # directory is "live" only when the registry knows its hash; otherwise
-    # it is "unmarked", which is what an operator triaging by hand needs to
-    # see: an orphan no pass has reached yet must not read as a live VM.
+    # An unmarked directory reads as "live" only when the registry knows its
+    # hash, so an orphan no pass has reached yet is not shown as a live VM.
     # Registry only, like status: list never dials the supervisor.
     live = live_hashes(registry)
     out.write("HASH\tPOOL\tSIZE\tREASON\tAGE\n")
     for directory in iter_namespace_dirs():
         # repair=False: removing a marker that does not parse is the
-        # reconciler's job, and a listing that unlinks a file is not the
-        # read-only command this is documented to be (it may also be run by
-        # a user who cannot unlink it, and the error would abort the whole
-        # listing over one row).
+        # reconciler's job, and this command only reads.
         marker = read_marker(directory, repair=False)
         if reclaimable_only and marker is None:
             continue
@@ -621,11 +591,9 @@ def _list(registry: AgentVmRegistry, out: TextIO, *, reclaimable_only: bool) -> 
 def _is_marked_reclaimable(vm_hash: str) -> bool:
     """Whether any pool holds a marker for this hash.
 
-    repair=False, like every marker read this process makes: the walk covers
-    every directory on the node, and it runs before the refusals, so with
-    the repair on, a reclaim that is about to be refused would first unlink
-    the corrupt markers of unrelated VMs. Both callers (the refusal, and the
-    second read immediately before the purge) go through here.
+    repair=False: the walk covers every directory on the node, so repairing
+    here would let a reclaim that is about to be refused unlink the corrupt
+    markers of unrelated VMs.
     """
     return any(directory.name == vm_hash for directory, _marker in iter_reclaimable(repair=False))
 
@@ -634,10 +602,9 @@ def _is_marked_reclaimable(vm_hash: str) -> bool:
 class Refusal:
     """A reason not to purge, and the exit code that reports it.
 
-    Most refusals say "not this hash" and exit 1. A node whose agent is
-    live, or whose agent database was lost, is a different answer: nothing
-    about the hash is wrong, the command simply may not run here, and a
-    wrapper script has to be able to tell the two apart.
+    Most refusals say "not this hash" and exit 1. A live agent or a lost agent
+    database says the command may not run here at all, which a wrapper script
+    has to be able to tell apart.
     """
 
     message: str
@@ -650,10 +617,8 @@ def _supervisor_reclaim_refusal(registry: AgentVmRegistry, vm_hash: str, *, trus
     if answer.answered:
         if vm_hash in answer.running:
             return Refusal(f"{vm_hash} is running (the supervisor lists it); refusing to purge it")
-        # The daemon's own reason to distrust a live set, asked here too: a
-        # lost agent DB makes every marker on the node look purgeable, and
-        # the supervisor's list is no second opinion on a VM it has not
-        # started yet.
+        # A lost agent DB makes every marker on the node look purgeable, and
+        # the supervisor's list is no second opinion on a VM it never started.
         lost_database = _startup_refusal(registry, len(answer.running))
         if lost_database is not None:
             return Refusal(f"Refusing to purge {vm_hash}: {lost_database}", DEGRADED_EXIT_CODE)
@@ -675,12 +640,9 @@ def _supervisor_reclaim_refusal(registry: AgentVmRegistry, vm_hash: str, *, trus
 def _reclaim_refusal(registry: AgentVmRegistry, vm_hash: str, *, trust_registry: bool) -> Refusal | None:
     """Why reclaim must not purge this hash, or None when it may.
 
-    Cheapest, purely local checks first: a typo or an unrelated hash fails
-    instantly instead of waiting out a supervisor dial that can only ever
-    confirm what these checks already know. The name check mirrors the
-    daemon's walk: a hand-made marker under a directory nobody named after a
-    VM must be refused here, not tripped over as a ValueError inside
-    purge_vm_storage after every other check passed.
+    Local checks first, so a typo fails without waiting out a supervisor dial.
+    The name check is one of them: a hand-made marker under a directory not
+    named after a VM is refused here rather than deep inside purge_vm_storage.
     """
     if not is_vm_namespace(vm_hash):
         return Refusal(f"{vm_hash!r} is not a VM hash; refusing to purge a directory not named after a VM")
@@ -692,9 +654,9 @@ def _reclaim_refusal(registry: AgentVmRegistry, vm_hash: str, *, trust_registry:
         return Refusal(f"{vm_hash} is a live VM in the agent registry; refusing to purge it")
     probe = _probe_agent()
     if probe.may_be_running:
-        # A marked directory is not safe to purge merely because it is
-        # marked: a create adopts it by clearing the marker, and this
-        # process would have to win a race with that to notice.
+        # A marked directory is not safe to purge merely because it is marked:
+        # a create adopts it by clearing the marker, and this pass would have
+        # to win that race to notice.
         return Refusal(
             f"Refusing to purge {vm_hash}: {_agent_at_work_reason(probe)}. {_agent_pass_note()}; "
             "run 'storage reconcile --dry-run' to preview what the agent's own pass will find",
@@ -704,18 +666,15 @@ def _reclaim_refusal(registry: AgentVmRegistry, vm_hash: str, *, trust_registry:
 
 
 def _reclaim(registry: AgentVmRegistry, vm_hash: str, out: TextIO, err: TextIO, *, trust_registry: bool) -> int:
-    # Every refusal and every diagnostic goes to err, as in reconcile: stdout
-    # carries what the command achieved and nothing else, so a wrapper can
-    # read it without filtering.
+    # Refusals and diagnostics go to err, so stdout carries only what the
+    # command achieved and a wrapper can read it unfiltered.
     refusal = _reclaim_refusal(registry, vm_hash, trust_registry=trust_registry)
     if refusal is not None:
         err.write(refusal.message + "\n")
         return refusal.code
-    # Asked again, after the probe and the dial: a re-create adopts its
-    # retained directories by clearing their markers, and a create that
-    # started while the supervisor was being asked is in no answer this
-    # process has. The marker is the one thing that says the disks are
-    # nobody's.
+    # Asked again after the probe and the dial: a create that started while the
+    # supervisor was being asked clears the marker, which is the one thing that
+    # says the disks are nobody's.
     if not _is_marked_reclaimable(vm_hash):
         err.write(
             f"{vm_hash} is no longer marked reclaimable: a create adopted its directory while the "
@@ -733,11 +692,9 @@ def _reclaim(registry: AgentVmRegistry, vm_hash: str, out: TextIO, err: TextIO, 
 def _incomplete_purge_report(vm_hash: str, result: PurgeResult) -> str:
     """What the purge could not remove, named, with advice that fits it.
 
-    A device-mapper hold and a failed removal (a read-only filesystem, an
-    immutable file, a directory this user may not write) leave the same
-    thing on disk, so the directory alone cannot tell them apart. Only the
-    first is fixed by tearing devices down, and sending an operator to
-    'storage reconcile' for the others is advice that cannot work.
+    A device-mapper hold and a failed removal leave the same thing on disk, but
+    only the first is fixed by tearing devices down, so the advice has to
+    follow which one it was.
     """
     lines = [f"Purge of {vm_hash} left {len(result.kept)} directory(ies) behind:\n"]
     lines.extend(f"  {kept.path}: {kept.reason}\n" for kept in result.kept)
@@ -779,10 +736,9 @@ def _agent_pass_refusal(probe: AgentProbe) -> str:
 
 
 def _lost_database_refusal(live_set: LiveSet) -> str | None:
-    """The daemon's own reason to distrust a live set, once the agent is out
-    of the way: an empty registry while the supervisor runs VMs means the
-    agent DB was lost, and every directory on the node then reads as an
-    orphan."""
+    """The daemon's own reason to distrust a live set: an empty registry while
+    the supervisor runs VMs means the agent DB was lost, and every directory on
+    the node then reads as an orphan."""
     if live_set.refusal is None:
         return None
     return (
@@ -813,10 +769,8 @@ def _unanswered_warning(answer: SupervisorAnswer, *, dry_run: bool, trust_regist
 
 
 def _reconcile(registry: AgentVmRegistry, out: TextIO, err: TextIO, *, dry_run: bool, trust_registry: bool) -> int:
-    # The agent probe comes before the supervisor dial: it is a loopback
-    # connect that answers at once, and it can refuse the whole pass, so a
-    # refused pass should not first sit through a three second deadline for
-    # an answer it then throws away.
+    # The agent probe comes before the supervisor dial: it answers at once and
+    # can refuse the whole pass, which would throw the dial's answer away.
     probe = _probe_agent()
     if probe.may_be_running:
         if not dry_run:
@@ -914,11 +868,9 @@ def _setup_logging(level: str | int) -> None:
 
 
 def _env_file_path(explicit: str | None) -> tuple[Path, bool]:
-    """The env file to load, and whether the operator named it (via
-    --env-file or $ALEPH_VM_ENV_FILE) rather than this falling back to the
-    node's default location. Both ways of naming a file are equally
-    explicit operator intent: a missing one must refuse rather than run on
-    defaults the operator did not choose.
+    """The env file to load, and whether the operator named it (via --env-file
+    or $ALEPH_VM_ENV_FILE) rather than this falling back to the default. A
+    named file that is missing must refuse rather than run on defaults.
     """
     if explicit:
         return Path(explicit), True
@@ -983,9 +935,8 @@ def run_parsed(args: argparse.Namespace) -> int:
     read_only = args.storage_command in READ_ONLY_COMMANDS
     database = settings.EXECUTION_DATABASE
     if read_only and not database.exists():
-        # Before anything else: settings.setup() makes every configured
-        # directory, so an operator who mistyped the execution root used to
-        # get this refusal and a tree of empty directories at the typo.
+        # Before settings.setup(), which would make every configured directory
+        # and leave a tree of empty ones at a mistyped execution root.
         logger.error(
             "No agent database at %s: nothing has run on this node yet, or the execution root is not the one "
             "the agent uses",
@@ -993,22 +944,17 @@ def run_parsed(args: argparse.Namespace) -> int:
         )
         return 1
     if read_only:
-        # settings.setup() creates the caches, the execution root, the pool
-        # directory and the session directory, and resolves the node's DNS;
-        # setup_pools() adopts a pool on first sight, marker file and
-        # adoption registry both. None of that belongs in a command that
-        # reports on a node. The settings themselves are complete without
-        # setup(): every path these verbs read is derived when the settings
-        # object is built.
+        # settings.setup() creates directories and setup_pools() adopts a pool
+        # on first sight, neither of which belongs in a reporting command. The
+        # paths these verbs read are derived when the settings are built.
         storage_pools.setup_pools(read_only=True)
     else:
         settings.setup()
         storage_pools.setup_pools()
         if not database.exists():
             logger.info("Creating the agent database at %s", database)
-    # Read-only included: the registry cannot be read out of a database
-    # whose schema predates the code, and the migration writes only to the
-    # database file that is already there.
+    # Read-only included: the registry cannot be read out of a database whose
+    # schema predates the code, and the migration touches only that file.
     initialise_database()
 
     registry = asyncio.run(_load_registry())

@@ -843,9 +843,8 @@ def plumbing(tmp_path, monkeypatch, registry):
     database = tmp_path / "executions.sqlite3"
     database.touch()
     monkeypatch.setattr(settings, "EXECUTION_DATABASE", database)
-    # An env file the CLI loads rebuilds every field of the settings
-    # singleton, not only the ones a test monkeypatched, so the whole
-    # namespace is put back rather than trusting the two patches to cover it.
+    # Loading an env file rebuilds every field of the settings singleton, not
+    # only the monkeypatched ones, so the whole namespace is put back.
     snapshot = dict(settings.__dict__)
     yield database
     settings.__dict__.clear()

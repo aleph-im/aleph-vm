@@ -40,25 +40,16 @@ pub fn controller_unit_name(vm_hash: &str) -> String {
 }
 
 /// What systemd says about one controller unit, reduced to the answers the
-/// status mapping distinguishes.
-///
-/// The plain active flag cannot tell a unit systemd is still working on from
-/// one that has settled, and the daemon needs that distinction: a unit with a
-/// start or stop job in flight is a VM on its way somewhere, while a unit
-/// that has settled at failed or inactive under a VM the daemon has seen
-/// alive, with nobody stopping it, is a guest that exited on its own.
+/// status mapping distinguishes. The plain active flag cannot separate a unit
+/// systemd is still working on from one that has settled dead on its own.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum UnitLiveness {
     /// The unit is up: `active`, or `reloading` on its way through a reload.
     Active,
-    /// systemd has a job in flight: `activating` on the way up,
-    /// `deactivating` on the way down. Either way something asked for the
-    /// change and the outcome is not settled, so neither is a guest that
-    /// died on its own.
+    /// A job is in flight (`activating`, `deactivating`): something asked for
+    /// the change, so the outcome is not a guest that died on its own.
     Transitional,
-    /// The unit has settled down: `failed`, `inactive`, or not loaded at all
-    /// (a template instance never started, or one systemd garbage collected
-    /// after it stopped).
+    /// The unit has settled down: `failed`, `inactive`, or not loaded at all.
     Dead,
     /// Nothing was observed: no unit was queried, or the bus did not answer.
     /// Never a conclusion about the guest.
@@ -68,8 +59,8 @@ pub enum UnitLiveness {
 
 impl UnitLiveness {
     /// One ActiveState string, mapped. An unrecognized state is `Unknown`
-    /// rather than a guess: a systemd that grows a new state must not be
-    /// able to make the daemon declare a live guest dead.
+    /// rather than a guess, so a systemd that grows a new state cannot make
+    /// the daemon declare a live guest dead.
     pub fn from_active_state(state: &str) -> Self {
         match state {
             "active" | "reloading" => Self::Active,
@@ -153,10 +144,8 @@ pub trait UnitStateSource: Send + Sync {
 }
 
 /// Python `SystemDManager.stop_and_disable`: stop gated on the actual
-/// ActiveState (never on enablement), then disable when enabled.
-///
-/// The error says which of the two steps failed, because the unit state
-/// afterwards cannot: see [`StopAndDisableError`].
+/// ActiveState (never on enablement), then disable when enabled. The error
+/// says which of the two steps failed: see [`StopAndDisableError`].
 pub fn stop_and_disable(
     units: &dyn UnitStateSource,
     unit: &str,
@@ -173,15 +162,9 @@ pub fn stop_and_disable(
     Ok(())
 }
 
-/// Which of [`stop_and_disable`]'s two steps failed.
-///
-/// `StopUnit` returns as soon as systemd accepts the job, and the unit then
-/// sits in `deactivating` for the whole of the guest's shutdown, so what the
-/// unit looks like when the disable fails says nothing about whether a stop
-/// was ever issued: it reads active, deactivating, or unknown on a silent
-/// bus, whether or not a job is on its way. The failing step does say. A
-/// caller that has recorded the stop before issuing it needs that answer to
-/// decide whether the record still stands.
+/// Which of [`stop_and_disable`]'s two steps failed. The unit state afterwards
+/// cannot say: `StopUnit` returns as soon as systemd accepts the job, so the
+/// unit reads active or deactivating whether or not a stop was ever issued.
 #[derive(Debug, thiserror::Error)]
 pub enum StopAndDisableError {
     /// `StopUnit` was refused: no job was queued and the unit is still up.
@@ -392,9 +375,8 @@ impl UnitStateSource for ZbusUnitStates {
         Ok(units
             .iter()
             .map(|unit| {
-                // ListUnits only reports what systemd has loaded; a unit
-                // missing from the reply is one it never loaded or already
-                // released, which is as down as a unit gets.
+                // ListUnits only reports what systemd has loaded, so a unit
+                // missing from the reply is as down as a unit gets.
                 let state = by_name.get(unit.as_str()).copied().unwrap_or(NOT_LOADED);
                 (unit.clone(), UnitLiveness::from_active_state(state))
             })
