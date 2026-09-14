@@ -6538,7 +6538,6 @@ mod tests {
     struct MidJobObservation {
         harness: Harness,
         state: Arc<DaemonState>,
-        probing: Arc<MidJobProbe>,
         vm_id: String,
         seen: Arc<std::sync::Mutex<Vec<pb::VmStatus>>>,
         events: tokio::sync::mpsc::UnboundedReceiver<pb::VmEvent>,
@@ -6581,7 +6580,6 @@ mod tests {
         MidJobObservation {
             harness,
             state,
-            probing,
             vm_id,
             seen,
             events,
@@ -6721,7 +6719,6 @@ mod tests {
         let entry = entry_snapshot(&probe.state, &probe.vm_id).unwrap();
         assert!(!entry.restarting);
         assert_eq!(status_snapshot(&probe.state, &entry), pb::VmStatus::Failed);
-        drop(probe.probing);
     }
 
     /// One of the two steps `stop_and_disable` takes.
