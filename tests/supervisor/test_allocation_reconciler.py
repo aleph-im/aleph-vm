@@ -666,6 +666,27 @@ async def test_a_stopped_vm_the_plan_stops_naming_is_still_torn_down(reconciler,
     assert reconciler_module.teardown_vm.await_args.args[0] == HASH_B
 
 
+@pytest.mark.asyncio
+async def test_the_loops_starts_are_marked_as_rebuilds_for_admission(reconciler, monkeypatch):
+    """Whatever the loop starts, this node either already holds a record for
+    or does not. When it does, that record is still committing the VM's memory
+    and vCPUs, and the create must not be charged for them a second time: on a
+    node that sits over its caps it would be refused, and a refused rebuild is
+    a VM stranded by one crash. The create path reads the registry itself to
+    decide; the flag is the loop saying it may."""
+    seen: list = []
+
+    async def fake_start(vm_hash, _pubsub, **kwargs):
+        seen.append(kwargs.get("recreate"))
+
+    monkeypatch.setattr(reconciler_module, "start_persistent_vm", fake_start)
+    reconciler.submit(_plan(HASH_C))
+
+    await reconciler._converge_once()
+
+    assert seen == [True]
+
+
 def test_pending_hashes_are_the_entries_the_push_carried_no_message_for(reconciler):
     reconciler.submit(
         AllocationPlan(

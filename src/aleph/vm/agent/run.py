@@ -478,12 +478,28 @@ def _log_lost_create_race(vm_hash: ItemHash, what: str) -> None:
     logger.info("%s %s already exists: another start built it, leaving it alone", what, vm_hash)
 
 
+def _admit_create(content, vm_hash: ItemHash, *, capacity: CapacityManager, rebuild: bool) -> None:
+    """Run the admission this create is to be judged by.
+
+    A rebuild of a VM this node already holds a record for is not new load:
+    its memory and vCPUs were reserved when it was first admitted and nothing
+    gave them back when the guest died, so only the disk it does not already
+    hold is judged. A first create, and any create whose caller cannot vouch
+    that this is a rebuild, goes through the full check.
+    """
+    if rebuild:
+        capacity.check_recreate(content, vm_hash=vm_hash)
+    else:
+        capacity.check_message(content, exclude_vm_hash=vm_hash)
+
+
 async def create_vm_execution(
     vm_hash: ItemHash,
     *,
     supervisor: Supervisor,
     registry: AgentVmRegistry,
     capacity: CapacityManager,
+    recreate: bool = False,
 ) -> None:
     """Create a VM for the given message.
 
@@ -500,7 +516,16 @@ async def create_vm_execution(
     the VM and returns None; the hypervisor object lives behind the supervisor.
     The agent never touches a VmPool: there is no legacy pool fallback anymore.
     An unsupported content type is rejected with a clear error.
+
+    ``recreate`` says the caller is building again a VM this node already
+    holds, so admission may skip the memory and vCPU checks when the registry
+    turns out to hold the hash. Only a caller that knows this (the convergence
+    loop, the operator's reboot and reinstall) sets it.
     """
+    # Read before the branches below record anything. Each of them records the
+    # VM before it admits it, so by admission time the registry always holds
+    # the hash and could no longer tell a rebuild from a first create.
+    rebuild = recreate and registry.get(vm_hash) is not None
     message, original_message = await load_updated_message(vm_hash)
 
     logger.debug(f"Message: {json.dumps(message.model_dump(exclude_none=True), indent=4, sort_keys=True, default=str)}")
@@ -529,7 +554,7 @@ async def create_vm_execution(
                 vm_hash, message=content, original=original_message.content, persistent=bool(content.on.persistent)
             )
             try:
-                capacity.check_message(content, exclude_vm_hash=vm_hash)
+                _admit_create(content, vm_hash, capacity=capacity, rebuild=rebuild)
                 spec, _resources = await build_program_create_vm_spec(vm_hash, content)
                 info = await supervisor.create_vm(spec)
                 await _wait_until_running(supervisor, info.vm_id)
@@ -573,7 +598,7 @@ async def create_vm_execution(
             # they cover the same create attempt.
             had_volumes = await asyncio.to_thread(vm_has_volumes, vm_hash)
             try:
-                capacity.check_message(content, exclude_vm_hash=vm_hash)
+                _admit_create(content, vm_hash, capacity=capacity, rebuild=rebuild)
                 if snp_instance:
                     # SEV-SNP confidential instances build through the dedicated
                     # LUKS-rootfs SNP launch path, not build_create_vm_spec (which
@@ -663,7 +688,7 @@ async def create_vm_execution(
             # create attempt.
             had_volumes = await asyncio.to_thread(vm_has_volumes, vm_hash)
             try:
-                capacity.check_message(content, exclude_vm_hash=vm_hash)
+                _admit_create(content, vm_hash, capacity=capacity, rebuild=rebuild)
                 spec, attest_port = await build_vprogram_spec(vm_hash, content)
                 # A confidential GPU is resolved against the host's CC-mode
                 # cards here, after staging, mirroring the instance path's
@@ -729,12 +754,15 @@ async def create_vm_execution_or_raise_http_error(
     supervisor: Supervisor,
     registry: AgentVmRegistry,
     capacity: CapacityManager,
+    recreate: bool = False,
 ) -> None:
     # The spec path retires a half-started VM as FAILED_CREATE inside
     # create_vm_execution, so this wrapper only translates failures to HTTP
     # responses. The agent holds no pool to clean up.
     try:
-        return await create_vm_execution(vm_hash=vm_hash, supervisor=supervisor, registry=registry, capacity=capacity)
+        return await create_vm_execution(
+            vm_hash=vm_hash, supervisor=supervisor, registry=registry, capacity=capacity, recreate=recreate
+        )
     except ResourceDownloadError as error:
         logger.exception(error)
         raise HTTPBadRequest(reason="Code, runtime or data not available") from error
@@ -1115,8 +1143,15 @@ async def start_persistent_vm(
     capacity: CapacityManager,
     expiry: ExpiryManager,
     update_watcher: UpdateWatcher,
+    recreate: bool = False,
 ) -> None:
     """Bring a scheduled VM up, whatever state this node holds it in.
+
+    ``recreate`` is passed through to the create: it says the caller is
+    building again a VM this node already holds a record for, whose memory and
+    vCPUs are still committed to it, so admission judges only the disk it does
+    not already hold. The convergence loop sets it; the legacy allocation
+    endpoints do not.
 
     Serialised per hash. Every start path runs the same read, record,
     download, create sequence, and the download between the read and the
@@ -1173,7 +1208,9 @@ async def start_persistent_vm(
 
         if info is None:
             logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
-            await create_vm_execution(vm_hash=vm_hash, supervisor=supervisor, registry=registry, capacity=capacity)
+            await create_vm_execution(
+                vm_hash=vm_hash, supervisor=supervisor, registry=registry, capacity=capacity, recreate=recreate
+            )
             # A confidential VM is created but left awaiting its owner's session
             # (only the owner can start it via /confidential/initialize). Waiting
             # for RUNNING would block forever, so re-read the status and skip the
