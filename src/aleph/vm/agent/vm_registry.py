@@ -14,6 +14,7 @@ import logging
 from collections.abc import ItemsView
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Protocol
 from uuid import uuid4
 
 from aleph_message.models import ExecutableContent, ItemHash, VerifiableProgramContent
@@ -48,7 +49,18 @@ class AgentVmRecord:
         return isinstance(self.message, VerifiableProgramContent)
 
 
-class AgentVmRegistry:
+class RecordLookup(Protocol):
+    """The one read a caller needs when all it asks is "do we know this VM".
+
+    Published here, next to the only implementation, and inherited by it, so
+    the signature is checked against the real one rather than restated in the
+    caller and left to drift.
+    """
+
+    def get(self, vm_hash: ItemHash) -> AgentVmRecord | None: ...
+
+
+class AgentVmRegistry(RecordLookup):
     """In-memory cache of AgentVmRecord, keyed by vm_hash."""
 
     def __init__(self) -> None:

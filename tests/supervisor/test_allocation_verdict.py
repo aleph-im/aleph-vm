@@ -14,6 +14,7 @@ from test_supervisor_translate import _make_qemu_instance_message
 
 from aleph.vm.agent.allocation import verdict as verdict_module
 from aleph.vm.agent.allocation.plan import AllocationPlan, PlannedVm, PlanVerdict
+from aleph.vm.agent.allocation.refusal import AllocationFailureCode, Refusal
 from aleph.vm.agent.allocation.verdict import build_plan, compute_verdict, narrow_plan
 from aleph.vm.agent.capacity import AdmissionVerdict, CapacityManager
 from aleph.vm.agent.vm_registry import AgentVmRegistry
@@ -107,19 +108,19 @@ def test_a_vm_caught_mid_stop_is_unchanged_too():
 
 def test_a_new_vm_that_fits_is_accepted():
     verdict = compute_verdict(
-        _plan(HASH_C), infos=[], registry=_registry({}), capacity=_capacity([AdmissionVerdict(HASH_C, True)])
+        _plan(HASH_C), infos=[], registry=_registry({}), capacity=_capacity([AdmissionVerdict(HASH_C)])
     )
 
     assert verdict.accepted == [HASH_C]
 
 
 def test_a_new_vm_that_does_not_fit_is_rejected_with_a_code():
-    capacity = _capacity([AdmissionVerdict(HASH_C, False, "insufficient_capacity", "no room")])
+    capacity = _capacity([AdmissionVerdict(HASH_C, Refusal.for_code(AllocationFailureCode.INSUFFICIENT_CAPACITY))])
 
     verdict = compute_verdict(_plan(HASH_C), infos=[], registry=_registry({}), capacity=capacity)
 
     assert verdict.accepted == []
-    assert verdict.rejected[HASH_C]["code"] == "insufficient_capacity"
+    assert verdict.rejected[HASH_C].code is AllocationFailureCode.INSUFFICIENT_CAPACITY
 
 
 def test_an_entry_without_a_verified_message_is_pending():
@@ -139,7 +140,7 @@ def test_a_vm_id_that_is_not_a_hash_is_dropped_not_raised_on():
         _plan(HASH_C),
         infos=[_info("operator-scratch-vm"), _info(HASH_B)],
         registry=_registry({HASH_B: _record()}),
-        capacity=_capacity([AdmissionVerdict(HASH_C, True)]),
+        capacity=_capacity([AdmissionVerdict(HASH_C)]),
     )
 
     assert verdict.accepted == [HASH_C]
@@ -228,7 +229,7 @@ def test_a_vm_whose_teardown_is_in_flight_is_not_answered_unchanged():
         _plan(HASH_A),
         infos=[_info(HASH_A)],
         registry=_registry({HASH_A: _record()}),
-        capacity=_capacity([AdmissionVerdict(HASH_A, True)]),
+        capacity=_capacity([AdmissionVerdict(HASH_A)]),
         removing_now=frozenset({HASH_A}),
     )
 
@@ -251,6 +252,37 @@ def test_a_vm_being_torn_down_with_no_message_is_pending_not_unchanged():
 
     assert verdict.unchanged == []
     assert verdict.pending == [HASH_A]
+
+
+def test_a_vm_being_torn_down_that_the_host_cannot_take_back_is_refused_and_stays_gone():
+    """The worst outcome the in-flight set can produce, pinned so it is a
+    decision and not a surprise.
+
+    The teardown is past the point where a push can call it off, so the VM is
+    going away with its disks whatever this answer says. Judged as a candidate,
+    it can be refused, and then it is dropped from the plan: the loop will not
+    build it back, and the scheduler is told "rejected" rather than being left
+    to discover a VM it believes is running has silently gone. Refusing is
+    still the right answer, since the host genuinely has no room for it, and
+    the hash stays in the plan's refused set so no later pass reads its absence
+    as one more VM to delete.
+    """
+    plan = _plan(HASH_A)
+    verdict = compute_verdict(
+        plan,
+        infos=[_info(HASH_A)],
+        registry=_registry({HASH_A: _record()}),
+        capacity=_capacity([AdmissionVerdict(HASH_A, Refusal.for_code(AllocationFailureCode.INSUFFICIENT_CAPACITY))]),
+        removing_now=frozenset({HASH_A}),
+    )
+
+    assert verdict.unchanged == []
+    assert verdict.rejected[HASH_A].code is AllocationFailureCode.INSUFFICIENT_CAPACITY
+
+    narrowed = narrow_plan(plan, verdict)
+
+    assert narrowed.entries == {}
+    assert narrowed.refused == frozenset({HASH_A})
 
 
 def test_a_vm_being_torn_down_that_the_push_drops_is_still_removing():
@@ -302,7 +334,7 @@ def test_a_vprogram_absent_from_the_plan_is_removing_despite_being_confidential(
 
 def test_admission_counts_the_removals_as_freed():
     """The plan drops B and adds C, so C is judged against B's release."""
-    capacity = _capacity([AdmissionVerdict(HASH_C, True)])
+    capacity = _capacity([AdmissionVerdict(HASH_C)])
 
     compute_verdict(_plan(HASH_C), infos=[_info(HASH_B)], registry=_registry({HASH_B: _record()}), capacity=capacity)
 
@@ -323,7 +355,7 @@ def test_a_vm_pinned_to_another_node_is_rejected():
         node_hash="our-node",
     )
 
-    assert verdict.rejected[HASH_C]["code"] == "node_mismatch"
+    assert verdict.rejected[HASH_C].code is AllocationFailureCode.NODE_MISMATCH
 
 
 def test_a_vm_pinned_to_this_node_is_admitted():
@@ -334,7 +366,7 @@ def test_a_vm_pinned_to_this_node_is_admitted():
         _plan(HASH_C, content=content),
         infos=[],
         registry=_registry({}),
-        capacity=_capacity([AdmissionVerdict(HASH_C, True)]),
+        capacity=_capacity([AdmissionVerdict(HASH_C)]),
         node_hash="our-node",
     )
 
@@ -428,11 +460,24 @@ async def test_an_entry_with_an_unusable_item_hash_is_rejected_not_raised():
     plan, rejected = await build_plan(body, now=NOW)
 
     assert list(plan.entries) == [HASH_A]
-    assert rejected["not-a-hash"]["code"] == "invalid_message"
-    assert rejected["None"]["code"] == "invalid_message"
+    assert rejected["vms[0]"].code is AllocationFailureCode.INVALID_MESSAGE
+    assert rejected["vms[1]"].code is AllocationFailureCode.INVALID_MESSAGE
     # Neither key names a VM this node could be running, so neither is worth
     # protecting from the teardown pass.
     assert plan.refused == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_every_entry_with_no_usable_hash_is_answered_for_on_its_own():
+    """Answered by position, so a push whose entries carry no item_hash at all
+    is told about each of them. They all used to be keyed by the string that
+    was not there, "None", which collapsed them into a single refusal: a
+    scheduler pushing three broken entries was answered about one."""
+    body = {"vms": [{}, {"message": {"whatever": True}}, 5]}
+
+    _plan, rejected = await build_plan(body, now=NOW)
+
+    assert sorted(rejected) == ["vms[0]", "vms[1]", "vms[2]"]
 
 
 @pytest.mark.asyncio
@@ -445,7 +490,7 @@ async def test_a_hash_whose_message_will_not_verify_is_still_a_hash_the_push_nam
 
     plan, rejected = await build_plan(body, now=NOW)
 
-    assert rejected[HASH_A]["code"] == "invalid_message"
+    assert rejected[HASH_A].code is AllocationFailureCode.INVALID_MESSAGE
     assert list(plan.entries) == [HASH_B]
     assert plan.refused == frozenset({HASH_A})
 
@@ -458,7 +503,7 @@ async def test_narrowing_carries_the_refusals_the_plan_arrived_with():
     plan, _ = await build_plan(
         {"vms": [{"item_hash": str(HASH_A), "message": "not-an-object"}, {"item_hash": str(HASH_B)}]}, now=NOW
     )
-    verdict = PlanVerdict(rejected={HASH_B: {"code": "insufficient_capacity"}})
+    verdict = PlanVerdict(rejected={HASH_B: Refusal.for_code(AllocationFailureCode.INSUFFICIENT_CAPACITY)})
 
     narrowed = narrow_plan(plan, verdict)
 
@@ -476,7 +521,7 @@ def test_a_pinned_vm_is_not_refused_when_we_do_not_know_our_own_hash():
         _plan(HASH_C, content=content), infos=[], registry=_registry({}), capacity=_capacity([]), node_hash=None
     )
 
-    assert verdict.rejected[HASH_C]["code"] == "node_hash_unknown"
+    assert verdict.rejected[HASH_C].code is AllocationFailureCode.NODE_HASH_UNKNOWN
 
 
 def _real_capacity(mocker, *, memory_gib=64, registry=None):
@@ -562,7 +607,7 @@ def test_a_newcomer_is_refused_the_room_a_stopped_vm_holds(mocker):
     )
 
     assert verdict.unchanged == [HASH_C]
-    assert verdict.rejected[HASH_A]["code"] == "insufficient_capacity"
+    assert verdict.rejected[HASH_A].code is AllocationFailureCode.INSUFFICIENT_CAPACITY
 
 
 def test_compute_verdict_drives_the_real_capacity_manager(mocker):
@@ -619,7 +664,7 @@ def test_a_recreate_still_waiting_on_its_message_frees_nothing(mocker):
     verdict = compute_verdict(plan, infos=[_info(HASH_C, status=VmStatus.FAILED)], registry=registry, capacity=capacity)
 
     assert verdict.pending == [HASH_C]
-    assert verdict.rejected[HASH_A]["code"] == "insufficient_capacity"
+    assert verdict.rejected[HASH_A].code is AllocationFailureCode.INSUFFICIENT_CAPACITY
 
 
 DEVICE_ID = "10de:2504"
@@ -652,7 +697,7 @@ def test_a_gpu_candidate_is_refused_when_no_inventory_reached_the_verdict(mocker
         _plan(HASH_C, content=_gpu_message()), infos=[], registry=_registry({}), capacity=_real_capacity(mocker)
     )
 
-    assert verdict.rejected[HASH_C]["code"] == "gpu_unavailable"
+    assert verdict.rejected[HASH_C].code is AllocationFailureCode.GPU_UNAVAILABLE
 
 
 def test_a_gpu_candidate_is_judged_against_the_inventory_the_caller_read(mocker):
@@ -685,7 +730,11 @@ def test_narrowing_drops_what_the_answer_refused_and_nothing_else():
             HASH_C: PlannedVm(vm_hash=HASH_C, verified=None),
         },
     )
-    verdict = PlanVerdict(accepted=[HASH_A], pending=[HASH_C], rejected={HASH_B: {"code": "insufficient_capacity"}})
+    verdict = PlanVerdict(
+        accepted=[HASH_A],
+        pending=[HASH_C],
+        rejected={HASH_B: Refusal.for_code(AllocationFailureCode.INSUFFICIENT_CAPACITY)},
+    )
 
     narrowed = narrow_plan(plan, verdict)
 
@@ -704,7 +753,7 @@ def test_a_dead_vm_the_answer_refused_is_carried_as_refused():
     not list is one the scheduler took away, and it reaps the disks of every
     VM it takes away."""
     plan = _plan(HASH_C)
-    capacity = _capacity([AdmissionVerdict(HASH_C, False, "insufficient_capacity", "not enough capacity on this CRN")])
+    capacity = _capacity([AdmissionVerdict(HASH_C, Refusal.for_code(AllocationFailureCode.INSUFFICIENT_CAPACITY))])
 
     verdict = compute_verdict(
         plan,
@@ -714,7 +763,7 @@ def test_a_dead_vm_the_answer_refused_is_carried_as_refused():
     )
     narrowed = narrow_plan(plan, verdict)
 
-    assert verdict.rejected[HASH_C]["code"] == "insufficient_capacity"
+    assert verdict.rejected[HASH_C].code is AllocationFailureCode.INSUFFICIENT_CAPACITY
     assert narrowed.entries == {}
     assert narrowed.refused == frozenset({HASH_C})
 
@@ -737,7 +786,7 @@ def test_a_vm_refused_for_an_undiscovered_node_hash_is_carried_as_refused():
     )
     narrowed = narrow_plan(plan, verdict)
 
-    assert verdict.rejected[HASH_C]["code"] == "node_hash_unknown"
+    assert verdict.rejected[HASH_C].code is AllocationFailureCode.NODE_HASH_UNKNOWN
     assert narrowed.refused == frozenset({HASH_C})
 
 

@@ -16,15 +16,15 @@ from aleph_message.models import ItemHash
 from test_supervisor_translate import _make_qemu_instance_message
 
 from aleph.vm.agent.allocation import reconciler as reconciler_module
-from aleph.vm.agent.allocation.failures import (
-    AllocationFailureCode,
-    public_failure_message,
-)
 from aleph.vm.agent.allocation.plan import (
     AllocationPlan,
     AllocationState,
     FailureRecord,
     PlannedVm,
+)
+from aleph.vm.agent.allocation.refusal import (
+    AllocationFailureCode,
+    public_failure_message,
 )
 from aleph.vm.agent.supervisor import setup_webapp
 from aleph.vm.resources import InsufficientResourcesError
@@ -128,7 +128,6 @@ async def test_a_failed_allocation_reports_its_reason_and_retry_time(aiohttp_cli
     failure = FailureRecord(
         code=AllocationFailureCode.DOWNLOAD_FAILED,
         attempts=2,
-        first_failed_at=NOW,
         last_failed_at=NOW,
         next_retry_at=NOW + timedelta(seconds=60),
     )
@@ -223,7 +222,6 @@ async def test_a_vm_the_supervisor_holds_dead_still_carries_the_agents_failure(a
     failure = FailureRecord(
         code=AllocationFailureCode.INTERNAL,
         attempts=1,
-        first_failed_at=NOW,
         last_failed_at=NOW,
         next_retry_at=NOW,
     )

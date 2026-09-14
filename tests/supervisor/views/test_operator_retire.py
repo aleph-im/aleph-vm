@@ -491,7 +491,6 @@ async def test_operator_reinstall_persistent_confidential_rebuilds_from_scratch(
         supervisor=fake_sup,
         registry=app["vm_registry"],
         capacity=app["capacity"],
-        persistent=True,
     )
 
 
@@ -540,7 +539,6 @@ async def test_operator_reinstall_non_persistent_recreates(aiohttp_client, mocke
         supervisor=fake_sup,
         registry=app["vm_registry"],
         capacity=app["capacity"],
-        persistent=False,
     )
 
 
