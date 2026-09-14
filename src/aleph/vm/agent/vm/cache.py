@@ -763,7 +763,7 @@ def admit_download(
 ) -> None:
     """Refuse, before a byte is written, a download the cache cannot hold.
 
-    Registered on ``storage.set_cache_admission`` so it runs inside
+    Installed as the agent's ``cache_admission`` hook, so it runs inside
     ``download_file_in_chunks`` as soon as the response headers are in.
     Evicting is the point: the budget is a cap on what is kept, not on what
     may be fetched, and only a load that would stay over the budget with
