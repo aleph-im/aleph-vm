@@ -46,12 +46,6 @@ impl CcCacheWindows {
             unreadable: UNREADABLE_CC_MODE_TTL,
         }
     }
-
-    /// The shortest window any cached answer can be held under, which is
-    /// how long a decision taken over the whole cache at once stays true.
-    pub fn shortest(self) -> Duration {
-        self.mode.min(self.unreadable)
-    }
 }
 
 /// How long a runtime-suspended card gets to come back before the register is
@@ -659,7 +653,6 @@ mod tests {
         // served a minute in, an answer with no mode is read again.
         let windows = CcCacheWindows::with_mode_ttl(Duration::from_secs(3600));
         assert_eq!(windows.unreadable, UNREADABLE_CC_MODE_TTL);
-        assert_eq!(windows.shortest(), UNREADABLE_CC_MODE_TTL);
 
         let answer = ProbedCcMode::now(Some(CcMode::On));
         assert_eq!(answer.mode, Some(CcMode::On));

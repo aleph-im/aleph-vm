@@ -87,13 +87,13 @@ pub enum DaemonError {
 
     #[error(
         "a {window_mb} MiB 64-bit PCI MMIO window next to {guest_ram_mb} MiB of guest RAM reaches \
-         {top_mb} MiB, past the {budget_mb} MiB the guest can address"
+         {top_mb} MiB, past the {} MiB the guest can address",
+        crate::gpu_bar::GUEST_PHYS_MB
     )]
     GpuMmioBudget {
         window_mb: u64,
         guest_ram_mb: u64,
         top_mb: u64,
-        budget_mb: u64,
     },
 
     #[error("Device vendor not compatible")]

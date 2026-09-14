@@ -202,7 +202,6 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
         numa_ledger,
         gpu_cc_modes: std::sync::Mutex::new(std::collections::HashMap::new()),
         gpu_cc_probe: supervisor_daemon::gpu_cc::probe_cc_mode,
-        gpu_cc_sweep: std::sync::Mutex::new(Default::default()),
         gpu_cc_refresh: std::sync::Mutex::new(()),
     });
 

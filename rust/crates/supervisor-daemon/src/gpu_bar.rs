@@ -26,7 +26,7 @@ const MAX_WINDOW_MB: u64 = 4 * 1024 * 1024;
 /// Guest physical address space, in MiB. The confidential argv names a CPU
 /// model with no `phys-bits`, and QEMU defaults a named x86 model to 40 bits
 /// whichever model it is, so the firmware has 1 TiB to place everything in.
-const GUEST_PHYS_MB: u64 = 1 << 20;
+pub(crate) const GUEST_PHYS_MB: u64 = 1 << 20;
 
 /// What sits below the guest's RAM and is not counted in the RAM figure: the
 /// 32-bit MMIO hole under 4 GiB, the firmware's reservations and the ACPI
@@ -99,7 +99,6 @@ pub fn check_mmio64_budget(window_mb: u64, guest_ram_mb: u64) -> Result<(), Daem
             window_mb,
             guest_ram_mb,
             top_mb,
-            budget_mb: GUEST_PHYS_MB,
         });
     }
     Ok(())

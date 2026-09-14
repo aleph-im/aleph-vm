@@ -180,21 +180,9 @@ pub struct DaemonState {
     /// How a card's CC mode is read: the BAR0 register in production,
     /// `gpu_cc::no_probe` on hermetic state so tests never open sysfs.
     pub gpu_cc_probe: crate::gpu_cc::CcProbe,
-    /// What the last CC-mode sweep ran against and when, so the publicly
-    /// reachable `GetHostInfo` cannot drive an unbounded rate of register reads.
-    pub gpu_cc_sweep: std::sync::Mutex<CcSweep>,
     /// Serializes CC mode refresh passes: two at once can both read
     /// `power/control` before either writes it, pinning the card awake.
     pub gpu_cc_refresh: std::sync::Mutex<()>,
-}
-
-/// The attached set the last CC-mode sweep saw, and when it ran. The skip
-/// window is the shortest cache tier, since one decision here covers every
-/// card and must not outlive the card that ages out first.
-#[derive(Debug, Default)]
-pub struct CcSweep {
-    pub attached: HashSet<String>,
-    pub at: Option<std::time::Instant>,
 }
 
 /// See [`DaemonState::log_follows`].
@@ -235,7 +223,6 @@ impl DaemonState {
             )),
             gpu_cc_modes: std::sync::Mutex::new(HashMap::new()),
             gpu_cc_probe: crate::gpu_cc::no_probe,
-            gpu_cc_sweep: std::sync::Mutex::new(CcSweep::default()),
             gpu_cc_refresh: std::sync::Mutex::new(()),
         }
     }
@@ -495,10 +482,9 @@ pub fn refresh_cc_modes(state: &DaemonState) {
 /// write lock before it boots. That is what makes "never read the register
 /// under a guest" hold, so the probes cannot move outside the guard.
 ///
-/// Two freshness gates, the whole sweep then each card, keep an
-/// unauthenticated host-info poller from turning every request into a
-/// register read. The create gate does not come through here: it always
-/// reads the card.
+/// The per-card freshness gate keeps an unauthenticated host-info poller
+/// from turning every request into a register read. The create gate does not
+/// come through here: it always reads the card.
 fn refresh_cc_modes_with(
     state: &DaemonState,
     probe: impl Fn(&str, &str) -> Result<Option<crate::gpu_cc::CcMode>, DaemonError>,
@@ -520,17 +506,6 @@ fn refresh_cc_modes_with(
         attached.insert(pci_host.to_string());
         if vouched_cc_on {
             known_cc_on.insert(pci_host.to_string());
-        }
-    }
-    {
-        let sweep = state.gpu_cc_sweep.lock().expect("gpu_cc_sweep poisoned");
-        if let Some(at) = sweep.at
-            && sweep.attached == attached
-            && at.elapsed() < windows.shortest()
-        {
-            // Nothing changed hands since that sweep and no answer can have
-            // aged out of even the shortest window in between.
-            return;
         }
     }
     for gpu in &state.host.gpus {
@@ -572,9 +547,6 @@ fn refresh_cc_modes_with(
             .expect("gpu_cc_modes poisoned")
             .insert(gpu.pci_host.clone(), crate::gpu_cc::ProbedCcMode::now(mode));
     }
-    let mut sweep = state.gpu_cc_sweep.lock().expect("gpu_cc_sweep poisoned");
-    sweep.attached = attached;
-    sweep.at = Some(std::time::Instant::now());
 }
 
 // ── World view to wire mapping ──────────────────────────────────────────
@@ -1730,7 +1702,7 @@ mod tests {
     fn refresh_cc_modes_serves_a_fresh_answer_without_reading_the_card() {
         // Without a per-card TTL an unauthenticated caller could make the host
         // mmap every idle card's BAR as often as it likes. Failures are cached
-        // too; the sweep gate is forced open so only that window is under test.
+        // too, under the short window.
         let state = two_free_cards();
 
         let probed: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -1745,7 +1717,6 @@ mod tests {
         };
 
         refresh_cc_modes_with(&state, probe, default_windows());
-        force_next_sweep(&state);
         refresh_cc_modes_with(&state, probe, default_windows());
         let after_two_refreshes = probed.lock().unwrap().clone();
         assert_eq!(
@@ -1766,12 +1737,6 @@ mod tests {
         // An entry past its TTL is read again, both the mode and the failure.
         refresh_cc_modes_with(&state, probe, expired_windows());
         assert_eq!(probed.into_inner().unwrap().len(), 4);
-    }
-
-    /// Drop the record of the last sweep so the next `refresh_cc_modes_with`
-    /// walks the cards, leaving only the per-card freshness check.
-    fn force_next_sweep(state: &DaemonState) {
-        state.gpu_cc_sweep.lock().unwrap().at = None;
     }
 
     /// The windows a daemon runs with out of the box: the long tier for a
@@ -1819,12 +1784,6 @@ mod tests {
             );
             cache.insert("07:00.0".to_string(), aged_answer(None, age));
         }
-        state.gpu_cc_sweep.lock().unwrap().at = Some(
-            std::time::Instant::now()
-                .checked_sub(age)
-                .expect("the process started after the ages used here"),
-        );
-
         let probed: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
         refresh_cc_modes_with(
             &state,
