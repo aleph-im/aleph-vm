@@ -398,6 +398,49 @@ impl SupervisorService {
         vm_info_message(&self.state, entry, running, UnitLiveness::Unknown, now_ns())
     }
 
+    /// The VmInfo a read path reports for one entry, with the dead-unit arm
+    /// confirmed against the world before anyone believes it.
+    ///
+    /// A read clones the entry and releases the world lock before it asks
+    /// systemd, so the clone can predate a stop, a reboot or a start whose
+    /// unit job the answer already reflects. Such a clone carries a start
+    /// stamped, no stop and no restarting marker, which is the dead-unit
+    /// arm's exact shape, and believing it announces a death against a VM
+    /// that is doing what it was asked. The gap is one D-Bus round trip at
+    /// rest, but a blocking pool queued behind lifecycle work stretches it
+    /// well past the point where a mutation marks its window.
+    ///
+    /// Every mutation sets its marker or its stamps under the world write
+    /// lock before it touches systemd, so an entry re-read after the unit
+    /// was observed dead necessarily sees the window. Recomputing from a
+    /// fresh entry therefore tells a guest that died from a transition under
+    /// way, and it costs one uncontended read lock on the only arm that
+    /// announces anything. The unit observation is carried over untouched:
+    /// what went stale is the entry, not what systemd said. `running` comes
+    /// from that same observation for every VM the arm can fire on (a
+    /// program's comes from its times, and a program is never judged dead).
+    ///
+    /// `None` means the VM left the world while the query was in flight, a
+    /// delete. That is not a death and there is no status left to report, so
+    /// GetVm answers NOT_FOUND, as it would have a moment later, and ListVms
+    /// leaves the VM out of the listing.
+    async fn observed_vm_info(
+        &self,
+        entry: &VmEntry,
+        running: bool,
+        unit: UnitLiveness,
+        now: u64,
+    ) -> Option<pb::VmInfo> {
+        let mut info = vm_info_message(&self.state, entry, running, unit, now);
+        if info.status() == pb::VmStatus::Failed {
+            let world = self.state.world.read().await;
+            let fresh = world.entries.get(&entry.vm_hash)?;
+            info = vm_info_message(&self.state, fresh, running, unit, now);
+        }
+        self.state.events.observe(&info.vm_id, info.status());
+        Some(info)
+    }
+
     /// Live state of one entry's controller unit, off the runtime threads
     /// (the Python `_is_running` D-Bus query equivalent). A bus failure
     /// degrades to `Unknown`: it stays "not running" like the Python
@@ -1126,8 +1169,13 @@ impl Supervisor for SupervisorService {
             let unit = self.unit_liveness(entry.unit_name()).await?;
             (unit.is_active(), unit)
         };
-        let info = vm_info_message(&self.state, &entry, running, unit, now_ns());
-        self.state.events.observe(&entry.vm_hash, info.status());
+        // The snapshot above may predate a deliberate transition the unit
+        // answer already reflects, so a computed death is confirmed against
+        // a fresh entry before it is reported or announced.
+        let info = self
+            .observed_vm_info(&entry, running, unit, now_ns())
+            .await
+            .ok_or_else(|| vm_not_found_status(&vm_id))?;
         Ok(Response::new(info))
     }
 
@@ -1163,26 +1211,27 @@ impl Supervisor for SupervisorService {
             .collect();
         let states = self.units_liveness(unit_names).await?;
         let now = now_ns();
-        let vms: Vec<pb::VmInfo> = entries
-            .iter()
-            .map(|entry| {
-                let (running, unit) = if entry.is_program {
-                    (
-                        entry.times.starting_at_ns != 0 && entry.times.stopping_at_ns == 0,
-                        UnitLiveness::Unknown,
-                    )
-                } else {
-                    let unit = states
-                        .get(&entry.unit_name())
-                        .copied()
-                        .unwrap_or(UnitLiveness::Unknown);
-                    (unit.is_active(), unit)
-                };
-                vm_info_message(&self.state, entry, running, unit, now)
-            })
-            .collect();
-        for info in &vms {
-            self.state.events.observe(&info.vm_id, info.status());
+        let mut vms: Vec<pb::VmInfo> = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            let (running, unit) = if entry.is_program {
+                (
+                    entry.times.starting_at_ns != 0 && entry.times.stopping_at_ns == 0,
+                    UnitLiveness::Unknown,
+                )
+            } else {
+                let unit = states
+                    .get(&entry.unit_name())
+                    .copied()
+                    .unwrap_or(UnitLiveness::Unknown);
+                (unit.is_active(), unit)
+            };
+            // A computed death is confirmed against a fresh entry (see
+            // get_vm): the snapshot above may predate a transition the unit
+            // answer already reflects. A VM deleted meanwhile is left out of
+            // the listing, which is what the next call would report anyway.
+            if let Some(info) = self.observed_vm_info(entry, running, unit, now).await {
+                vms.push(info);
+            }
         }
         Ok(Response::new(pb::ListVmsResponse { vms }))
     }
