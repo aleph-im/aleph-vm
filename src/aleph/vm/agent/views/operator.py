@@ -629,7 +629,12 @@ async def operate_reboot(request: web.Request, authenticated_sender: str) -> web
                 return web.Response(status=200, body=f"Rebooted VM with ref {vm_hash}")
         except VmNotFoundError:
             raise web.HTTPNotFound(body=f"No virtual machine with ref {vm_hash}") from None
-        return web.Response(status=200, body=f"Starting VM (was not running) with ref {vm_hash}")
+        # A reboot of a VM that is not running is a start, which has its own
+        # route: say so rather than report a start nothing performed.
+        return web.Response(
+            status=409,
+            body=f"VM with ref {vm_hash} is not running, start it through /control/machine/{vm_hash}/start",
+        )
 
 
 @cors_allow_all
