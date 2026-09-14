@@ -335,28 +335,12 @@ pub fn verify_report_signature(report_raw: &[u8], vcek_der: &[u8]) -> Result<()>
     let r_bytes_le = &report_raw[sig_offset..sig_offset + 72];
     let s_bytes_le = &report_raw[sig_offset + 72..sig_offset + 144];
 
-    // Convert from little-endian to big-endian (openssl expects big-endian)
-    let r_bytes_be: Vec<u8> = r_bytes_le
-        .iter()
-        .rev()
-        .collect::<Vec<_>>()
-        .into_iter()
-        .copied()
-        .collect();
-    let s_bytes_be: Vec<u8> = s_bytes_le
-        .iter()
-        .rev()
-        .collect::<Vec<_>>()
-        .into_iter()
-        .copied()
-        .collect();
+    // The report carries r and s little-endian; openssl reads them
+    // big-endian, leading zeros and all.
+    let r_bytes_be: Vec<u8> = r_bytes_le.iter().rev().copied().collect();
+    let s_bytes_be: Vec<u8> = s_bytes_le.iter().rev().copied().collect();
 
-    // Strip leading zeros but keep at least 1 byte
-    let r_trimmed = strip_leading_zeros(&r_bytes_be);
-    let s_trimmed = strip_leading_zeros(&s_bytes_be);
-
-    // Build ECDSA signature from r and s components
-    let ecdsa_sig = ecdsa_from_components(r_trimmed, s_trimmed)?;
+    let ecdsa_sig = ecdsa_from_components(&r_bytes_be, &s_bytes_be)?;
 
     // Hash the signed portion with SHA-384
     let digest = openssl::hash::hash(MessageDigest::sha384(), signed_data)
@@ -382,15 +366,6 @@ pub fn verify_report_signature(report_raw: &[u8], vcek_der: &[u8]) -> Result<()>
     }
 
     Ok(())
-}
-
-/// Strip leading zero bytes from a big-endian byte slice, keeping at least one byte.
-fn strip_leading_zeros(bytes: &[u8]) -> &[u8] {
-    let first_nonzero = bytes.iter().position(|&b| b != 0);
-    match first_nonzero {
-        Some(pos) => &bytes[pos..],
-        None => &bytes[bytes.len().saturating_sub(1)..], // all zeros, keep last byte
-    }
 }
 
 #[cfg(test)]
@@ -512,17 +487,6 @@ mod tests {
             ark_der: ark.to_der().unwrap(),
         };
         (chain, ark_key, ask_key, vcek_key, ark)
-    }
-
-    // ---- strip_leading_zeros ----
-
-    #[test]
-    fn test_strip_leading_zeros() {
-        assert_eq!(strip_leading_zeros(&[0, 0, 1, 2, 3]), &[1, 2, 3]);
-        assert_eq!(strip_leading_zeros(&[1, 2, 3]), &[1, 2, 3]);
-        assert_eq!(strip_leading_zeros(&[0, 0, 0]), &[0]);
-        assert_eq!(strip_leading_zeros(&[0]), &[0]);
-        assert_eq!(strip_leading_zeros(&[5]), &[5]);
     }
 
     #[test]
