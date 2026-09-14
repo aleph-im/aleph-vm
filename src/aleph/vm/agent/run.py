@@ -290,10 +290,8 @@ class VmStartupError(Exception):
 
     Agent-internal (raised by ``_wait_until_running``, never crosses the
     Supervisor boundary), so it is not part of the SupervisorError vocabulary.
-    ``create_vm_execution_or_raise_http_error`` (instances, v-programs) and
-    ``_raise_http_for_program_error`` (on-demand programs) map it to a clear
-    HTTP reason instead of the generic "unhandled error" bucket, so the
-    mapping covers every VM type."""
+    ``_raise_http_for_program_error`` maps it to a clear HTTP reason instead of
+    the generic "unhandled error" bucket, for every VM type."""
 
 
 async def _wait_until_running(
@@ -765,40 +763,9 @@ async def create_vm_execution_or_raise_http_error(
         return await create_vm_execution(
             vm_hash=vm_hash, supervisor=supervisor, registry=registry, capacity=capacity, recreate=recreate
         )
-    except ResourceDownloadError as error:
-        logger.exception(error)
-        raise HTTPBadRequest(reason="Code, runtime or data not available") from error
-    except (InsufficientResourcesError, supervisor_errors.InsufficientResourcesError) as error:
-        # The spec path's atomic admission surfaces the boundary error through
-        # LocalSupervisor.create_vm (translating_errors).
-        logger.warning("Refusing %s: %s", vm_hash, error)
-        raise HTTPServiceUnavailable(
-            reason="Insufficient capacity",
-            text="This CRN cannot host the requested workload at this time.",
-        ) from error
-    except FileTooLargeError as error:
-        # An oversized resource is the message's fault, not the node's.
-        raise HTTPBadRequest(reason=error.args[0]) from error
-    except VmStartupError as error:
-        # Created but never reached RUNNING (terminal status or start timeout):
-        # a distinct, expected outcome, not the generic "unhandled error".
-        logger.warning("VM %s failed to start: %s", vm_hash, error)
-        raise HTTPInternalServerError(reason="VM failed to start") from error
-    except VmSetupError as error:
-        logger.exception(error)
-        raise HTTPInternalServerError(reason="Error during vm initialisation") from error
-    except HostNotFoundError as error:
-        logger.exception(error)
-        raise HTTPInternalServerError(reason="Host did not respond to ping") from error
-    except ClientResponseError as error:
-        logger.exception(error)
-        if error.status == 404:
-            raise HTTPInternalServerError(reason=f"Item hash {vm_hash} not found") from error
-        else:
-            raise HTTPInternalServerError(reason=f"Error downloading {vm_hash}") from error
     except Exception as error:
-        logger.exception(error)
-        raise HTTPInternalServerError(reason="Unhandled error during initialisation") from error
+        _raise_http_for_program_error(error, vm_hash)
+        raise  # pragma: no cover - _raise_http_for_program_error always raises
 
 
 async def _resolve_program_content(vm_hash: ItemHash, registry: AgentVmRegistry):
@@ -812,7 +779,7 @@ async def _resolve_program_content(vm_hash: ItemHash, registry: AgentVmRegistry)
 
 
 def _raise_http_for_program_error(error: Exception, vm_hash: ItemHash) -> None:
-    """Map program create/setup failures to HTTP responses.
+    """Map create/setup failures to HTTP responses, for every VM type.
 
     Both the agent-side download phase and the supervisor boundary now raise the
     closed ``supervisor_interface.errors.SupervisorError`` vocabulary, so the
