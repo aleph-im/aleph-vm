@@ -49,8 +49,12 @@ pub enum UnitLiveness {
     /// A job is in flight (`activating`, `deactivating`): something asked for
     /// the change, so the outcome is not a guest that died on its own.
     Transitional,
-    /// The unit has settled down: `failed`, `inactive`, or not loaded at all.
+    /// The unit has settled down with nothing wrong recorded: `inactive`, or
+    /// not loaded at all. That is the shape a deliberate stop leaves behind.
     Dead,
+    /// The unit stopped on an error systemd kept (`failed`). Dead for every
+    /// status purpose, and the one state that says the VM did not stop itself.
+    Failed,
     /// Nothing was observed: no unit was queried, or the bus did not answer.
     /// Never a conclusion about the guest.
     #[default]
@@ -65,13 +69,20 @@ impl UnitLiveness {
         match state {
             "active" | "reloading" => Self::Active,
             "activating" | "deactivating" => Self::Transitional,
-            "failed" | "inactive" | NOT_LOADED => Self::Dead,
+            "failed" => Self::Failed,
+            "inactive" | NOT_LOADED => Self::Dead,
             _ => Self::Unknown,
         }
     }
 
     pub fn is_active(self) -> bool {
         self == Self::Active
+    }
+
+    /// Settled with nothing running under it, however it got there: the
+    /// status mapping treats a failed unit as dead as an inactive one.
+    pub fn is_dead(self) -> bool {
+        matches!(self, Self::Dead | Self::Failed)
     }
 }
 
@@ -852,10 +863,29 @@ mod tests {
             vec![format!("stop {unit}"), format!("disable {unit}")]
         );
         assert_eq!(fake.get_active_state(&unit), "inactive");
+        // Adoption reads a failed unit as a death and an inactive one as a
+        // deliberate stop, so the state a stop leaves behind is load-bearing.
+        assert_eq!(
+            UnitLiveness::from_active_state(&fake.get_active_state(&unit)),
+            UnitLiveness::Dead
+        );
 
         // Already inactive and disabled: nothing happens.
         stop_and_disable(&fake, &unit).unwrap();
         assert_eq!(fake.actions().len(), 2);
+    }
+
+    #[test]
+    fn a_failed_unit_is_dead_without_being_a_deliberate_stop() {
+        assert_eq!(
+            UnitLiveness::from_active_state("failed"),
+            UnitLiveness::Failed
+        );
+        assert!(UnitLiveness::Failed.is_dead());
+        assert!(UnitLiveness::Dead.is_dead());
+        assert!(!UnitLiveness::Failed.is_active());
+        assert!(!UnitLiveness::Transitional.is_dead());
+        assert!(!UnitLiveness::Unknown.is_dead());
     }
 
     #[test]

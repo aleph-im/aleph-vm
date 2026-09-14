@@ -1118,6 +1118,9 @@ fn start_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> 
     with_entry_mut(state, vm_id, |entry| {
         entry.times.stopping_at_ns = 0;
         entry.times.stopped_at_ns = 0;
+        // The death this start answers is over; a guest of this VM is about
+        // to hold its cards and its session again.
+        entry.adopted_failed = false;
         entry.restarting = true;
         entry.times.starting_at_ns = now_ns();
     });
@@ -1308,7 +1311,11 @@ pub fn reboot_vm(state: &DaemonState, vm_id: &str) -> Result<(VmEntry, bool), Rp
         .and_then(|()| wait_for_controller_ready(state, &unit).map_err(RpcError::from));
     with_entry_mut(state, vm_id, |entry| entry.restarting = false);
     restarted?;
-    with_entry_mut(state, vm_id, |entry| entry.times.started_at_ns = now_ns());
+    with_entry_mut(state, vm_id, |entry| {
+        entry.times.started_at_ns = now_ns();
+        // A guest is back under the VM, so an adopted death no longer stands.
+        entry.adopted_failed = false;
+    });
     let entry = entry_snapshot(state, vm_id).ok_or_else(|| RpcError::NotFound(vm_id.into()))?;
     let liveness = entry_liveness(state, &entry);
     let running = liveness.is_active();
@@ -2650,6 +2657,7 @@ fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, 
             ..VmTimes::default()
         },
         adopted_running: true,
+        adopted_failed: false,
         restarting: false,
         ipv4: None,
         ipv6: None,
@@ -2992,6 +3000,7 @@ fn create_vm_inner(
                 ..VmTimes::default()
             },
             adopted_running: false,
+            adopted_failed: false,
             restarting: false,
             ipv4: assignment.as_ref().map(|(ipv4, _)| ipv4.clone()),
             ipv6: assignment.as_ref().map(|(_, ipv6)| ipv6.clone()),
@@ -3344,6 +3353,7 @@ fn create_program_vm(
                 ..VmTimes::default()
             },
             adopted_running: false,
+            adopted_failed: false,
             restarting: false,
             ipv4: assignment.as_ref().map(|(ipv4, _)| ipv4.clone()),
             ipv6: assignment.as_ref().map(|(_, ipv6)| ipv6.clone()),
@@ -8298,6 +8308,7 @@ mod tests {
                 ..VmTimes::default()
             },
             adopted_running: true,
+            adopted_failed: false,
             restarting: false,
             ipv4: None,
             ipv6: None,
@@ -8704,6 +8715,7 @@ mod tests {
                 ..VmTimes::default()
             },
             adopted_running: true,
+            adopted_failed: false,
             restarting: false,
             ipv4: None,
             ipv6: None,
