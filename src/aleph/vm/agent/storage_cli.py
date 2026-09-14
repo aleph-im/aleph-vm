@@ -88,7 +88,6 @@ import asyncio
 import errno
 import logging
 import os
-import shutil
 import socket
 import sys
 from collections.abc import Iterator
@@ -118,13 +117,13 @@ from aleph.vm.agent.vm.reconciler import (
     live_hashes,
     reconcile_storage,
     release_cache_devices,
+    retention_budget,
     supervisor_hashes,
     teardown_orphan_devices,
 )
 from aleph.vm.agent.vm_registry import AgentVmRegistry, rehydrate_registry
 from aleph.vm.conf import Settings, settings
-from aleph.vm.storage_budget import parse_budget
-from aleph.vm.storage_pools import iter_namespace_dirs
+from aleph.vm.storage_pools import iter_namespace_dirs, pool_usage_bytes
 from aleph.vm.supervisor_interface.abc import Supervisor
 
 # How long to wait for the supervisor to answer before treating it as
@@ -502,33 +501,6 @@ def _cli_live_set(registry: AgentVmRegistry) -> LiveSet:
     )
 
 
-def _pool_usage(path: Path) -> tuple[int | None, int | None]:
-    """(total, free) bytes of the filesystem holding ``path``, or (None,
-    None) when it cannot be read: a mountpoint that went away, a directory
-    this user may not stat, a filesystem that is gone."""
-    try:
-        usage = shutil.disk_usage(str(path))
-    except OSError:
-        logger.warning("Could not read the usage of %s", path, exc_info=True)
-        return None, None
-    return usage.total, usage.free
-
-
-def _retention_budget(total: int | None) -> int | None:
-    """The retention budget in bytes, or None when it cannot be computed.
-
-    Under ``reap`` it is zero and nothing else, whatever the filesystem
-    says. Otherwise it is measured against the pool's size (typically a
-    percentage of it), so a size this process could not read leaves the
-    budget unknown rather than zero.
-    """
-    if settings.VOLUME_RETENTION == "reap":
-        return 0
-    if total is None:
-        return None
-    return parse_budget(settings.VOLUME_RETENTION_BUDGET, total)
-
-
 def _figure(size: int | None) -> str:
     """A byte figure, or ``unknown`` for one this process could not measure.
 
@@ -548,10 +520,14 @@ def _status(registry: AgentVmRegistry, out: TextIO) -> int:
             for directory in iter_namespace_dirs()
             if directory.parent == pool.path and directory.name in live
         )
-        total, free = _pool_usage(pool.path)
+        # pool_usage_bytes stays silent so each caller says what it means;
+        # here it means the budget and the free figure are unknown.
+        usage = pool_usage_bytes(pool)
+        if usage is None:
+            logger.warning("Could not read the usage of %s", pool.path)
         out.write(
             f"{pool.path}\t{_human(live_bytes)}\t{_human(reclaimable_bytes(pool.path, repair=False))}\t"
-            f"{_figure(_retention_budget(total))}\t{_figure(free)}\n"
+            f"{_figure(retention_budget(pool))}\t{_figure(usage.free if usage else None)}\n"
         )
     out.write("CACHE\tUSED\tBUDGET\n")
     for root in cache_roots():

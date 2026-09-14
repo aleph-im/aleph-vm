@@ -11,10 +11,9 @@ from datetime import datetime
 from enum import Enum
 
 from aleph_message.exceptions import UnknownHashError
-from aleph_message.models import ItemHash
+from aleph_message.models import ExecutableMessage, ItemHash
 
 from aleph.vm.agent.allocation.refusal import AllocationFailureCode, Refusals
-from aleph.vm.agent.allocation.verify import VerifiedMessage
 from aleph.vm.supervisor_interface.types import VmInfo, VmStatus
 
 logger = logging.getLogger(__name__)
@@ -102,7 +101,7 @@ class PlannedVm:
     """One entry of the plan. State lives in the reconciler, not here: one owner."""
 
     vm_hash: ItemHash
-    verified: VerifiedMessage | None = None
+    verified: ExecutableMessage | None = None
 
 
 @dataclass(frozen=True)

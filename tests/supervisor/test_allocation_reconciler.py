@@ -693,7 +693,7 @@ def test_pending_hashes_are_the_entries_the_push_carried_no_message_for(reconcil
             plan_id="sha256:test",
             received_at=NOW,
             entries={
-                HASH_B: PlannedVm(vm_hash=HASH_B, verified=SimpleNamespace(message=MagicMock())),
+                HASH_B: PlannedVm(vm_hash=HASH_B, verified=MagicMock()),
                 HASH_C: PlannedVm(vm_hash=HASH_C),
             },
         )

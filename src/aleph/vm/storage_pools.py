@@ -21,13 +21,13 @@ import shutil
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import NamedTuple
 
 from aleph.vm.conf import settings
-from aleph.vm.hooks import RoomMaker, current_hooks, install_hooks
+from aleph.vm.hooks import current_hooks
 from aleph.vm.resources import InsufficientResourcesError
 
 logger = logging.getLogger(__name__)
@@ -318,16 +318,6 @@ def _pool_free_bytes(pool: StoragePool) -> int | None:
         logger.error("Volume pool %s not accessible, skipping", pool.path)
         return None
     return usage.free
-
-
-def set_room_maker(fn: RoomMaker | None) -> None:
-    """Set the room maker slot on its own, leaving the other hooks alone.
-
-    The agent installs all three hooks as one object at startup; this is the
-    single-slot form, for a test that wires an evictor and for anything out
-    of tree that still calls it.
-    """
-    install_hooks(replace(current_hooks(), room_maker=fn))
 
 
 def _select_from(candidates: list[StoragePool], size_mib: int) -> StoragePool:

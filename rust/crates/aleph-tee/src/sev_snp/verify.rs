@@ -6,7 +6,9 @@ use openssl::x509::X509;
 use serde_json::json;
 use sev::certs::snp::builtin;
 
-use crate::pki::{asn1_now, check_cert_window, check_pinned_root_key, ecdsa_from_components};
+use crate::pki::{
+    asn1_now, check_cert_window, check_pinned_root_key, check_signed_by, ecdsa_from_components,
+};
 use crate::types::{AttestationReport, SevSnpRegisters, TeeType, VerificationResult};
 
 use super::certs::{CertChain, TcbParams, fetch_ca_chain, fetch_vcek};
@@ -217,39 +219,14 @@ pub(crate) fn verify_cert_chain_at(
     // its own: the pinning below is what actually ties the chain to AMD.
     verify_ark_identity(&ark).context("ARK identity verification failed")?;
 
-    // Verify ARK is self-signed
-    let ark_pubkey = ark
-        .public_key()
-        .context("failed to extract ARK public key")?;
-    if !ark
-        .verify(&ark_pubkey)
-        .context("failed to verify ARK self-signature")?
-    {
-        bail!("ARK certificate is not validly self-signed");
-    }
+    check_signed_by("ARK certificate", &ark, "its own key", &ark)?;
 
     // SECURITY-CRITICAL: pin the chain's ARK to AMD's genuine root.
     verify_ark_matches_pinned_root(&ark, pinned_ark_der)
         .context("ARK does not match the pinned AMD root")?;
 
-    // Verify ASK is signed by ARK
-    if !ask
-        .verify(&ark_pubkey)
-        .context("failed to verify ASK signature")?
-    {
-        bail!("ASK certificate is not signed by ARK");
-    }
-
-    // Verify VCEK is signed by ASK
-    let ask_pubkey = ask
-        .public_key()
-        .context("failed to extract ASK public key")?;
-    if !vcek
-        .verify(&ask_pubkey)
-        .context("failed to verify VCEK signature")?
-    {
-        bail!("VCEK certificate is not signed by ASK");
-    }
+    check_signed_by("ASK certificate", &ask, "ARK", &ark)?;
+    check_signed_by("VCEK certificate", &vcek, "ASK", &ask)?;
 
     // Reject expired or not-yet-valid certificates.
     let now = asn1_now(now)?;
@@ -358,28 +335,12 @@ pub fn verify_report_signature(report_raw: &[u8], vcek_der: &[u8]) -> Result<()>
     let r_bytes_le = &report_raw[sig_offset..sig_offset + 72];
     let s_bytes_le = &report_raw[sig_offset + 72..sig_offset + 144];
 
-    // Convert from little-endian to big-endian (openssl expects big-endian)
-    let r_bytes_be: Vec<u8> = r_bytes_le
-        .iter()
-        .rev()
-        .collect::<Vec<_>>()
-        .into_iter()
-        .copied()
-        .collect();
-    let s_bytes_be: Vec<u8> = s_bytes_le
-        .iter()
-        .rev()
-        .collect::<Vec<_>>()
-        .into_iter()
-        .copied()
-        .collect();
+    // The report carries r and s little-endian; openssl reads them
+    // big-endian, leading zeros and all.
+    let r_bytes_be: Vec<u8> = r_bytes_le.iter().rev().copied().collect();
+    let s_bytes_be: Vec<u8> = s_bytes_le.iter().rev().copied().collect();
 
-    // Strip leading zeros but keep at least 1 byte
-    let r_trimmed = strip_leading_zeros(&r_bytes_be);
-    let s_trimmed = strip_leading_zeros(&s_bytes_be);
-
-    // Build ECDSA signature from r and s components
-    let ecdsa_sig = ecdsa_from_components(r_trimmed, s_trimmed)?;
+    let ecdsa_sig = ecdsa_from_components(&r_bytes_be, &s_bytes_be)?;
 
     // Hash the signed portion with SHA-384
     let digest = openssl::hash::hash(MessageDigest::sha384(), signed_data)
@@ -405,15 +366,6 @@ pub fn verify_report_signature(report_raw: &[u8], vcek_der: &[u8]) -> Result<()>
     }
 
     Ok(())
-}
-
-/// Strip leading zero bytes from a big-endian byte slice, keeping at least one byte.
-fn strip_leading_zeros(bytes: &[u8]) -> &[u8] {
-    let first_nonzero = bytes.iter().position(|&b| b != 0);
-    match first_nonzero {
-        Some(pos) => &bytes[pos..],
-        None => &bytes[bytes.len().saturating_sub(1)..], // all zeros, keep last byte
-    }
 }
 
 #[cfg(test)]
@@ -535,17 +487,6 @@ mod tests {
             ark_der: ark.to_der().unwrap(),
         };
         (chain, ark_key, ask_key, vcek_key, ark)
-    }
-
-    // ---- strip_leading_zeros ----
-
-    #[test]
-    fn test_strip_leading_zeros() {
-        assert_eq!(strip_leading_zeros(&[0, 0, 1, 2, 3]), &[1, 2, 3]);
-        assert_eq!(strip_leading_zeros(&[1, 2, 3]), &[1, 2, 3]);
-        assert_eq!(strip_leading_zeros(&[0, 0, 0]), &[0]);
-        assert_eq!(strip_leading_zeros(&[0]), &[0]);
-        assert_eq!(strip_leading_zeros(&[5]), &[5]);
     }
 
     #[test]
@@ -780,8 +721,8 @@ mod tests {
 
         let err = verify_cert_chain(&chain, &pinned).unwrap_err().to_string();
         assert!(
-            err.contains("self-signed"),
-            "expected self-signed failure, got: {err}"
+            err.contains("ARK certificate is not signed by its own key"),
+            "expected self-signature failure, got: {err}"
         );
     }
 

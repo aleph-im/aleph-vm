@@ -568,30 +568,20 @@ class CapacityManager(PlanAdmission):
         registry as it stands. One implementation, so an advisory answer can
         never be stronger or weaker than the enforced one.
         """
-        required_memory_mib = memory_mib
-        required_vcpus = vcpus
-        required_disk_mib = disk_mib
-
-        caps = self._caps()
-        physical_memory_mib = caps.physical_memory_mib
-        physical_cores = caps.physical_cores
-        host_reserved_mib = caps.host_reserved_mib
-        program_reserved_mib = caps.program_reserved_mib
-        instance_memory_cap_mib = caps.instance_memory_mib
-        program_memory_cap_mib = caps.program_memory_mib
+        caps = HostCaps.read()
         vcpu_cap = caps.vcpus
 
         if is_instance:
             bucket_name = "instance"
             committed_memory_mib = committed_instance_memory_mib
-            memory_cap_mib = instance_memory_cap_mib
+            memory_cap_mib = caps.instance_memory_mib
         else:
             bucket_name = "program"
             committed_memory_mib = committed_program_memory_mib
-            memory_cap_mib = program_memory_cap_mib
+            memory_cap_mib = caps.program_memory_mib
 
         disk_errors, available_disk_mib = self._disk_errors(
-            disk_mib=required_disk_mib,
+            disk_mib=disk_mib,
             max_volume_mib=max_volume_mib,
             max_volume_credit=max_volume_credit,
             committed_disk_mib=committed_disk_mib,
@@ -599,23 +589,23 @@ class CapacityManager(PlanAdmission):
 
         errors: list[str] = []
 
-        if committed_memory_mib + required_memory_mib > memory_cap_mib:
+        if committed_memory_mib + memory_mib > memory_cap_mib:
             errors.append(
                 f"Memory ({bucket_name} bucket): "
-                f"required {required_memory_mib} MiB, "
+                f"required {memory_mib} MiB, "
                 f"committed {committed_memory_mib} MiB, "
                 f"cap {memory_cap_mib} MiB "
-                f"(physical {physical_memory_mib} MiB, "
-                f"host_reserved {host_reserved_mib} MiB, "
-                f"program_reserved {program_reserved_mib} MiB)"
+                f"(physical {caps.physical_memory_mib} MiB, "
+                f"host_reserved {caps.host_reserved_mib} MiB, "
+                f"program_reserved {caps.program_reserved_mib} MiB)"
             )
 
-        if committed_vcpus + required_vcpus > vcpu_cap:
+        if committed_vcpus + vcpus > vcpu_cap:
             errors.append(
-                f"vCPUs: required {required_vcpus}, "
+                f"vCPUs: required {vcpus}, "
                 f"committed {committed_vcpus}, "
                 f"cap {vcpu_cap} "
-                f"(physical {physical_cores} x factor {settings.VCPU_OVERCOMMIT_FACTOR})"
+                f"(physical {caps.physical_cores} x factor {settings.VCPU_OVERCOMMIT_FACTOR})"
             )
 
         errors.extend(disk_errors)
@@ -627,9 +617,9 @@ class CapacityManager(PlanAdmission):
             raise InsufficientResourcesError(
                 detail,
                 required={
-                    "vcpus": required_vcpus,
-                    "memory_mib": required_memory_mib,
-                    "disk_mib": required_disk_mib,
+                    "vcpus": vcpus,
+                    "memory_mib": memory_mib,
+                    "disk_mib": disk_mib,
                 },
                 available={
                     "vcpus": available_vcpus,
@@ -663,9 +653,6 @@ class CapacityManager(PlanAdmission):
             errors.append(max_volume_error)
         return errors, available_disk_mib
 
-    def _caps(self) -> HostCaps:
-        return HostCaps.read()
-
     def headroom(self, available_gpus: list[GpuDevice] | None = None) -> dict:
         """What a plan could still be admitted against, for the scheduler.
 
@@ -684,7 +671,7 @@ class CapacityManager(PlanAdmission):
         own candidate take it. The per-candidate answer is the one to trust
         for a given VM; this figure is what anyone else could count on.
         """
-        caps = self._caps()
+        caps = HostCaps.read()
         committed_instance, committed_program, committed_vcpus = self._committed_resources(())
         return {
             "instance_memory_mib": max(caps.instance_memory_mib - committed_instance, 0),

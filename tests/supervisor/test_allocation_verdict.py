@@ -57,7 +57,7 @@ def _capacity(verdicts):
 
 
 def _verified(content=None):
-    return SimpleNamespace(message=SimpleNamespace(content=content or _make_qemu_instance_message()))
+    return SimpleNamespace(content=content or _make_qemu_instance_message())
 
 
 def _plan(*hashes, verified=True, content=None):

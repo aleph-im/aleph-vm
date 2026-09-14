@@ -11,7 +11,46 @@ use anyhow::{Context, Result, bail};
 use openssl::asn1::{Asn1Time, Asn1TimeRef};
 use openssl::bn::BigNum;
 use openssl::ecdsa::EcdsaSig;
-use openssl::x509::X509;
+use openssl::x509::{X509, X509Crl};
+
+/// Reject a certificate that does not carry a valid signature by its issuer.
+pub(crate) fn check_signed_by(
+    child_label: &str,
+    child: &X509,
+    issuer_label: &str,
+    issuer: &X509,
+) -> Result<()> {
+    let key = issuer
+        .public_key()
+        .with_context(|| format!("failed to extract the public key of {issuer_label}"))?;
+    if !child
+        .verify(&key)
+        .with_context(|| format!("failed to check the signature of {child_label}"))?
+    {
+        bail!("{child_label} is not signed by {issuer_label}");
+    }
+    Ok(())
+}
+
+/// [`check_signed_by`] for a CRL, which openssl types separately from a
+/// certificate.
+pub(crate) fn check_crl_signed_by(
+    crl_label: &str,
+    crl: &X509Crl,
+    issuer_label: &str,
+    issuer: &X509,
+) -> Result<()> {
+    let key = issuer
+        .public_key()
+        .with_context(|| format!("failed to extract the public key of {issuer_label}"))?;
+    if !crl
+        .verify(&key)
+        .with_context(|| format!("failed to check the signature of {crl_label}"))?
+    {
+        bail!("{crl_label} is not signed by {issuer_label}");
+    }
+    Ok(())
+}
 
 /// Assemble an ECDSA signature from its raw big-endian `r` and `s`
 /// components, since attestation evidence carries them as fixed-width

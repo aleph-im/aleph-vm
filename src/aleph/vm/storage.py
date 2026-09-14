@@ -11,7 +11,7 @@ import logging
 import os
 import re
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from shutil import make_archive
 from subprocess import CalledProcessError
@@ -35,7 +35,7 @@ from aleph_message.models.execution.volume import (
 )
 
 from aleph.vm.conf import settings
-from aleph.vm.hooks import CacheAdmission, current_hooks, install_hooks
+from aleph.vm.hooks import current_hooks
 from aleph.vm.storage_pools import find_existing_volume, volume_path_for
 from aleph.vm.supervisor_interface.errors import FileTooLargeError
 from aleph.vm.utils import fix_message_validation, run_in_subprocess
@@ -122,13 +122,6 @@ class DownloadReservation:
 # have. Kept here rather than in the agent's cache module because this is
 # where the download ends, in ``download_file``'s finally.
 _reserved_downloads: dict[Path, DownloadReservation] = {}
-
-
-def set_cache_admission(fn: CacheAdmission | None) -> None:
-    """Set the cache admission slot on its own, leaving the other hooks
-    alone. The agent installs all three as one object at startup; this is the
-    single-slot form, used by the tests that drive a download directly."""
-    install_hooks(replace(current_hooks(), cache_admission=fn))
 
 
 def reserve_download(tmp_path: Path, size_bytes: int, *, measured: bool) -> None:

@@ -180,21 +180,9 @@ pub struct DaemonState {
     /// How a card's CC mode is read: the BAR0 register in production,
     /// `gpu_cc::no_probe` on hermetic state so tests never open sysfs.
     pub gpu_cc_probe: crate::gpu_cc::CcProbe,
-    /// What the last CC-mode sweep ran against and when, so the publicly
-    /// reachable `GetHostInfo` cannot drive an unbounded rate of register reads.
-    pub gpu_cc_sweep: std::sync::Mutex<CcSweep>,
     /// Serializes CC mode refresh passes: two at once can both read
     /// `power/control` before either writes it, pinning the card awake.
     pub gpu_cc_refresh: std::sync::Mutex<()>,
-}
-
-/// The attached set the last CC-mode sweep saw, and when it ran. The skip
-/// window is the shortest cache tier, since one decision here covers every
-/// card and must not outlive the card that ages out first.
-#[derive(Debug, Default)]
-pub struct CcSweep {
-    pub attached: HashSet<String>,
-    pub at: Option<std::time::Instant>,
 }
 
 /// See [`DaemonState::log_follows`].
@@ -235,7 +223,6 @@ impl DaemonState {
             )),
             gpu_cc_modes: std::sync::Mutex::new(HashMap::new()),
             gpu_cc_probe: crate::gpu_cc::no_probe,
-            gpu_cc_sweep: std::sync::Mutex::new(CcSweep::default()),
             gpu_cc_refresh: std::sync::Mutex::new(()),
         }
     }
@@ -394,21 +381,13 @@ impl SupervisorService {
     /// entry 13), but never death, which needs an answering bus.
     async fn unit_liveness(&self, unit: String) -> Result<UnitLiveness, Status> {
         let units = self.state.units.clone();
-        tokio::task::spawn_blocking(
-            move || match units.unit_states(std::slice::from_ref(&unit)) {
-                Ok(states) => states.get(&unit).copied().unwrap_or(UnitLiveness::Unknown),
-                Err(error) => {
-                    tracing::error!(%error, "Failed to get services active states");
-                    UnitLiveness::Unknown
-                }
-            },
-        )
-        .await
-        .map_err(|error| {
-            internal_status(DaemonError::Internal(format!(
-                "the unit-state task failed: {error}"
-            )))
-        })
+        tokio::task::spawn_blocking(move || crate::units::query_unit(units.as_ref(), &unit))
+            .await
+            .map_err(|error| {
+                internal_status(DaemonError::Internal(format!(
+                    "the unit-state task failed: {error}"
+                )))
+            })
     }
 
     /// Live states for every entry, one batched query (the Python
@@ -495,10 +474,9 @@ pub fn refresh_cc_modes(state: &DaemonState) {
 /// write lock before it boots. That is what makes "never read the register
 /// under a guest" hold, so the probes cannot move outside the guard.
 ///
-/// Two freshness gates, the whole sweep then each card, keep an
-/// unauthenticated host-info poller from turning every request into a
-/// register read. The create gate does not come through here: it always
-/// reads the card.
+/// The per-card freshness gate keeps an unauthenticated host-info poller
+/// from turning every request into a register read. The create gate does not
+/// come through here: it always reads the card.
 fn refresh_cc_modes_with(
     state: &DaemonState,
     probe: impl Fn(&str, &str) -> Result<Option<crate::gpu_cc::CcMode>, DaemonError>,
@@ -520,17 +498,6 @@ fn refresh_cc_modes_with(
         attached.insert(pci_host.to_string());
         if vouched_cc_on {
             known_cc_on.insert(pci_host.to_string());
-        }
-    }
-    {
-        let sweep = state.gpu_cc_sweep.lock().expect("gpu_cc_sweep poisoned");
-        if let Some(at) = sweep.at
-            && sweep.attached == attached
-            && at.elapsed() < windows.shortest()
-        {
-            // Nothing changed hands since that sweep and no answer can have
-            // aged out of even the shortest window in between.
-            return;
         }
     }
     for gpu in &state.host.gpus {
@@ -572,9 +539,6 @@ fn refresh_cc_modes_with(
             .expect("gpu_cc_modes poisoned")
             .insert(gpu.pci_host.clone(), crate::gpu_cc::ProbedCcMode::now(mode));
     }
-    let mut sweep = state.gpu_cc_sweep.lock().expect("gpu_cc_sweep poisoned");
-    sweep.attached = attached;
-    sweep.at = Some(std::time::Instant::now());
 }
 
 // ── World view to wire mapping ──────────────────────────────────────────
@@ -612,6 +576,19 @@ pub(crate) fn awaiting_confidential_init(entry: &VmEntry, running: bool) -> bool
         && entry.times.stopping_at_ns == 0
         && !running
         && !entry.adopted_failed
+}
+
+/// Python `_is_running` as a pair: an ephemeral program goes by its times and
+/// has no unit to judge, a persistent VM by the unit state the caller observed.
+pub(crate) fn liveness_of(entry: &VmEntry, observed: UnitLiveness) -> (bool, UnitLiveness) {
+    if entry.is_program {
+        (
+            entry.times.starting_at_ns != 0 && entry.times.stopping_at_ns == 0,
+            UnitLiveness::Unknown,
+        )
+    } else {
+        (observed.is_active(), observed)
+    }
 }
 
 /// What an observed unit state says about `entry`'s guest. Three kinds of VM
@@ -1041,17 +1018,13 @@ impl Supervisor for SupervisorService {
                 None => return Err(vm_not_found_status(&vm_id)),
             }
         };
-        // Python _is_running: systemd for persistent VMs, times for
-        // ephemeral programs.
-        let (running, unit) = if entry.is_program {
-            (
-                entry.times.starting_at_ns != 0 && entry.times.stopping_at_ns == 0,
-                UnitLiveness::Unknown,
-            )
+        // An ephemeral program has no unit to ask about.
+        let observed = if entry.is_program {
+            UnitLiveness::Unknown
         } else {
-            let unit = self.unit_liveness(entry.unit_name()).await?;
-            (unit.is_active(), unit)
+            self.unit_liveness(entry.unit_name()).await?
         };
+        let (running, unit) = liveness_of(&entry, observed);
         // The snapshot above may predate a transition the unit answer
         // already reflects, so a computed death is re-read before it stands.
         let info = self
@@ -1095,18 +1068,11 @@ impl Supervisor for SupervisorService {
         let now = now_ns();
         let mut vms: Vec<pb::VmInfo> = Vec::with_capacity(entries.len());
         for entry in &entries {
-            let (running, unit) = if entry.is_program {
-                (
-                    entry.times.starting_at_ns != 0 && entry.times.stopping_at_ns == 0,
-                    UnitLiveness::Unknown,
-                )
-            } else {
-                let unit = states
-                    .get(&entry.unit_name())
-                    .copied()
-                    .unwrap_or(UnitLiveness::Unknown);
-                (unit.is_active(), unit)
-            };
+            let observed = states
+                .get(&entry.unit_name())
+                .copied()
+                .unwrap_or(UnitLiveness::Unknown);
+            let (running, unit) = liveness_of(entry, observed);
             // A computed death is re-read before it stands (see get_vm); a
             // VM deleted meanwhile is left out of the listing.
             if let Some(info) = self.observed_vm_info(entry, running, unit, now).await {
@@ -1730,7 +1696,7 @@ mod tests {
     fn refresh_cc_modes_serves_a_fresh_answer_without_reading_the_card() {
         // Without a per-card TTL an unauthenticated caller could make the host
         // mmap every idle card's BAR as often as it likes. Failures are cached
-        // too; the sweep gate is forced open so only that window is under test.
+        // too, under the short window.
         let state = two_free_cards();
 
         let probed: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -1745,7 +1711,6 @@ mod tests {
         };
 
         refresh_cc_modes_with(&state, probe, default_windows());
-        force_next_sweep(&state);
         refresh_cc_modes_with(&state, probe, default_windows());
         let after_two_refreshes = probed.lock().unwrap().clone();
         assert_eq!(
@@ -1766,12 +1731,6 @@ mod tests {
         // An entry past its TTL is read again, both the mode and the failure.
         refresh_cc_modes_with(&state, probe, expired_windows());
         assert_eq!(probed.into_inner().unwrap().len(), 4);
-    }
-
-    /// Drop the record of the last sweep so the next `refresh_cc_modes_with`
-    /// walks the cards, leaving only the per-card freshness check.
-    fn force_next_sweep(state: &DaemonState) {
-        state.gpu_cc_sweep.lock().unwrap().at = None;
     }
 
     /// The windows a daemon runs with out of the box: the long tier for a
@@ -1819,12 +1778,6 @@ mod tests {
             );
             cache.insert("07:00.0".to_string(), aged_answer(None, age));
         }
-        state.gpu_cc_sweep.lock().unwrap().at = Some(
-            std::time::Instant::now()
-                .checked_sub(age)
-                .expect("the process started after the ages used here"),
-        );
-
         let probed: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
         refresh_cc_modes_with(
             &state,

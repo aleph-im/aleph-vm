@@ -45,7 +45,6 @@ authority this module exists to deny. The agent resolves those refs itself.
 
 import json
 import logging
-from dataclasses import dataclass
 from enum import Enum
 
 from aleph_message import parse_message
@@ -73,20 +72,6 @@ class VerificationOutcome(Enum):
     VERIFIED = "verified"
     REJECTED = "rejected"
     UNVERIFIABLE = "unverifiable"
-
-
-@dataclass(frozen=True)
-class VerifiedMessage:
-    """A message this node checked the signature of, and its own provenance.
-
-    The type is the record that the message inside came out of item_content
-    under a signature we recovered, which a bare ExecutableMessage would not
-    say. It is read to size the VM for the immediate answer and for nothing
-    else: no launch path runs off it, so it carries no untouched copy against
-    a caller that would resolve refs in place.
-    """
-
-    message: ExecutableMessage
 
 
 def verification_buffer(message: ExecutableMessage) -> bytes:
@@ -124,10 +109,11 @@ def _parse(raw: dict) -> ExecutableMessage:
     return message
 
 
-def verify_entry(entry: dict) -> tuple[VerificationOutcome, VerifiedMessage | None, str]:
+def verify_entry(entry: dict) -> tuple[VerificationOutcome, ExecutableMessage | None, str]:
     """Verify one plan entry.
 
-    Returns (outcome, verified, reason). ``verified`` is set only for VERIFIED;
+    Returns (outcome, message, reason). The message is set only for VERIFIED,
+    is read to size the VM and for nothing else (no launch path runs off it);
     ``reason`` is a safe, caller-facing string for REJECTED.
     """
     raw = entry.get("message")
@@ -166,4 +152,4 @@ def verify_entry(entry: dict) -> tuple[VerificationOutcome, VerifiedMessage | No
         logger.warning("Embedded message %s is not signed by its sender", message.item_hash)
         return VerificationOutcome.REJECTED, None, "signature is invalid or not the sender's"
 
-    return VerificationOutcome.VERIFIED, VerifiedMessage(message=message), ""
+    return VerificationOutcome.VERIFIED, message, ""

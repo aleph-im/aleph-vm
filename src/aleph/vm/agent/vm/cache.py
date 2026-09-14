@@ -482,7 +482,6 @@ def _evict_entry(entry: CacheEntry, evicted: list[Path], *, dry_run: bool) -> bo
 class _RootBudget:
     """One cache root's arithmetic, carried through the two eviction phases."""
 
-    root: Path
     budget: int
     usage: int
     evicted: list[Path]
@@ -545,7 +544,6 @@ def evict_caches(
             continue
         entries = cache_entries(root)
         state = _RootBudget(
-            root=root,
             budget=budget,
             # An unmeasured download holds a guessed figure, so only the bytes
             # it has really written may cost a real entry its place.

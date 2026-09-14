@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
 
-from aleph_message.models import ExecutableContent, ItemHash
+from aleph_message.models import ExecutableContent, ExecutableMessage, ItemHash
 
 from aleph.vm.agent.allocation.plan import (
     LIVE_STATUSES,
@@ -29,11 +29,7 @@ from aleph.vm.agent.allocation.plan import (
 )
 from aleph.vm.agent.allocation.refusal import AllocationFailureCode, Refusal, Refusals
 from aleph.vm.agent.allocation.teardown import retention_reason
-from aleph.vm.agent.allocation.verify import (
-    VerificationOutcome,
-    VerifiedMessage,
-    verify_entry,
-)
+from aleph.vm.agent.allocation.verify import VerificationOutcome, verify_entry
 from aleph.vm.agent.capacity import PlanAdmission, requirements_from_message
 from aleph.vm.agent.vm_registry import RecordLookup
 from aleph.vm.resources import GpuDevice
@@ -80,7 +76,7 @@ class JudgedEntry:
 
     vm_hash: ItemHash | None
     outcome: VerificationOutcome
-    verified: VerifiedMessage | None
+    verified: ExecutableMessage | None
     reason: str
 
 
@@ -295,7 +291,7 @@ def compute_verdict(
         if planned.verified is None:
             verdict.pending.append(vm_hash)
             continue
-        content = planned.verified.message.content
+        content = planned.verified.content
         required_node = _required_node_hash(content)
         if required_node and node_hash is None:
             # Not knowing our own hash yet is not the same answer as "you asked
@@ -312,7 +308,7 @@ def compute_verdict(
 
     admissions = capacity.simulate(candidates, releasing=frozenset(verdict.removing), available_gpus=available_gpus)
     for admission in admissions:
-        if admission.refusal is None:
+        if admission.accepted:
             verdict.accepted.append(admission.vm_hash)
         else:
             verdict.rejected[admission.vm_hash] = admission.refusal

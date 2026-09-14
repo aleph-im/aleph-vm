@@ -89,6 +89,20 @@ impl UnitLiveness {
 /// The synthetic ActiveState for a unit systemd does not have loaded.
 const NOT_LOADED: &str = "not-loaded";
 
+/// The liveness of one unit, one batched query. A bus that does not answer
+/// degrades to `Unknown` rather than `Dead`: only an answering bus supports
+/// the claim that a guest is down.
+pub fn query_unit(source: &dyn UnitStateSource, unit: &str) -> UnitLiveness {
+    let names = [unit.to_string()];
+    match source.unit_states(&names) {
+        Ok(states) => states.get(unit).copied().unwrap_or(UnitLiveness::Unknown),
+        Err(error) => {
+            tracing::error!(%error, "Failed to get services active states");
+            UnitLiveness::Unknown
+        }
+    }
+}
+
 /// Where the daemon learns systemd unit states from.
 ///
 /// Both methods are blocking (one D-Bus round trip); RPC handlers call them

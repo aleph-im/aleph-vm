@@ -1196,7 +1196,7 @@ def test_status_says_unknown_for_a_pool_it_cannot_measure(pools, registry, monke
             raise OSError(errno.EACCES, "Permission denied")
         return real_disk_usage(path, *args, **kwargs)
 
-    monkeypatch.setattr(cli.shutil, "disk_usage", refuse)
+    monkeypatch.setattr(cli.storage_pools.shutil, "disk_usage", refuse)
 
     code, out, _err = _run(["status"], registry)
 
