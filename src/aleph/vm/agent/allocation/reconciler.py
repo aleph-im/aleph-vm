@@ -32,6 +32,10 @@ from datetime import datetime, timedelta, timezone
 from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash
 
+from aleph.vm.agent.allocation.failures import (
+    AllocationFailureCode,
+    classify_start_failure,
+)
 from aleph.vm.agent.allocation.plan import (
     LIVE_STATUSES,
     STOPPED_STATUSES,
@@ -364,11 +368,7 @@ class AllocationReconciler:
         # down event wakes the loop, and nothing gates the next pass. The
         # record deliberately outlives this successful start, and is dropped
         # once the VM has stayed up (see _forget_settled).
-        record = self._note_attempt(
-            vm_hash,
-            code=f"vm_{down.status.value}",
-            message=f"rebuilt after the supervisor reported it {down.status.value}",
-        )
+        record = self._note_attempt(vm_hash, code=AllocationFailureCode.VM_FAILED)
         logger.warning(
             "Rebuilt %s after the supervisor reported it %s (attempt %d, next rebuild not before %s)",
             vm_hash,
@@ -385,12 +385,18 @@ class AllocationReconciler:
         self._states.pop(vm_hash, None)
 
     def _record_failure(self, vm_hash: ItemHash, error: Exception) -> None:
-        code = getattr(getattr(error, "code", None), "value", "") or type(error).__name__
-        record = self._note_attempt(vm_hash, code=code, message=str(error))
-        logger.warning("Starting %s failed (attempt %d): %s", vm_hash, record.attempts, error)
+        code = classify_start_failure(error)
+        record = self._note_attempt(vm_hash, code=code)
+        # The only place the exception's own text is kept. The record the
+        # executions list publishes carries the code and no more: that
+        # endpoint answers anyone, and a create failure quotes the paths, the
+        # URLs and the host figures it was working with.
+        logger.warning(
+            "Starting %s failed (attempt %d, published as %s): %s", vm_hash, record.attempts, code.value, error
+        )
         self._states[vm_hash] = AllocationState.FAILED
 
-    def _note_attempt(self, vm_hash: ItemHash, *, code: str, message: str) -> FailureRecord:
+    def _note_attempt(self, vm_hash: ItemHash, *, code: AllocationFailureCode) -> FailureRecord:
         # There is no terminal failure, on purpose. The plan is the authority
         # on what should run here, so a VM it still lists is still owed an
         # attempt, at the capped interval; giving up would leave a listed VM
@@ -406,7 +412,6 @@ class AllocationReconciler:
         )
         record = FailureRecord(
             code=code,
-            message=message[:200],
             attempts=attempts,
             first_failed_at=previous.first_failed_at if previous else now,
             last_failed_at=now,
