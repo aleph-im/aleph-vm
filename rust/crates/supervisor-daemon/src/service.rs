@@ -2964,6 +2964,246 @@ mod tests {
         assert_eq!(stream.next().await.unwrap().unwrap().vm_id, "sentinel");
     }
 
+    /// A unit source that lets the world move between the moment a read
+    /// clones an entry and the moment its unit query is answered. The read
+    /// paths hold no lock across that query, so nothing keeps a mutation out
+    /// of the gap on a real node: it is one D-Bus round trip at rest, and a
+    /// blocking pool queued behind lifecycle work stretches it.
+    struct RacingUnits {
+        inner: Arc<crate::units::FakeSystemd>,
+        race: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
+    }
+
+    impl RacingUnits {
+        fn new(inner: Arc<crate::units::FakeSystemd>) -> Self {
+            Self {
+                inner,
+                race: std::sync::OnceLock::new(),
+            }
+        }
+
+        /// What happens to the world while the query is in flight.
+        fn on_query(&self, race: impl Fn() + Send + Sync + 'static) {
+            let _ = self.race.set(Box::new(race));
+        }
+    }
+
+    impl crate::units::UnitStateSource for RacingUnits {
+        fn unit_states(
+            &self,
+            units: &[String],
+        ) -> Result<HashMap<String, UnitLiveness>, crate::units::UnitsError> {
+            if let Some(race) = self.race.get() {
+                race();
+            }
+            self.inner.unit_states(units)
+        }
+        fn controller_units(&self) -> Result<HashMap<String, bool>, crate::units::UnitsError> {
+            self.inner.controller_units()
+        }
+        fn get_active_state(&self, unit: &str) -> String {
+            self.inner.get_active_state(unit)
+        }
+        fn start(&self, unit: &str) -> Result<(), crate::units::UnitsError> {
+            self.inner.start(unit)
+        }
+        fn stop(&self, unit: &str) -> Result<(), crate::units::UnitsError> {
+            self.inner.stop(unit)
+        }
+        fn restart(&self, unit: &str) -> Result<(), crate::units::UnitsError> {
+            self.inner.restart(unit)
+        }
+        fn enable(&self, unit: &str) -> Result<(), crate::units::UnitsError> {
+            self.inner.enable(unit)
+        }
+        fn disable(&self, unit: &str) -> Result<(), crate::units::UnitsError> {
+            self.inner.disable(unit)
+        }
+        fn is_enabled(&self, unit: &str) -> bool {
+            self.inner.is_enabled(unit)
+        }
+    }
+
+    /// One running VM whose unit query can race the world, with a watcher on
+    /// the hub.
+    struct RacingRead {
+        state: Arc<DaemonState>,
+        systemd: Arc<crate::units::FakeSystemd>,
+        racing: Arc<RacingUnits>,
+        service: SupervisorService,
+        events: tokio::sync::mpsc::UnboundedReceiver<pb::VmEvent>,
+        unit: String,
+    }
+
+    fn racing_read() -> RacingRead {
+        let entry = fixture_entry(test_fixtures::QEMU_HASH, true);
+        let unit = entry.unit_name();
+        let mut world = WorldView::default();
+        world.insert_entry(entry);
+        let systemd = Arc::new(crate::units::FakeSystemd::with_active_vms(&[
+            test_fixtures::QEMU_HASH,
+        ]));
+        let racing = Arc::new(RacingUnits::new(systemd.clone()));
+        let state = Arc::new(DaemonState::hermetic(
+            test_host_state(),
+            world,
+            racing.clone(),
+            Arc::new(crate::logs::StaticLogSource::default()),
+        ));
+        let events = state.events.subscribe();
+        let service = SupervisorService::new(state.clone());
+        RacingRead {
+            state,
+            systemd,
+            racing,
+            service,
+            events,
+            unit,
+        }
+    }
+
+    impl RacingRead {
+        async fn get(&self) -> Result<pb::VmInfo, Status> {
+            self.service
+                .get_vm(Request::new(pb::GetVmRequest {
+                    vm_id: test_fixtures::QEMU_HASH.to_string(),
+                }))
+                .await
+                .map(Response::into_inner)
+        }
+
+        async fn list(&self) -> Vec<pb::VmInfo> {
+            self.service
+                .list_vms(Request::new(pb::ListVmsRequest {}))
+                .await
+                .unwrap()
+                .into_inner()
+                .vms
+        }
+
+        /// Every status the hub announced since the subscription.
+        fn announced(&mut self) -> Vec<pb::VmStatus> {
+            let mut statuses = Vec::new();
+            while let Ok(event) = self.events.try_recv() {
+                statuses.push(pb::VmStatus::try_from(event.new_status).unwrap());
+            }
+            statuses
+        }
+
+        /// Seed the hub with the VM alive, so a FAILED after it would be a
+        /// transition the hub announces, and leave the unit down.
+        async fn seed_alive_then_kill_the_unit(&mut self) {
+            assert_eq!(
+                self.get().await.unwrap().status,
+                pb::VmStatus::Running as i32
+            );
+            let _ = self.announced();
+            self.systemd.set_state(&self.unit, "inactive");
+        }
+    }
+
+    /// What a reboot installs in the world before it touches systemd: the
+    /// marker, and a fresh starting_at so the VM reports BOOTING.
+    fn mark_reboot(state: &DaemonState, vm_id: &str) {
+        let mut world = state.world.blocking_write();
+        let entry = world.entries.get_mut(vm_id).expect("still tracked");
+        entry.restarting = true;
+        entry.times.starting_at_ns = now_ns();
+    }
+
+    #[tokio::test]
+    async fn a_get_whose_snapshot_predates_a_reboot_reports_booting() {
+        // The clone is taken before the reboot marks its window and the
+        // unit answer comes back after the restart job took the unit down,
+        // which is the dead-unit arm's exact shape on a stale entry. Read
+        // from the clone it says FAILED, and the hub announces a death that
+        // makes the agent retire and rebuild a VM that is rebooting as
+        // asked.
+        let mut read = racing_read();
+        read.seed_alive_then_kill_the_unit().await;
+        let state = read.state.clone();
+        read.racing
+            .on_query(move || mark_reboot(&state, test_fixtures::QEMU_HASH));
+
+        let info = read.get().await.unwrap();
+        assert_eq!(
+            info.status,
+            pb::VmStatus::Booting as i32,
+            "the fresh entry carries the reboot's marker"
+        );
+        assert!(
+            read.announced().is_empty(),
+            "a reboot under way is not a death"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_list_whose_snapshot_predates_a_stop_reports_stopping() {
+        // The same race through ListVms, against the other window: the stop
+        // stamps stopping_at under the write lock before it issues the stop,
+        // so the re-read finds a VM on its way down rather than one that
+        // died.
+        let mut read = racing_read();
+        read.seed_alive_then_kill_the_unit().await;
+        let state = read.state.clone();
+        read.racing.on_query(move || {
+            let mut world = state.world.blocking_write();
+            let entry = world
+                .entries
+                .get_mut(test_fixtures::QEMU_HASH)
+                .expect("still tracked");
+            entry.times.stopping_at_ns = now_ns();
+        });
+
+        let vms = read.list().await;
+        assert_eq!(vms[0].status, pb::VmStatus::Stopping as i32);
+        assert!(
+            read.announced().is_empty(),
+            "a stop under way is not a death"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_read_that_races_nothing_still_reports_the_death_once() {
+        // The converse: the re-read must not blunt the arm. With no window
+        // opened while the query is in flight, the fresh entry is the stale
+        // one and the guest really did exit on its own.
+        let mut read = racing_read();
+        read.seed_alive_then_kill_the_unit().await;
+
+        assert_eq!(
+            read.get().await.unwrap().status,
+            pb::VmStatus::Failed as i32
+        );
+        assert_eq!(read.announced(), vec![pb::VmStatus::Failed]);
+        // Still FAILED on the next read, and announced only the once.
+        assert_eq!(read.list().await[0].status, pb::VmStatus::Failed as i32);
+        assert!(read.announced().is_empty(), "one event per transition");
+    }
+
+    #[tokio::test]
+    async fn a_read_that_races_a_delete_reports_no_vm_and_no_death() {
+        // A VM deleted while the query was in flight has no status left to
+        // report and did not die: GetVm answers NOT_FOUND, as it would have
+        // a moment later, and nothing is announced against a hash whose
+        // entry is gone.
+        let mut read = racing_read();
+        read.seed_alive_then_kill_the_unit().await;
+        let state = read.state.clone();
+        read.racing.on_query(move || {
+            state
+                .world
+                .blocking_write()
+                .entries
+                .remove(test_fixtures::QEMU_HASH);
+        });
+
+        let error = read.get().await.expect_err("the VM is gone");
+        assert_eq!(error.code(), Code::NotFound);
+        assert!(read.list().await.is_empty(), "and it is out of the listing");
+        assert!(read.announced().is_empty(), "a delete is not a death");
+    }
+
     #[test]
     fn the_journal_subprocess_is_bounded_except_for_head_reads() {
         // R3: "unlimited" requests get the Rust-only server cap (ledger
