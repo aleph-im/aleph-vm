@@ -1040,83 +1040,37 @@ mod tests {
     }
 
     #[test]
-    fn walk_falls_through_to_a_lower_status() {
-        // A synthetic TCB Info: the top level demands a TDX component SVN
-        // above the quote's, so the walk must skip it and take the second.
+    fn the_walk_skips_what_the_platform_misses_and_ignores_document_order() {
+        // A level the platform does not reach is not the answer, and neither
+        // is the first level the document happens to list: both DCAP
+        // references sort highest-first before walking (Intel's TcbLevel
+        // operator>, dcap-qvl's canonicalize_tcb_levels).
         let quote = parse_tdx_quote(QUOTE_V4).unwrap();
         let platform = parse_pck_platform(&pck_leaf(QUOTE_V4)).unwrap();
-        let zeros = vec![serde_json::json!({"svn": 0}); 16];
-        let mut high_tdx = zeros.clone();
-        high_tdx[0] = serde_json::json!({"svn": 255});
-        let tcb_info: TcbInfo = serde_json::from_value(serde_json::json!({
-            "id": "TDX",
-            "version": 3,
-            "issueDate": "2025-06-19T10:16:03Z",
-            "nextUpdate": "2025-07-19T10:16:03Z",
-            "fmspc": "b0c06f000000",
-            "tcbLevels": [
-                {
-                    "tcb": {
-                        "sgxtcbcomponents": zeros,
-                        "tdxtcbcomponents": high_tdx,
-                        "pcesvn": 0
-                    },
-                    "tcbStatus": "UpToDate"
-                },
-                {
-                    "tcb": {
-                        "sgxtcbcomponents": zeros,
-                        "tdxtcbcomponents": zeros,
-                        "pcesvn": 0
-                    },
-                    "tcbStatus": "OutOfDate"
-                }
-            ]
-        }))
-        .unwrap();
-        let (status, _) = walk_platform_tcb(&tcb_info, &platform, &quote.body.tee_tcb_svn).unwrap();
-        assert_eq!(status, TcbStatus::OutOfDate);
-    }
 
-    #[test]
-    fn walk_does_not_trust_document_order() {
-        // Two levels the platform satisfies, listed lowest first, where the
-        // lower one carries the better status. Both DCAP references sort
-        // the levels highest-first before walking (Intel's TcbLevel
-        // operator>, dcap-qvl's canonicalize_tcb_levels), so the higher
-        // level's OutOfDate is the answer, not the first match in the
-        // document.
-        let quote = parse_tdx_quote(QUOTE_V4).unwrap();
-        let platform = parse_pck_platform(&pck_leaf(QUOTE_V4)).unwrap();
-        let zeros = vec![serde_json::json!({"svn": 0}); 16];
-        let tcb_info: TcbInfo = serde_json::from_value(serde_json::json!({
-            "id": "TDX",
-            "version": 3,
-            "issueDate": "2025-06-19T10:16:03Z",
-            "nextUpdate": "2025-07-19T10:16:03Z",
-            "fmspc": "b0c06f000000",
-            "tcbLevels": [
-                {
-                    "tcb": {
-                        "sgxtcbcomponents": zeros,
-                        "tdxtcbcomponents": zeros,
-                        "pcesvn": 0
-                    },
-                    "tcbStatus": "UpToDate"
-                },
-                {
-                    "tcb": {
-                        "sgxtcbcomponents": zeros,
-                        "tdxtcbcomponents": zeros,
-                        "pcesvn": 1
-                    },
-                    "tcbStatus": "OutOfDate"
-                }
-            ]
-        }))
-        .unwrap();
-        let (status, _) = walk_platform_tcb(&tcb_info, &platform, &quote.body.tee_tcb_svn).unwrap();
-        assert_eq!(status, TcbStatus::OutOfDate);
+        let mut above_the_quote = [0u8; 16];
+        above_the_quote[0] = 255;
+        let unreachable_top = tcb_info_with_tdx_levels(&[
+            (above_the_quote, "UpToDate", &[]),
+            ([0u8; 16], "OutOfDate", &[]),
+        ]);
+
+        // Two levels the platform satisfies, the better status on the lower
+        // one, listed first. The pcesvn is what puts the levels in order.
+        let mut listed_lowest_first = tcb_info_with_tdx_levels(&[
+            ([0u8; 16], "UpToDate", &[]),
+            ([0u8; 16], "OutOfDate", &[]),
+        ]);
+        listed_lowest_first.tcb_levels[1].tcb.pcesvn = 1;
+
+        for (case, tcb_info) in [
+            ("a level above the quote's SVNs is skipped", unreachable_top),
+            ("the highest level wins, not the first", listed_lowest_first),
+        ] {
+            let (status, _) =
+                walk_platform_tcb(&tcb_info, &platform, &quote.body.tee_tcb_svn).unwrap();
+            assert_eq!(status, TcbStatus::OutOfDate, "{case}");
+        }
     }
 
     /// A TCB Info carrying one level per (TDX component ladder, status,
