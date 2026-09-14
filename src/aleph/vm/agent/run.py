@@ -1146,15 +1146,16 @@ async def start_persistent_vm(
     expiry: ExpiryManager,
     update_watcher: UpdateWatcher,
     recreate: bool = False,
-    create: CreateVmExecution = create_vm_execution,
+    create: CreateVmExecution | None = None,
 ) -> None:
     """Bring a scheduled VM up, whatever state this node holds it in.
 
     ``recreate`` says the caller is rebuilding a VM this node already holds a
     record for, so admission judges only the disk it does not hold yet.
 
-    ``create`` performs the rebuild: a view passes the HTTP-mapping wrapper so
-    a rebuild that fails answers a mapped status rather than a bare 500.
+    ``create`` performs the rebuild, defaulting to ``create_vm_execution``: a
+    view passes the HTTP-mapping wrapper so a failed rebuild answers a mapped
+    status rather than a bare 500.
 
     Serialised per hash: the download sits between the read and the create, so
     two concurrent starts would both read "this node does not have it" and
@@ -1207,7 +1208,9 @@ async def start_persistent_vm(
 
         if info is None:
             logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
-            await create(
+            # Resolved here, not as a default argument: a default would bind the
+            # function object at import time, past any patch of the module name.
+            await (create or create_vm_execution)(
                 vm_hash=vm_hash, supervisor=supervisor, registry=registry, capacity=capacity, recreate=recreate
             )
             # A confidential VM is created but left awaiting its owner's session
