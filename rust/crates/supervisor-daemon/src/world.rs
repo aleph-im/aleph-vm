@@ -254,6 +254,20 @@ pub struct VmEntry {
     /// Status queries use the LIVE unit state; this drives what was
     /// populated at adoption (times, IPs, port forwards).
     pub adopted_running: bool,
+    /// Set while the daemon is deliberately bringing the controller unit
+    /// back up: RebootVm around its restart job, StartVm from its first step
+    /// until the unit is ready or the start has failed. Both leave the unit
+    /// out of `active` for a stretch with no stop recorded, and a status
+    /// read takes no per-VM lock, so without this marker a poll landing in
+    /// the gap would read the VM as a guest that died and the agent would
+    /// retire and recreate a healthy VM. Both stamp a fresh `starting_at`
+    /// with it, so the VM reports BOOTING for the length of the window.
+    ///
+    /// A reader may conclude only that the daemon asked for this unit to
+    /// come back, never that the guest is alive. Both paths clear it on
+    /// their way out, success or failure, so a VM that is really down says
+    /// so as soon as the window closes.
+    pub restarting: bool,
     /// Computed like the Python `TapInterface` the reattach rebuilds; only
     /// for VMs adopted running (a stopped VM's tap was torn down, and the
     /// proto documents empty assignments until the tap exists).
@@ -314,6 +328,7 @@ impl VmEntry {
             settings_slice: controller_config::ControllerSettingsSlice::default(),
             times: VmTimes::default(),
             adopted_running: false,
+            restarting: false,
             ipv4: None,
             ipv6: None,
             port_forwards: Vec::new(),
@@ -745,6 +760,7 @@ pub fn build_world_view(
             settings_slice: config.settings,
             times,
             adopted_running: running == Some(true),
+            restarting: false,
             ipv4,
             ipv6,
             port_forwards,

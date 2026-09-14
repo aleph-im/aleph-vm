@@ -32,7 +32,7 @@ use crate::config::Settings;
 use crate::error::DaemonError;
 use crate::logs::{LogSource, LogStream};
 use crate::lspci::GpuDevice;
-use crate::units::UnitStateSource;
+use crate::units::{UnitLiveness, UnitStateSource};
 use crate::world::{VmEntry, VmTimes, WorldView, now_ns};
 use crate::{host, lspci, net};
 
@@ -388,21 +388,76 @@ impl SupervisorService {
         })
     }
 
-    /// Live active flag for one entry's controller unit, off the runtime
-    /// threads (the Python `_is_running` D-Bus query equivalent). A bus
-    /// failure degrades to "inactive", the Python
-    /// `get_services_active_states` parity behavior (ledger entry 13).
-    async fn unit_running(&self, unit: String) -> Result<bool, Status> {
+    /// The VmInfo a mutation RPC answers with. The mutation settled the
+    /// unit itself (started it and waited for it to be ready, stopped it,
+    /// or deliberately left it down until the owner uploads the session
+    /// certificates), so it hands the mapping no unit observation: a fresh
+    /// query would only repeat what the path already knows, and spontaneous
+    /// death is what the read paths (GetVm, ListVms) are there to notice.
+    fn mutated_vm_info(&self, entry: &VmEntry, running: bool) -> pb::VmInfo {
+        vm_info_message(&self.state, entry, running, UnitLiveness::Unknown, now_ns())
+    }
+
+    /// The VmInfo a read path reports for one entry, with the dead-unit arm
+    /// confirmed against the world before anyone believes it.
+    ///
+    /// A read clones the entry and releases the world lock before it asks
+    /// systemd, so the clone can predate a stop, a reboot or a start whose
+    /// unit job the answer already reflects. Such a clone carries a start
+    /// stamped, no stop and no restarting marker, which is the dead-unit
+    /// arm's exact shape, and believing it announces a death against a VM
+    /// that is doing what it was asked. The gap is one D-Bus round trip at
+    /// rest, but a blocking pool queued behind lifecycle work stretches it
+    /// well past the point where a mutation marks its window.
+    ///
+    /// Every mutation sets its marker or its stamps under the world write
+    /// lock before it touches systemd, so an entry re-read after the unit
+    /// was observed dead necessarily sees the window. Recomputing from a
+    /// fresh entry therefore tells a guest that died from a transition under
+    /// way, and it costs one uncontended read lock on the only arm that
+    /// announces anything. The unit observation is carried over untouched:
+    /// what went stale is the entry, not what systemd said. `running` comes
+    /// from that same observation for every VM the arm can fire on (a
+    /// program's comes from its times, and a program is never judged dead).
+    ///
+    /// `None` means the VM left the world while the query was in flight, a
+    /// delete. That is not a death and there is no status left to report, so
+    /// GetVm answers NOT_FOUND, as it would have a moment later, and ListVms
+    /// leaves the VM out of the listing.
+    async fn observed_vm_info(
+        &self,
+        entry: &VmEntry,
+        running: bool,
+        unit: UnitLiveness,
+        now: u64,
+    ) -> Option<pb::VmInfo> {
+        let mut info = vm_info_message(&self.state, entry, running, unit, now);
+        if info.status() == pb::VmStatus::Failed {
+            let world = self.state.world.read().await;
+            let fresh = world.entries.get(&entry.vm_hash)?;
+            info = vm_info_message(&self.state, fresh, running, unit, now);
+        }
+        self.state.events.observe(&info.vm_id, info.status());
+        Some(info)
+    }
+
+    /// Live state of one entry's controller unit, off the runtime threads
+    /// (the Python `_is_running` D-Bus query equivalent). A bus failure
+    /// degrades to `Unknown`: it stays "not running" like the Python
+    /// `get_services_active_states` parity behavior (ledger entry 13), and
+    /// it must never read as death, which is a claim only an answering bus
+    /// can support.
+    async fn unit_liveness(&self, unit: String) -> Result<UnitLiveness, Status> {
         let units = self.state.units.clone();
-        tokio::task::spawn_blocking(move || {
-            match units.active_states(std::slice::from_ref(&unit)) {
-                Ok(states) => states.get(&unit).copied().unwrap_or(false),
+        tokio::task::spawn_blocking(
+            move || match units.unit_states(std::slice::from_ref(&unit)) {
+                Ok(states) => states.get(&unit).copied().unwrap_or(UnitLiveness::Unknown),
                 Err(error) => {
                     tracing::error!(%error, "Failed to get services active states");
-                    false
+                    UnitLiveness::Unknown
                 }
-            }
-        })
+            },
+        )
         .await
         .map_err(|error| {
             internal_status(DaemonError::Internal(format!(
@@ -411,22 +466,22 @@ impl SupervisorService {
         })
     }
 
-    /// Live active flags for every entry, one batched query (the Python
+    /// Live states for every entry, one batched query (the Python
     /// `_running_states` ListUnits call, pushed off the loop like
     /// `asyncio.to_thread` in list_vms). Bus failures degrade to
-    /// all-inactive, like the Python method (ledger entry 13).
-    async fn units_running(
+    /// all-`Unknown`, for the reason in [`Self::unit_liveness`].
+    async fn units_liveness(
         &self,
         unit_names: Vec<String>,
-    ) -> Result<HashMap<String, bool>, Status> {
+    ) -> Result<HashMap<String, UnitLiveness>, Status> {
         let units = self.state.units.clone();
-        tokio::task::spawn_blocking(move || match units.active_states(&unit_names) {
+        tokio::task::spawn_blocking(move || match units.unit_states(&unit_names) {
             Ok(states) => states,
             Err(error) => {
                 tracing::error!(%error, "Failed to get services active states");
                 unit_names
                     .iter()
-                    .map(|unit| (unit.clone(), false))
+                    .map(|unit| (unit.clone(), UnitLiveness::Unknown))
                     .collect()
             }
         })
@@ -624,18 +679,66 @@ fn refresh_cc_modes_with(
 
 // ── World view to wire mapping ──────────────────────────────────────────
 
-/// `_status_of`, ported literally: the times short-circuit the live flag.
-pub(crate) fn vm_status(times: &VmTimes, running: bool) -> pb::VmStatus {
+/// `_status_of`: the times short-circuit the live flag, plus the FAILED arm
+/// the Python daemon never had.
+///
+/// `unit` is what systemd last said about the VM's controller, and it is
+/// only ever [`UnitLiveness::Dead`] when the daemon positively observed the
+/// unit down; every caller that cannot judge (an ephemeral program runs no
+/// unit, a confidential VM waits for its owner's session before one is
+/// started, the bus did not answer) passes `Unknown`. A VM the daemon has
+/// seen alive (`started_at_ns` is stamped once the controller is confirmed
+/// ready, and at adoption for a VM already running) whose unit is now down
+/// without anyone stopping it is a guest that died on its own: reporting it
+/// BOOTING for ever, as the port did, leaves the agent's reconciler holding
+/// it live and never rebuilding it.
+pub(crate) fn vm_status(times: &VmTimes, running: bool, unit: UnitLiveness) -> pb::VmStatus {
     if times.stopped_at_ns != 0 {
         pb::VmStatus::Stopped
     } else if times.stopping_at_ns != 0 {
         pb::VmStatus::Stopping
     } else if running {
         pb::VmStatus::Running
+    } else if times.started_at_ns != 0 && unit == UnitLiveness::Dead {
+        pb::VmStatus::Failed
     } else if times.starting_at_ns != 0 {
         pb::VmStatus::Booting
     } else {
         pb::VmStatus::Defined
+    }
+}
+
+/// `is_awaiting_confidential_init`, ported literally: confidential (SEV /
+/// SEV-ES only, via the session/godh slot), persistent (every adopted VM
+/// is), started but neither stopping nor observed running. SNP has no
+/// session handshake, so it is never awaiting: it starts at create.
+pub(crate) fn awaiting_confidential_init(entry: &VmEntry, running: bool) -> bool {
+    entry.config.confidential().is_some()
+        && entry.times.started_at_ns != 0
+        && entry.times.stopping_at_ns == 0
+        && !running
+}
+
+/// What an observed unit state says about `entry`'s guest.
+///
+/// Three kinds of VM have a down unit for a reason of their own, and reading
+/// death into it would condemn a healthy VM. An ephemeral program runs under
+/// no controller unit at all. A SEV / SEV-ES VM's controller is deliberately
+/// held down until its owner uploads the session certificates. And a VM in
+/// the middle of a reboot has a restart job in flight, which takes the unit
+/// down and back up with nothing stamped in between. All three report
+/// `Unknown`, which leaves the status exactly where it was before the dead
+/// unit arm existed.
+///
+/// The session blindness has a cost: a SEV / SEV-ES guest that dies after
+/// its session was uploaded is still not reported FAILED, because nothing
+/// distinguishes that from a VM that never got its session. SEV-SNP, which
+/// has no session and boots at create, is judged like any other VM.
+pub(crate) fn guest_liveness(entry: &VmEntry, unit: UnitLiveness) -> UnitLiveness {
+    if entry.is_program || entry.restarting || awaiting_confidential_init(entry, unit.is_active()) {
+        UnitLiveness::Unknown
+    } else {
+        unit
     }
 }
 
@@ -644,6 +747,7 @@ pub fn vm_info_message(
     state: &DaemonState,
     entry: &VmEntry,
     running: bool,
+    unit: UnitLiveness,
     now_ns: u64,
 ) -> pb::VmInfo {
     let times = &entry.times;
@@ -666,12 +770,7 @@ pub fn vm_info_message(
             Some(_) => pb::ConfidentialMode::Sev,
         }
     };
-    // `is_awaiting_confidential_init`, ported literally: confidential (SEV /
-    // SEV-ES only, via the session/godh slot), persistent (every adopted VM
-    // is), started but neither stopping nor observed running. SNP has no
-    // session handshake, so it is never awaiting: it starts at create.
-    let awaiting_confidential_init =
-        confidential.is_some() && times.started_at_ns != 0 && times.stopping_at_ns == 0 && !running;
+    let awaiting_confidential_init = awaiting_confidential_init(entry, running);
     let ip = |pair: &Option<crate::world::IpPair>| {
         pair.as_ref()
             .map(|pair| pb::IpAssignment {
@@ -690,7 +789,7 @@ pub fn vm_info_message(
     };
     pb::VmInfo {
         vm_id: entry.vm_hash.clone(),
-        status: vm_status(times, running) as i32,
+        status: vm_status(times, running, guest_liveness(entry, unit)) as i32,
         ipv4: Some(ip(&entry.ipv4)),
         ipv6: Some(ip(&entry.ipv6)),
         uptime_secs,
@@ -1041,12 +1140,7 @@ impl Supervisor for SupervisorService {
         let spec = request.into_inner();
         let (entry, running) =
             run_lifecycle(move || crate::lifecycle::create_vm(&state, spec)).await?;
-        Ok(Response::new(vm_info_message(
-            &self.state,
-            &entry,
-            running,
-            now_ns(),
-        )))
+        Ok(Response::new(self.mutated_vm_info(&entry, running)))
     }
 
     async fn get_vm(
@@ -1066,17 +1160,23 @@ impl Supervisor for SupervisorService {
         };
         // Python _is_running: systemd for persistent VMs, times for
         // ephemeral programs.
-        let running = if entry.is_program {
-            entry.times.starting_at_ns != 0 && entry.times.stopping_at_ns == 0
+        let (running, unit) = if entry.is_program {
+            (
+                entry.times.starting_at_ns != 0 && entry.times.stopping_at_ns == 0,
+                UnitLiveness::Unknown,
+            )
         } else {
-            self.unit_running(entry.unit_name()).await?
+            let unit = self.unit_liveness(entry.unit_name()).await?;
+            (unit.is_active(), unit)
         };
-        Ok(Response::new(vm_info_message(
-            &self.state,
-            &entry,
-            running,
-            now_ns(),
-        )))
+        // The snapshot above may predate a deliberate transition the unit
+        // answer already reflects, so a computed death is confirmed against
+        // a fresh entry before it is reported or announced.
+        let info = self
+            .observed_vm_info(&entry, running, unit, now_ns())
+            .await
+            .ok_or_else(|| vm_not_found_status(&vm_id))?;
+        Ok(Response::new(info))
     }
 
     async fn get_vm_spec(
@@ -1109,19 +1209,30 @@ impl Supervisor for SupervisorService {
             .filter(|entry| !entry.is_program)
             .map(|entry| entry.unit_name())
             .collect();
-        let states = self.units_running(unit_names).await?;
+        let states = self.units_liveness(unit_names).await?;
         let now = now_ns();
-        let vms = entries
-            .iter()
-            .map(|entry| {
-                let running = if entry.is_program {
-                    entry.times.starting_at_ns != 0 && entry.times.stopping_at_ns == 0
-                } else {
-                    states.get(&entry.unit_name()).copied().unwrap_or(false)
-                };
-                vm_info_message(&self.state, entry, running, now)
-            })
-            .collect();
+        let mut vms: Vec<pb::VmInfo> = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            let (running, unit) = if entry.is_program {
+                (
+                    entry.times.starting_at_ns != 0 && entry.times.stopping_at_ns == 0,
+                    UnitLiveness::Unknown,
+                )
+            } else {
+                let unit = states
+                    .get(&entry.unit_name())
+                    .copied()
+                    .unwrap_or(UnitLiveness::Unknown);
+                (unit.is_active(), unit)
+            };
+            // A computed death is confirmed against a fresh entry (see
+            // get_vm): the snapshot above may predate a transition the unit
+            // answer already reflects. A VM deleted meanwhile is left out of
+            // the listing, which is what the next call would report anyway.
+            if let Some(info) = self.observed_vm_info(entry, running, unit, now).await {
+                vms.push(info);
+            }
+        }
         Ok(Response::new(pb::ListVmsResponse { vms }))
     }
 
@@ -1146,12 +1257,7 @@ impl Supervisor for SupervisorService {
         let vm_id = request.into_inner().vm_id;
         let entry = run_lifecycle(move || crate::lifecycle::stop_vm(&state, &vm_id)).await?;
         // Python stop_vm reports running=False unconditionally.
-        Ok(Response::new(vm_info_message(
-            &self.state,
-            &entry,
-            false,
-            now_ns(),
-        )))
+        Ok(Response::new(self.mutated_vm_info(&entry, false)))
     }
 
     async fn start_vm(
@@ -1162,12 +1268,7 @@ impl Supervisor for SupervisorService {
         let vm_id = request.into_inner().vm_id;
         let (entry, running) =
             run_lifecycle(move || crate::lifecycle::start_vm(&state, &vm_id)).await?;
-        Ok(Response::new(vm_info_message(
-            &self.state,
-            &entry,
-            running,
-            now_ns(),
-        )))
+        Ok(Response::new(self.mutated_vm_info(&entry, running)))
     }
 
     async fn reboot_vm(
@@ -1178,12 +1279,7 @@ impl Supervisor for SupervisorService {
         let vm_id = request.into_inner().vm_id;
         let (entry, running) =
             run_lifecycle(move || crate::lifecycle::reboot_vm(&state, &vm_id)).await?;
-        Ok(Response::new(vm_info_message(
-            &self.state,
-            &entry,
-            running,
-            now_ns(),
-        )))
+        Ok(Response::new(self.mutated_vm_info(&entry, running)))
     }
 
     async fn run_program_code(
@@ -1567,6 +1663,7 @@ mod tests {
             settings_slice: config.settings,
             times,
             adopted_running: running,
+            restarting: false,
             ipv4: running.then(|| IpPair {
                 address: "172.16.3.2".to_string(),
                 network_cidr: "172.16.3.0/24".to_string(),
@@ -2106,7 +2203,13 @@ mod tests {
             "a plain passthrough card went through no gate and stays unknown"
         );
         // The VM's own report, which is where the empty mode showed.
-        let info = vm_info_message(&state, &snp_entry, true, snp_entry.times.started_at_ns);
+        let info = vm_info_message(
+            &state,
+            &snp_entry,
+            true,
+            UnitLiveness::Active,
+            snp_entry.times.started_at_ns,
+        );
         assert_eq!(info.gpus.len(), 1);
         assert_eq!(info.gpus[0].cc_mode, "on");
         assert_eq!(
@@ -2205,7 +2308,7 @@ mod tests {
     fn a_running_adopted_vm_maps_like_the_python_to_vm_info() {
         let entry = fixture_entry(test_fixtures::QEMU_HASH, true);
         let now = entry.times.started_at_ns + 7_500_000_000;
-        let info = vm_info_message(&empty_state(), &entry, true, now);
+        let info = vm_info_message(&empty_state(), &entry, true, UnitLiveness::Active, now);
         assert_eq!(info.status, pb::VmStatus::Running as i32);
         assert_eq!(info.uptime_secs, 7, "int(total_seconds()) truncates");
         assert_eq!(info.backend, pb::Backend::Qemu as i32);
@@ -2229,11 +2332,16 @@ mod tests {
         // wart of ledger entry 11).
         let entry = fixture_entry(test_fixtures::QEMU_HASH, false);
         for live in [false, true] {
-            let info = vm_info_message(&empty_state(), &entry, live, now_ns());
+            let unit = if live {
+                UnitLiveness::Active
+            } else {
+                UnitLiveness::Dead
+            };
+            let info = vm_info_message(&empty_state(), &entry, live, unit, now_ns());
             assert_eq!(info.status, pb::VmStatus::Stopped as i32);
             assert_eq!(info.uptime_secs, 0);
         }
-        let info = vm_info_message(&empty_state(), &entry, false, now_ns());
+        let info = vm_info_message(&empty_state(), &entry, false, UnitLiveness::Dead, now_ns());
         assert_eq!(info.ipv4, Some(pb::IpAssignment::default()));
         assert_eq!(info.ipv6, Some(pb::IpAssignment::default()));
     }
@@ -2249,33 +2357,115 @@ mod tests {
             defined_at_ns: entry.times.defined_at_ns,
             ..VmTimes::default()
         };
-        let info = vm_info_message(&empty_state(), &entry, true, now_ns());
+        let info = vm_info_message(&empty_state(), &entry, true, UnitLiveness::Active, now_ns());
         assert_eq!(info.status, pb::VmStatus::Running as i32);
         assert_eq!(info.uptime_secs, 0, "no started_at was ever stamped");
-        let info = vm_info_message(&empty_state(), &entry, false, now_ns());
+        // A dead unit under an entry the daemon never saw alive is not a
+        // death it can claim: the bus outage left started_at unstamped, so
+        // the status falls through to DEFINED rather than FAILED.
+        let info = vm_info_message(&empty_state(), &entry, false, UnitLiveness::Dead, now_ns());
         assert_eq!(info.status, pb::VmStatus::Defined as i32);
     }
 
     #[test]
-    fn a_running_adopted_vm_whose_unit_died_reports_defined() {
-        // The Python wart, ported: the restore path never sets starting_at
-        // or stopped_at, so a dead unit falls through _status_of to DEFINED.
+    fn a_running_adopted_vm_whose_unit_died_reports_failed() {
+        // The restore path sets neither starting_at nor stopped_at, so this
+        // entry used to fall through to DEFINED, which the agent's
+        // allocation reconciler counts as live: a guest whose QEMU exited on
+        // its own was never rebuilt. The unit state settles it instead.
         let entry = fixture_entry(test_fixtures::QEMU_HASH, true);
-        let info = vm_info_message(&empty_state(), &entry, false, now_ns());
-        assert_eq!(info.status, pb::VmStatus::Defined as i32);
+        let info = vm_info_message(&empty_state(), &entry, false, UnitLiveness::Dead, now_ns());
+        assert_eq!(info.status, pb::VmStatus::Failed as i32);
         assert_eq!(info.uptime_secs, 0);
+        // A unit still on its way up is a VM booting, not one that died.
+        let info = vm_info_message(
+            &empty_state(),
+            &entry,
+            false,
+            UnitLiveness::Transitional,
+            now_ns(),
+        );
+        assert_eq!(info.status, pb::VmStatus::Defined as i32);
+        // And an unanswered bus concludes nothing at all.
+        let info = vm_info_message(
+            &empty_state(),
+            &entry,
+            false,
+            UnitLiveness::Unknown,
+            now_ns(),
+        );
+        assert_eq!(info.status, pb::VmStatus::Defined as i32);
+    }
+
+    #[test]
+    fn a_started_vm_whose_unit_died_reports_failed_instead_of_booting_for_ever() {
+        // The created-and-started shape: starting_at stamped, then
+        // started_at once the controller was confirmed ready. A unit that
+        // goes down afterwards without a StopVm is a guest that died, and
+        // reporting BOOTING for ever left the agent holding it live.
+        let mut entry = fixture_entry(test_fixtures::QEMU_HASH, true);
+        entry.times.starting_at_ns = entry.times.prepared_at_ns;
+        let info = vm_info_message(&empty_state(), &entry, false, UnitLiveness::Dead, now_ns());
+        assert_eq!(info.status, pb::VmStatus::Failed as i32);
+        let info = vm_info_message(
+            &empty_state(),
+            &entry,
+            false,
+            UnitLiveness::Transitional,
+            now_ns(),
+        );
+        assert_eq!(info.status, pb::VmStatus::Booting as i32);
+        let info = vm_info_message(&empty_state(), &entry, true, UnitLiveness::Active, now_ns());
+        assert_eq!(info.status, pb::VmStatus::Running as i32);
+    }
+
+    #[test]
+    fn an_explicitly_stopped_vm_stays_stopped_under_a_dead_unit() {
+        // The stop stamps come first: a VM the operator stopped has a dead
+        // unit by definition and must not be reported as a crash the agent
+        // rebuilds.
+        let mut entry = fixture_entry(test_fixtures::QEMU_HASH, true);
+        entry.times.stopping_at_ns = entry.times.started_at_ns + 1_000;
+        let info = vm_info_message(&empty_state(), &entry, false, UnitLiveness::Dead, now_ns());
+        assert_eq!(info.status, pb::VmStatus::Stopping as i32);
+        entry.times.stopped_at_ns = entry.times.stopping_at_ns + 1_000;
+        let info = vm_info_message(&empty_state(), &entry, false, UnitLiveness::Dead, now_ns());
+        assert_eq!(info.status, pb::VmStatus::Stopped as i32);
+    }
+
+    #[test]
+    fn a_confidential_vm_awaiting_its_session_is_never_reported_failed() {
+        // A SEV / SEV-ES controller is deliberately held down until the
+        // owner uploads the session certificates, so its unit is dead by
+        // design and says nothing about a guest.
+        let mut entry = fixture_entry(test_fixtures::CONFIDENTIAL_HASH, true);
+        entry.times.starting_at_ns = entry.times.prepared_at_ns;
+        let info = vm_info_message(&empty_state(), &entry, false, UnitLiveness::Dead, now_ns());
+        assert!(info.awaiting_confidential_init);
+        assert_eq!(info.status, pb::VmStatus::Booting as i32);
+    }
+
+    #[test]
+    fn an_ephemeral_program_ignores_the_unit_state() {
+        // A program runs under no controller unit; its times are the whole
+        // truth, and a stray unit lookup must not condemn it.
+        let mut entry = fixture_entry(test_fixtures::QEMU_HASH, true);
+        entry.is_program = true;
+        entry.times.starting_at_ns = entry.times.prepared_at_ns;
+        let info = vm_info_message(&empty_state(), &entry, true, UnitLiveness::Dead, now_ns());
+        assert_eq!(info.status, pb::VmStatus::Running as i32);
     }
 
     #[test]
     fn confidential_mode_follows_the_sev_policy_bit() {
         let entry = fixture_entry(test_fixtures::CONFIDENTIAL_HASH, true);
         // The fixture's policy is 0x5: the SEV_ES bit (0x4) is set.
-        let info = vm_info_message(&empty_state(), &entry, true, now_ns());
+        let info = vm_info_message(&empty_state(), &entry, true, UnitLiveness::Active, now_ns());
         assert_eq!(info.confidential_mode, pb::ConfidentialMode::SevEs as i32);
         assert!(!info.awaiting_confidential_init);
         // A confidential VM with a dead unit but started_at set is
         // "awaiting init" in Python's formula; port it literally.
-        let info = vm_info_message(&empty_state(), &entry, false, now_ns());
+        let info = vm_info_message(&empty_state(), &entry, false, UnitLiveness::Dead, now_ns());
         assert!(info.awaiting_confidential_init);
     }
 
@@ -2706,6 +2896,312 @@ mod tests {
         assert_eq!(event.vm_id, "aa");
         assert_eq!(event.old_status, pb::VmStatus::Defined as i32);
         assert_eq!(event.new_status, pb::VmStatus::Running as i32);
+    }
+
+    #[tokio::test]
+    async fn a_list_that_finds_a_dead_unit_reports_failed_and_announces_it_once() {
+        // The whole point of the FAILED arm: the agent's allocation
+        // reconciler counts BOOTING and DEFINED as live, so a guest whose
+        // QEMU exited on its own used to sit in the supervisor's list for
+        // ever and never be rebuilt. ListVms is where the daemon notices.
+        use crate::logs::StaticLogSource;
+        use crate::units::FakeSystemd;
+        let entry = fixture_entry(test_fixtures::QEMU_HASH, true);
+        let unit = entry.unit_name();
+        let mut world = WorldView::default();
+        world.insert_entry(entry);
+        let systemd = Arc::new(FakeSystemd::with_active_vms(&[test_fixtures::QEMU_HASH]));
+        let state = Arc::new(DaemonState::hermetic(
+            test_host_state(),
+            world,
+            systemd.clone(),
+            Arc::new(StaticLogSource::default()),
+        ));
+        let service = SupervisorService::new(state.clone());
+        let mut stream = service
+            .watch_events(Request::new(pb::WatchEventsRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+
+        async fn list(service: &SupervisorService) -> Vec<pb::VmInfo> {
+            service
+                .list_vms(Request::new(pb::ListVmsRequest {}))
+                .await
+                .unwrap()
+                .into_inner()
+                .vms
+        }
+        let vms = list(&service).await;
+        assert_eq!(vms[0].status, pb::VmStatus::Running as i32);
+
+        systemd.set_state(&unit, "failed");
+        let vms = list(&service).await;
+        assert_eq!(vms[0].status, pb::VmStatus::Failed as i32);
+        let event = stream.next().await.unwrap().unwrap();
+        assert_eq!(event.vm_id, test_fixtures::QEMU_HASH);
+        assert_eq!(event.old_status, pb::VmStatus::Running as i32);
+        assert_eq!(event.new_status, pb::VmStatus::Failed as i32);
+
+        // A second list still reports FAILED, and says so without repeating
+        // the announcement: the agent polls this call.
+        let vms = list(&service).await;
+        assert_eq!(vms[0].status, pb::VmStatus::Failed as i32);
+        // GetVm agrees, and is not a second announcement either.
+        let info = service
+            .get_vm(Request::new(pb::GetVmRequest {
+                vm_id: test_fixtures::QEMU_HASH.to_string(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(info.status, pb::VmStatus::Failed as i32);
+        // A sentinel proves the reads queued nothing behind the one death:
+        // the next event off the stream is this one, not a repeat.
+        state
+            .events
+            .emit("sentinel", pb::VmStatus::Defined, pb::VmStatus::Running);
+        assert_eq!(stream.next().await.unwrap().unwrap().vm_id, "sentinel");
+    }
+
+    /// A unit source that lets the world move between the moment a read
+    /// clones an entry and the moment its unit query is answered. The read
+    /// paths hold no lock across that query, so nothing keeps a mutation out
+    /// of the gap on a real node: it is one D-Bus round trip at rest, and a
+    /// blocking pool queued behind lifecycle work stretches it.
+    struct RacingUnits {
+        inner: Arc<crate::units::FakeSystemd>,
+        race: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
+    }
+
+    impl RacingUnits {
+        fn new(inner: Arc<crate::units::FakeSystemd>) -> Self {
+            Self {
+                inner,
+                race: std::sync::OnceLock::new(),
+            }
+        }
+
+        /// What happens to the world while the query is in flight.
+        fn on_query(&self, race: impl Fn() + Send + Sync + 'static) {
+            let _ = self.race.set(Box::new(race));
+        }
+    }
+
+    impl crate::units::UnitStateSource for RacingUnits {
+        fn unit_states(
+            &self,
+            units: &[String],
+        ) -> Result<HashMap<String, UnitLiveness>, crate::units::UnitsError> {
+            if let Some(race) = self.race.get() {
+                race();
+            }
+            self.inner.unit_states(units)
+        }
+        fn controller_units(&self) -> Result<HashMap<String, bool>, crate::units::UnitsError> {
+            self.inner.controller_units()
+        }
+        fn get_active_state(&self, unit: &str) -> String {
+            self.inner.get_active_state(unit)
+        }
+        fn start(&self, unit: &str) -> Result<(), crate::units::UnitsError> {
+            self.inner.start(unit)
+        }
+        fn stop(&self, unit: &str) -> Result<(), crate::units::UnitsError> {
+            self.inner.stop(unit)
+        }
+        fn restart(&self, unit: &str) -> Result<(), crate::units::UnitsError> {
+            self.inner.restart(unit)
+        }
+        fn enable(&self, unit: &str) -> Result<(), crate::units::UnitsError> {
+            self.inner.enable(unit)
+        }
+        fn disable(&self, unit: &str) -> Result<(), crate::units::UnitsError> {
+            self.inner.disable(unit)
+        }
+        fn is_enabled(&self, unit: &str) -> bool {
+            self.inner.is_enabled(unit)
+        }
+    }
+
+    /// One running VM whose unit query can race the world, with a watcher on
+    /// the hub.
+    struct RacingRead {
+        state: Arc<DaemonState>,
+        systemd: Arc<crate::units::FakeSystemd>,
+        racing: Arc<RacingUnits>,
+        service: SupervisorService,
+        events: tokio::sync::mpsc::UnboundedReceiver<pb::VmEvent>,
+        unit: String,
+    }
+
+    fn racing_read() -> RacingRead {
+        let entry = fixture_entry(test_fixtures::QEMU_HASH, true);
+        let unit = entry.unit_name();
+        let mut world = WorldView::default();
+        world.insert_entry(entry);
+        let systemd = Arc::new(crate::units::FakeSystemd::with_active_vms(&[
+            test_fixtures::QEMU_HASH,
+        ]));
+        let racing = Arc::new(RacingUnits::new(systemd.clone()));
+        let state = Arc::new(DaemonState::hermetic(
+            test_host_state(),
+            world,
+            racing.clone(),
+            Arc::new(crate::logs::StaticLogSource::default()),
+        ));
+        let events = state.events.subscribe();
+        let service = SupervisorService::new(state.clone());
+        RacingRead {
+            state,
+            systemd,
+            racing,
+            service,
+            events,
+            unit,
+        }
+    }
+
+    impl RacingRead {
+        async fn get(&self) -> Result<pb::VmInfo, Status> {
+            self.service
+                .get_vm(Request::new(pb::GetVmRequest {
+                    vm_id: test_fixtures::QEMU_HASH.to_string(),
+                }))
+                .await
+                .map(Response::into_inner)
+        }
+
+        async fn list(&self) -> Vec<pb::VmInfo> {
+            self.service
+                .list_vms(Request::new(pb::ListVmsRequest {}))
+                .await
+                .unwrap()
+                .into_inner()
+                .vms
+        }
+
+        /// Every status the hub announced since the subscription.
+        fn announced(&mut self) -> Vec<pb::VmStatus> {
+            let mut statuses = Vec::new();
+            while let Ok(event) = self.events.try_recv() {
+                statuses.push(pb::VmStatus::try_from(event.new_status).unwrap());
+            }
+            statuses
+        }
+
+        /// Seed the hub with the VM alive, so a FAILED after it would be a
+        /// transition the hub announces, and leave the unit down.
+        async fn seed_alive_then_kill_the_unit(&mut self) {
+            assert_eq!(
+                self.get().await.unwrap().status,
+                pb::VmStatus::Running as i32
+            );
+            let _ = self.announced();
+            self.systemd.set_state(&self.unit, "inactive");
+        }
+    }
+
+    /// What a reboot installs in the world before it touches systemd: the
+    /// marker, and a fresh starting_at so the VM reports BOOTING.
+    fn mark_reboot(state: &DaemonState, vm_id: &str) {
+        let mut world = state.world.blocking_write();
+        let entry = world.entries.get_mut(vm_id).expect("still tracked");
+        entry.restarting = true;
+        entry.times.starting_at_ns = now_ns();
+    }
+
+    #[tokio::test]
+    async fn a_get_whose_snapshot_predates_a_reboot_reports_booting() {
+        // The clone is taken before the reboot marks its window and the
+        // unit answer comes back after the restart job took the unit down,
+        // which is the dead-unit arm's exact shape on a stale entry. Read
+        // from the clone it says FAILED, and the hub announces a death that
+        // makes the agent retire and rebuild a VM that is rebooting as
+        // asked.
+        let mut read = racing_read();
+        read.seed_alive_then_kill_the_unit().await;
+        let state = read.state.clone();
+        read.racing
+            .on_query(move || mark_reboot(&state, test_fixtures::QEMU_HASH));
+
+        let info = read.get().await.unwrap();
+        assert_eq!(
+            info.status,
+            pb::VmStatus::Booting as i32,
+            "the fresh entry carries the reboot's marker"
+        );
+        assert!(
+            read.announced().is_empty(),
+            "a reboot under way is not a death"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_list_whose_snapshot_predates_a_stop_reports_stopping() {
+        // The same race through ListVms, against the other window: the stop
+        // stamps stopping_at under the write lock before it issues the stop,
+        // so the re-read finds a VM on its way down rather than one that
+        // died.
+        let mut read = racing_read();
+        read.seed_alive_then_kill_the_unit().await;
+        let state = read.state.clone();
+        read.racing.on_query(move || {
+            let mut world = state.world.blocking_write();
+            let entry = world
+                .entries
+                .get_mut(test_fixtures::QEMU_HASH)
+                .expect("still tracked");
+            entry.times.stopping_at_ns = now_ns();
+        });
+
+        let vms = read.list().await;
+        assert_eq!(vms[0].status, pb::VmStatus::Stopping as i32);
+        assert!(
+            read.announced().is_empty(),
+            "a stop under way is not a death"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_read_that_races_nothing_still_reports_the_death_once() {
+        // The converse: the re-read must not blunt the arm. With no window
+        // opened while the query is in flight, the fresh entry is the stale
+        // one and the guest really did exit on its own.
+        let mut read = racing_read();
+        read.seed_alive_then_kill_the_unit().await;
+
+        assert_eq!(
+            read.get().await.unwrap().status,
+            pb::VmStatus::Failed as i32
+        );
+        assert_eq!(read.announced(), vec![pb::VmStatus::Failed]);
+        // Still FAILED on the next read, and announced only the once.
+        assert_eq!(read.list().await[0].status, pb::VmStatus::Failed as i32);
+        assert!(read.announced().is_empty(), "one event per transition");
+    }
+
+    #[tokio::test]
+    async fn a_read_that_races_a_delete_reports_no_vm_and_no_death() {
+        // A VM deleted while the query was in flight has no status left to
+        // report and did not die: GetVm answers NOT_FOUND, as it would have
+        // a moment later, and nothing is announced against a hash whose
+        // entry is gone.
+        let mut read = racing_read();
+        read.seed_alive_then_kill_the_unit().await;
+        let state = read.state.clone();
+        read.racing.on_query(move || {
+            state
+                .world
+                .blocking_write()
+                .entries
+                .remove(test_fixtures::QEMU_HASH);
+        });
+
+        let error = read.get().await.expect_err("the VM is gone");
+        assert_eq!(error.code(), Code::NotFound);
+        assert!(read.list().await.is_empty(), "and it is out of the listing");
+        assert!(read.announced().is_empty(), "a delete is not a death");
     }
 
     #[test]
