@@ -33,7 +33,7 @@ from aleph.vm.agent.metrics import delete_records_for_vm
 from aleph.vm.agent.vm.backup import purge_vm_backups
 from aleph.vm.agent.vm.cache import forget_live
 from aleph.vm.agent.vm.purge import (
-    _checked_namespace,
+    checked_namespace,
     purge_vm_side_dirs,
     purge_vm_storage,
 )
@@ -94,7 +94,7 @@ async def teardown_namespace_devices(namespace: str) -> None:
     no snapshot at all (a create that died between the two ``dmsetup create``
     calls) is the one case that never reaches, so it is removed at the end.
     """
-    namespace = _checked_namespace(namespace)
+    namespace = checked_namespace(namespace)
     mapper = Path(DEVICE_MAPPER_DIRECTORY)
     try:
         devices = sorted(mapper.glob(f"{namespace}_*"))
@@ -141,12 +141,14 @@ async def teardown_vm_devices(namespace: str, record: AgentVmRecord | None) -> N
             logger.exception("Device teardown of %s failed", namespace)
         return
     try:
-        namespace = _checked_namespace(namespace)
+        namespace = checked_namespace(namespace)
     except ValueError:
-        # Unreachable from the callers, which pass an ItemHash, but the
-        # best-effort contract holds for the check too: a teardown that
-        # cannot run must not abort the retire between the forget and the
-        # storage release.
+        # Reachable: this is called straight from the reinstall path as well
+        # as from retire_vm, and neither its signature nor the module
+        # boundary promises a hash anyone has parsed. The best-effort
+        # contract covers the check with the rest: a teardown that cannot
+        # run must not abort the retire between the forget and the storage
+        # release.
         logger.exception("Device teardown of %r skipped", namespace)
         return
     for volume in getattr(record.message, "volumes", None) or []:
@@ -199,6 +201,12 @@ async def retire_vm(
     # racing a live VM the agent has no message for, so nothing is evicted and
     # a download that needs room is refused.
     forget_live(str(vm_hash))
+    # And the other half of the same set. Imported here rather than at the
+    # top: the reconciler imports this module for the device teardown, so it
+    # cannot be imported back at load time.
+    from aleph.vm.agent.vm.reconciler import forget_supervisor_hash
+
+    forget_supervisor_hash(str(vm_hash))
     await delete_records_for_vm(str(vm_hash))
     # Before the storage pass: a volume file held by a live dm target cannot
     # be unlinked usefully, and the marker written for a kept volume would

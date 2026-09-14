@@ -38,9 +38,11 @@ import json
 import logging
 import os
 import shutil
-from collections.abc import Callable, Collection, Iterable
+from collections.abc import Callable, Collection, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+
+from aleph_message.models import ExecutableContent, ItemHash
 
 from aleph.vm.agent.vm.purge import purge_vm_storage
 from aleph.vm.agent.vm.reclaimable import (
@@ -48,7 +50,8 @@ from aleph.vm.agent.vm.reclaimable import (
     ReclaimableMarker,
     file_size_bytes,
     iter_content_refs,
-    iter_reclaimable,
+    namespace_size_bytes,
+    reclaimable_entries,
     refs_from_content,
 )
 from aleph.vm.agent.vm_registry import AgentVmRegistry
@@ -57,12 +60,11 @@ from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.storage import (
     DEVICE_MAPPER_DIRECTORY,
     DEVICE_NAME_MAX_BYTES,
-    is_vm_namespace,
     reserve_download,
     reserved_downloads,
 )
 from aleph.vm.storage_budget import parse_budget
-from aleph.vm.storage_pools import iter_namespace_dirs
+from aleph.vm.storage_pools import has_namespace_dirs
 from aleph.vm.utils import create_task_log_exceptions, run_in_subprocess
 
 logger = logging.getLogger(__name__)
@@ -253,7 +255,7 @@ def _manifest_bundle_ref(ref: str) -> str | None:
     return str(bundle_ref) if bundle_ref else None
 
 
-def _record_refs(content, vm_hash: object) -> set[str]:
+def _record_refs(content: ExecutableContent, vm_hash: ItemHash) -> set[str]:
     """Every cache entry one live record names.
 
     ``reclaimable.iter_content_refs`` is the enumeration; this adds what only
@@ -289,25 +291,27 @@ def _is_creating(namespace: str) -> bool:
     return is_creating(namespace)
 
 
-def _markers() -> list[tuple[Path, ReclaimableMarker]]:
-    """The reclaimable directories, oldest marker first, implausibly named
-    ones dropped (they can never be handed to ``purge_vm_storage``)."""
-    entries = [(directory, marker) for directory, marker in iter_reclaimable() if is_vm_namespace(directory.name)]
-    entries.sort(key=lambda item: item[1].reclaimable_since)
-    return entries
-
-
 def _marker_refs(markers: Iterable[tuple[Path, ReclaimableMarker]]) -> set[str]:
     return {ref for _directory, marker in markers for ref in marker.depends_on}
 
 
 def referenced_hashes(registry: AgentVmRegistry) -> set[str]:
     """Live refs plus what the ``.reclaimable`` markers pin."""
-    return live_refs(registry) | _marker_refs(_markers())
+    return live_refs(registry) | _marker_refs(reclaimable_entries())
+
+
+def cache_disk_total(root: Path) -> int:
+    """The size of the filesystem a cache root sits on.
+
+    Raises OSError when it cannot be read, which each caller answers for
+    itself: the pass leaves that root's budget unapplied, admission lets the
+    download through.
+    """
+    return shutil.disk_usage(str(root)).total
 
 
 def cache_budget_bytes(root: Path) -> int:
-    return parse_budget(settings.CACHE_BUDGET, shutil.disk_usage(str(root)).total)
+    return parse_budget(settings.CACHE_BUDGET, cache_disk_total(root))
 
 
 def _safe_ref(ref: str) -> bool:
@@ -364,27 +368,30 @@ def parent_refs_of(evicted: list[Path]) -> list[str]:
     return [path.name for path in evicted if path.parent == runtime]
 
 
-def _loop_devices_backing(path: Path) -> list[str]:
-    """The loop devices backed by ``path``, found through sysfs.
+def _iter_loop_backings() -> Iterator[tuple[str, str]]:
+    """``(loop device, backing file)`` for every loop device the kernel lists.
 
-    ``storage.detach_loop_devices`` asks ``losetup -j``, which has to stat
-    the backing file; an evicted cache entry is already unlinked, and the
-    loop that still pins its blocks is exactly the one that has to go. sysfs
-    keeps the path, marked " (deleted)".
+    Read from sysfs rather than with ``losetup -j``, which has to stat the
+    backing file: an evicted cache entry is already unlinked, and the loop
+    that still pins its blocks is exactly the one that has to go. sysfs keeps
+    the path of an unlinked file, marked " (deleted)", and the marker is left
+    on the string here because it is what tells the two callers apart.
     """
-    devices: list[str] = []
     try:
         backing_files = sorted(SYS_BLOCK.glob("loop*/loop/backing_file"))
     except OSError:
-        return devices
+        return
     for backing_file in backing_files:
         try:
             backing = backing_file.read_text().strip()
         except OSError:
             continue
-        if backing.removesuffix(DELETED_SUFFIX) == str(path):
-            devices.append(f"/dev/{backing_file.parent.parent.name}")
-    return devices
+        yield f"/dev/{backing_file.parent.parent.name}", backing
+
+
+def _loop_devices_backing(path: Path) -> list[str]:
+    """The loop devices backed by ``path``, unlinked or not."""
+    return [device for device, backing in _iter_loop_backings() if backing.removesuffix(DELETED_SUFFIX) == str(path)]
 
 
 async def remove_parent_device(ref: str) -> None:
@@ -448,18 +455,21 @@ def release_parent_devices(evicted: list[Path]) -> None:
     create_task_log_exceptions(remove_parent_devices(refs), name="remove parent devices")
 
 
-def _may_evict(entry: CacheEntry) -> bool:
+def _may_evict(entry: CacheEntry, *, log: bool = True) -> bool:
     """Whether this entry's file can be unlinked right now.
 
     Only parent images have devices on top of them, and only they can be
-    refused here.
+    refused here. ``log`` is off for the callers that are only counting what
+    could go, so an estimate does not fill the journal with refusals nobody
+    acted on.
     """
     runtime = _runtime_cache()
     if runtime is None or entry.path.parent != runtime:
         return True
     if parent_device_is_free(entry.path.name):
         return True
-    logger.warning("Not evicting %s: its device-mapper device is still held", entry.path)
+    if log:
+        logger.warning("Not evicting %s: its device-mapper device is still held", entry.path)
     return False
 
 
@@ -488,6 +498,10 @@ class _RootBudget:
     budget: int
     usage: int
     evicted: list[Path]
+    # Namespace to the bytes its retained volumes gave back, for the caller's
+    # report: reclaiming a VM to free its parent image deletes disks, and a
+    # pass that does not say so reports only the cache entries it unlinked.
+    reclaimed_bytes: dict[str, int]
     live_only: set[str]
     is_live: Callable[[str], bool]
     dry_run: bool
@@ -511,6 +525,7 @@ def evict_caches(
     dry_run: bool = False,
     is_live: Callable[[str], bool] | None = None,
     reclaim_retained: bool = True,
+    reclaimed_bytes: dict[str, int] | None = None,
 ) -> list[Path]:
     """Bring every cache root under ``CACHE_BUDGET``; return what was evicted.
 
@@ -525,9 +540,14 @@ def evict_caches(
     to free the parent images they pin. Admission turns it off: it runs on the
     event loop inside a download, where an rmtree of a retained VM's disks
     does not belong. What it cannot free there, the next pass frees.
+
+    ``reclaimed_bytes`` is filled with the retained VMs that second phase
+    purged and what each gave back. The return value covers cache entries
+    alone, and those are the smaller half of what this can delete.
     """
     needed = needed or {}
     evicted: list[Path] = []
+    reclaimed_bytes = reclaimed_bytes if reclaimed_bytes is not None else {}
     is_live = is_live or (lambda namespace: namespace in registry)
     live_only = live_refs(registry)
     for root in cache_roots():
@@ -547,6 +567,7 @@ def evict_caches(
             # eviction it does cause is the one its own body earned.
             usage=_root_usage(root, entries, count_ceilings=False) + needed.get(root, 0),
             evicted=evicted,
+            reclaimed_bytes=reclaimed_bytes,
             live_only=live_only,
             is_live=is_live,
             dry_run=dry_run,
@@ -555,7 +576,7 @@ def evict_caches(
             continue
         # Re-read the markers per root: what was reclaimed for the previous
         # root changes what this one is allowed to touch.
-        markers = _markers()
+        markers = reclaimable_entries()
         _evict_unreferenced(state, entries, state.live_only | _marker_refs(markers))
         if state.over_budget and reclaim_retained:
             _reclaim_pinning_dirs(state, entries, markers)
@@ -584,10 +605,25 @@ def _evict_unreferenced(state: _RootBudget, entries: list[CacheEntry], reference
     for entry in entries:
         if not state.over_budget:
             return
-        if _entry_refs(entry.path) & referenced:
-            continue
-        if _may_evict(entry):
+        if _is_evictable(entry, referenced):
             state.take(entry)
+
+
+def _is_evictable(entry: CacheEntry, referenced: set[str], *, log: bool = True) -> bool:
+    """Whether this entry may go: nobody names it and no device holds it."""
+    return not (_entry_refs(entry.path) & referenced) and _may_evict(entry, log=log)
+
+
+def _evictable_bytes(registry: AgentVmRegistry, entries: list[CacheEntry]) -> int:
+    """The most an eviction could free among ``entries``, without reclaiming
+    a retained VM's disks (which admission does not do).
+
+    An estimate, and an optimistic one: an entry that turns out not to unlink
+    is counted here. That is the right way round for the caller, which uses
+    it to decide not to evict at all rather than to decide to.
+    """
+    referenced = live_refs(registry) | _marker_refs(reclaimable_entries())
+    return sum(entry.size_bytes for entry in entries if _is_evictable(entry, referenced, log=False))
 
 
 def _reclaim_pinning_dirs(
@@ -649,16 +685,20 @@ def _reclaim_for_parents(
         # and the VM has no registry record yet for ``is_live`` to find.
         logger.warning("Not reclaiming %s for its parent images: a create is using it", namespace)
         return False
+    # Measured before the purge, and over every pool: this is what the pass
+    # gave back, and after the rmtree there is nothing left to measure.
+    size = namespace_size_bytes(namespace)
     if not state.dry_run:
         purge_vm_storage(namespace)
-        if any(True for _ in iter_namespace_dirs(namespace)):
+        if has_namespace_dirs(namespace):
             # purge_vm_storage refuses a directory a device-mapper target
             # still holds: those volumes still need their parent image, so
             # the parent stays too.
             logger.warning("Not evicting the parent images of %s: its purge left directories behind", namespace)
             return False
     reclaimed.add(namespace)
-    logger.info("Reclaimed the retained volumes of %s to free its parent images", namespace)
+    state.reclaimed_bytes[namespace] = size
+    logger.info("Reclaimed the retained volumes of %s (%d bytes) to free its parent images", namespace, size)
     return True
 
 
@@ -725,9 +765,16 @@ def admit_download(
 
     Registered on ``storage.set_cache_admission`` so it runs inside
     ``download_file_in_chunks`` as soon as the response headers are in.
-    Evicting first is the point: the budget is a cap on what is kept, not on
-    what may be fetched, and only a load that stays over the budget with
-    nothing safely evictable left is refused.
+    Evicting is the point: the budget is a cap on what is kept, not on what
+    may be fetched, and only a load that would stay over the budget with
+    everything safely evictable gone is refused.
+
+    The refusal is decided before any of it, against what a full eviction
+    would leave. Deciding it afterwards meant measuring two different things:
+    the eviction stops as soon as the bytes really on disk fit, while the
+    refusal also counts the room an unmeasured download is holding, so a
+    download could take entries with it on the way to being refused. Nothing
+    is evicted for a download that is not admitted.
 
     An admitted download is then charged to its ``.part`` path until
     ``download_file`` releases it, so the next admission sees the room this
@@ -755,33 +802,48 @@ def admit_download(
         logger.debug("Not a download cache, so not subject to CACHE_BUDGET: %s", root)
         return
     try:
-        budget = cache_budget_bytes(root)
+        # Read once and carried down: everything below is a share of this
+        # figure, and a second read is a second chance to fail on a question
+        # already answered.
+        total = cache_disk_total(root)
     except OSError:
         logger.warning("Cache directory %s is not accessible; admitting the download", root, exc_info=True)
         if content_length is not None:
             reserve_download(tmp_path, content_length, measured=True)
         return
+    budget = parse_budget(settings.CACHE_BUDGET, total)
     if content_length is None:
-        _admit_unknown_length(tmp_path, root, budget, max_bytes)
+        _admit_unknown_length(tmp_path, root, total, budget, max_bytes)
         return
-    if _may_evict_for_admission(registry):
+    entries = cache_entries(root)
+    usage = _root_usage(root, entries) + content_length
+    may_evict = _may_evict_for_admission(registry)
+    # Only asked when the answer can change anything: a root already inside
+    # its budget cannot be refused whatever is evictable, and the estimate
+    # costs a walk of every pool's markers plus a sysfs stat per runtime
+    # entry, on the event loop, inside the download.
+    evictable = _evictable_bytes(registry, entries) if may_evict and usage > budget else 0
+    if usage - evictable > budget:
+        # Decided before anything is unlinked. The eviction below stops as
+        # soon as the bytes really on disk fit, while this total also counts
+        # the room an unmeasured download is holding, so a refusal taken
+        # after the eviction could leave entries gone and the download failed
+        # all the same. Nothing is evicted for a download that cannot fit.
+        free = max(budget - (usage - content_length), 0)
+        msg = f"Cache {root} cannot hold a {content_length} byte download within CACHE_BUDGET"
+        raise InsufficientResourcesError(
+            msg,
+            required={"disk_mib": content_length // MIB},
+            available={"disk_mib": free // MIB},
+        )
+    if may_evict:
         release_parent_devices(
             evict_caches(registry, needed={root: content_length}, reclaim_retained=False),
         )
-    usage = _root_usage(root, cache_entries(root)) + content_length
-    if usage <= budget:
-        reserve_download(tmp_path, content_length, measured=True)
-        return
-    free = max(budget - (usage - content_length), 0)
-    msg = f"Cache {root} cannot hold a {content_length} byte download within CACHE_BUDGET"
-    raise InsufficientResourcesError(
-        msg,
-        required={"disk_mib": content_length // MIB},
-        available={"disk_mib": free // MIB},
-    )
+    reserve_download(tmp_path, content_length, measured=True)
 
 
-def _admit_unknown_length(tmp_path: Path, root: Path, budget: int, max_bytes: int | None) -> None:
+def _admit_unknown_length(tmp_path: Path, root: Path, total: int, budget: int, max_bytes: int | None) -> None:
     """Admit a download whose size the server did not state.
 
     All that is known is the cap the caller is downloading under, and a cap is
@@ -814,21 +876,18 @@ def _admit_unknown_length(tmp_path: Path, root: Path, budget: int, max_bytes: in
             required={"disk_mib": (usage - budget) // MIB},
             available={"disk_mib": 0},
         )
-    reserve_download(tmp_path, _unknown_length_charge(root, budget, max_bytes), measured=False)
+    reserve_download(tmp_path, _unknown_length_charge(total, budget, max_bytes), measured=False)
 
 
-def _unknown_length_charge(root: Path, budget: int, max_bytes: int | None) -> int:
+def _unknown_length_charge(total: int, budget: int, max_bytes: int | None) -> int:
     """The room to hold for a body nobody measured: the smallest of the
-    reserve, this download's own cap and the budget."""
-    try:
-        total = shutil.disk_usage(str(root)).total
-    except OSError:
-        # A disk nobody can measure must not resurrect the whole-budget hold:
-        # resolve the reserve against a zero total instead, which yields the
-        # configured size when it is written as an absolute one and nothing
-        # when it is a percentage of the disk that just failed to answer.
-        logger.warning("Cache directory %s is not accessible; holding only the reserve", root, exc_info=True)
-        total = 0
+    reserve, this download's own cap and the budget.
+
+    ``total`` is the size of the cache disk, which the caller has already
+    read: the reserve may be a percentage of it. It used to be read a second
+    time here, with a fallback for a failure that cannot happen, since the
+    caller's own read of the very same disk had just succeeded. One reading,
+    one answer, and no unreachable branch left to reason about."""
     reserve = parse_budget(settings.UNKNOWN_LENGTH_RESERVE, total)
     figures = [reserve, budget] if max_bytes is None else [reserve, budget, max_bytes]
     return min(figures)
@@ -839,20 +898,12 @@ def _deleted_cache_backings() -> list[tuple[str, Path]]:
     cache entry that is already unlinked."""
     roots = cache_roots()
     leaked: list[tuple[str, Path]] = []
-    try:
-        backing_files = sorted(SYS_BLOCK.glob("loop*/loop/backing_file"))
-    except OSError:
-        return leaked
-    for backing_file in backing_files:
-        try:
-            backing = backing_file.read_text().strip()
-        except OSError:
-            continue
+    for device, backing in _iter_loop_backings():
         if not backing.endswith(DELETED_SUFFIX):
             continue
         path = Path(backing.removesuffix(DELETED_SUFFIX))
         if path.parent in roots:
-            leaked.append((f"/dev/{backing_file.parent.parent.name}", path))
+            leaked.append((device, path))
     return leaked
 
 

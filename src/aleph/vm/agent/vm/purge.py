@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 ROOTFS_STEM = "rootfs"
 
 
-def _checked_namespace(vm_hash: ItemHash | str) -> ItemHash:
+def checked_namespace(vm_hash: ItemHash | str) -> ItemHash:
     """The item hash to purge, or a refusal before any filesystem access.
 
     A namespace is an item hash and nothing else, so the check is ItemHash's
@@ -70,7 +70,7 @@ def iter_volume_files(
     Only regular files directly inside ``{pool}/{vm_hash}/`` are yielded, so
     this can never reach a cache entry or another VM's volume.
     """
-    namespace = _checked_namespace(vm_hash)
+    namespace = checked_namespace(vm_hash)
     for volumes_dir in iter_namespace_dirs(namespace):
         try:
             entries = sorted(volumes_dir.iterdir())
@@ -127,7 +127,7 @@ def purge_vm_volumes(
     ``storage_pools.pin_layout`` so each volume is rebuilt on the pool it
     came from.
     """
-    namespace = _checked_namespace(vm_hash)
+    namespace = checked_namespace(vm_hash)
     deleted: list[Path] = []
     for volume in iter_volume_files(
         namespace,
@@ -164,7 +164,7 @@ def purge_vm_staging(vm_hash: ItemHash | str) -> None:
     Covers both the V-PROGRAM and the confidential-instance staging
     directories; each is a no-op for a VM of the other type.
     """
-    item_hash = _checked_namespace(vm_hash)
+    item_hash = checked_namespace(vm_hash)
     remove_vprogram_staging(item_hash)
     remove_snp_instance_staging(item_hash)
 
@@ -208,7 +208,7 @@ def purge_vm_storage(vm_hash: ItemHash | str) -> PurgeResult:
     guess from a directory that is still there. Idempotent: purging a VM with
     nothing on disk is a no-op.
     """
-    namespace = _checked_namespace(vm_hash)
+    namespace = checked_namespace(vm_hash)
     # File by file first, then the directories: rmtree alone would do, but
     # the per-file pass logs each volume and yields the count, which is the
     # audit trail an erase should leave.
@@ -252,7 +252,7 @@ def purge_vm_side_dirs(vm_hash: ItemHash | str) -> None:
     """Delete the per-VM directories that are not volumes: the confidential
     session directory and the staging directories. Rebuilt by the next
     create, so a retained (reclaimable) VM keeps only its volumes."""
-    namespace = _checked_namespace(vm_hash)
+    namespace = checked_namespace(vm_hash)
     if settings.CONFIDENTIAL_SESSION_DIRECTORY:
         session_dir = Path(settings.CONFIDENTIAL_SESSION_DIRECTORY) / namespace
         if session_dir.exists():
