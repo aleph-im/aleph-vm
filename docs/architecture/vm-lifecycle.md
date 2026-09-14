@@ -290,6 +290,17 @@ This diverges from v1, where an allocation push restarted a stopped VM. The
 node answered every push by starting whatever it held down, so an owner's
 stop lasted until the next push and no longer.
 
+One mode per node, for the same reason the plan is authoritative: a plan lists
+everything the node should run, so the loop deletes every VM it leaves out.
+A node that also accepted the legacy `POST /control/allocations` push, which
+names only what one scheduler knows about, would have each such push swept
+within the reconcile interval and then rebuilt by the next push, indefinitely.
+So once a plan has reached the node, the legacy route answers 409 Conflict
+naming `/v2/control/allocations` and does nothing, and it keeps working
+normally on a node no plan has reached. The owner-signed single-VM
+notification (`POST /control/allocation/notify`) is not a scheduler push and
+is unaffected.
+
 ### Idle expiry
 
 Idle teardown is agent policy, not something the supervisor knows about: the
