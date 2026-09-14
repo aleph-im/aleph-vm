@@ -181,8 +181,9 @@ pub(crate) fn verify_signer_chain(chain_pem: &[u8], now: SystemTime) -> Result<X
     )?;
     check_signer_identity(signer)?;
 
-    // The pinned root's own window is a compile-time fact, asserted by the
-    // unit test rather than re-checked on every document.
+    // The pinned copy's window rather than the presented root's, which is the
+    // same check: the two were just established to be the same bytes.
+    check_cert_window(PINNED_ROOT_LABEL, &pinned, &now)?;
     check_cert_window("the signer certificate", signer, &now)?;
     Ok(signer.to_owned())
 }
