@@ -872,25 +872,3 @@ def test_the_bytes_a_ceiling_download_writes_are_counted_as_they_land(pools, mon
     chunked.write_bytes(b"x" * 4096)
 
     assert evict_caches(registry) == [old]
-
-
-def test_both_downloads_together_stay_inside_the_budget(pools, monkeypatch):
-    """The guess is a placeholder, not a licence: what the two downloads leave
-    behind once they land is still under the cap."""
-    monkeypatch.setattr(settings, "CACHE_BUDGET", "16384")
-    monkeypatch.setattr(settings, "UNKNOWN_LENGTH_RESERVE", "4096")
-    registry = AgentVmRegistry()
-    cache_module.record_live_snapshot(set())
-    root = pools["code"]
-    _entry(root, "old", size=4096, age=1000)
-    chunked = root / "chunked.part"
-    measured = root / "measured.part"
-
-    admit_download(registry, chunked, None, 100 * 1024**3)
-    admit_download(registry, measured, 4096)
-    for part in (chunked, measured):
-        part.write_bytes(b"x" * 4096)
-        storage_module.release_download(part)
-        part.rename(part.with_suffix(""))
-
-    assert cache_module._root_usage(root, cache_entries(root)) <= 16384

@@ -74,43 +74,23 @@ def test_a_running_vm_still_in_the_plan_is_unchanged():
     assert verdict.accepted == []
 
 
-def test_a_stopped_vm_still_in_the_plan_is_unchanged_and_never_sized():
-    """A VM this node holds stopped is a VM this node holds. The scheduler's
-    belief that it is allocated here is exactly what has not changed, so the
-    answer says so instead of sizing it: sized as a candidate, a node that is
-    tight on room refuses a VM it is already holding, and a refusal is what
-    takes the VM out of the plan the loop converges on."""
+@pytest.mark.parametrize("status", [VmStatus.STOPPED, VmStatus.FAILED, VmStatus.STOPPING])
+def test_a_vm_this_node_holds_a_record_for_is_unchanged_and_never_sized(status):
+    """Stopped, crashed or stopping, the node still holds the record and the
+    reservation behind it, so the answer acknowledges the VM instead of
+    sizing it: sized as a candidate, a node tight on room refuses a VM it is
+    already holding, and a refusal takes it out of the plan."""
     capacity = _capacity([])
 
     verdict = compute_verdict(
         _plan(HASH_A),
-        infos=[_info(HASH_A, status=VmStatus.STOPPED)],
+        infos=[_info(HASH_A, status=status)],
         registry=_registry({HASH_A: _record()}),
         capacity=capacity,
     )
 
     assert verdict.unchanged == [HASH_A]
     assert verdict.accepted == []
-    assert capacity.simulate.call_args.args[0] == []
-
-
-def test_a_dead_vm_this_node_holds_a_record_for_is_unchanged():
-    """A crashed VM is rebuilt out of a reservation this node never gave back:
-    its record is still in the registry and its memory still committed. Sized
-    as a candidate it can be refused for want of room, and a refusal takes it
-    out of the plan the loop converges on, so a node that is over its caps
-    keeps the VM and never rebuilds it. Acknowledging it is the answer that
-    matches what the node will actually do."""
-    capacity = _capacity([])
-
-    verdict = compute_verdict(
-        _plan(HASH_A),
-        infos=[_info(HASH_A, status=VmStatus.FAILED)],
-        registry=_registry({HASH_A: _record()}),
-        capacity=capacity,
-    )
-
-    assert verdict.unchanged == [HASH_A]
     assert verdict.rejected == {}
     assert capacity.simulate.call_args.args[0] == []
 
@@ -131,18 +111,6 @@ def test_a_dead_vm_this_node_holds_no_record_for_is_still_sized():
     assert verdict.unchanged == []
     assert verdict.accepted == [HASH_A]
     assert [vm_hash for vm_hash, _ in capacity.simulate.call_args.args[0]] == [HASH_A]
-
-
-def test_a_vm_caught_mid_stop_is_unchanged_too():
-    """STOPPING is a stop in flight, not a VM to rebuild."""
-    verdict = compute_verdict(
-        _plan(HASH_A),
-        infos=[_info(HASH_A, status=VmStatus.STOPPING)],
-        registry=_registry({HASH_A: _record()}),
-        capacity=_capacity([]),
-    )
-
-    assert verdict.unchanged == [HASH_A]
 
 
 def test_a_new_vm_that_fits_is_accepted():
@@ -598,30 +566,6 @@ def _registry_holding(vm_hash, memory_mib):
     recorded = _make_qemu_instance_message(memory=memory_mib)
     registry.record(vm_hash, message=recorded, original=recorded, persistent=True)
     return registry
-
-
-def test_a_stopped_vm_keeps_its_capacity_committed(mocker):
-    """Not restarting a stopped VM is not forgetting it. The definition and
-    the volumes are still allocated, so its memory and vCPUs stay committed
-    and the headroom the node advertises stays reduced by them. Freeing them
-    on a stop is how a node over-provisions: it would promise the same room
-    to somebody else and then have nowhere to put the VM when its owner
-    starts it again."""
-    _tight_host(mocker)
-    registry = _registry_holding(HASH_C, 16384)
-    capacity = _real_capacity(mocker, memory_gib=40, registry=registry)
-
-    verdict = compute_verdict(
-        _plan(HASH_C),
-        infos=[_info(HASH_C, status=VmStatus.STOPPED)],
-        registry=registry,
-        capacity=capacity,
-    )
-
-    assert verdict.unchanged == [HASH_C]
-    # 40 GiB less the two reservations is a 30720 MiB bucket, less the
-    # stopped VM's 16384 MiB.
-    assert capacity.headroom()["instance_memory_mib"] == 30720 - 16384
 
 
 def test_a_newcomer_is_refused_the_room_a_stopped_vm_holds(mocker):

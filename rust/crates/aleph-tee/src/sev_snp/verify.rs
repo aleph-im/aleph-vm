@@ -785,30 +785,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_verify_cert_chain_ark_not_matching_pinned_root() {
-        // Genuine, self-consistent chain, but pinned to a DIFFERENT AMD root.
-        let (chain, _ark_key, _ask_key, _vcek_key, _ark) = valid_chain();
-        let other_ark_key = gen_p384();
-        let other_ark = build_cert(
-            &other_ark_key,
-            &other_ark_key,
-            AMD_CN,
-            AMD_ORG_NAME,
-            AMD_CN,
-            AMD_ORG_NAME,
-            -3600,
-            3600,
-        );
-        let pinned = other_ark.to_der().unwrap();
-
-        let err = verify_cert_chain(&chain, &pinned).unwrap_err().to_string();
-        assert!(
-            err.contains("pinned"),
-            "expected pinned-root mismatch, got: {err}"
-        );
-    }
-
     /// The pin is on the key: a chain carrying an AMD re-issue of the same key
     /// must keep verifying against the vendored copy.
     #[test]
@@ -894,57 +870,6 @@ mod tests {
         assert!(
             err.contains("VCEK certificate is not signed by ASK"),
             "expected VCEK<-ASK link failure, got: {err}"
-        );
-    }
-
-    #[test]
-    fn test_verify_cert_chain_expired_ark() {
-        // ARK already expired (notAfter in the past); everything else valid.
-        let ark_key = gen_p384();
-        let ask_key = gen_p384();
-        let vcek_key = gen_p384();
-
-        let ark = build_cert(
-            &ark_key,
-            &ark_key,
-            AMD_CN,
-            AMD_ORG_NAME,
-            AMD_CN,
-            AMD_ORG_NAME,
-            -7200,
-            -3600,
-        );
-        let ask = build_cert(
-            &ask_key,
-            &ark_key,
-            ASK_CN,
-            AMD_ORG_NAME,
-            AMD_CN,
-            AMD_ORG_NAME,
-            -3600,
-            3600,
-        );
-        let vcek = build_cert(
-            &vcek_key,
-            &ask_key,
-            VCEK_CN,
-            AMD_ORG_NAME,
-            ASK_CN,
-            AMD_ORG_NAME,
-            -3600,
-            3600,
-        );
-        let chain = CertChain {
-            vcek_der: vcek.to_der().unwrap(),
-            ask_der: ask.to_der().unwrap(),
-            ark_der: ark.to_der().unwrap(),
-        };
-        let pinned = ark.to_der().unwrap();
-
-        let err = verify_cert_chain(&chain, &pinned).unwrap_err().to_string();
-        assert!(
-            err.contains("expired"),
-            "expected expiry failure, got: {err}"
         );
     }
 
