@@ -28,4 +28,4 @@ tempfile.workspace = true
 # SNP fragment is self-contained (`qemu::snp_tee_fragment`) precisely so the
 # controller binary does not pull aleph-tee's verifier closure (ring,
 # x509-parser, reqwest).
-aleph-tee = { path = "../aleph-tee" }
+aleph-tee = { path = "../aleph-tee", default-features = false }
