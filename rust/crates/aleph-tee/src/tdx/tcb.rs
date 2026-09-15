@@ -245,7 +245,7 @@ fn verify_signed_document(
 /// Parse the fixed `YYYY-MM-DDTHH:MM:SSZ` timestamp Intel uses in its signed
 /// documents into a `SystemTime`. Kept deliberately small: pulling in a date
 /// crate would widen the measured agent's dependency tree for one format.
-fn parse_rfc3339_z(s: &str) -> Result<SystemTime> {
+pub(crate) fn parse_rfc3339_z(s: &str) -> Result<SystemTime> {
     let b = s.as_bytes();
     if b.len() != 20
         || b[4] != b'-'
