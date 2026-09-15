@@ -73,7 +73,6 @@ ring = "0.17"
 der = { version = "0.7", features = ["alloc"] }
 # Test-only: absolute validity windows for the certificates tests fabricate.
 time = "0.3"
-openssl = "0.10"
 hex = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "charset", "http2"] }
 # owner_auth: EIP-191 personal-sign over the owner-auth payload (secp256k1
