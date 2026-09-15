@@ -83,6 +83,7 @@ jobs:
           cargo clippy --locked -p aleph-tee --no-default-features --features guest --all-targets -- -D warnings
           cargo clippy --locked -p aleph-tee --no-default-features --features verify --all-targets -- -D warnings
           cargo test --locked -p aleph-tee --no-default-features --features verify
+          cargo test --locked -p aleph-tee --no-default-features --features guest
 
       # aleph-attest-agent is its own workspace (own Cargo.lock: it is the
       # measured guest binary, see rust/Cargo.toml). Same three gates.

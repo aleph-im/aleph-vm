@@ -12,7 +12,7 @@ use super::report::parse_sev_snp_report;
 /// inside the guest. It deliberately carries neither launch state (QEMU
 /// argument generation is a launcher concern with its own explicit API,
 /// [`super::qemu::sev_snp_qemu_args`]) nor verification (a client concern
-/// with its own explicit async API, [`super::verify::verify_sev_snp_report`],
+/// with its own explicit async API, `verify_sev_snp_report`,
 /// which fetches and checks the full AMD certificate chain).
 pub struct SevSnpBackend {
     /// The AMD product name (e.g., "Milan", "Genoa", "Turin").
