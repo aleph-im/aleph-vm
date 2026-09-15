@@ -1,10 +1,12 @@
 """Stopping a VM because the scheduler's plan no longer lists it.
 
-Removability is not uniform. A VM the user pays for directly (a payment stream
-or credits), one holding GPUs, or a confidential one is retained: the scheduler
-is not the authority on those. A v-program inverts that, because the scheduler
-IS its single source of truth, and it is credit-paid and confidential by
-construction.
+Removability is not uniform. A credit-paid VM, one holding GPUs, or a
+confidential one is retained: the scheduler is not the authority on those. A
+v-program inverts that, because the scheduler IS its single source of truth,
+and it is credit-paid and confidential by construction. So does a stream-paid
+(PAYG) VM: the scheduler's payment gate validates the stream and drops an
+unpaid instance from the plan, and that decision only takes effect if the node
+honours the absence.
 
 Stopping means retiring as GONE: the scheduler said this VM should not exist,
 so the record and side state go, and the disks follow VOLUME_RETENTION. The
@@ -31,13 +33,13 @@ def retention_reason(record: AgentVmRecord, info: VmInfo) -> str | None:
     """
     if not record.persistent:
         return "non_persistent"
-    if record.is_vprogram:
+    if record.is_vprogram or record.uses_payment_stream:
         # The scheduler is a v-program's single source of truth, so none of
         # the reasons below hold against it, credit-paid and confidential
-        # though it is by construction.
+        # though it is by construction. PAYG is scheduler-owned too, GPU and
+        # confidential included: the exclusions below exist for hold-tier VMs
+        # the scheduler does not place, and most of the PAYG fleet has a GPU.
         return None
-    if record.uses_payment_stream:
-        return "payment_stream"
     if record.uses_payment_credit:
         return "payment_credit"
     if info.gpus:
