@@ -1,7 +1,6 @@
-use std::path::PathBuf;
-
 use anyhow::{Context, Result};
-use tracing::debug;
+
+use crate::fetch::{cache_dir, read_body_capped, read_cached, write_cache};
 
 /// A complete AMD SEV-SNP certificate chain containing the VCEK, ASK, and ARK
 /// certificates in DER format.
@@ -59,71 +58,6 @@ pub fn validate_product(product: &str) -> Result<()> {
     }
 }
 
-/// Read an HTTP response body, rejecting anything larger than
-/// [`MAX_KDS_RESPONSE_BYTES`]. Streams the body in chunks so an oversized
-/// response is rejected without first buffering the whole thing.
-async fn read_body_capped(mut response: reqwest::Response) -> Result<Vec<u8>> {
-    // Fast path: reject up front if the server advertises an oversized body.
-    if let Some(len) = response.content_length()
-        && len > MAX_KDS_RESPONSE_BYTES as u64
-    {
-        anyhow::bail!(
-            "KDS response Content-Length {len} exceeds {MAX_KDS_RESPONSE_BYTES} byte cap"
-        );
-    }
-
-    let mut buf = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .context("failed to read KDS response chunk")?
-    {
-        if buf.len() + chunk.len() > MAX_KDS_RESPONSE_BYTES {
-            anyhow::bail!("KDS response body exceeds {MAX_KDS_RESPONSE_BYTES} byte cap");
-        }
-        buf.extend_from_slice(&chunk);
-    }
-    Ok(buf)
-}
-
-/// Return the cache directory for AMD KDS certificates.
-///
-/// Uses `$XDG_CACHE_HOME/aleph-tee/kds` if set,
-/// otherwise `$HOME/.cache/aleph-tee/kds`.
-fn cache_dir() -> Option<PathBuf> {
-    let base = std::env::var("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .ok()
-        .or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .map(|h| PathBuf::from(h).join(".cache"))
-        })?;
-    Some(base.join("aleph-tee").join("kds"))
-}
-
-/// Read a cached certificate file, if it exists.
-fn read_cached(path: &std::path::Path) -> Option<Vec<u8>> {
-    match std::fs::read(path) {
-        Ok(data) if !data.is_empty() => {
-            debug!(path = %path.display(), "using cached certificate");
-            Some(data)
-        }
-        _ => None,
-    }
-}
-
-/// Write certificate data to the cache.
-fn write_cache(path: &std::path::Path, data: &[u8]) {
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    match std::fs::write(path, data) {
-        Ok(()) => debug!(path = %path.display(), "cached certificate"),
-        Err(e) => debug!(path = %path.display(), error = %e, "failed to cache certificate"),
-    }
-}
-
 /// Fetch the VCEK (Versioned Chip Endorsement Key) certificate from AMD KDS.
 ///
 /// The `product` parameter identifies the CPU product line (e.g., "Milan", "Genoa", "Turin").
@@ -137,7 +71,7 @@ pub async fn fetch_vcek(product: &str, chip_id: &[u8; 64], tcb: &TcbParams) -> R
     let chip_id_hex = hex::encode(chip_id);
 
     // Check cache first
-    let cache_path = cache_dir().map(|d| {
+    let cache_path = cache_dir("kds").map(|d| {
         d.join(product).join(format!(
             "vcek_{chip_id_hex}_{}_{}_{}_{}.der",
             tcb.bl_spl, tcb.tee_spl, tcb.snp_spl, tcb.ucode_spl
@@ -163,7 +97,7 @@ pub async fn fetch_vcek(product: &str, chip_id: &[u8; 64], tcb: &TcbParams) -> R
         anyhow::bail!("AMD KDS returned HTTP {status} for VCEK request: {url}");
     }
 
-    let data = read_body_capped(response)
+    let data = read_body_capped("AMD KDS", response, MAX_KDS_RESPONSE_BYTES)
         .await
         .context("failed to read VCEK response body")?;
 
@@ -184,7 +118,7 @@ pub async fn fetch_vcek(product: &str, chip_id: &[u8; 64], tcb: &TcbParams) -> R
 pub async fn fetch_ca_chain(product: &str) -> Result<(Vec<u8>, Vec<u8>)> {
     validate_product(product)?;
     // Check cache first
-    let cache_paths = cache_dir().map(|d| {
+    let cache_paths = cache_dir("kds").map(|d| {
         let dir = d.join(product);
         (dir.join("ask.der"), dir.join("ark.der"))
     });
@@ -205,7 +139,7 @@ pub async fn fetch_ca_chain(product: &str) -> Result<(Vec<u8>, Vec<u8>)> {
         anyhow::bail!("AMD KDS returned HTTP {status} for CA chain request: {url}");
     }
 
-    let bytes = read_body_capped(response)
+    let bytes = read_body_capped("AMD KDS", response, MAX_KDS_RESPONSE_BYTES)
         .await
         .context("failed to read CA chain response body")?;
 
