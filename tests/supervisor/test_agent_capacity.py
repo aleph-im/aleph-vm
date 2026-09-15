@@ -280,15 +280,18 @@ def test_check_message_refuses_what_the_node_has_switched_off(mocker):
     empty it is."""
     from aleph_message.models.execution.environment import TrustedExecutionEnvironment
 
-    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
+    manager = _manager()
+    sizing = mocker.patch.object(manager, "check_capacity")
     mocker.patch.object(settings, "ENABLE_CONFIDENTIAL_COMPUTING", False)
     message = _make_qemu_instance_message(trusted_execution=TrustedExecutionEnvironment())
 
     with pytest.raises(UnsupportedWorkloadError, match="confidential computing is disabled"):
-        _manager().check_message(message)
+        manager.check_message(message)
+    sizing.assert_not_called()
 
     mocker.patch.object(settings, "ENABLE_CONFIDENTIAL_COMPUTING", True)
-    assert _manager().check_message(message) is None
+    manager.check_message(message)
+    sizing.assert_called_once()
 
 
 # ── GPU reservation ledger ──────────────────────────────────────────────────
@@ -1422,10 +1425,13 @@ def test_check_message_buckets_a_vprogram_as_an_instance(mocker):
     manager = _manager()
     check = mocker.patch.object(manager, "check_capacity")
     _hold_nothing(mocker)
+    # A V-PROGRAM is only sized on a node that can launch a TEE.
+    mocker.patch.object(settings, "ENABLE_CONFIDENTIAL_COMPUTING", True)
     content = MagicMock(spec=VerifiableProgramContent)
     content.resources = MagicMock(vcpus=2, memory=4096)
     content.volumes = []
     content.requirements = None
+    content.gpu = None
 
     manager.check_message(content, exclude_vm_hash=_VM_HASH)
 
