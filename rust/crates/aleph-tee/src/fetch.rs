@@ -3,9 +3,28 @@
 //! vendors' rate limits.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use tracing::debug;
+
+/// How long one vendor request may take end to end. The AMD KDS and Intel
+/// PCS answer in well under a second; a black-holed or slow-loris endpoint
+/// must not hang a verifier, which has no other way to bound the wait.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The one HTTP client the vendor fetches share: built once, with the
+/// request timeout applied, so no call site can forget it.
+pub(crate) fn http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+            .expect("the vendor HTTP client builds with static settings")
+    })
+}
 
 /// Read an HTTP response body, rejecting anything larger than `cap`.
 /// Streams the body in chunks so an oversized response is rejected without
@@ -87,5 +106,10 @@ mod tests {
         assert_eq!(read_cached(&path).unwrap(), b"data");
         std::fs::write(&path, b"").unwrap();
         assert!(read_cached(&path).is_none());
+    }
+
+    #[test]
+    fn http_client_is_shared() {
+        assert!(std::ptr::eq(http_client(), http_client()));
     }
 }

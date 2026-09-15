@@ -380,7 +380,9 @@ impl PcsClient {
     }
 
     async fn get_bytes(&self, url: &str) -> Result<(Vec<u8>, reqwest::header::HeaderMap)> {
-        let response = reqwest::get(url)
+        let response = crate::fetch::http_client()
+            .get(url)
+            .send()
             .await
             .with_context(|| format!("failed to fetch {url}"))?;
         let status = response.status();
