@@ -143,22 +143,6 @@ async def test_rehydrate_propagates_db_error(monkeypatch):
         await rehydrate_registry(AgentVmRegistry())
 
 
-def test_record_payment_helpers():
-    stream = AgentVmRecord(
-        message=SimpleNamespace(payment=SimpleNamespace(is_stream=True, is_credit=False)),
-        original=MagicMock(),
-    )
-    credit = AgentVmRecord(
-        message=SimpleNamespace(payment=SimpleNamespace(is_stream=False, is_credit=True)),
-        original=MagicMock(),
-    )
-    hold = AgentVmRecord(message=SimpleNamespace(payment=None), original=MagicMock())
-
-    assert stream.uses_payment_stream is True and stream.uses_payment_credit is False
-    assert credit.uses_payment_stream is False and credit.uses_payment_credit is True
-    assert hold.uses_payment_stream is False and hold.uses_payment_credit is False
-
-
 @pytest.mark.asyncio
 async def test_persist_record_writes_agent_fields(monkeypatch):
     saved: list[ExecutionRecord] = []

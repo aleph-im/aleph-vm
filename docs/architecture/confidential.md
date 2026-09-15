@@ -283,13 +283,12 @@ integrity check in this path fails closed as `VmSetupError`.
 Once a V-PROGRAM is scheduled, `allocation.v_programs` is a third
 allocation set alongside `persistent_vms` and `instances`, threaded through
 `update_allocations` (`src/aleph/vm/agent/views/__init__.py`) the same way:
-`start_persistent_vm` for each entry present, and, as the interesting
-asymmetry, an unconditional stop for any running, persistent VM record with
-`record.is_vprogram` that is *not* in the current allocation. The guard
+`start_persistent_vm` for each entry present, and a stop for any running,
+persistent VM record that is *not* in the current allocation. The guard
 itself, `is_removable_by_allocation`
-(`src/aleph/vm/agent/allocation/teardown.py`), checks `record.is_vprogram`
-before the general exemption that otherwise protects owner-paid confidential
-VMs from being stopped, and the same function backs both the legacy
+(`src/aleph/vm/agent/allocation/teardown.py`), keeps nothing on account of
+payment tier, GPUs or confidential mode: the scheduler validated those when
+it placed the VM. The same function backs both the legacy
 `update_allocations` endpoint and the v2 reconciler, so the two paths cannot
 disagree about what may be torn down. For a V-PROGRAM the scheduler is the sole source of
 truth: since attestation is deployment-independent, the client re-verifies
@@ -477,10 +476,9 @@ Two properties follow from this and matter to anyone building a client:
   advertises nothing: `src/aleph/vm/agent/vcpu_probe.py`.
 - TEE capability is a sibling field of `properties.cpu`, not nested inside
   it: `src/aleph/vm/agent/resources.py`.
-- A V-PROGRAM absent from the current allocation is stopped even though it
-  is confidential; the stop-guard checks `record.is_vprogram` before the
-  general confidential exemption: `src/aleph/vm/agent/allocation/teardown.py`
-  (`is_removable_by_allocation`).
+- A V-PROGRAM absent from the current allocation is stopped like any other
+  VM the plan dropped; being confidential keeps nothing:
+  `src/aleph/vm/agent/allocation/teardown.py` (`is_removable_by_allocation`).
 - Runtime bundle integrity is checked before any bytes are trusted: size
   and sha256 against the manifest before extraction, `filter="data"`
   during extraction, and every declared member path re-validated to stay
@@ -528,7 +526,7 @@ Two properties follow from this and matter to anyone building a client:
   `rust/crates/supervisor-daemon/src/gpu_cc.rs` (`probe_cc_mode`, the
   BAR0 GPU confidential-computing-mode probe).
 - Scheduler threading: `src/aleph/vm/agent/views/__init__.py`
-  (`update_allocations`). The V-PROGRAM stop-guard itself:
+  (`update_allocations`). The stop-guard itself:
   `src/aleph/vm/agent/allocation/teardown.py`
   (`is_removable_by_allocation`, `teardown_vm`), shared with the v2
   reconciler.

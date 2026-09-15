@@ -4,94 +4,36 @@ import logging
 import math
 import random
 import time
-from collections.abc import AsyncIterable, Callable, Iterable
-from datetime import datetime, timezone
-from decimal import Decimal
+from collections.abc import AsyncIterable, Callable
 from typing import TypeVar
 
 import aiohttp
 import pydantic
 from aiohttp import web
-from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import (
     AggregateMessage,
     AlephMessage,
-    Chain,
     InstanceContent,
-    ItemHash,
-    Payment,
-    PaymentType,
     ProgramMessage,
     parse_message,
 )
-from aleph_message.status import MessageStatus
 from yarl import URL
 
 from aleph.vm.agent.haproxy_sync import sync_domain_mappings
 from aleph.vm.agent.run import reconcile_port_forwards
-from aleph.vm.agent.utils import (
-    format_cost,
-    get_community_wallet_address,
-    is_after_community_wallet_start,
-)
-from aleph.vm.agent.vm.retire import RetireReason, retire_vm
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
-from aleph.vm.supervisor_interface.types import (
-    Backend,
-    ConfidentialMode,
-    VmId,
-    VmInfo,
-    VmStatus,
-)
+from aleph.vm.supervisor_interface.types import Backend, VmId, VmStatus
 from aleph.vm.utils import create_task_log_exceptions
 
-# Terminal statuses that confirm a message is no longer valid.
-# Only these should trigger VM shutdown — never an unexpected or missing value.
-_TERMINAL_STATUSES: frozenset[MessageStatus] = frozenset(
-    {
-        MessageStatus.REJECTED,
-        MessageStatus.FORGOTTEN,
-        MessageStatus.REMOVED,
-    }
-)
-
-# Consecutive sweeps that must agree before a VM is stopped, for a terminal
-# message status and for a payment shortfall alike: one bad API answer must
-# not retire a running VM, and under VOLUME_RETENTION=reap a retirement also
-# purges its disks.
-# TODO: The CCN API sits behind a load balancer. If one backend is in
-# maintenance or lagging behind on message processing, it may report a
-# stale/different status. Consider querying multiple CCN nodes and
-# requiring a quorum before treating a status as authoritative.
-STOP_AFTER_CONFIRMATIONS = 3
-_terminal_strike_count: dict[str, int] = {}
-_shortfall_strike_count: dict[str, int] = {}
-
-from .messages import get_message_status
-from .payment import (
-    compute_required_balance,
-    compute_required_credit_balance,
-    compute_required_flow,
-    fetch_balance_of_address,
-    fetch_credit_balance_of_address,
-    get_stream,
-)
 from .pubsub import PubSub
 from .reactor import Reactor
 
 logger = logging.getLogger(__name__)
 
 Value = TypeVar("Value")
-COMMUNITY_STREAM_RATIO = Decimal(0.2)
-
-
-def _dt_from_ns(ns: int) -> datetime | None:
-    if not ns:
-        return None
-    return datetime.fromtimestamp(ns // 1_000_000_000, tz=timezone.utc).replace(microsecond=(ns // 1_000) % 1_000_000)
 
 
 async def retry_generator(
@@ -310,241 +252,6 @@ async def stop_watch_for_messages_task(app: web.Application):
         await app["messages_listener"]
     except asyncio.CancelledError:
         logger.debug("Task messages_listener is cancelled now")
-
-
-async def monitor_payments(app: web.Application):
-    """Periodically checks and stops VMs if payment conditions are unmet, such as insufficient
-    wallet balance or payment stream coverage. Handles forgotten VMs, balance checks for the
-    "hold" tier, and stream flow validation for the "superfluid" tier to ensure compliance.
-    """
-    supervisor: Supervisor = app["supervisor"]
-    registry: AgentVmRegistry = app["vm_registry"]
-    while True:
-        await asyncio.sleep(settings.PAYMENT_MONITOR_INTERVAL)
-        # noinspection PyBroadException
-        try:
-            logger.debug("Monitoring balances task running")
-            await check_payment(supervisor, registry)
-            logger.debug("Monitoring balances task ended")
-        except Exception as e:
-            if isinstance(e, RuntimeError) and "Event loop is closed" in str(e):
-                logger.debug("monitor_payments exiting: event loop closed")
-                return
-            logger.warning(f"check_payment failed {e}", exc_info=True)
-
-
-def _group_executions_by_payment(
-    infos: list[VmInfo], registry: AgentVmRegistry, payment_type: PaymentType
-) -> dict[str, dict[Chain, list[VmInfo]]]:
-    """Group running VMs by sender address and chain for one payment type.
-
-    Status comes from the supervisor (VmInfo); the message (payment tier, owner)
-    comes from the agent registry. Spec-built and restart-restored VMs (which
-    carry no hypervisor-side message) are grouped via their registry record.
-    """
-    by_address: dict[str, dict[Chain, list[VmInfo]]] = {}
-    for info in infos:
-        vm_hash = ItemHash(info.vm_id)
-        record = registry.get(vm_hash)
-        if record is None:
-            continue
-        if record.is_vprogram:
-            # V-Programs are not payment-checked on the node: the CCN and the
-            # scheduler already enforce their credit budget, node-side
-            # duplication adds nothing.
-            continue
-        if vm_hash in (settings.CHECK_FASTAPI_VM_ID, settings.LEGACY_CHECK_FASTAPI_VM_ID):
-            continue
-        if info.status is not VmStatus.RUNNING:
-            continue
-        payment = record.message.payment if record.message.payment else Payment(chain=Chain.ETH, type=PaymentType.hold)
-        if payment.type == payment_type:
-            by_address.setdefault(record.message.address, {}).setdefault(payment.chain, []).append(info)
-    return by_address
-
-
-def _confirmed(strikes: dict[str, int], vm_hash: ItemHash, finding: str) -> bool:
-    """One more sweep found ``finding`` on the VM; True once enough agree."""
-    key = str(vm_hash)
-    strikes[key] = strikes.get(key, 0) + 1
-    if strikes[key] < STOP_AFTER_CONFIRMATIONS:
-        logger.info("VM %s: %s (%d/%d confirmations)", vm_hash, finding, strikes[key], STOP_AFTER_CONFIRMATIONS)
-        return False
-    logger.info("Stopping %s after %d consecutive confirmations: %s", vm_hash, strikes[key], finding)
-    del strikes[key]
-    return True
-
-
-def _youngest_last(infos: Iterable[VmInfo]) -> list[VmInfo]:
-    """Stop order: the most recently started VM goes first. Fixed, so the
-    same VM is found short on every sweep and its confirmations accumulate."""
-    return sorted(infos, key=lambda info: (info.started_at_ns, str(info.vm_id)))
-
-
-async def check_payment(supervisor: Supervisor, registry: AgentVmRegistry):
-    """Ensures VMs are stopped if payment conditions are unmet, such as insufficient
-    funds in the wallet or inadequate payment stream coverage. Handles forgotten VMs
-    balance checks for the "hold" tier, and stream flow validation for the "superfluid" tier
-    stopping executions as needed to maintain compliance.
-
-    Stopping a VM here means retiring it as GONE: the record is dropped and the
-    disks follow VOLUME_RETENTION. A VM is only retired once
-    STOP_AFTER_CONFIRMATIONS consecutive sweeps found it short, or its message
-    in a terminal status.
-    """
-    # Take a single snapshot of all running VMs from the supervisor, dropping
-    # ids that are not item hashes the way the reconciler's supervisor_hashes
-    # does: one unparseable id must not take the whole payment sweep down,
-    # and it cannot name a payment-checked VM anyway.
-    infos = []
-    for info in await supervisor.list_vms():
-        try:
-            ItemHash(str(info.vm_id))
-        except (UnknownHashError, ValueError):
-            logger.warning("Skipping payment checks for %r: its id is not an item hash", info.vm_id)
-            continue
-        infos.append(info)
-
-    # Check if the executions continues existing or are forgotten before checking the payment
-    # this is actually the main workflow for properly stopping PAYG instances, a user agent would stop the payment stream
-    # and forget the instance message. Compared to just stopping or decreasing the payment stream as the CRN don't know
-    # which VM it affects.
-    for info in infos:
-        vm_hash = ItemHash(info.vm_id)
-        if vm_hash == settings.FAKE_INSTANCE_ID:
-            continue
-        try:
-            message_status = await get_message_status(vm_hash)
-        except Exception:
-            logger.warning("Failed to fetch status for %s, skipping", vm_hash)
-            continue
-
-        if message_status in _TERMINAL_STATUSES:
-            if _confirmed(_terminal_strike_count, vm_hash, f"terminal status {message_status}"):
-                await retire_vm(vm_hash, RetireReason.GONE, supervisor=supervisor, registry=registry)
-        else:
-            # Status is healthy: reset any previous strikes
-            _terminal_strike_count.pop(str(vm_hash), None)
-
-    # The VMs this sweep would stop for payment, and why. Retired only once
-    # enough consecutive sweeps agree, at the end.
-    short: dict[ItemHash, str] = {}
-
-    # Check if the balance held in the wallet is sufficient holder tier resources (Not do it yet)
-    for execution_address, chains in _group_executions_by_payment(infos, registry, PaymentType.hold).items():
-        for chain, vm_infos in chains.items():
-            vm_infos = _youngest_last(i for i in vm_infos if i.confidential_mode is not ConfidentialMode.NONE)
-            if not vm_infos:
-                continue
-            balance = await fetch_balance_of_address(execution_address)
-
-            # Stop executions until the required balance is reached
-            required_balance = await compute_required_balance([ItemHash(i.vm_id) for i in vm_infos])
-            logger.debug(f"Required balance for Sender {execution_address} executions: {required_balance}, {vm_infos}")
-            # Stop executions until the required balance is reached
-            while vm_infos and balance < (required_balance + settings.PAYMENT_BUFFER):
-                last_info = vm_infos.pop(-1)
-                short[ItemHash(last_info.vm_id)] = f"insufficient balance for {execution_address}"
-                required_balance = await compute_required_balance([ItemHash(i.vm_id) for i in vm_infos])
-
-    community_wallet = await get_community_wallet_address()
-    if not community_wallet:
-        logger.error("Monitor payment ERROR: No community wallet set. Cannot check community payment")
-
-    # Check if the credit balance held in the wallet is sufficient credit tier resources (Not do it yet)
-    for execution_address, chains in _group_executions_by_payment(infos, registry, PaymentType.credit).items():
-        for chain, vm_infos in chains.items():
-            vm_infos = _youngest_last(vm_infos)
-            if not vm_infos:
-                continue
-            balance = await fetch_credit_balance_of_address(execution_address)
-
-            # Stop executions until the required credits are reached
-            required_credits = await compute_required_credit_balance([ItemHash(i.vm_id) for i in vm_infos])
-            logger.debug(
-                f"Required credit balance for Address {execution_address} executions: {required_credits}, {vm_infos}"
-            )
-            # Stop executions until the required credits are reached
-            while vm_infos and balance < (required_credits + settings.PAYMENT_BUFFER):
-                last_info = vm_infos.pop(-1)
-                short[ItemHash(last_info.vm_id)] = f"insufficient credit balance for {execution_address}"
-                required_credits = await compute_required_credit_balance([ItemHash(i.vm_id) for i in vm_infos])
-
-    # Check if the balance held in the wallet is sufficient stream tier resources
-    for execution_address, chains in _group_executions_by_payment(infos, registry, PaymentType.superfluid).items():
-        for chain, vm_infos in chains.items():
-            vm_infos = _youngest_last(vm_infos)
-            try:
-                stream = await get_stream(
-                    sender=execution_address, receiver=settings.PAYMENT_RECEIVER_ADDRESS, chain=chain
-                )
-
-                logger.debug(
-                    f"Stream flow from {execution_address} to {settings.PAYMENT_RECEIVER_ADDRESS} = {stream} {chain.value}"
-                )
-            except ValueError as error:
-                logger.error(f"Error found getting stream for chain {chain} and sender {execution_address}: {error}")
-                continue
-            try:
-                community_stream = await get_stream(sender=execution_address, receiver=community_wallet, chain=chain)
-                logger.debug(
-                    f"Stream flow from {execution_address} to {community_wallet} (community) : {stream} {chain}"
-                )
-
-            except ValueError as error:
-                logger.error(f"Error found getting stream for chain {chain} and sender {execution_address}: {error}")
-                continue
-
-            while vm_infos:
-                infos_with_community = [
-                    i for i in vm_infos if await is_after_community_wallet_start(_dt_from_ns(i.started_at_ns))
-                ]
-
-                required_stream = await compute_required_flow([ItemHash(i.vm_id) for i in infos_with_community])
-                infos_without_community = [
-                    i for i in vm_infos if not await is_after_community_wallet_start(_dt_from_ns(i.started_at_ns))
-                ]
-                logger.info("flow community %s", infos_with_community)
-                logger.info("flow without community %s", infos_without_community)
-                required_stream_without_community = await compute_required_flow(
-                    [ItemHash(i.vm_id) for i in infos_without_community]
-                )
-                # TODO, rounding should be done per executions to not have the extra  accumulate before rounding
-                required_crn_stream = format_cost(
-                    required_stream * (1 - COMMUNITY_STREAM_RATIO) + required_stream_without_community
-                )
-                required_community_stream = format_cost(required_stream * COMMUNITY_STREAM_RATIO)
-                logger.debug(
-                    f"Stream for senders {execution_address} {len(vm_infos)} executions.  CRN : {stream} /  {required_crn_stream}."
-                    f"Community: {community_stream} / {required_community_stream}"
-                )
-                # Can pay all executions
-                if (stream + settings.PAYMENT_BUFFER) > required_crn_stream and (
-                    community_stream + settings.PAYMENT_BUFFER
-                ) > required_community_stream:
-                    break
-                # Stop executions until the required stream is reached
-                last_info = vm_infos.pop(-1)
-                short[ItemHash(last_info.vm_id)] = f"insufficient stream from {execution_address}"
-
-    for info in infos:
-        if ItemHash(info.vm_id) not in short:
-            _shortfall_strike_count.pop(str(info.vm_id), None)
-    for vm_hash, finding in short.items():
-        if _confirmed(_shortfall_strike_count, vm_hash, finding):
-            await retire_vm(vm_hash, RetireReason.GONE, supervisor=supervisor, registry=registry)
-
-
-async def start_payment_monitoring_task(app: web.Application):
-    app["payments_monitor"] = create_task_log_exceptions(monitor_payments(app), name="payment_monitor")
-
-
-async def stop_balances_monitoring_task(app: web.Application):
-    app["payments_monitor"].cancel()
-    try:
-        await app["payments_monitor"]
-    except asyncio.CancelledError:
-        logger.debug("Task payments_monitor is cancelled now")
 
 
 async def periodic_domain_resync(app: web.Application):

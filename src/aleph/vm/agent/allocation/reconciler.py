@@ -223,7 +223,7 @@ class AllocationReconciler:
             if current is None or current.lists(vm_hash):
                 continue
             record = self.registry.get(vm_hash)
-            if record is None or not is_removable_by_allocation(record, info):
+            if record is None or not is_removable_by_allocation(record):
                 continue
             logger.info("Plan %s dropped %s; tearing it down", current.plan_id, vm_hash)
             # Marked before the await and cleared however it ends: a hash left

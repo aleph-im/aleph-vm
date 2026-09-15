@@ -12,7 +12,6 @@ import pytest
 from aleph_message.models import (
     InstanceMessage,
     ItemHash,
-    PaymentType,
     ProgramMessage,
     VerifiableProgramContent,
     VerifiableProgramMessage,
@@ -23,7 +22,6 @@ from aleph.vm.agent.messages import update_message
 from aleph.vm.agent.resources import Allocation
 from aleph.vm.agent.run import VmStartupError, create_vm_execution, run_code_on_request
 from aleph.vm.agent.supervisor import setup_webapp
-from aleph.vm.agent.tasks import _group_executions_by_payment
 from aleph.vm.agent.vm_registry import AgentVmRecord, AgentVmRegistry
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor_interface.errors import VmSetupError
@@ -66,8 +64,8 @@ def test_agent_record_is_vprogram():
     message = load_vprogram_message()
     record = AgentVmRecord(message=message.content, original=message.content, persistent=True)
     assert record.is_vprogram
-    # The schema enforces credit payment; node-side sweep exclusion is explicit
-    assert record.uses_payment_credit
+    # The schema enforces credit payment
+    assert record.message.payment.is_credit
 
 
 @pytest.mark.asyncio
@@ -364,19 +362,6 @@ async def test_run_code_rejects_vprogram():
 
     with pytest.raises(HTTPBadRequest, match="scheduler-controlled"):
         await run_code_on_request(message.item_hash, "/", request)
-
-
-def test_payment_sweep_excludes_vprograms():
-    """V-Programs are credit-paid by schema but must never be grouped into the
-    node-side payment sweep: the CCN and the scheduler enforce their budget."""
-    message = load_vprogram_message()
-    vm_hash = str(message.item_hash)
-
-    registry = AgentVmRegistry()
-    registry.record(ItemHash(vm_hash), message=message.content, original=message.content, persistent=True)
-
-    grouped = _group_executions_by_payment([_running_vm_info(vm_hash)], registry, PaymentType.credit)
-    assert grouped == {}
 
 
 def test_update_refs_returns_nothing_for_a_v_program():

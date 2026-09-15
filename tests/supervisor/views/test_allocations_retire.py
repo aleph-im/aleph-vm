@@ -31,8 +31,8 @@ from aleph.vm.supervisor_interface.types import (
 
 VM_HASH = ItemHash("decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca")
 
-# A hold-tier instance: neither credit-paid, GPU-bearing nor confidential, so
-# the stop loop's retention rule has nothing to keep it for.
+# A hold-tier instance. The tier no longer matters to the stop loop; the
+# stream-paid variant below pins that.
 _HOLD_INSTANCE_CONTENT = {
     "address": "0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9",
     "time": 1713874241.800818,
