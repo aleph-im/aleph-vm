@@ -24,6 +24,7 @@ from aleph.vm.agent.migration.helpers import (
     rebase_overlay,
 )
 from aleph.vm.agent.migration.jobs import (
+    EXPORT_TTL_SECONDS,
     DiskFileInfo,
     ExportJob,
     ImportJob,
@@ -47,7 +48,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-EXPORT_TTL_SECONDS = 1800  # 30 minutes — matches today's behaviour
 IMPORT_TTL_SECONDS = 1800
 
 
@@ -55,8 +55,8 @@ def _collect_export_disks(vm_hash: str) -> list[Path]:
     """The qcow2 files to export for a VM, one per basename across all pools.
 
     A basename can legitimately appear in several pools (e.g. a complete
-    orphan preserved by the reaper after a failed import, plus a retried
-    staging in another pool). The boot-time volume lookup resolves such
+    orphan a failed import left, which the storage reconciler has not purged
+    yet, plus a retried staging in another pool). The boot-time volume lookup resolves such
     duplicates to the lowest-index pool's copy, so export must ship exactly
     that copy: duplicates from higher-index pools are skipped with a warning.
     """
@@ -65,9 +65,9 @@ def _collect_export_disks(vm_hash: str) -> list[Path]:
     for volumes_dir in iter_namespace_dirs(vm_hash):
         for qcow2_file in sorted(volumes_dir.glob("*.qcow2")):
             if qcow2_file.name.endswith(".export.qcow2"):
-                # A stale export artifact from an earlier failed run: the
-                # reaper only sweeps at startup, so a retry without an agent
-                # restart would otherwise collect it as a source disk and
+                # A stale export from an earlier failed run. The storage
+                # reconciler removes it once it outlives the export TTL; until
+                # then a retry must not collect it as a source disk and
                 # re-export an export.
                 continue
             if qcow2_file.name in seen_names:

@@ -493,6 +493,28 @@ def test_old_part_files_are_removed_young_ones_kept(pools, registry):  # noqa: F
     assert report.parts_removed == 2
 
 
+def test_a_migration_export_is_swept_on_the_export_ttl_not_the_create_guard(pools, registry):  # noqa: F811
+    """An export sits beside a live VM's disks and waits up to the export TTL
+    for the destination; the runner's own cleanup dies with the agent, so a
+    restart orphans it where no other pass looks. Older than the create guard
+    is not old enough: a valid export is that old."""
+    from aleph.vm.agent.migration.jobs import EXPORT_TTL_SECONDS
+
+    stale = volume(pools["pool0"], LIVE, "rootfs.qcow2.export.qcow2")
+    _age(stale, EXPORT_TTL_SECONDS + 60)
+    waiting = volume(pools["pool0"], LIVE, "data.qcow2.export.qcow2")
+    _age(waiting, settings.VOLUME_CREATE_GUARD + 60)
+    disk = volume(pools["pool0"], LIVE, "rootfs.qcow2")
+    _age(disk, EXPORT_TTL_SECONDS + 60)
+
+    report = reconcile_storage(registry, now=NOW)
+
+    assert not stale.exists()
+    assert waiting.exists()
+    assert disk.exists()
+    assert (report.exports_removed, report.parts_removed) == (1, 0)
+
+
 def test_side_dirs_of_unknown_hashes_are_removed(pools, registry):  # noqa: F811
     stale_session = pools["sessions"] / VM_HASH
     stale_session.mkdir()
@@ -947,7 +969,7 @@ def test_a_create_in_flight_keeps_its_directory_and_its_part_files(pools, regist
     """A migration import streams multi-GB disks into a namespace no registry
     record covers yet, for far longer than VOLUME_CREATE_GUARD, and the
     directory's own mtime does not advance while a file inside it grows. Only
-    ``creating()`` stands between that transfer and the reaper."""
+    ``creating()`` stands between that transfer and the parts sweep."""
     monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
     staged = volume(pools["pool0"], VM_HASH, "rootfs.qcow2.part")
     _age(staged, 10_000)

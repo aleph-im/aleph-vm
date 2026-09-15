@@ -267,14 +267,11 @@ same `create_vm` RPC a fresh instance create uses; because the downloader's
 volume lookup scans every pool, `build_create_vm_spec` finds the
 already-staged, already-rebased overlay in place instead of trying to
 recreate it. Migration is restricted to QEMU, non-confidential instances
-(`run_import` raises before touching disk for anything else). An agent
-restart runs `reap_orphan_migration_files`
-(`src/aleph/vm/agent/migration/reaper.py`) once at startup: it always
-deletes stray `*.export.qcow2` files, and it `rmtree`s any namespace
-directory that is not a known live VM and still has `.part` (incomplete
-download) files, since that combination is unambiguous evidence of an
-aborted import; a namespace with only complete `.qcow2` files but no known
-VM is left alone and only logged, since a retried import can still adopt it.
+(`run_import` raises before touching disk for anything else). What a
+migration leaves behind is the storage reconciler's: an aborted import is a
+namespace of `.part` files it judges like any other orphan once the create
+guard has passed, and an export the runner no longer remembers (its TTL
+task died with the agent) is swept once it is older than the export TTL.
 
 ## Reclamation
 
@@ -386,7 +383,9 @@ message. One pass does, in order:
 2. Delete `*.part` and `*.tmp` files older than the guard, in the four
    download caches and in the pools (the downloader streams volumes in
    place). Every write-then-rename in the agent uses one of the two suffixes,
-   and an interrupted one leaks the same way.
+   and an interrupted one leaks the same way. A migration export
+   (`*.export.qcow2`) goes the same way once it is older than the export
+   TTL, the time a valid one may wait for the destination.
 3. Sweep the side directories keyed by VM hash: the confidential session
    directory, the SNP and V-PROGRAM staging directories, and
    `/mnt/{namespace}_{volume}` mount points. A directory that is still a
@@ -943,6 +942,4 @@ pass against an empty registry would call every running VM an orphan.
   builder, and the byte-compared fixtures under `rust/crates/supervisor-daemon/tests/fixtures/cloudinit/`
   that pin its parity with the deleted Python builder.
 - `src/aleph/vm/agent/migration/runner.py`,
-  `src/aleph/vm/agent/migration/helpers.py`,
-  `src/aleph/vm/agent/migration/reaper.py`: cold-migration export/import and
-  orphan-artifact cleanup.
+  `src/aleph/vm/agent/migration/helpers.py`: cold-migration export/import.
