@@ -1,0 +1,91 @@
+//! HTTP plumbing shared by the AMD KDS and Intel PCS clients: a response
+//! body cap, and the on-disk cache both clients use to stay under the
+//! vendors' rate limits.
+
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, bail};
+use tracing::debug;
+
+/// Read an HTTP response body, rejecting anything larger than `cap`.
+/// Streams the body in chunks so an oversized response is rejected without
+/// first buffering the whole thing.
+pub(crate) async fn read_body_capped(
+    what: &str,
+    mut response: reqwest::Response,
+    cap: usize,
+) -> Result<Vec<u8>> {
+    // Fast path: reject up front if the server advertises an oversized body.
+    if let Some(len) = response.content_length()
+        && len > cap as u64
+    {
+        bail!("{what} response Content-Length {len} exceeds the {cap} byte cap");
+    }
+
+    let mut buf = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .with_context(|| format!("failed to read a {what} response chunk"))?
+    {
+        if buf.len() + chunk.len() > cap {
+            bail!("{what} response body exceeds the {cap} byte cap");
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
+}
+
+/// The cache directory for one vendor's material:
+/// `$XDG_CACHE_HOME/aleph-tee/<vendor>` if set, otherwise
+/// `$HOME/.cache/aleph-tee/<vendor>`. `None` when neither variable is set,
+/// in which case callers skip the cache.
+pub(crate) fn cache_dir(vendor: &str) -> Option<PathBuf> {
+    let base = std::env::var("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .ok()
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|home| PathBuf::from(home).join(".cache"))
+        })?;
+    Some(base.join("aleph-tee").join(vendor))
+}
+
+/// Read a cached file, if it exists and is not empty.
+pub(crate) fn read_cached(path: &Path) -> Option<Vec<u8>> {
+    match std::fs::read(path) {
+        Ok(data) if !data.is_empty() => {
+            debug!(path = %path.display(), "using cached copy");
+            Some(data)
+        }
+        _ => None,
+    }
+}
+
+/// Write data to the cache; a failure is logged, never fatal.
+pub(crate) fn write_cache(path: &Path, data: &[u8]) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::write(path, data) {
+        Ok(()) => debug!(path = %path.display(), "cached"),
+        Err(e) => debug!(path = %path.display(), error = %e, "failed to write the cache"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_round_trip_and_empty_files_are_misses() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("item");
+        assert!(read_cached(&path).is_none());
+        write_cache(&path, b"data");
+        assert_eq!(read_cached(&path).unwrap(), b"data");
+        std::fs::write(&path, b"").unwrap();
+        assert!(read_cached(&path).is_none());
+    }
+}
