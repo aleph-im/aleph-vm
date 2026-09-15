@@ -13,7 +13,7 @@ use anyhow::Result;
 ///   (a compromised guest would claim validity), and real verification is
 ///   async (it fetches the AMD certificate chain over the network). The
 ///   verifying CLIENT uses the explicit per-TEE verify APIs instead (e.g.
-///   [`crate::sev_snp::verify::verify_sev_snp_report`]).
+///   `verify_sev_snp_report`).
 pub trait TeeBackend: Send + Sync {
     /// Returns the TEE type this backend handles.
     fn tee_type(&self) -> TeeType;

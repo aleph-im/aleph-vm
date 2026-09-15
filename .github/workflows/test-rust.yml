@@ -73,6 +73,18 @@ jobs:
         working-directory: rust
         run: cargo test --locked
 
+      - name: aleph-tee feature matrix
+        # The crate is consumed in two halves: the measured guest agent takes
+        # `guest` only and client SDKs take `verify` only, so each half must
+        # build and test on its own.
+        working-directory: rust
+        run: |
+          cargo check --locked -p aleph-tee --no-default-features
+          cargo clippy --locked -p aleph-tee --no-default-features --features guest --all-targets -- -D warnings
+          cargo clippy --locked -p aleph-tee --no-default-features --features verify --all-targets -- -D warnings
+          cargo test --locked -p aleph-tee --no-default-features --features verify
+          cargo test --locked -p aleph-tee --no-default-features --features guest
+
       # aleph-attest-agent is its own workspace (own Cargo.lock: it is the
       # measured guest binary, see rust/Cargo.toml). Same three gates.
       - name: cargo fmt (aleph-attest-agent workspace)
