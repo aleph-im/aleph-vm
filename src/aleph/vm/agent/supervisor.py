@@ -474,15 +474,12 @@ async def stop_program_client(app: web.Application) -> None:
 
 
 async def _run_migration_reaper(app: web.Application) -> None:
-    """on_startup hook: clean up orphan migration files from a prior agent run.
+    """on_startup hook: delete the export files a prior agent run left behind.
 
-    Cold migration staging is agent-owned, so this runs agent-side. The live-VM
-    set comes from the supervisor over the ABC; it only guards against deleting
-    a running VM's volume directory.
+    Cold migration staging is agent-owned, so this runs agent-side. Only
+    export files go; directories are the storage reconciler's.
     """
-    supervisor = app["supervisor"]
-    known_vm_ids = {str(info.vm_id) for info in await supervisor.list_vms()}
-    await reap_orphan_migration_files(known_vm_ids)
+    await reap_orphan_migration_files()
 
 
 async def _rehydrate_vm_registry(app: web.Application) -> None:
