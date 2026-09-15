@@ -52,7 +52,6 @@ class TestRetentionReason:
         ("record", "info", "expected"),
         [
             (_record(persistent=False), _info(), "non_persistent"),
-            (_record(stream=True), _info(), "payment_stream"),
             (_record(credit=True), _info(), "payment_credit"),
             (
                 _record(),
@@ -80,6 +79,34 @@ class TestRetentionReason:
         reason, had anything ever asked the two about the same VM."""
         record = _record(credit=True, vprogram=True)
         info = _info(confidential=ConfidentialMode.SEV_SNP)
+
+        assert retention_reason(record, info) is None
+        assert is_removable_by_allocation(record, info) is True
+
+    @pytest.mark.parametrize(
+        "info",
+        [
+            _info(),
+            _info(
+                gpus=[
+                    GpuDevice(
+                        pci_host=PciAddress("0000:01:00.0"),
+                        device_id="10de:2504",
+                        model="x",
+                        supports_x_vga=True,
+                    )
+                ]
+            ),
+            _info(confidential=ConfidentialMode.SEV_SNP),
+        ],
+        ids=["plain", "gpu", "confidential"],
+    )
+    def test_a_stream_paid_vm_is_the_schedulers_to_stop(self, info):
+        """PAYG is scheduler-owned: its payment gate validates the stream and
+        drops an unpaid instance from the plan, so absence stops it. GPU and
+        confidential PAYG included, or most of the PAYG fleet would sit
+        outside scheduler control."""
+        record = _record(stream=True)
 
         assert retention_reason(record, info) is None
         assert is_removable_by_allocation(record, info) is True
