@@ -4,7 +4,7 @@ import logging
 import math
 import random
 import time
-from collections.abc import AsyncIterable, Callable
+from collections.abc import AsyncIterable, Callable, Iterable
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import TypeVar
@@ -58,14 +58,17 @@ _TERMINAL_STATUSES: frozenset[MessageStatus] = frozenset(
     }
 )
 
-# Track consecutive terminal-status confirmations per VM before stopping.
-# Prevents a single bad API response from killing a running instance.
+# Consecutive sweeps that must agree before a VM is stopped, for a terminal
+# message status and for a payment shortfall alike: one bad API answer must
+# not retire a running VM, and under VOLUME_RETENTION=reap a retirement also
+# purges its disks.
 # TODO: The CCN API sits behind a load balancer. If one backend is in
 # maintenance or lagging behind on message processing, it may report a
 # stale/different status. Consider querying multiple CCN nodes and
 # requiring a quorum before treating a status as authoritative.
 STOP_AFTER_CONFIRMATIONS = 3
 _terminal_strike_count: dict[str, int] = {}
+_shortfall_strike_count: dict[str, int] = {}
 
 from .messages import get_message_status
 from .payment import (
@@ -360,6 +363,24 @@ def _group_executions_by_payment(
     return by_address
 
 
+def _confirmed(strikes: dict[str, int], vm_hash: ItemHash, finding: str) -> bool:
+    """One more sweep found ``finding`` on the VM; True once enough agree."""
+    key = str(vm_hash)
+    strikes[key] = strikes.get(key, 0) + 1
+    if strikes[key] < STOP_AFTER_CONFIRMATIONS:
+        logger.info("VM %s: %s (%d/%d confirmations)", vm_hash, finding, strikes[key], STOP_AFTER_CONFIRMATIONS)
+        return False
+    logger.info("Stopping %s after %d consecutive confirmations: %s", vm_hash, strikes[key], finding)
+    del strikes[key]
+    return True
+
+
+def _youngest_last(infos: Iterable[VmInfo]) -> list[VmInfo]:
+    """Stop order: the most recently started VM goes first. Fixed, so the
+    same VM is found short on every sweep and its confirmations accumulate."""
+    return sorted(infos, key=lambda info: (info.started_at_ns, str(info.vm_id)))
+
+
 async def check_payment(supervisor: Supervisor, registry: AgentVmRegistry):
     """Ensures VMs are stopped if payment conditions are unmet, such as insufficient
     funds in the wallet or inadequate payment stream coverage. Handles forgotten VMs
@@ -367,7 +388,9 @@ async def check_payment(supervisor: Supervisor, registry: AgentVmRegistry):
     stopping executions as needed to maintain compliance.
 
     Stopping a VM here means retiring it as GONE: the record is dropped and the
-    disks follow VOLUME_RETENTION.
+    disks follow VOLUME_RETENTION. A VM is only retired once
+    STOP_AFTER_CONFIRMATIONS consecutive sweeps found it short, or its message
+    in a terminal status.
     """
     # Take a single snapshot of all running VMs from the supervisor, dropping
     # ids that are not item hashes the way the reconciler's supervisor_hashes
@@ -397,34 +420,20 @@ async def check_payment(supervisor: Supervisor, registry: AgentVmRegistry):
             continue
 
         if message_status in _TERMINAL_STATUSES:
-            key = str(vm_hash)
-            _terminal_strike_count[key] = _terminal_strike_count.get(key, 0) + 1
-            strikes = _terminal_strike_count[key]
-            if strikes < STOP_AFTER_CONFIRMATIONS:
-                logger.info(
-                    "VM %s has terminal status %s (%d/%d confirmations)",
-                    vm_hash,
-                    message_status,
-                    strikes,
-                    STOP_AFTER_CONFIRMATIONS,
-                )
-                continue
-            logger.info(
-                "Stopping %s after %d consecutive %s confirmations",
-                vm_hash,
-                strikes,
-                message_status,
-            )
-            del _terminal_strike_count[key]
-            await retire_vm(vm_hash, RetireReason.GONE, supervisor=supervisor, registry=registry)
+            if _confirmed(_terminal_strike_count, vm_hash, f"terminal status {message_status}"):
+                await retire_vm(vm_hash, RetireReason.GONE, supervisor=supervisor, registry=registry)
         else:
-            # Status is healthy — reset any previous strikes
+            # Status is healthy: reset any previous strikes
             _terminal_strike_count.pop(str(vm_hash), None)
+
+    # The VMs this sweep would stop for payment, and why. Retired only once
+    # enough consecutive sweeps agree, at the end.
+    short: dict[ItemHash, str] = {}
 
     # Check if the balance held in the wallet is sufficient holder tier resources (Not do it yet)
     for execution_address, chains in _group_executions_by_payment(infos, registry, PaymentType.hold).items():
         for chain, vm_infos in chains.items():
-            vm_infos = [i for i in vm_infos if i.confidential_mode is not ConfidentialMode.NONE]
+            vm_infos = _youngest_last(i for i in vm_infos if i.confidential_mode is not ConfidentialMode.NONE)
             if not vm_infos:
                 continue
             balance = await fetch_balance_of_address(execution_address)
@@ -435,8 +444,7 @@ async def check_payment(supervisor: Supervisor, registry: AgentVmRegistry):
             # Stop executions until the required balance is reached
             while vm_infos and balance < (required_balance + settings.PAYMENT_BUFFER):
                 last_info = vm_infos.pop(-1)
-                logger.debug(f"Stopping {last_info.vm_id} due to insufficient balance")
-                await retire_vm(ItemHash(last_info.vm_id), RetireReason.GONE, supervisor=supervisor, registry=registry)
+                short[ItemHash(last_info.vm_id)] = f"insufficient balance for {execution_address}"
                 required_balance = await compute_required_balance([ItemHash(i.vm_id) for i in vm_infos])
 
     community_wallet = await get_community_wallet_address()
@@ -446,7 +454,7 @@ async def check_payment(supervisor: Supervisor, registry: AgentVmRegistry):
     # Check if the credit balance held in the wallet is sufficient credit tier resources (Not do it yet)
     for execution_address, chains in _group_executions_by_payment(infos, registry, PaymentType.credit).items():
         for chain, vm_infos in chains.items():
-            vm_infos = list(vm_infos)
+            vm_infos = _youngest_last(vm_infos)
             if not vm_infos:
                 continue
             balance = await fetch_credit_balance_of_address(execution_address)
@@ -459,13 +467,13 @@ async def check_payment(supervisor: Supervisor, registry: AgentVmRegistry):
             # Stop executions until the required credits are reached
             while vm_infos and balance < (required_credits + settings.PAYMENT_BUFFER):
                 last_info = vm_infos.pop(-1)
-                logger.debug(f"Stopping {last_info.vm_id} due to insufficient credit balance")
-                await retire_vm(ItemHash(last_info.vm_id), RetireReason.GONE, supervisor=supervisor, registry=registry)
+                short[ItemHash(last_info.vm_id)] = f"insufficient credit balance for {execution_address}"
                 required_credits = await compute_required_credit_balance([ItemHash(i.vm_id) for i in vm_infos])
 
     # Check if the balance held in the wallet is sufficient stream tier resources
     for execution_address, chains in _group_executions_by_payment(infos, registry, PaymentType.superfluid).items():
         for chain, vm_infos in chains.items():
+            vm_infos = _youngest_last(vm_infos)
             try:
                 stream = await get_stream(
                     sender=execution_address, receiver=settings.PAYMENT_RECEIVER_ADDRESS, chain=chain
@@ -517,8 +525,14 @@ async def check_payment(supervisor: Supervisor, registry: AgentVmRegistry):
                     break
                 # Stop executions until the required stream is reached
                 last_info = vm_infos.pop(-1)
-                logger.info(f"Stopping {last_info.vm_id} of {execution_address} due to insufficient stream")
-                await retire_vm(ItemHash(last_info.vm_id), RetireReason.GONE, supervisor=supervisor, registry=registry)
+                short[ItemHash(last_info.vm_id)] = f"insufficient stream from {execution_address}"
+
+    for info in infos:
+        if ItemHash(info.vm_id) not in short:
+            _shortfall_strike_count.pop(str(info.vm_id), None)
+    for vm_hash, finding in short.items():
+        if _confirmed(_shortfall_strike_count, vm_hash, finding):
+            await retire_vm(vm_hash, RetireReason.GONE, supervisor=supervisor, registry=registry)
 
 
 async def start_payment_monitoring_task(app: web.Application):

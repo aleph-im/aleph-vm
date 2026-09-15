@@ -193,12 +193,91 @@ async def test_not_enough_flow(mocker, fake_instance_content):
     assert len(executions_by_sender) == 1
     assert list(executions_by_sender["0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9"][Chain.BASE]) == [info]
 
-    await check_payment(supervisor=supervisor, registry=registry)
+    await _sweep_until_confirmed(supervisor, registry, retire)
 
     # Insufficient-funds stop: retire_vm is called with GONE, not supervisor.delete_vm
     # directly.
     retire.assert_awaited_once_with(ItemHash(hash), RetireReason.GONE, supervisor=supervisor, registry=registry)
     supervisor.delete_vm.assert_not_awaited()
+
+
+async def _sweep_until_confirmed(supervisor, registry, retire) -> None:
+    """Run the sweep the number of times a shortfall must be seen before it
+    retires anything, checking that the earlier sweeps retired nothing."""
+    from aleph.vm.agent import tasks
+
+    tasks._shortfall_strike_count.clear()
+    for _ in range(tasks.STOP_AFTER_CONFIRMATIONS - 1):
+        await check_payment(supervisor=supervisor, registry=registry)
+        retire.assert_not_awaited()
+    await check_payment(supervisor=supervisor, registry=registry)
+
+
+@pytest.mark.asyncio
+async def test_a_shortfall_that_clears_resets_its_confirmations(mocker, fake_instance_content):
+    """Two sweeps short, one covered, two short again: nothing is retired.
+    One bad API answer, or a top-up that lands between two sweeps, must not
+    add up to a stop."""
+    from aleph.vm.agent import tasks
+
+    mocker.patch.object(settings, "ALLOW_VM_NETWORKING", False)
+    mocker.patch.object(settings, "PAYMENT_RECEIVER_ADDRESS", "0xD39C335404a78E0BDCf6D50F29B86EFd57924288")
+    mocker.patch("aleph.vm.agent.tasks.get_community_wallet_address", return_value="0x" + "1" * 40)
+    mocker.patch("aleph.vm.agent.tasks.is_after_community_wallet_start", return_value=True)
+    mocker.patch("aleph.vm.agent.tasks.get_message_status", return_value=MessageStatus.PROCESSED)
+    mocker.patch("aleph.vm.agent.tasks.compute_required_flow", return_value=5)
+    stream = mocker.patch("aleph.vm.agent.tasks.get_stream", return_value=2, autospec=True)
+    retire = mocker.patch("aleph.vm.agent.tasks.retire_vm", new_callable=AsyncMock)
+    tasks._shortfall_strike_count.clear()
+
+    registry = _make_registry()
+    message = InstanceContent.model_validate(fake_instance_content)
+    hash = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca"
+    registry.record(ItemHash(hash), message=message, original=message, persistent=False)
+    supervisor = _make_supervisor([_make_info(hash)])
+
+    for flow in (2, 2, 10_000, 2, 2):
+        stream.return_value = flow
+        await check_payment(supervisor=supervisor, registry=registry)
+
+    retire.assert_not_awaited()
+    assert tasks._shortfall_strike_count == {hash: 2}
+
+
+@pytest.mark.asyncio
+async def test_the_youngest_vm_is_the_one_found_short_on_every_sweep(mocker, fake_instance_content):
+    """With two VMs and room for one, the same VM must be short on each sweep
+    for its confirmations to add up, whatever order the supervisor lists them
+    in: the most recently started one goes."""
+    from aleph.vm.agent import tasks
+
+    mocker.patch.object(settings, "ALLOW_VM_NETWORKING", False)
+    mocker.patch.object(settings, "PAYMENT_RECEIVER_ADDRESS", "0xD39C335404a78E0BDCf6D50F29B86EFd57924288")
+    mocker.patch("aleph.vm.agent.tasks.get_community_wallet_address", return_value="0x" + "1" * 40)
+    mocker.patch("aleph.vm.agent.tasks.is_after_community_wallet_start", return_value=True)
+    mocker.patch("aleph.vm.agent.tasks.get_message_status", return_value=MessageStatus.PROCESSED)
+
+    async def compute_required_flow(vm_hashes):
+        return 5 * len(list(vm_hashes))
+
+    mocker.patch("aleph.vm.agent.tasks.compute_required_flow", compute_required_flow)
+    mocker.patch("aleph.vm.agent.tasks.get_stream", return_value=6, autospec=True)
+    retire = mocker.patch("aleph.vm.agent.tasks.retire_vm", new_callable=AsyncMock)
+    tasks._shortfall_strike_count.clear()
+
+    registry = _make_registry()
+    message = InstanceContent.model_validate(fake_instance_content)
+    old, young = "decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca", "cafe" * 16
+    for vm_hash in (old, young):
+        registry.record(ItemHash(vm_hash), message=message, original=message, persistent=False)
+    old_info, young_info = _make_info(old, started_at_ns=1), _make_info(young, started_at_ns=2)
+
+    for listing in ([old_info, young_info], [young_info, old_info], [old_info, young_info]):
+        supervisor = _make_supervisor(listing)
+        await check_payment(supervisor=supervisor, registry=registry)
+
+    retire.assert_awaited_once()
+    assert retire.await_args.args[0] == ItemHash(young)
 
 
 @pytest.mark.asyncio
@@ -231,7 +310,7 @@ async def test_not_enough_community_flow(mocker, fake_instance_content):
     assert len(executions_by_sender) == 1
     assert list(executions_by_sender["0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9"][Chain.BASE]) == [info]
 
-    await check_payment(supervisor=supervisor, registry=registry)
+    await _sweep_until_confirmed(supervisor, registry, retire)
 
     # Insufficient-funds stop: retire_vm is called with GONE, not supervisor.delete_vm
     # directly.
@@ -359,6 +438,6 @@ async def test_insufficient_stream_retires_as_gone(mocker, fake_instance_content
     info = _make_info(hash)
     supervisor = _make_supervisor([info])
 
-    await check_payment(supervisor=supervisor, registry=registry)
+    await _sweep_until_confirmed(supervisor, registry, retire)
 
     retire.assert_awaited_once_with(vm_hash, RetireReason.GONE, supervisor=supervisor, registry=registry)
