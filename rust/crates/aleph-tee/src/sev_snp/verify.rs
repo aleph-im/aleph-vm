@@ -710,7 +710,7 @@ mod tests {
 
     /// A freshly generated self-signed cert carrying AMD's CN/O strings (plus an
     /// attacker ASK/VCEK) must be REJECTED: the CN/O check alone is not enough,
-    /// the ARK must match AMD's pinned root. This is the FIX 1 blocker scenario.
+    /// the ARK must match AMD's pinned root.
     #[test]
     fn test_forged_amd_ark_is_rejected_against_real_pin() {
         let (chain, _ark_key, _ask_key, _vcek_key) = valid_chain();
