@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from pathlib import Path
 
 import grpc
@@ -255,7 +255,7 @@ class GrpcSupervisor(Supervisor):
         )
         return [conv.log_chunk_from_pb(chunk) for chunk in reply.lines]
 
-    async def stream_logs(self, vm_id: VmId, include_history: bool = False) -> AsyncIterator[LogChunk]:
+    async def stream_logs(self, vm_id: VmId, include_history: bool = False) -> AsyncGenerator[LogChunk, None]:
         call = self._ensure_stub().StreamLogs(pb.StreamLogsRequest(vm_id=str(vm_id), include_history=include_history))
         try:
             async for chunk in call:
