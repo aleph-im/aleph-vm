@@ -21,6 +21,7 @@ from aleph_message.models import (
     InstanceContent,
     ItemHash,
     ProgramContent,
+    VerifiableProgramContent,
 )
 from eth_typing import HexAddress, HexStr
 from eth_utils import hexstr_if_str, is_address, to_hex
@@ -39,8 +40,15 @@ def get_hostname_from_hash(vm_hash: ItemHash) -> str:
 
 
 def get_message_executable_content(message_dict: dict) -> ExecutableContent:
+    """Parse a content dict that lost its message type, such as a persisted
+    execution record. Every content model forbids extra fields, so at most
+    one of the three accepts the dict."""
     try:
         return ProgramContent.model_validate(message_dict)
+    except ValueError:
+        pass
+    try:
+        return VerifiableProgramContent.model_validate(message_dict)
     except ValueError:
         return InstanceContent.model_validate(message_dict)
 
