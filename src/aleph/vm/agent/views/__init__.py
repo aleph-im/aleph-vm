@@ -30,6 +30,7 @@ from aleph.vm.agent.capacity import (
     CapacityManager,
     UnsupportedWorkloadError,
     requested_gpu_ids,
+    unsupported_message,
 )
 from aleph.vm.agent.custom_logs import set_vm_for_logging
 from aleph.vm.agent.haproxy_sync import sync_domain_mappings
@@ -1123,7 +1124,7 @@ async def operate_reserve_resources(request: web.Request, authenticated_sender: 
     except UnsupportedWorkloadError as error:
         # Before its parent: not a matter of room or of time on this node.
         logger.warning("Refusing resource reservation: %s", error)
-        return web.HTTPBadRequest(reason="Unsupported workload", text=str(error))
+        return web.HTTPBadRequest(reason="Unsupported workload", text=unsupported_message(error.feature))
     except InsufficientResourcesError as error:
         logger.warning("Refusing resource reservation: %s", error)
         return web.HTTPServiceUnavailable(

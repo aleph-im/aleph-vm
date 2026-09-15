@@ -885,12 +885,10 @@ def test_program_error_mapper_maps_an_unsupported_workload_to_bad_request():
     better on this node. The branch has to sit before the parent's."""
     from aiohttp.web_exceptions import HTTPBadRequest
 
-    from aleph.vm.agent.capacity import UnsupportedWorkloadError
+    from aleph.vm.agent.capacity import UnsupportedFeature, UnsupportedWorkloadError
 
     with pytest.raises(HTTPBadRequest) as excinfo:
-        run_module._raise_http_for_program_error(
-            UnsupportedWorkloadError("GPU support is disabled on this node"), ItemHash(_HASH)
-        )
+        run_module._raise_http_for_program_error(UnsupportedWorkloadError(UnsupportedFeature.GPU), ItemHash(_HASH))
     assert excinfo.value.reason == "Unsupported workload"
     assert excinfo.value.text == "GPU support is disabled on this node"
 

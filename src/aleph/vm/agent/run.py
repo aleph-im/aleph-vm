@@ -28,6 +28,7 @@ from aleph.vm.agent.capacity import (
     CapacityManager,
     UnsupportedWorkloadError,
     requested_gpu_ids,
+    unsupported_message,
 )
 from aleph.vm.agent.create_lock import vm_create_lock
 from aleph.vm.agent.expiry import ExpiryManager
@@ -805,7 +806,7 @@ def _raise_http_for_program_error(error: Exception, vm_hash: ItemHash) -> None:
     if isinstance(error, UnsupportedWorkloadError):
         # Before its parent: not a matter of room or of time on this node.
         logger.warning("Refusing %s: %s", vm_hash, error)
-        raise HTTPBadRequest(reason="Unsupported workload", text=str(error)) from error
+        raise HTTPBadRequest(reason="Unsupported workload", text=unsupported_message(error.feature)) from error
     if isinstance(error, (InsufficientResourcesError, supervisor_errors.InsufficientResourcesError)):
         logger.warning("Refusing %s: %s", vm_hash, error)
         raise HTTPServiceUnavailable(

@@ -19,6 +19,7 @@ import re
 from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Protocol
 
@@ -61,7 +62,7 @@ class ResourceRequirements:
     is_instance: bool = False
     gpu_device_ids: list[str] = field(default_factory=list)
     # What the node must have switched on to run this VM at all, judged
-    # before any sizing (see unsupported_reason).
+    # before any sizing (see unsupported_feature).
     confidential: bool = False
     wants_gpu: bool = False
     # Whose VM this is, for the GPU ledger: a hold this address took is
@@ -356,29 +357,50 @@ def needs_confidential_computing(content: ExecutableContent) -> bool:
     return getattr(environment, "trusted_execution", None) is not None
 
 
+class UnsupportedFeature(str, Enum):
+    """What a node has switched off that a VM needs."""
+
+    CONFIDENTIAL_COMPUTING = "confidential_computing"
+    GPU = "gpu"
+
+
+_UNSUPPORTED_MESSAGES: dict[UnsupportedFeature, str] = {
+    UnsupportedFeature.CONFIDENTIAL_COMPUTING: "confidential computing is disabled on this node",
+    UnsupportedFeature.GPU: "GPU support is disabled on this node",
+}
+
+
+def unsupported_message(feature: UnsupportedFeature) -> str:
+    """The one sentence a response carries for a feature, never exception text."""
+    return _UNSUPPORTED_MESSAGES[feature]
+
+
 class UnsupportedWorkloadError(InsufficientResourcesError):
     """The node's own settings rule this VM out, whatever the room.
 
     An admission refusal, so every create route already answers it; the
     allocation classifier and the HTTP mapper tell it from a lack of room,
     which a scheduler should answer by placing the VM elsewhere for good.
+    Carries the feature, not prose: a response names it through
+    ``unsupported_message``.
     """
 
-    def __init__(self, reason: str) -> None:
-        super().__init__(reason, required={}, available={})
+    def __init__(self, feature: UnsupportedFeature) -> None:
+        super().__init__(unsupported_message(feature), required={}, available={})
+        self.feature = feature
 
 
-def unsupported_reason(requirements: ResourceRequirements) -> str | None:
-    """Why this node cannot run the VM at all, or None.
+def unsupported_feature(requirements: ResourceRequirements) -> UnsupportedFeature | None:
+    """What this node has switched off that the VM needs, or None.
 
     Judged before any sizing: refusing on capacity would send the scheduler
     looking for room that exists, on a node whose daemon would fail the
     create anyway.
     """
     if requirements.confidential and not settings.ENABLE_CONFIDENTIAL_COMPUTING:
-        return "confidential computing is disabled on this node"
+        return UnsupportedFeature.CONFIDENTIAL_COMPUTING
     if requirements.wants_gpu and not settings.ENABLE_GPU_SUPPORT:
-        return "GPU support is disabled on this node"
+        return UnsupportedFeature.GPU
     return None
 
 
@@ -486,9 +508,9 @@ class CapacityManager(PlanAdmission):
         """
         volumes = declared_volumes(content)
         requirements = requirements_from_message(content, volumes)
-        reason = unsupported_reason(requirements)
-        if reason is not None:
-            raise UnsupportedWorkloadError(reason)
+        feature = unsupported_feature(requirements)
+        if feature is not None:
+            raise UnsupportedWorkloadError(feature)
         disk = discounted_disk(exclude_vm_hash, volumes)
         self.check_capacity(
             memory_mib=requirements.memory_mib,
@@ -531,9 +553,9 @@ class CapacityManager(PlanAdmission):
         offers one.
         """
         volumes = declared_volumes(content)
-        reason = unsupported_reason(requirements_from_message(content, volumes))
-        if reason is not None:
-            raise UnsupportedWorkloadError(reason)
+        feature = unsupported_feature(requirements_from_message(content, volumes))
+        if feature is not None:
+            raise UnsupportedWorkloadError(feature)
         disk = discounted_disk(vm_hash, volumes)
         errors, available_disk_mib = self._disk_errors(
             disk_mib=disk.disk_mib,
@@ -820,9 +842,9 @@ class CapacityManager(PlanAdmission):
         committed_disk = 0
         for vm_hash, requirements in candidates:
             refusal: Refusal | None = None
-            reason = unsupported_reason(requirements)
-            if reason is not None:
-                logger.info("Plan candidate %s refused: %s", vm_hash, reason)
+            feature = unsupported_feature(requirements)
+            if feature is not None:
+                logger.info("Plan candidate %s refused: %s", vm_hash, unsupported_message(feature))
                 refusal = Refusal.for_code(AllocationFailureCode.UNSUPPORTED)
             else:
                 disk = self._candidate_disk(vm_hash, requirements)
