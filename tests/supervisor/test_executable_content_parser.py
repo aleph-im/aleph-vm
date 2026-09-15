@@ -5,7 +5,11 @@ import json
 from pathlib import Path
 
 import pytest
-from aleph_message.models import InstanceContent, ProgramContent, VerifiableProgramContent
+from aleph_message.models import (
+    InstanceContent,
+    ProgramContent,
+    VerifiableProgramContent,
+)
 
 from aleph.vm.utils import get_message_executable_content
 
