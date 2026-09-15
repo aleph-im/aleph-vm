@@ -49,6 +49,7 @@ from aiohttp import web
 from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash
 
+from aleph.vm.agent.migration.jobs import EXPORT_TTL_SECONDS
 from aleph.vm.agent.vm.backup import sweep_expired_backups
 from aleph.vm.agent.vm.cache import (
     evict_caches,
@@ -117,6 +118,7 @@ class ReconcileReport:
     evicted: list[str] = field(default_factory=list)
     cache_evicted: list[Path] = field(default_factory=list)
     parts_removed: int = 0
+    exports_removed: int = 0
     side_dirs_removed: int = 0
     backups_removed: int = 0
     bytes_freed: int = 0
@@ -124,8 +126,8 @@ class ReconcileReport:
     def summary(self) -> str:
         return (
             f"orphans purged={len(self.purged_orphans)} marked={len(self.marked_orphans)}, "
-            f"evicted={len(self.evicted)}, parts={self.parts_removed}, side dirs={self.side_dirs_removed}, "
-            f"cache entries={len(self.cache_evicted)}, "
+            f"evicted={len(self.evicted)}, parts={self.parts_removed}, exports={self.exports_removed}, "
+            f"side dirs={self.side_dirs_removed}, cache entries={len(self.cache_evicted)}, "
             f"backups={self.backups_removed}, freed={self.bytes_freed} bytes"
         )
 
@@ -507,21 +509,32 @@ def _sweep_parts(now: datetime, guard: timedelta, report: ReconcileReport, *, dr
     ``.tmp`` goes with ``.part``: every write-then-rename in the agent uses
     one (``storage.get_message``, ``create_ext4``, the marker writer), and an
     interrupted one leaks exactly the same way.
+
+    A migration export (``*.export.qcow2``) is swept here too, once it is
+    older than the export TTL rather than the create guard: a valid one waits
+    up to that long for the destination to download it. The job that would
+    delete it lives in the agent's memory, so an agent restart leaves the
+    file beside a live VM's disks, where no other pass looks.
     """
+    export_guard = timedelta(seconds=EXPORT_TTL_SECONDS)
     for root in _part_roots():
         try:
-            parts = [path for pattern in ("*.part", "*.tmp") for path in root.glob(pattern)]
+            stale = [(path, guard) for pattern in ("*.part", "*.tmp") for path in root.glob(pattern)]
+            stale += [(path, export_guard) for path in root.glob("*.export.qcow2")]
         except OSError:
             continue
-        for part in parts:
+        for part, age_guard in stale:
             try:
                 stat = part.stat()
-                if now - datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc) < guard:
+                if now - datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc) < age_guard:
                     continue
                 if not dry_run:
                     part.unlink()
                     logger.info("Removed stale partial download %s", part)
-                report.parts_removed += 1
+                if part.name.endswith(".export.qcow2"):
+                    report.exports_removed += 1
+                else:
+                    report.parts_removed += 1
                 report.bytes_freed += stat.st_blocks * 512
             except OSError:
                 logger.warning("Failed to remove %s", part, exc_info=True)

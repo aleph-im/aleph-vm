@@ -35,7 +35,8 @@ directory untouched.
 
 The reconciler also removes what no VM owns at all: directories on a pool
 that belong to no VM (orphans left by older releases), interrupted downloads
-(`.part` and `.tmp` files older than the create guard), stale session and
+(`.part` and `.tmp` files older than the create guard), migration exports
+older than the export TTL, stale session and
 staging directories, empty `/mnt` mount points, and expired backups. It then
 brings each download cache (runtime, code, data, message) under
 `CACHE_BUDGET`.

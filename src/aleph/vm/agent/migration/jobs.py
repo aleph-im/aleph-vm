@@ -11,6 +11,11 @@ from pydantic import BaseModel
 
 from aleph.vm.conf import settings
 
+# How long an export waits for the destination to download it before the
+# runner deletes it. The storage reconciler uses the same age to tell a
+# stale export from a live one: after an agent restart no job remembers it.
+EXPORT_TTL_SECONDS = 1800
+
 
 class MigrationState(str, Enum):
     """State of VM migration process. Source-side states begin with EXPORT_, destination-side with IMPORT_."""
