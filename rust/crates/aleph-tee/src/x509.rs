@@ -56,6 +56,10 @@ pub fn decode_attestation_extension(der_bytes: &[u8]) -> Result<AttestationRepor
 /// Returns `Ok(None)` if the certificate does not contain the extension.
 /// Returns `Ok(Some(report))` if the extension is found and decoded.
 /// Returns `Err(...)` if parsing fails.
+///
+/// Verify-side only: parsing a full X.509 certificate structure is a relying
+/// party's job (the embedding side only ever encodes, never parses).
+#[cfg(feature = "verify")]
 pub fn extract_attestation_from_cert(cert_der: &[u8]) -> Result<Option<AttestationReport>> {
     let (_, cert) = x509_parser::parse_x509_certificate(cert_der)
         .map_err(|e| anyhow::anyhow!("failed to parse X.509 certificate: {e}"))?;
@@ -160,6 +164,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "verify")]
     fn test_extract_from_cert_with_extension() {
         let report = make_test_report();
 
@@ -192,6 +197,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "verify")]
     fn test_extract_from_cert_without_extension() {
         // Create a self-signed certificate WITHOUT our custom extension
         let params = rcgen::CertificateParams::new(vec!["localhost".to_string()])
@@ -212,6 +218,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "verify")]
     fn test_extract_from_invalid_cert() {
         let result = extract_attestation_from_cert(&[0x30, 0x00]);
         assert!(result.is_err(), "invalid cert should fail");
