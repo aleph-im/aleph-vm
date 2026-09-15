@@ -249,6 +249,16 @@ pub(crate) fn check_signed_by(
     issuer_label: &str,
     issuer: &X509Certificate<'_>,
 ) -> Result<()> {
+    // RFC 5280 4.1.1.2 requires the outer AlgorithmIdentifier to equal the
+    // one inside the signed TBSCertificate. The outer copy is not itself
+    // signed, so without this check an attacker could leave the signed
+    // inner algorithm alone and swap the outer one for a weaker or
+    // different algorithm to change how the signature below gets verified.
+    if child.signature_algorithm != child.tbs_certificate.signature {
+        bail!(
+            "{child_label} declares different signature algorithms inside and outside the signed bytes"
+        );
+    }
     verify_chain_signature(
         child_label,
         issuer_label,
@@ -266,6 +276,14 @@ pub(crate) fn check_crl_signed_by(
     issuer_label: &str,
     issuer: &X509Certificate<'_>,
 ) -> Result<()> {
+    // Same binding as in check_signed_by, and for the same reason: the
+    // outer AlgorithmIdentifier is unsigned, so it must be checked against
+    // the signed copy inside the TBSCertList rather than trusted on its own.
+    if crl.signature_algorithm != crl.tbs_cert_list.signature {
+        bail!(
+            "{crl_label} declares different signature algorithms inside and outside the signed bytes"
+        );
+    }
     verify_chain_signature(
         crl_label,
         issuer_label,
@@ -479,9 +497,8 @@ mod tests {
     fn raw_ecdsa_round_trip_verifies() {
         let rng = SystemRandom::new();
         let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).unwrap();
-        let key =
-            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
-                .unwrap();
+        let key = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
+            .unwrap();
         let raw = key.sign(&rng, b"evidence").unwrap();
         let public = key.public_key().as_ref();
 
@@ -518,7 +535,9 @@ mod tests {
         assert_eq!(sig[48], 0xff);
         let mut oversized = [0u8; 72];
         oversized[48] = 1;
-        let err = p384_signature_from_le(&oversized, &s).unwrap_err().to_string();
+        let err = p384_signature_from_le(&oversized, &s)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("exceeds the P-384 scalar width"), "got: {err}");
         assert!(p384_signature_from_le(&r[..71], &s).is_err());
     }
@@ -609,5 +628,35 @@ mod tests {
         assert!(pem_certs_to_der("empty", b"nothing here").is_err());
         let key_block = p256_key().serialize_pem();
         assert!(pem_certs_to_der("key", key_block.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn signature_algorithm_binding_is_enforced() {
+        use testing::{Name, cert, p256_key, p384_key};
+        let name = Name {
+            common_names: vec!["Self Signed"],
+            organization: None,
+        };
+        let p256 = cert(&name, &p256_key(), None, 1_700_000_000, 1_900_000_000);
+        let p256_parsed = parse_cert("p256", p256.der()).unwrap();
+        check_signed_by("p256", &p256_parsed, "itself", &p256_parsed)
+            .expect("a self-signed certificate verifies against itself");
+
+        // A P-384 cert to steal a mismatched (but validly encoded)
+        // AlgorithmIdentifier from, for the outer field.
+        let p384 = cert(&name, &p384_key(), None, 1_700_000_000, 1_900_000_000);
+        let p384_parsed = parse_cert("p384", p384.der()).unwrap();
+
+        let mut mismatched = p256_parsed.clone();
+        mismatched.signature_algorithm = p384_parsed.signature_algorithm.clone();
+        let err = check_signed_by("mismatched", &mismatched, "itself", &p256_parsed)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains(
+                "declares different signature algorithms inside and outside the signed bytes"
+            ),
+            "got: {err}"
+        );
     }
 }
