@@ -1,14 +1,16 @@
 """The log stream websocket when the client hangs up mid-stream."""
 
-import asyncio
+import itertools
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from aiohttp.test_utils import TestClient
+from aiohttp import ClientConnectionResetError
+from aiohttp.test_utils import make_mocked_request
 from aleph_message.models import ItemHash
 
 from aleph.vm.agent.supervisor import setup_webapp
+from aleph.vm.agent.views.operator import stream_logs
 from aleph.vm.conf import settings
 from aleph.vm.storage import get_message
 from aleph.vm.supervisor_interface.types import (
@@ -23,8 +25,34 @@ from aleph.vm.supervisor_interface.types import (
 )
 
 
+class HungUpWebSocket:
+    """Delivers the auth message, then the peer is gone by the second log line.
+
+    That is what aiohttp's writer raises once the transport is closing; the
+    test fixtures cannot produce it, their server cancels the handler instead.
+    """
+
+    def __init__(self) -> None:
+        self.sent: list[dict] = []
+        self.closed = False
+
+    async def prepare(self, request) -> None:
+        pass
+
+    async def receive_json(self) -> dict:
+        return {"auth": {"any": "thing"}}
+
+    async def send_json(self, payload: dict) -> None:
+        if sum(1 for sent in self.sent if "type" in sent) == 1:
+            raise ClientConnectionResetError("Cannot write to closing transport")
+        self.sent.append(payload)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 @pytest.mark.asyncio
-async def test_a_client_leaving_mid_stream_is_not_an_error(aiohttp_client, mocker, caplog):
+async def test_a_client_leaving_mid_stream_is_not_an_error(mocker, caplog):
     """A viewer closing the log tab used to surface as a 500 with a traceback:
     the send to the gone peer raised through the handler. It is the normal
     end of a stream, so the handler logs it as such and cancels the
@@ -37,16 +65,18 @@ async def test_a_client_leaving_mid_stream_is_not_an_error(aiohttp_client, mocke
         "aleph.vm.agent.views.operator.authenticate_websocket_message",
         AsyncMock(return_value=instance_message.sender),
     )
+    ws = HungUpWebSocket()
+    mocker.patch("aleph.vm.agent.views.operator.web.WebSocketResponse", return_value=ws)
 
-    stream_finalized = asyncio.Event()
+    stream_finalized = False
 
     async def endless_logs(vm_id, include_history=False):
+        nonlocal stream_finalized
         try:
-            for n in range(10_000):
+            for n in itertools.count():
                 yield LogChunk(timestamp_ns=n, line=f"line {n}", source=LogSource.SERIAL)
-                await asyncio.sleep(0.01)
         finally:
-            stream_finalized.set()
+            stream_finalized = True
 
     info = VmInfo(
         vm_id=VmId(str(vm_hash)),
@@ -68,18 +98,17 @@ async def test_a_client_leaving_mid_stream_is_not_an_error(aiohttp_client, mocke
         original=instance_message.content,
         persistent=True,
     )
-    client: TestClient = await aiohttp_client(app)
+    request = make_mocked_request(
+        "GET", f"/control/machine/{vm_hash}/stream_logs", match_info={"ref": str(vm_hash)}, app=app
+    )
 
     caplog.set_level(logging.INFO)
-    ws = await client.ws_connect(f"/control/machine/{vm_hash}/stream_logs", timeout=0.2)
-    await ws.send_json({"auth": {"any": "thing"}})
-    assert await ws.receive_json() == {"status": "connected"}
-    assert (await ws.receive_json())["message"] == "line 0"
-    # Drop the connection without reading further: the handler is still
-    # mid-send when the transport goes.
-    await ws.close()
+    assert await stream_logs(request) is ws
 
-    await asyncio.wait_for(stream_finalized.wait(), timeout=5)
+    assert ws.sent == [{"status": "connected"}, {"type": "serial", "message": "line 0"}]
+    assert ws.closed
+    # Set before the handler returned, so by aclose, not by a later collection.
+    assert stream_finalized
     errors = [record for record in caplog.records if record.levelno >= logging.ERROR]
     assert errors == []
     assert any("went away" in record.getMessage() for record in caplog.records)

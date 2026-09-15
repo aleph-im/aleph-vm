@@ -307,7 +307,7 @@ async def stream_logs(request: web.Request) -> web.StreamResponse:
         await ws.prepare(request)
         try:
             await _serve_log_stream(ws, request.app["supervisor"], vm_hash, message)
-        except ConnectionResetError:
+        except (ConnectionResetError, aiohttp.ClientConnectionResetError):
             # The client hung up; there is nobody left to answer.
             logger.info("log stream client of %s went away", vm_hash)
         finally:
