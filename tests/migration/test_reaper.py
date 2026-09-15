@@ -1,11 +1,8 @@
 """Tests for the startup migration reaper.
 
-The reaper takes the set of live vm_ids (sourced from supervisor.list_vms by the
-agent hook), not a pool, so it works in both in-process and split mode.
+The reaper deletes orphan export files and nothing else: directories, with
+or without half-imported ``.part`` files, are the storage reconciler's.
 """
-
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -22,8 +19,7 @@ async def test_reaper_deletes_export_files(tmp_path, monkeypatch):
     (vm_dir / "rootfs.qcow2.export.qcow2").write_bytes(b"orphan")
     (vm_dir / "data.qcow2.export.qcow2").write_bytes(b"orphan2")
 
-    # The VM is live — the directory itself stays, only orphan exports go.
-    await reap_orphan_migration_files({"abc123"})
+    await reap_orphan_migration_files()
 
     assert (vm_dir / "rootfs.qcow2").exists()
     assert not (vm_dir / "rootfs.qcow2.export.qcow2").exists()
@@ -31,61 +27,43 @@ async def test_reaper_deletes_export_files(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_reaper_removes_orphan_dest_dir_with_part_files(tmp_path, monkeypatch):
+async def test_reaper_leaves_a_half_imported_directory_to_the_reconciler(tmp_path, monkeypatch):
+    """A directory holding a ``.part`` file used to be removed whole on the
+    supervisor's word alone, before the registry was rehydrated. Whether it
+    is an aborted import, a retained volume with a stale download beside it,
+    or a create the registry knows about is the reconciler's call."""
     monkeypatch.setattr(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
     vm_dir = tmp_path / "abandoned"
     vm_dir.mkdir()
     (vm_dir / "rootfs.qcow2.part").write_bytes(b"partial")
+    (vm_dir / ".reclaimable").write_text("{}")
 
-    await reap_orphan_migration_files(set())
+    await reap_orphan_migration_files()
 
-    assert not vm_dir.exists()
-
-
-@pytest.mark.asyncio
-async def test_reaper_keeps_part_dir_of_live_vm(tmp_path, monkeypatch):
-    """A .part dir whose vm_hash IS a live VM must be left alone (no rmtree)."""
-    monkeypatch.setattr(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
-    vm_dir = tmp_path / "live"
-    vm_dir.mkdir()
-    (vm_dir / "rootfs.qcow2.part").write_bytes(b"partial")
-
-    await reap_orphan_migration_files({"live"})
-
-    assert vm_dir.exists()
+    assert (vm_dir / "rootfs.qcow2.part").exists()
+    assert (vm_dir / ".reclaimable").exists()
 
 
 @pytest.mark.asyncio
 async def test_reaper_keeps_complete_orphan_volumes(tmp_path, monkeypatch):
-    """Directory with completed qcow2 files but no live VM: keep, log a warning."""
     monkeypatch.setattr(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
     vm_dir = tmp_path / "complete-but-orphan"
     vm_dir.mkdir()
     (vm_dir / "rootfs.qcow2").write_bytes(b"complete")
 
-    await reap_orphan_migration_files(set())
+    await reap_orphan_migration_files()
 
-    assert vm_dir.exists()
     assert (vm_dir / "rootfs.qcow2").exists()
 
 
 @pytest.mark.asyncio
-async def test_agent_hook_sources_live_ids_from_supervisor(mocker):
-    """The agent on_startup hook builds the live-VM set from supervisor.list_vms
-    (over the ABC, so it works in split mode with no in-process pool) and hands
-    it to the reaper."""
+async def test_agent_hook_needs_nothing_from_the_supervisor(mocker):
+    """The hook runs before the registry is rehydrated, so it must not act on
+    any live set: it only deletes export files."""
     from aleph.vm.agent.supervisor import _run_migration_reaper
 
-    captured = {}
+    reap = mocker.patch("aleph.vm.agent.supervisor.reap_orphan_migration_files")
 
-    async def fake_reap(known_vm_ids):
-        captured["known"] = known_vm_ids
+    await _run_migration_reaper({})
 
-    mocker.patch("aleph.vm.agent.supervisor.reap_orphan_migration_files", new=fake_reap)
-    supervisor = SimpleNamespace(
-        list_vms=AsyncMock(return_value=[SimpleNamespace(vm_id="vm1"), SimpleNamespace(vm_id="vm2")])
-    )
-
-    await _run_migration_reaper({"supervisor": supervisor})
-
-    assert captured["known"] == {"vm1", "vm2"}
+    reap.assert_awaited_once_with()
