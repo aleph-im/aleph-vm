@@ -27,6 +27,7 @@ from test_supervisor_translate import _make_qemu_instance_message
 from aleph.vm.agent import run as run_module
 from aleph.vm.agent.vm.reconciler import is_creating
 from aleph.vm.agent.vm_registry import AgentVmRegistry
+from aleph.vm.conf import settings
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.utils import get_message_executable_content
 
@@ -194,6 +195,8 @@ class TestVProgramPath:
 
         _patch_message(monkeypatch, load_vprogram_message().content)
         monkeypatch.setattr(run_module, "build_vprogram_spec", AsyncMock())
+        # A V-PROGRAM is only sized on a node that can launch a TEE.
+        monkeypatch.setattr(settings, "ENABLE_CONFIDENTIAL_COMPUTING", True)
         capacity = _real_capacity(mocker, refuse=True)
 
         with pytest.raises(InsufficientResourcesError):

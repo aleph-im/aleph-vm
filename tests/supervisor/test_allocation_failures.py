@@ -15,6 +15,7 @@ from aleph.vm.agent.allocation.refusal import (
     Refusal,
     public_failure_message,
 )
+from aleph.vm.agent.capacity import UnsupportedWorkloadError
 from aleph.vm.agent.run import VmStartupError
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor_interface import errors as supervisor_errors
@@ -38,6 +39,12 @@ def _no_room() -> InsufficientResourcesError:
         # The node's own admission, whose text quotes free memory and the
         # cache path it could not fit a download in.
         (_no_room(), AllocationFailureCode.INSUFFICIENT_CAPACITY),
+        # The node's settings rule the VM out: an admission refusal by type,
+        # but one no room anywhere on this node changes.
+        (
+            UnsupportedWorkloadError("confidential computing is disabled on this node"),
+            AllocationFailureCode.UNSUPPORTED,
+        ),
         # The same refusal arriving through the supervisor boundary.
         (supervisor_errors.InsufficientResourcesError("no room"), AllocationFailureCode.INSUFFICIENT_CAPACITY),
         (supervisor_errors.ResourceDownloadError("404 for https://host/rootfs"), AllocationFailureCode.DOWNLOAD_FAILED),

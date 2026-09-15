@@ -60,6 +60,10 @@ class ResourceRequirements:
     # though it is not an InstanceContent.
     is_instance: bool = False
     gpu_device_ids: list[str] = field(default_factory=list)
+    # What the node must have switched on to run this VM at all, judged
+    # before any sizing (see unsupported_reason).
+    confidential: bool = False
+    wants_gpu: bool = False
     # Whose VM this is, for the GPU ledger: a hold this address took is
     # available to it, the way resolve_gpus consumes an owner's own hold.
     owner: str | None = None
@@ -214,6 +218,8 @@ def requirements_from_message(
         max_volume_mib=max(volume_sizes_mib, default=0),
         is_instance=is_instance_bucket(content),
         gpu_device_ids=requested_gpu_ids(content),
+        confidential=needs_confidential_computing(content),
+        wants_gpu=bool(requested_gpu_ids(content)) or bool(getattr(content, "gpu", None)),
         owner=str(address) if (address := getattr(content, "address", None)) else None,
         volumes=tuple(declared),
     )
@@ -342,6 +348,40 @@ def requested_gpu_ids(content: ExecutableContent) -> list[str]:
     return [gpu.device_id for gpu in requested]
 
 
+def needs_confidential_computing(content: ExecutableContent) -> bool:
+    """A V-PROGRAM always runs in a TEE; an instance does when it asks for one."""
+    if isinstance(content, VerifiableProgramContent):
+        return True
+    environment = getattr(content, "environment", None)
+    return getattr(environment, "trusted_execution", None) is not None
+
+
+class UnsupportedWorkloadError(InsufficientResourcesError):
+    """The node's own settings rule this VM out, whatever the room.
+
+    An admission refusal, so every create route already answers it; the
+    allocation classifier and the HTTP mapper tell it from a lack of room,
+    which a scheduler should answer by placing the VM elsewhere for good.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason, required={}, available={})
+
+
+def unsupported_reason(requirements: ResourceRequirements) -> str | None:
+    """Why this node cannot run the VM at all, or None.
+
+    Judged before any sizing: refusing on capacity would send the scheduler
+    looking for room that exists, on a node whose daemon would fail the
+    create anyway.
+    """
+    if requirements.confidential and not settings.ENABLE_CONFIDENTIAL_COMPUTING:
+        return "confidential computing is disabled on this node"
+    if requirements.wants_gpu and not settings.ENABLE_GPU_SUPPORT:
+        return "GPU support is disabled on this node"
+    return None
+
+
 @dataclass(frozen=True)
 class HostCaps:
     """The ceilings admission judges against, read from the host once per call.
@@ -447,6 +487,9 @@ class CapacityManager(PlanAdmission):
         volumes = declared_volumes(content)
         disk = discounted_disk(exclude_vm_hash, volumes)
         requirements = requirements_from_message(content, volumes)
+        reason = unsupported_reason(requirements)
+        if reason is not None:
+            raise UnsupportedWorkloadError(reason)
         self.check_capacity(
             memory_mib=requirements.memory_mib,
             vcpus=requirements.vcpus,
@@ -770,25 +813,30 @@ class CapacityManager(PlanAdmission):
         committed_disk = 0
         for vm_hash, requirements in candidates:
             refusal: Refusal | None = None
-            disk = self._candidate_disk(vm_hash, requirements)
-            try:
-                self._check_against(
-                    memory_mib=requirements.memory_mib,
-                    vcpus=requirements.vcpus,
-                    disk_mib=disk.disk_mib,
-                    max_volume_mib=disk.max_volume_mib,
-                    max_volume_credit=disk.max_volume_credit,
-                    is_instance=requirements.is_instance,
-                    committed_instance_memory_mib=committed_instance,
-                    committed_program_memory_mib=committed_program,
-                    committed_vcpus=committed_vcpus,
-                    committed_disk_mib=committed_disk,
-                )
-            except InsufficientResourcesError as error:
-                logger.info("Plan candidate %s refused: %s", vm_hash, error)
-                # The figures the error quotes are the host's, so only the code
-                # and its published sentence leave this node.
-                refusal = Refusal.for_code(AllocationFailureCode.INSUFFICIENT_CAPACITY)
+            reason = unsupported_reason(requirements)
+            if reason is not None:
+                logger.info("Plan candidate %s refused: %s", vm_hash, reason)
+                refusal = Refusal.for_code(AllocationFailureCode.UNSUPPORTED)
+            else:
+                disk = self._candidate_disk(vm_hash, requirements)
+                try:
+                    self._check_against(
+                        memory_mib=requirements.memory_mib,
+                        vcpus=requirements.vcpus,
+                        disk_mib=disk.disk_mib,
+                        max_volume_mib=disk.max_volume_mib,
+                        max_volume_credit=disk.max_volume_credit,
+                        is_instance=requirements.is_instance,
+                        committed_instance_memory_mib=committed_instance,
+                        committed_program_memory_mib=committed_program,
+                        committed_vcpus=committed_vcpus,
+                        committed_disk_mib=committed_disk,
+                    )
+                except InsufficientResourcesError as error:
+                    logger.info("Plan candidate %s refused: %s", vm_hash, error)
+                    # The figures the error quotes are the host's, so only the
+                    # code and its published sentence leave this node.
+                    refusal = Refusal.for_code(AllocationFailureCode.INSUFFICIENT_CAPACITY)
             if refusal is None:
                 # Last, and only once the candidate has cleared everything
                 # else: taking cards is what makes the pool cumulative, so a

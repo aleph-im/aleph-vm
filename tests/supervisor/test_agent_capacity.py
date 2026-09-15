@@ -23,6 +23,7 @@ from aleph.vm.agent.capacity import (
     CapacityManager,
     GpuHold,
     ResourceRequirements,
+    UnsupportedWorkloadError,
     requirements_from_message,
 )
 from aleph.vm.agent.vm.reclaimable import MARKER_NAME
@@ -253,6 +254,41 @@ def test_requirements_from_message_extracts_resources():
     assert req.owner == message.address
     # rootfs size is summed into disk_mib (the message fixture sets size_mib=10000)
     assert req.disk_mib == 10000
+    assert (req.confidential, req.wants_gpu) == (False, True)
+
+
+def test_requirements_from_message_says_what_the_node_must_have_switched_on():
+    from aleph_message.models.execution.environment import TrustedExecutionEnvironment
+    from test_vprogram import load_vprogram_message
+
+    plain = requirements_from_message(_make_qemu_instance_message())
+    assert (plain.confidential, plain.wants_gpu) == (False, False)
+
+    confidential = requirements_from_message(
+        _make_qemu_instance_message(trusted_execution=TrustedExecutionEnvironment())
+    )
+    assert confidential.confidential is True
+
+    # A V-PROGRAM is an SNP guest whether or not it says so.
+    vprogram = requirements_from_message(load_vprogram_message().content)
+    assert vprogram.confidential is True
+
+
+def test_check_message_refuses_what_the_node_has_switched_off(mocker):
+    """Judged before any sizing, and as its own refusal: a scheduler told
+    "no room" would look for room, and this node has none to offer however
+    empty it is."""
+    from aleph_message.models.execution.environment import TrustedExecutionEnvironment
+
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
+    mocker.patch.object(settings, "ENABLE_CONFIDENTIAL_COMPUTING", False)
+    message = _make_qemu_instance_message(trusted_execution=TrustedExecutionEnvironment())
+
+    with pytest.raises(UnsupportedWorkloadError, match="confidential computing is disabled"):
+        _manager().check_message(message)
+
+    mocker.patch.object(settings, "ENABLE_CONFIDENTIAL_COMPUTING", True)
+    assert _manager().check_message(message) is None
 
 
 # ── GPU reservation ledger ──────────────────────────────────────────────────
@@ -783,6 +819,42 @@ def test_simulate_admits_a_gpu_candidate_the_host_can_serve(mocker):
     verdicts = _manager().simulate([(_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID]))], available_gpus=[gpu])
 
     assert verdicts[0].accepted is True
+
+
+def test_simulate_refuses_a_confidential_candidate_on_a_node_with_tee_off(mocker):
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
+    mocker.patch.object(settings, "ENABLE_CONFIDENTIAL_COMPUTING", False)
+    requirements = ResourceRequirements(vcpus=1, memory_mib=1024, disk_mib=0, is_instance=True, confidential=True)
+
+    verdicts = _manager().simulate([(_HASH_A, requirements)])
+
+    assert verdicts[0].accepted is False
+    assert verdicts[0].refusal.code is AllocationFailureCode.UNSUPPORTED
+
+
+def test_simulate_admits_a_confidential_candidate_on_a_node_with_tee_on(mocker):
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
+    mocker.patch.object(settings, "ENABLE_CONFIDENTIAL_COMPUTING", True)
+    requirements = ResourceRequirements(vcpus=1, memory_mib=1024, disk_mib=0, is_instance=True, confidential=True)
+
+    verdicts = _manager().simulate([(_HASH_A, requirements)])
+
+    assert verdicts[0].accepted is True
+
+
+def test_simulate_refuses_a_gpu_candidate_on_a_node_with_gpu_support_off(mocker):
+    """Unsupported, not gpu_unavailable: the card is right there, the node
+    will not hand it out, and no free card later changes that."""
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
+    mocker.patch.object(settings, "ENABLE_GPU_SUPPORT", False)
+    requirements = ResourceRequirements(
+        vcpus=1, memory_mib=1024, disk_mib=0, is_instance=True, gpu_device_ids=[_DEVICE_ID], wants_gpu=True
+    )
+
+    verdicts = _manager().simulate([(_HASH_A, requirements)], available_gpus=[_gpu_device()])
+
+    assert verdicts[0].accepted is False
+    assert verdicts[0].refusal.code is AllocationFailureCode.UNSUPPORTED
 
 
 def test_simulate_refuses_a_card_the_host_does_not_have(mocker):
