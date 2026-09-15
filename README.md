@@ -86,30 +86,30 @@ Unless your focus is developing the VM-Connector, using the Docker image is easi
 2. **Install the Debian Package**
    This will also install required some dep and config file, making the setup easier. 
  
-   Replace `1.2.0` with the latest release version.
+   Replace `2.1.0` with the latest release version.
 
    **On Debian 12 (Bookworm)**:
    ```shell
-   wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/1.2.0/aleph-vm.debian-12.deb
+   wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/2.1.0/aleph-vm.debian-12.deb
    sudo apt install /opt/aleph-vm.debian-12.deb
    ```
 
    **On Ubuntu 22.04 (Jammy Jellyfish)**:
    ```shell
-   sudo wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/1.2.0/aleph-vm.ubuntu-22.04.deb
+   sudo wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/2.1.0/aleph-vm.ubuntu-22.04.deb
    sudo apt install /opt/aleph-vm.ubuntu-22.04.deb
    ```
 
    **On Ubuntu 24.04 (Noble Numbat)**:
    ```shell
-   sudo wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/1.2.0/aleph-vm.ubuntu-24.04.deb
+   sudo wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/2.1.0/aleph-vm.ubuntu-24.04.deb
    sudo apt install /opt/aleph-vm.ubuntu-24.04.deb
    ```
 
    **On Ubuntu 26.04 (Resolute Raccoon)**, recommended for SEV-SNP hosts
    (ships QEMU 10.2, which can launch SEV-SNP guests):
    ```shell
-   sudo wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/1.2.0/aleph-vm.ubuntu-26.04.deb
+   sudo wget -P /opt https://github.com/aleph-im/aleph-vm/releases/download/2.1.0/aleph-vm.ubuntu-26.04.deb
    sudo apt install /opt/aleph-vm.ubuntu-26.04.deb
    ```
 
