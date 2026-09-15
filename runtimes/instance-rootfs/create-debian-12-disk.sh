@@ -6,7 +6,10 @@ set -euf
 ROOTFS_FILE="./debian-12.btrfs"
 MOUNT_ORIGIN_DIR="/mnt/debian"
 MOUNT_DIR="/mnt/vm"
-IMAGE_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.tar.xz"
+IMAGE_PATH="images/cloud/bookworm/latest/debian-12-genericcloud-amd64.tar.xz"
+# cloud.debian.org redirects every download to one host of the umu.se cluster;
+# when that host is broken, its siblings still serve the same files.
+IMAGE_MIRRORS="https://cloud.debian.org https://laotzu.ftp.acc.umu.se https://gemmei.ftp.acc.umu.se https://saimei.ftp.acc.umu.se"
 IMAGE_NAME="debian-12-genericcloud.tar.xz"
 IMAGE_RAW_NAME="disk.raw"
 
@@ -21,7 +24,15 @@ mkdir -p "$MOUNT_DIR"
 
 # Download Debian image
 echo "Downloading Debian 12 image"
-curl -L "$IMAGE_URL" -o "$IMAGE_NAME"
+download_image() {
+    for mirror in $IMAGE_MIRRORS; do
+        curl -fL "$mirror/$IMAGE_PATH" -o "$IMAGE_NAME" && return 0
+        echo "Download from $mirror failed, trying the next mirror" >&2
+    done
+    echo "No mirror served $IMAGE_PATH" >&2
+    return 1
+}
+download_image
 
 # Allocate 1GB rootfs.btrfs file
 echo "Allocate 1GB $ROOTFS_FILE file"
