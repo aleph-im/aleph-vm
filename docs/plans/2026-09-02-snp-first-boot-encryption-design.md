@@ -1,7 +1,8 @@
 # SEV-SNP instances: on-node (first-boot) encryption from a generic base image
 
 **Date:** 2026-09-02 (revised 2026-09-03: key model, delegated unlock;
-2026-09-09: sequencing refreshed against dev-2.1)
+2026-09-09: sequencing refreshed against dev-2.1; 2026-09-15: refreshed
+against the 2.1.1 release)
 **Status:** Design, pending review
 **Author:** Olivier Desenfans
 **Related:**
@@ -101,9 +102,9 @@ deliberately deferred).
    pre-encrypted manifest keeps `{owner}` only. Both manifests may point
    at the same bundle (one guest image implements both branches). The
    allowed placeholder set in the manifest models widens from `{owner}`
-   to `{owner, base_sha256}`; 2.0.1 agents reject the unknown placeholder
-   and fail closed, which is the intended version gate (they cannot parse
-   the new message field either).
+   to `{owner, base_sha256}`; every shipped agent through 2.1.1 rejects
+   the unknown placeholder and fails closed, which is the intended version
+   gate (none of them can parse the new message field either).
 7. **The unlock authority is the message sender; grants extend it.**
    (Added 2026-09-03.) The measured `owner=` slot binds the address that
    signed the INSTANCE message (shipped in aleph-vm PR #1190). Delegated
@@ -467,10 +468,11 @@ blindly" to "whom do we remove on proof of equivocation."
 ## 8. Component changes and sequencing
 
 1. **aleph-message**: `rootfs_encryption` field + validators (incl. the
-   `authorized_keys` rejection). The TDX release window this was meant to
-   ride has closed: 1.4.0 shipped the TDX schema and dev-2.1 already pins
-   it (aleph-vm #1185), so the field goes into the next minor (1.5.0) as
-   its own ecosystem bump.
+   `authorized_keys` rejection). The release windows this was meant to
+   share are gone: 1.4.0 shipped the TDX schema, 1.5.0 shipped the
+   confidential-GPU requirements, and aleph-vm 2.1.1 already pins 1.5. The
+   field targets the next aleph-message release (1.6.0) as its own
+   ecosystem bump.
 2. **pyaleph**: aleph-message pin bump only (parse/price/store already
    generic); measurement cross-checking stays with the existing deferred
    CCN item.
@@ -491,10 +493,10 @@ blindly" to "whom do we remove on proof of equivocation."
    blocks on it, and shipping it later only requires a runtime image
    revision (pinned keys) plus the envelope field it already reserves.
 
-Version gating is parse-level and fail-closed: a 2.0.1 CRN can parse
-neither the new message field (pydantic forbids unknowns) nor the new
-cmdline placeholder, so a guest-mode instance never half-launches on an
-old node.
+Version gating is parse-level and fail-closed: every shipped CRN release
+through 2.1.1 (the current one) can parse neither the new message field
+(pydantic forbids unknowns) nor the new cmdline placeholder, so a
+guest-mode instance never half-launches on an old node.
 
 ## 9. Testing
 
