@@ -88,7 +88,9 @@ pub async fn fetch_vcek(product: &str, chip_id: &[u8; 64], tcb: &TcbParams) -> R
         tcb.bl_spl, tcb.tee_spl, tcb.snp_spl, tcb.ucode_spl
     );
 
-    let response = reqwest::get(&url)
+    let response = crate::fetch::http_client()
+        .get(&url)
+        .send()
         .await
         .with_context(|| format!("failed to fetch VCEK from {url}"))?;
 
@@ -130,7 +132,9 @@ pub async fn fetch_ca_chain(product: &str) -> Result<(Vec<u8>, Vec<u8>)> {
 
     let url = format!("{KDS_BASE_URL}/{product}/cert_chain");
 
-    let response = reqwest::get(&url)
+    let response = crate::fetch::http_client()
+        .get(&url)
+        .send()
         .await
         .with_context(|| format!("failed to fetch CA chain from {url}"))?;
 
