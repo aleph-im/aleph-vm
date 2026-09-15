@@ -659,4 +659,30 @@ mod tests {
             "got: {err}"
         );
     }
+
+    #[test]
+    fn non_allowlisted_algorithms_are_refused() {
+        use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, PKCS_ED25519};
+
+        let key = KeyPair::generate_for(&PKCS_ED25519).expect("Ed25519 key generation");
+        let mut params = CertificateParams::new(Vec::<String>::new()).expect("params");
+        let mut dn = DistinguishedName::new();
+        dn.push(DnType::CommonName, "Ed25519 Self Signed");
+        params.distinguished_name = dn;
+        let cert = params.self_signed(&key).expect("self-signed certificate");
+        let parsed = parse_cert("cert", cert.der()).unwrap();
+
+        let err = check_signed_by("cert", &parsed, "itself", &parsed)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("unsupported signature algorithm"),
+            "got: {err}"
+        );
+
+        let err = ec_public_key("cert", parsed.public_key(), Curve::P256)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("is not an EC key"), "got: {err}");
+    }
 }
