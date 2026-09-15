@@ -10,7 +10,8 @@
 //! parser: the structure is fixed and the inputs are untrusted.
 
 use anyhow::{Context, Result, bail};
-use openssl::x509::X509;
+
+use crate::pki::parse_cert;
 
 /// OID `1.2.840.113741.1.13.1`, the Intel SGX extension.
 const OID_SGX_EXT: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf8, 0x4d, 0x01, 0x0d, 0x01];
@@ -146,13 +147,8 @@ fn integer_u16(tlv: &Tlv<'_>) -> Result<u16> {
 
 /// Extract the platform identity from a PCK leaf certificate's SGX
 /// extension.
-///
-/// Crate-private: it takes an openssl certificate, and openssl types stay
-/// out of the crate's API so a dependency bump cannot break callers.
-pub(crate) fn parse_pck_platform(leaf: &X509) -> Result<PckPlatform> {
-    let der = leaf.to_der().context("failed to DER-encode the PCK leaf")?;
-    let (_, cert) = x509_parser::parse_x509_certificate(&der)
-        .map_err(|e| anyhow::anyhow!("failed to parse the PCK leaf: {e}"))?;
+pub(crate) fn parse_pck_platform(leaf_der: &[u8]) -> Result<PckPlatform> {
+    let cert = parse_cert("the PCK leaf", leaf_der)?;
 
     let ext = cert
         .extensions()
@@ -203,10 +199,11 @@ mod tests {
     const QUOTE_V4: &[u8] = include_bytes!("../../tests/fixtures/tdx/tdx_quote_v4.bin");
     const QUOTE_OUTDATED: &[u8] = include_bytes!("../../tests/fixtures/tdx/tdx_quote_outdated.bin");
 
-    fn pck_leaf(raw: &[u8]) -> X509 {
+    fn pck_leaf(raw: &[u8]) -> Vec<u8> {
         let quote = parse_tdx_quote(raw).expect("quote parses");
-        let chain = X509::stack_from_pem(&quote.signature.pck_chain_pem).expect("chain parses");
-        chain.into_iter().next().expect("leaf present")
+        crate::pki::pem_certs_to_der("chain", &quote.signature.pck_chain_pem)
+            .expect("chain parses")
+            .swap_remove(0)
     }
 
     #[test]

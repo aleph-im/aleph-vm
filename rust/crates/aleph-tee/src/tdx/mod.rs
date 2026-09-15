@@ -6,8 +6,8 @@
 //! backend and QGS round trip arrive in a later increment.
 //!
 //! `verify_tdx_quote` is the entry point callers outside the crate use. The
-//! `openssl::x509::X509` values the steps under it pass around stay
-//! crate-private, so no consumer is forced onto this crate's openssl version.
+//! steps under it pass certificates around as DER bytes and parsed
+//! x509-parser views, both crate-private.
 
 pub mod certs;
 pub mod collateral;
