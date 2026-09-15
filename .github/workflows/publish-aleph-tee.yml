@@ -1,3 +1,4 @@
+---
 name: Publish aleph-tee
 
 # Tag `aleph-tee-vX.Y.Z` on a commit whose rust/crates/aleph-tee/Cargo.toml
@@ -12,9 +13,11 @@ on:
     tags:
       - "aleph-tee-v*"
 
+
 permissions:
   contents: read
   id-token: write
+
 
 jobs:
   publish:
