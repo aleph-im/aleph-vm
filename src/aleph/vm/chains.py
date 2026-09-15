@@ -59,15 +59,3 @@ STREAM_CHAINS: dict[Chain | str, ChainInfo] = {
         super_token="0xc0Fbc4967259786C743361a5885ef49380473dCF",
     ),
 }
-
-
-class InvalidChainError(ValueError):
-    pass
-
-
-def get_chain(chain: str) -> ChainInfo:
-    try:
-        return STREAM_CHAINS[chain]
-    except KeyError:
-        msg = f"Unknown chain id for chain {chain}"
-        raise InvalidChainError(msg)

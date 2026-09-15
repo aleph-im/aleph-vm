@@ -3,7 +3,6 @@ import binascii
 import http
 import logging
 from datetime import datetime, timezone
-from decimal import Decimal
 from json import JSONDecodeError
 from packaging.version import InvalidVersion, Version
 from pathlib import Path
@@ -16,11 +15,11 @@ import aiohttp
 from aiohttp import web
 from aiohttp.web_exceptions import HTTPBadRequest, HTTPNotFound
 from aleph_message.exceptions import UnknownHashError
-from aleph_message.models import InstanceContent, ItemHash, MessageType, PaymentType
+from aleph_message.models import InstanceContent, ItemHash, MessageType
 from pydantic import ValidationError
 
 from aleph.vm import haproxy
-from aleph.vm.agent import payment, status
+from aleph.vm.agent import status
 from aleph.vm.agent.aggregate import update_aggregate_settings
 from aleph.vm.agent.allocation.plan import AllocationState, FailureRecord
 from aleph.vm.agent.allocation.reconciler import AllocationReconciler
@@ -37,25 +36,12 @@ from aleph.vm.agent.haproxy_sync import sync_domain_mappings
 from aleph.vm.agent.messages import try_get_message
 from aleph.vm.agent.metrics import get_execution_records
 from aleph.vm.agent.node_identity import NodeIdentity
-from aleph.vm.agent.payment import (
-    InvalidAddressError,
-    InvalidChainError,
-    fetch_credit_balance_of_address,
-    fetch_execution_price,
-    get_stream,
-)
 from aleph.vm.agent.pubsub import PubSub
 from aleph.vm.agent.resources import Allocation, VMNotification
 from aleph.vm.agent.run import (
     reconcile_port_forwards,
     run_code_on_request,
     start_persistent_vm,
-)
-from aleph.vm.agent.tasks import COMMUNITY_STREAM_RATIO
-from aleph.vm.agent.utils import (
-    format_cost,
-    get_community_wallet_address,
-    is_after_community_wallet_start,
 )
 from aleph.vm.agent.views.allocation_auth import authenticate_api_request
 from aleph.vm.agent.views.authentication import require_jwk_authentication
@@ -595,7 +581,6 @@ async def status_public_config(request: web.Request):
             "payment": {
                 "PAYMENT_RECEIVER_ADDRESS": settings.PAYMENT_RECEIVER_ADDRESS,
                 "AVAILABLE_PAYMENTS": available_payments,
-                "PAYMENT_MONITOR_INTERVAL": settings.PAYMENT_MONITOR_INTERVAL,
             },
             "computing": {
                 "ENABLE_QEMU_SUPPORT": settings.ENABLE_QEMU_SUPPORT,
@@ -677,11 +662,10 @@ async def update_allocations(request: web.Request):
         # First, free resources from persistent programs and instances that are not scheduled anymore.
         allocations = allocation.persistent_vms | allocation.instances | allocation.v_programs
         stopped_vms = []
-        # Status comes from the supervisor (VmInfo); persistence, payment tier
-        # and owner come from the agent registry. A VM with no registry record is
-        # not scheduler-managed and is skipped here; this is safe because every
-        # agent-created VM has a record (persisted on create, rehydrated on
-        # restart) post-#972, so a record-less running VM should not occur.
+        # Status comes from the supervisor (VmInfo); persistence and owner come
+        # from the agent registry. A VM with no registry record is not
+        # scheduler-managed and is skipped here: the allocation says nothing
+        # about it, and the idle-expiry path owns it instead.
         for info in await supervisor.list_vms():
             vm_hash = ItemHash(info.vm_id)
             record = registry.get(vm_hash)
@@ -689,7 +673,7 @@ async def update_allocations(request: web.Request):
                 record is not None
                 and vm_hash not in allocations
                 and info.status is VmStatus.RUNNING
-                and is_removable_by_allocation(record, info)
+                and is_removable_by_allocation(record)
             ):
                 vm_type = VmType.from_message_content(record.message).name
                 logger.info("Stopping %s %s", vm_type, vm_hash)
@@ -944,110 +928,9 @@ async def notify_allocation(request: web.Request):
     # vm_creation_exceptions / 503 path below surfaces that error to the
     # caller.
 
-    payment_type = message.content.payment and message.content.payment.type or PaymentType.hold
-
-    is_confidential = message.content.environment.trusted_execution is not None
-    have_gpu = message.content.requirements and message.content.requirements.gpu is not None
-
-    if payment_type == PaymentType.hold and (is_confidential or have_gpu):
-        # Log confidential and instances with GPU support
-        if is_confidential:
-            logger.debug(f"Confidential instance {item_hash} not using PAYG")
-        if have_gpu:
-            logger.debug(f"GPU Instance {item_hash} not using PAYG")
-        user_balance = await payment.fetch_balance_of_address(message.sender)
-        hold_price = await payment.fetch_execution_price(item_hash, [PaymentType.hold], False)
-        logger.debug(f"Address {message.sender} Balance: {user_balance}, Price: {hold_price}")
-        if hold_price > user_balance:
-            return web.HTTPPaymentRequired(
-                reason="Insufficient balance",
-                text="Insufficient balance for this instance\n\n"
-                f"Required: {hold_price} token \n"
-                f"Current user balance: {user_balance}",
-            )
-    elif payment_type == PaymentType.superfluid:
-        # Payment via PAYG
-        if message.content.payment.receiver != settings.PAYMENT_RECEIVER_ADDRESS:
-            return web.HTTPBadRequest(reason="Message is not for this instance")
-
-        # Check that there is a payment stream for this instance
-        try:
-            active_flow: Decimal = await get_stream(
-                sender=message.sender, receiver=message.content.payment.receiver, chain=message.content.payment.chain
-            )
-        except InvalidAddressError as error:
-            logger.warning(f"Invalid address {error}", exc_info=True)
-            return web.HTTPBadRequest(reason=f"Invalid address {error}")
-        except InvalidChainError as error:
-            logger.warning(f"Invalid chain {error}", exc_info=True)
-            return web.HTTPBadRequest(reason=f"Invalid Chain {error}")
-
-        if not active_flow:
-            raise web.HTTPPaymentRequired(reason="Empty payment stream for this instance")
-
-        required_flow: Decimal = await fetch_execution_price(item_hash, [PaymentType.superfluid])
-        community_wallet = await get_community_wallet_address()
-        required_crn_stream: Decimal
-        required_community_stream: Decimal
-        if await is_after_community_wallet_start() and community_wallet:
-            required_crn_stream = format_cost(required_flow * (1 - COMMUNITY_STREAM_RATIO))
-            required_community_stream = format_cost(required_flow * COMMUNITY_STREAM_RATIO)
-        else:  # No community wallet payment
-            required_crn_stream = format_cost(required_flow)
-            required_community_stream = Decimal(0)
-
-        if active_flow < (required_crn_stream - settings.PAYMENT_BUFFER):
-            active_flow_per_month = active_flow * 60 * 60 * 24 * (Decimal("30.41666666666923904761904784"))
-            required_flow_per_month = required_crn_stream * 60 * 60 * 24 * Decimal("30.41666666666923904761904784")
-            return web.HTTPPaymentRequired(
-                reason="Insufficient payment stream",
-                text="Insufficient payment stream for this instance\n\n"
-                f"Required: {required_flow_per_month} / month (flow = {required_crn_stream})\n"
-                f"Present: {active_flow_per_month} / month (flow = {active_flow})",
-            )
-
-        if community_wallet and required_community_stream:
-            community_flow: Decimal = await get_stream(
-                sender=message.sender,
-                receiver=community_wallet,
-                chain=message.content.payment.chain,
-            )
-            if community_flow < (required_community_stream - settings.PAYMENT_BUFFER):
-                active_flow_per_month = community_flow * 60 * 60 * 24 * (Decimal("30.41666666666923904761904784"))
-                required_flow_per_month = (
-                    required_community_stream * 60 * 60 * 24 * Decimal("30.41666666666923904761904784")
-                )
-                return web.HTTPPaymentRequired(
-                    reason="Insufficient payment stream to community",
-                    text="Insufficient payment stream for community \n\n"
-                    f"Required: {required_flow_per_month} / month (flow = {required_community_stream})\n"
-                    f"Present: {active_flow_per_month} / month (flow = {community_flow})\n"
-                    f"Address: {community_wallet}",
-                )
-    elif payment_type == PaymentType.credit:
-        if is_confidential:
-            logger.debug(f"Confidential instance {item_hash} using Credits")
-        if have_gpu:
-            logger.debug(f"GPU Instance {item_hash} using Credits")
-
-        credit_balance = await fetch_credit_balance_of_address(message.content.address)
-
-        credits_price_x_second = await fetch_execution_price(item_hash, [PaymentType.credit])
-        required_credits = Decimal(credits_price_x_second) * Decimal(60) * Decimal(60)
-        logger.debug(
-            f"Required credit balance for Address {message.content.address} executions: {required_credits}, {item_hash}"
-        )
-
-        if required_credits > credit_balance:
-            return web.HTTPPaymentRequired(
-                reason="Insufficient balance",
-                text="Insufficient credits for this instance\n\n"
-                f"Required: {required_credits} credits \n"
-                f"Current user credits: {credit_balance}",
-            )
-
-    else:
-        return web.HTTPBadRequest(reason="Invalid payment method")
+    # Payment is not checked here. The scheduler validates PAYG streams and
+    # the CCN removes messages whose balance no longer covers them; a VM
+    # started past either is swept by the next allocation that omits it.
 
     # Exceptions that can be raised when starting a VM. SupervisorError covers
     # the full create-failure contract vocabulary (download, setup, init,

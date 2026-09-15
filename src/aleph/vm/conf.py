@@ -4,7 +4,6 @@ import os
 import re
 import shutil
 from collections.abc import Iterable
-from decimal import Decimal
 from enum import Enum
 from os.path import abspath, exists, isdir, isfile, join
 from pathlib import Path
@@ -355,10 +354,6 @@ class Settings(BaseSettings):
         ),
     )
 
-    PAYMENT_MONITOR_INTERVAL: float = Field(
-        default=60.0,
-        description="Interval in seconds between payment checks",
-    )
     DOMAIN_RESYNC_INTERVAL: float = Field(
         default=600.0,
         description=(
@@ -371,10 +366,7 @@ class Settings(BaseSettings):
         default=None,
         description="Address of the account receiving payments. " "Defaults to OWNER_ADDRESS if not set.",
     )
-    # This address is the ALEPH SuperToken on SuperFluid Testnet
-    PAYMENT_PRICING_AGGREGATE: str = ""  # TODO: Missing
-
-    # Use to check PAYG payment
+    # Advertised to PAYG clients through /status/config (AVAILABLE_PAYMENTS)
     RPC_AVAX: HttpUrl = Field(
         default=STREAM_CHAINS[Chain.AVAX].rpc,
         description="RPC API Endpoint for AVAX chain",
@@ -385,26 +377,9 @@ class Settings(BaseSettings):
         description="RPC API Endpoint for BASE chain",
     )
 
-    PAYMENT_BUFFER: Decimal = Field(
-        default=Decimal("0.0000000001"),
-        description="Buffer to add to the required payment to prevent floating point errors",
-    )
-
     CACHE_TTL_SECURITY_AGGREGATE: float = Field(
         default=120.0,
         description="TTL in seconds for cached security aggregates (delegation checks)",
-    )
-    CACHE_TTL_EXECUTION_PRICE: float = Field(
-        default=300.0,
-        description="TTL in seconds for cached execution prices",
-    )
-    CACHE_TTL_ADDRESS_BALANCE: float = Field(
-        default=30.0,
-        description="TTL in seconds for cached address balances",
-    )
-    CACHE_TTL_MESSAGE_STATUS: float = Field(
-        default=30.0,
-        description="TTL in seconds for cached message statuses",
     )
 
     AUTHORIZED_ALLOCATION_SIGNERS: list[str] = []

@@ -33,9 +33,9 @@ def by_hash(infos: list[VmInfo]) -> dict[ItemHash, VmInfo]:
     """The supervisor's VMs, keyed by item hash.
 
     An id that is not one is dropped rather than raised on, the way
-    supervisor_hashes and check_payment drop theirs: it names a VM the plan
-    says nothing about, so letting it through would take down a whole push or
-    wedge a whole convergence pass over something neither is about.
+    supervisor_hashes drops its own: it names a VM the plan says nothing
+    about, so letting it through would take down a whole push or wedge a
+    whole convergence pass over something neither is about.
     """
     known: dict[ItemHash, VmInfo] = {}
     for info in infos:

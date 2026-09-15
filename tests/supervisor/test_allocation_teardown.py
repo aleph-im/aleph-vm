@@ -1,8 +1,7 @@
 """The stop half of an allocation: who may be stopped, and what stopping means.
 
-Both rules are shared by the legacy endpoint and (soon) the v2 reconciler, so
-they live in one module. The v-program inversion is the reason the predicate is
-a named function rather than an inline boolean.
+Both rules are shared by the legacy endpoint and the v2 reconciler, so they
+live in one module.
 """
 
 from types import SimpleNamespace
@@ -17,99 +16,36 @@ from aleph.vm.agent.allocation.teardown import (
     teardown_vm,
 )
 from aleph.vm.agent.vm.retire import RetireReason
-from aleph.vm.supervisor_interface.types import ConfidentialMode, GpuDevice, PciAddress
 
 _HASH = ItemHash("deadbeef" * 8)
 
 
-def _record(*, stream=False, credit=False, vprogram=False, persistent=True):
-    return SimpleNamespace(
-        persistent=persistent,
-        uses_payment_stream=stream,
-        uses_payment_credit=credit,
-        is_vprogram=vprogram,
-        message=MagicMock(),
-    )
-
-
-def _info(*, gpus=(), confidential=ConfidentialMode.NONE):
-    return SimpleNamespace(vm_id=str(_HASH), gpus=list(gpus), confidential_mode=confidential)
+def _record(*, vprogram=False, persistent=True):
+    return SimpleNamespace(persistent=persistent, is_vprogram=vprogram, message=MagicMock())
 
 
 class TestRetentionReason:
     """The answer a push gets for a VM it asked to have stopped and did not.
 
-    Written out twice until now, once as the predicate above and once in the
-    verdict, so a reason one grew and the other did not would have reported a
-    retained VM under the wrong reason, or under a catch-all that meant
-    nothing.
+    The verdict reports this rather than keeping a list of its own, so a
+    reason one grew and the other did not cannot have a retained VM reported
+    under the wrong reason, or under a catch-all that means nothing.
     """
 
-    def test_a_removable_vm_has_no_reason_to_be_kept(self):
-        assert retention_reason(_record(), _info()) is None
+    @pytest.mark.parametrize("record", [_record(), _record(vprogram=True)], ids=["instance", "vprogram"])
+    def test_a_persistent_vm_the_plan_dropped_is_stopped(self, record):
+        """Payment tier, GPUs and confidential mode are the scheduler's
+        business: it validated them when it placed the VM, and dropping the VM
+        from the plan is how it says they no longer hold."""
+        assert retention_reason(record) is None
+        assert is_removable_by_allocation(record) is True
 
-    @pytest.mark.parametrize(
-        ("record", "info", "expected"),
-        [
-            (_record(persistent=False), _info(), "non_persistent"),
-            (_record(credit=True), _info(), "payment_credit"),
-            (
-                _record(),
-                _info(
-                    gpus=[
-                        GpuDevice(
-                            pci_host=PciAddress("0000:01:00.0"),
-                            device_id="10de:2504",
-                            model="x",
-                            supports_x_vga=True,
-                        )
-                    ]
-                ),
-                "gpu",
-            ),
-            (_record(), _info(confidential=ConfidentialMode.SEV_SNP), "confidential"),
-        ],
-    )
-    def test_each_retained_vm_says_what_keeps_it(self, record, info, expected):
-        assert retention_reason(record, info) == expected
+    def test_a_non_persistent_vm_is_the_one_thing_kept(self):
+        """No allocation ever listed it, so no allocation gets to stop it."""
+        record = _record(persistent=False)
 
-    def test_the_reason_and_the_predicate_cannot_disagree(self):
-        """A v-program is the case that used to be answered wrong: removable by
-        the predicate, and reported as retained for being credit-paid by the
-        reason, had anything ever asked the two about the same VM."""
-        record = _record(credit=True, vprogram=True)
-        info = _info(confidential=ConfidentialMode.SEV_SNP)
-
-        assert retention_reason(record, info) is None
-        assert is_removable_by_allocation(record, info) is True
-
-    @pytest.mark.parametrize(
-        "info",
-        [
-            _info(),
-            _info(
-                gpus=[
-                    GpuDevice(
-                        pci_host=PciAddress("0000:01:00.0"),
-                        device_id="10de:2504",
-                        model="x",
-                        supports_x_vga=True,
-                    )
-                ]
-            ),
-            _info(confidential=ConfidentialMode.SEV_SNP),
-        ],
-        ids=["plain", "gpu", "confidential"],
-    )
-    def test_a_stream_paid_vm_is_the_schedulers_to_stop(self, info):
-        """PAYG is scheduler-owned: its payment gate validates the stream and
-        drops an unpaid instance from the plan, so absence stops it. GPU and
-        confidential PAYG included, or most of the PAYG fleet would sit
-        outside scheduler control."""
-        record = _record(stream=True)
-
-        assert retention_reason(record, info) is None
-        assert is_removable_by_allocation(record, info) is True
+        assert retention_reason(record) == "non_persistent"
+        assert is_removable_by_allocation(record) is False
 
 
 class TestTeardown:

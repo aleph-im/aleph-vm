@@ -37,14 +37,6 @@ class AgentVmRecord:
     persistent: bool = False
 
     @property
-    def uses_payment_stream(self) -> bool:
-        return bool(self.message.payment and self.message.payment.is_stream)
-
-    @property
-    def uses_payment_credit(self) -> bool:
-        return bool(self.message.payment and self.message.payment.is_credit)
-
-    @property
     def is_vprogram(self) -> bool:
         return isinstance(self.message, VerifiableProgramContent)
 
