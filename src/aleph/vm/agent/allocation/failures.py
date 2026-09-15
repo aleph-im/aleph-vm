@@ -11,6 +11,7 @@ from aiohttp import ClientResponseError
 from aiohttp.web_exceptions import HTTPBadRequest, HTTPNotFound, HTTPServiceUnavailable
 
 from aleph.vm.agent.allocation.refusal import AllocationFailureCode
+from aleph.vm.agent.capacity import UnsupportedWorkloadError
 from aleph.vm.agent.run import VmStartupError
 from aleph.vm.resources import InsufficientResourcesError
 from aleph.vm.supervisor_interface.errors import SupervisorError
@@ -44,6 +45,10 @@ def classify_start_failure(error: BaseException) -> AllocationFailureCode:
     """
     if isinstance(error, SupervisorError):
         return _BY_SUPERVISOR_CODE.get(error.code, AllocationFailureCode.SUPERVISOR_ERROR)
+    if isinstance(error, UnsupportedWorkloadError):
+        # Before its parent: the node's settings rule the VM out, and no room
+        # anywhere on this node changes that.
+        return AllocationFailureCode.UNSUPPORTED
     if isinstance(error, InsufficientResourcesError):
         # The node's own admission, which runs before the boundary is called.
         return AllocationFailureCode.INSUFFICIENT_CAPACITY

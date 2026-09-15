@@ -42,8 +42,11 @@ The answer is `202 Accepted` and sorts every hash in the push into a bucket:
 
 `rejected` codes are short machine strings with a human `message` beside
 them, for example `invalid_message` for an entry whose embedded message does
-not verify, `node_mismatch` for a message pinned to another node, and the
-capacity refusals. A `rejected` key is normally the VM hash, but an entry
+not verify, `node_mismatch` for a message pinned to another node,
+`unsupported` for a VM this node's settings rule out (a confidential VM or a
+V-PROGRAM with `ENABLE_CONFIDENTIAL_COMPUTING` off, a GPU VM with
+`ENABLE_GPU_SUPPORT` off), and the capacity refusals. A `rejected` key is
+normally the VM hash, but an entry
 the node could not read a hash out of at all is answered under its index in
 the pushed list, as `vms[3]`: it names no VM here, and echoing back whatever
 string the push sent would be unbounded text off the request.

@@ -879,6 +879,20 @@ def test_program_error_mapper_maps_file_too_large_to_bad_request():
     assert excinfo.value.reason == "f is too big"
 
 
+def test_program_error_mapper_maps_an_unsupported_workload_to_bad_request():
+    """A workload the node's settings rule out is a 400 with the reason, not
+    the 503 "at this time" its parent class gets: no later attempt does
+    better on this node. The branch has to sit before the parent's."""
+    from aiohttp.web_exceptions import HTTPBadRequest
+
+    from aleph.vm.agent.capacity import UnsupportedFeature, UnsupportedWorkloadError
+
+    with pytest.raises(HTTPBadRequest) as excinfo:
+        run_module._raise_http_for_program_error(UnsupportedWorkloadError(UnsupportedFeature.GPU), ItemHash(_HASH))
+    assert excinfo.value.reason == "Unsupported workload"
+    assert excinfo.value.text == "GPU support is disabled on this node"
+
+
 @pytest.mark.asyncio
 async def test_create_execution_maps_file_too_large_to_bad_request(monkeypatch):
     """The instance/v-program create path gives FileTooLargeError the same

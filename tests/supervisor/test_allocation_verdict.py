@@ -679,6 +679,7 @@ def _card(device_id=DEVICE_ID):
 def test_a_gpu_candidate_is_refused_when_no_inventory_reached_the_verdict(mocker):
     """simulate's rule, seen from here: with nothing to judge a card against,
     a candidate asking for one is refused rather than admitted on memory."""
+    mocker.patch.object(settings, "ENABLE_GPU_SUPPORT", True)
     verdict = compute_verdict(
         _plan(HASH_C, content=_gpu_message()), infos=[], registry=_registry({}), capacity=_real_capacity(mocker)
     )
@@ -689,6 +690,7 @@ def test_a_gpu_candidate_is_refused_when_no_inventory_reached_the_verdict(mocker
 def test_a_gpu_candidate_is_judged_against_the_inventory_the_caller_read(mocker):
     """Reading the host's cards is async and this is not, so the handler reads
     them and hands them in; from here on a GPU VM can be placed."""
+    mocker.patch.object(settings, "ENABLE_GPU_SUPPORT", True)
     verdict = compute_verdict(
         _plan(HASH_C, content=_gpu_message()),
         infos=[],

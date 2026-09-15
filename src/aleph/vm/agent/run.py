@@ -24,7 +24,12 @@ from msgpack import UnpackValueError
 from multidict import CIMultiDict
 
 from aleph.vm.agent.aggregate import get_user_settings
-from aleph.vm.agent.capacity import CapacityManager, requested_gpu_ids
+from aleph.vm.agent.capacity import (
+    CapacityManager,
+    UnsupportedWorkloadError,
+    requested_gpu_ids,
+    unsupported_message,
+)
 from aleph.vm.agent.create_lock import vm_create_lock
 from aleph.vm.agent.expiry import ExpiryManager
 from aleph.vm.agent.snp_instance_launch import (
@@ -798,6 +803,10 @@ def _raise_http_for_program_error(error: Exception, vm_hash: ItemHash) -> None:
     if isinstance(error, ResourceDownloadError):
         logger.exception(error)
         raise HTTPBadRequest(reason="Code, runtime or data not available") from error
+    if isinstance(error, UnsupportedWorkloadError):
+        # Before its parent: not a matter of room or of time on this node.
+        logger.warning("Refusing %s: %s", vm_hash, error)
+        raise HTTPBadRequest(reason="Unsupported workload", text=unsupported_message(error.feature)) from error
     if isinstance(error, (InsufficientResourcesError, supervisor_errors.InsufficientResourcesError)):
         logger.warning("Refusing %s: %s", vm_hash, error)
         raise HTTPServiceUnavailable(
