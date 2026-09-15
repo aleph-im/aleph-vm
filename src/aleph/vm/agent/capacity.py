@@ -485,11 +485,11 @@ class CapacityManager(PlanAdmission):
         one declared volume must not pay for a second one too.
         """
         volumes = declared_volumes(content)
-        disk = discounted_disk(exclude_vm_hash, volumes)
         requirements = requirements_from_message(content, volumes)
         reason = unsupported_reason(requirements)
         if reason is not None:
             raise UnsupportedWorkloadError(reason)
+        disk = discounted_disk(exclude_vm_hash, volumes)
         self.check_capacity(
             memory_mib=requirements.memory_mib,
             vcpus=requirements.vcpus,
@@ -525,8 +525,15 @@ class CapacityManager(PlanAdmission):
         Never reached by a first create or by an unrecorded hash: the caller
         picks this path only for a hash the registry already held before it
         recorded anything of its own.
+
+        What the node has switched off is judged the same as on a first
+        create: a reservation buys no TEE or GPU on a node that no longer
+        offers one.
         """
         volumes = declared_volumes(content)
+        reason = unsupported_reason(requirements_from_message(content, volumes))
+        if reason is not None:
+            raise UnsupportedWorkloadError(reason)
         disk = discounted_disk(vm_hash, volumes)
         errors, available_disk_mib = self._disk_errors(
             disk_mib=disk.disk_mib,

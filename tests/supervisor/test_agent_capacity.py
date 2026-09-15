@@ -1719,6 +1719,24 @@ def test_check_recreate_does_not_judge_memory_or_vcpus(mocker, tmp_path):
     assert manager.check_recreate(content, vm_hash=_HASH_A) is None
 
 
+def test_check_recreate_refuses_what_the_node_has_switched_off(mocker, tmp_path):
+    """A reservation buys no TEE on a node whose operator turned it off: the
+    rebuild is refused here, not by the daemon after the disks were staged."""
+    from aleph_message.models.execution.environment import TrustedExecutionEnvironment
+
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
+    _patch_eligible_pools(mocker, (tmp_path / "pool0", 100 * 1024 * 1024 * 1024))
+    _hold_nothing(mocker)
+    content = _make_qemu_instance_message(trusted_execution=TrustedExecutionEnvironment())
+
+    mocker.patch.object(settings, "ENABLE_CONFIDENTIAL_COMPUTING", False)
+    with pytest.raises(UnsupportedWorkloadError, match="confidential computing is disabled"):
+        _manager().check_recreate(content, vm_hash=_VM_HASH)
+
+    mocker.patch.object(settings, "ENABLE_CONFIDENTIAL_COMPUTING", True)
+    assert _manager().check_recreate(content, vm_hash=_VM_HASH) is None
+
+
 def test_check_recreate_still_judges_the_disk(mocker, tmp_path):
     """Memory is the only thing the record already holds. A message that grew
     a volume, or one whose files a reinstall purged, still has to find room

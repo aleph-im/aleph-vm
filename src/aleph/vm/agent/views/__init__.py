@@ -26,7 +26,11 @@ from aleph.vm.agent.allocation.plan import AllocationState, FailureRecord
 from aleph.vm.agent.allocation.reconciler import AllocationReconciler
 from aleph.vm.agent.allocation.refusal import Refusal
 from aleph.vm.agent.allocation.teardown import is_removable_by_allocation, teardown_vm
-from aleph.vm.agent.capacity import CapacityManager, requested_gpu_ids
+from aleph.vm.agent.capacity import (
+    CapacityManager,
+    UnsupportedWorkloadError,
+    requested_gpu_ids,
+)
 from aleph.vm.agent.custom_logs import set_vm_for_logging
 from aleph.vm.agent.haproxy_sync import sync_domain_mappings
 from aleph.vm.agent.messages import try_get_message
@@ -1116,6 +1120,10 @@ async def operate_reserve_resources(request: web.Request, authenticated_sender: 
         # hash to discount: nothing is allocated for this message yet.
         capacity.check_message(message)
         expiration_date = await capacity.reserve_gpus(requested_gpu_ids(message), authenticated_sender)
+    except UnsupportedWorkloadError as error:
+        # Before its parent: not a matter of room or of time on this node.
+        logger.warning("Refusing resource reservation: %s", error)
+        return web.HTTPBadRequest(reason="Unsupported workload", text=str(error))
     except InsufficientResourcesError as error:
         logger.warning("Refusing resource reservation: %s", error)
         return web.HTTPServiceUnavailable(
