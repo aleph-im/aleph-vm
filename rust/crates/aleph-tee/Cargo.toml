@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 description = "AMD SEV-SNP and Intel TDX attestation: report and quote parsing, AMD KDS and Intel DCAP collateral verification, and attestation-embedded X.509"
 readme = "README.md"
-keywords = ["sev-snp", "tdx", "attestation", "confidential-computing", "dcap"]
+keywords = ["sev-snp", "tdx", "attestation", "confidential", "dcap"]
 categories = ["cryptography", "hardware-support"]
 # Fixtures ride along so the packaged crate's tests run.
 include = ["src/**", "tests/**", "README.md", "LICENSE"]
