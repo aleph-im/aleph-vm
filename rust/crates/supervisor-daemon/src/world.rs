@@ -200,10 +200,11 @@ pub struct ProgramEntry {
 pub enum VmType {
     Microvm,
     Instance,
-    /// A V-PROGRAM (`aleph_message.models.VerifiableProgramContent`): the
-    /// QEMU SEV-SNP measured-boot launch path is its exclusive hypervisor,
-    /// unconditionally and by schema, so `QemuVmConfig::snp().is_some()`
-    /// identifies one on this side (see [`VmEntry::vm_type`]).
+    /// A V-PROGRAM (`aleph_message.models.VerifiableProgramContent`): it
+    /// always boots on the QEMU SEV-SNP dm-verity arm (the daemon derives its
+    /// measured cmdline). SEV-SNP alone does not identify one: a confidential
+    /// instance boots on the opaque-cmdline SNP arm and stays `Instance` (see
+    /// [`VmType::of_qemu`]).
     VProgram,
 }
 
@@ -219,16 +220,21 @@ impl VmType {
         }
     }
 
-    /// The vm type of a QEMU controller config: SEV-SNP measured boot is the
-    /// exclusive V-PROGRAM launch path (see [`VmType::VProgram`]), everything
-    /// else is a plain instance. This classifies the static-IPv6 recompute
-    /// fallback only (an empty requested_ipv6): the agent supplies the address
-    /// and its hextet for confidential instances under the static policy, so
-    /// this never misclassifies one there. Shared by [`VmEntry::vm_type`] and
-    /// the adoption path in [`build_world_view`], which classifies persisted
-    /// configs before any `VmEntry` exists, so the two can never diverge.
+    /// The vm type of a QEMU controller config. Only the SEV-SNP dm-verity
+    /// arm is a V-PROGRAM; the opaque-cmdline SNP arm is a confidential
+    /// instance, and everything else is a plain instance. The two SNP arms are
+    /// told apart by the persisted `image_format`, which the writer stamps on
+    /// the opaque arm only (it was introduced together with that arm, so every
+    /// persisted confidential-instance config carries it) and never on the
+    /// verity arm. This classifies the static-IPv6 recompute fallback (an
+    /// empty requested_ipv6 at create, or an adopted config with no persisted
+    /// `guest_ipv6_cidr`), where a misclassified confidential instance would
+    /// get the V-PROGRAM hextet instead of the instance one. Shared by
+    /// [`VmEntry::vm_type`] and the adoption path in [`build_world_view`],
+    /// which classifies persisted configs before any `VmEntry` exists, so the
+    /// two can never diverge.
     pub fn of_qemu(config: &QemuVmConfig) -> VmType {
-        if config.snp().is_some() {
+        if config.snp().is_some() && config.image_format.is_none() {
             VmType::VProgram
         } else {
             VmType::Instance
@@ -355,9 +361,9 @@ impl VmEntry {
     /// The vm-type hextet input to the static IPv6 scheme (mirrors the
     /// Python `VmType.from_message_content` split, ported as the equivalent
     /// config shape check: there is no message content on this side). An
-    /// ephemeral Firecracker program is `Microvm`; a QEMU SEV-SNP
-    /// measured-boot config is `VProgram` (its exclusive launch path, see
-    /// [`VmType::VProgram`]); everything else is `Instance`.
+    /// ephemeral Firecracker program is `Microvm`; a QEMU SEV-SNP dm-verity
+    /// config is `VProgram`; everything else, including an SEV-SNP
+    /// confidential instance, is `Instance` (see [`VmType::of_qemu`]).
     pub fn vm_type(&self) -> VmType {
         if self.is_program {
             VmType::Microvm
@@ -1219,17 +1225,16 @@ mod tests {
         assert_eq!(confidential.config.confidential().unwrap().sev_policy, 0x5);
     }
 
-    #[test]
-    fn adopting_a_persisted_snp_config_gives_the_v_program_ipv6_hextet() {
-        // The adoption arm derives adopted_vm_type from
-        // `qemu.snp().is_some()` (world.rs, around the QEMU adoption match
-        // arm); a persisted SNP controller config must adopt with the
-        // VProgram (0x4) hextet, not the plain-instance (0x3) one. This is
-        // the branch's central no-drift invariant: reverting that
-        // derivation to `VmType::Instance` must fail this test while
-        // leaving every other test green.
-        let tmp = tempfile::tempdir().unwrap();
-        let snp_hash = "d".repeat(64);
+    /// Adopt one persisted SEV-SNP controller config (no `guest_ipv6_cidr`,
+    /// so adoption falls back to the static recompute) and return the adopted
+    /// entry next to the settings. `opaque_cmdline` adds the
+    /// opaque-cmdline arm's `image_format` / `image_readonly` keys, which the
+    /// writer stamps on a confidential instance only.
+    fn adopt_persisted_snp_config(
+        tmp: &std::path::Path,
+        snp_hash: &str,
+        opaque_cmdline: bool,
+    ) -> (VmEntry, Settings) {
         let fixture = std::fs::read_to_string(
             test_fixtures::fixtures_dir()
                 .join(format!("{}-controller.json", test_fixtures::QEMU_HASH)),
@@ -1237,7 +1242,7 @@ mod tests {
         .unwrap();
         let mut value: serde_json::Value = serde_json::from_str(&fixture).unwrap();
         value["vm_id"] = 9.into();
-        value["vm_hash"] = snp_hash.clone().into();
+        value["vm_hash"] = snp_hash.into();
         // Persisted SNP measured-boot slice, matching what the QEMU config
         // writer (lifecycle.rs snp_config_slice / create_vm) stamps for an
         // SNP VM: `sev_snp: true` plus the four measured-boot fields, so
@@ -1252,35 +1257,85 @@ mod tests {
             "/opt/aleph-vm/firmware/OVMF.fd".into(),
         );
         config.insert("sev_policy".to_string(), 196608.into());
+        if opaque_cmdline {
+            config.insert("image_format".to_string(), "qcow2".into());
+            config.insert("image_readonly".to_string(), false.into());
+        }
         std::fs::write(
-            tmp.path().join(format!("{snp_hash}-controller.json")),
+            tmp.join(format!("{snp_hash}-controller.json")),
             value.to_string(),
         )
         .unwrap();
 
-        let settings = test_settings(tmp.path());
-        let units = StaticUnitStates::with_active_vms(&[snp_hash.as_str()]);
+        let settings = test_settings(tmp);
+        let units = StaticUnitStates::with_active_vms(&[snp_hash]);
         let world = build_world_view(&settings, &units, &[]);
 
-        let entry = &world.entries[snp_hash.as_str()];
+        let entry = world.entries[snp_hash].clone();
         assert!(entry.adopted_running);
         assert!(
             entry.config.snp().is_some(),
             "the persisted config must resolve as SNP"
         );
+        assert!(
+            entry.config.guest_ipv6_cidr.is_none(),
+            "the fixture must exercise the recompute fallback"
+        );
+        (entry, settings)
+    }
+
+    #[test]
+    fn adopting_a_persisted_snp_config_gives_the_v_program_ipv6_hextet() {
+        // A persisted SNP dm-verity (V-PROGRAM) controller config must adopt
+        // with the VProgram (0x4) hextet, not the plain-instance (0x3) one.
+        // Reverting `VmType::of_qemu` to `VmType::Instance` must fail this
+        // test.
+        let tmp = tempfile::tempdir().unwrap();
+        let snp_hash = "d".repeat(64);
+        let (entry, settings) = adopt_persisted_snp_config(tmp.path(), &snp_hash, false);
+
+        assert_eq!(entry.vm_type(), VmType::VProgram);
         let expected =
             ipv6_static_assignment(&settings.ipv6_address_pool, &snp_hash, VmType::VProgram)
                 .unwrap();
         assert_eq!(
             entry.ipv6,
             Some(expected),
-            "an adopted SNP VM must carry the V-PROGRAM (0x4) ipv6 hextet, \
+            "an adopted SNP V-PROGRAM must carry the V-PROGRAM (0x4) ipv6 hextet, \
              not the plain-instance (0x3) one"
         );
         let address = entry.ipv6.as_ref().unwrap().address.clone();
         assert!(
             address.split(':').nth(4) == Some("4"),
             "ipv6 address {address} must carry the 0x4 vm-type hextet"
+        );
+    }
+
+    #[test]
+    fn adopting_a_persisted_snp_instance_config_gives_the_instance_ipv6_hextet() {
+        // An SEV-SNP confidential instance (the opaque-cmdline arm, marked by
+        // its persisted `image_format`) is an instance, not a V-PROGRAM: with
+        // no persisted guest_ipv6_cidr (legacy config, or one written under
+        // the dynamic policy) the static recompute must key the instance
+        // (0x3) hextet, matching the agent's `compute_requested_ipv6`.
+        let tmp = tempfile::tempdir().unwrap();
+        let snp_hash = "e".repeat(64);
+        let (entry, settings) = adopt_persisted_snp_config(tmp.path(), &snp_hash, true);
+
+        assert_eq!(entry.vm_type(), VmType::Instance);
+        let expected =
+            ipv6_static_assignment(&settings.ipv6_address_pool, &snp_hash, VmType::Instance)
+                .unwrap();
+        assert_eq!(
+            entry.ipv6,
+            Some(expected),
+            "an adopted SNP confidential instance must carry the instance (0x3) \
+             ipv6 hextet, not the V-PROGRAM (0x4) one"
+        );
+        let address = entry.ipv6.as_ref().unwrap().address.clone();
+        assert!(
+            address.split(':').nth(4) == Some("3"),
+            "ipv6 address {address} must carry the 0x3 vm-type hextet"
         );
     }
 

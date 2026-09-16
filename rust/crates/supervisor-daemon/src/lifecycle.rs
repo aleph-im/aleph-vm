@@ -2803,6 +2803,20 @@ fn create_vm_inner(
         .tee
         .as_ref()
         .is_some_and(|tee| tee.backend == pb::TeeBackend::SevSnp as i32);
+    // The static-IPv6 vm-type hextet input (only the fallback for an empty
+    // requested_ipv6). Only the SEV-SNP dm-verity arm is a V-PROGRAM: an SNP
+    // create carrying `tee.kernel_cmdline` is the opaque-cmdline
+    // confidential-instance arm, and a plain or SEV/SEV-ES create is an
+    // instance too. Mirrors `VmType::of_qemu` on the written config.
+    let snp_opaque_cmdline = request
+        .tee
+        .as_ref()
+        .is_some_and(|tee| !tee.kernel_cmdline.is_empty());
+    let create_vm_type = if snp && !snp_opaque_cmdline {
+        VmType::VProgram
+    } else {
+        VmType::Instance
+    };
     let confidential = request.tee.is_some();
     // SEV/SEV-ES only: the create-then-await path. SNP does not await.
     let await_session = confidential && !snp;
@@ -2903,17 +2917,6 @@ fn create_vm_inner(
         });
         let vm_index = world.unique_vm_index(state.host.settings.start_id_index)?;
         let assignment = if state.host.settings.allow_vm_networking {
-            // `snp` (computed above from `request.tee`) is the V-PROGRAM
-            // signal: SEV-SNP measured boot is its exclusive launch path, so
-            // it is the only QEMU-create shape that gets the VProgram
-            // hextet; a plain or SEV/SEV-ES confidential create is Instance.
-            // This is only the fallback for an empty requested_ipv6 (the agent
-            // supplies the address, and its hextet, under the static policy).
-            let create_vm_type = if snp {
-                VmType::VProgram
-            } else {
-                VmType::Instance
-            };
             let mut ordinal = world.ipv6_dynamic_ordinal;
             let pair = world::derive_tap_assignment(
                 &state.host.settings,
@@ -2989,6 +2992,13 @@ fn create_vm_inner(
             entry.config.snp().is_some(),
             snp,
             "create's SNP predicate must match the written config's snp()"
+        );
+        // The IPv6 hextet chosen above must match the classification every
+        // later path (adoption included) derives from the written config.
+        debug_assert_eq!(
+            entry.vm_type(),
+            create_vm_type,
+            "create's vm type must match the written config's VmType::of_qemu"
         );
         match stale_ordinal {
             Some(ordinal) => {
@@ -4717,6 +4727,45 @@ mod tests {
             "an SNP (V-PROGRAM) create must get the 0x4 vm-type hextet, got {}",
             ipv6.address
         );
+    }
+
+    #[test]
+    fn create_snp_instance_allocates_the_instance_ipv6_hextet() {
+        // An SEV-SNP confidential instance (the opaque-cmdline arm: the agent
+        // supplies `tee.kernel_cmdline`) is an instance, not a V-PROGRAM: with
+        // no requested_ipv6 the daemon's static fallback must key the 0x3
+        // vm-type nibble, and the written config must classify the same way
+        // on adoption.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('f');
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let request = snp_opaque_spec(&vm_id, &root, &firmware.to_string_lossy());
+
+        let (entry, _running) = create_vm(state, request).unwrap();
+        assert!(
+            entry.config.snp().is_some(),
+            "the instance boots on SEV-SNP"
+        );
+        assert_eq!(entry.vm_type(), world::VmType::Instance);
+        let ipv6 = entry
+            .ipv6
+            .expect("networking is enabled in the harness; SNP create allocates an IPv6 pair");
+        assert!(
+            ipv6.address.starts_with("fc00:1:2:3:3:"),
+            "an SNP confidential instance create must get the 0x3 vm-type hextet, got {}",
+            ipv6.address
+        );
+
+        let written =
+            std::fs::read_to_string(root.join(format!("{vm_id}-controller.json"))).unwrap();
+        let parsed = parse_controller_config(&written).unwrap();
+        let VmConfiguration::Qemu(qemu) = parsed.vm else {
+            panic!("the written config must be QEMU");
+        };
+        assert_eq!(world::VmType::of_qemu(&qemu), world::VmType::Instance);
     }
 
     #[test]
