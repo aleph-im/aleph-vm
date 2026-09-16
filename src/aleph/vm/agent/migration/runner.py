@@ -15,6 +15,7 @@ from aleph_message.models import MessageType
 from aleph_message.models.execution.environment import HypervisorType
 
 from aleph.vm.agent.capacity import CapacityManager, requested_gpu_ids
+from aleph.vm.agent.guest_ipv6 import create_vm_with_ipv6
 from aleph.vm.agent.messages import load_updated_message
 from aleph.vm.agent.migration.helpers import (
     compress_disk,
@@ -359,7 +360,7 @@ async def run_import(
                 if requested_gpus:
                     resolved_gpus = await capacity.resolve_gpus(requested_gpus, owner=message.content.address)
                     spec = replace(spec, gpus=resolved_gpus)
-                await supervisor.create_vm(spec)
+                await create_vm_with_ipv6(supervisor, spec)
                 vm_created = True
 
                 # The agent records its own knowledge of the VM, exactly as

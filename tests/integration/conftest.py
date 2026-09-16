@@ -38,6 +38,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from ipaddress import IPv6Network
 from pathlib import Path
 
 import pytest
@@ -518,6 +519,13 @@ async def supervisor(daemon):
 # ---------------------------------------------------------------------------
 
 
+def guest_ipv6(vm_id: str, type_hextet: str = "3") -> str:
+    """A unique guest /124 per test VM, in the static scheme's shape. The
+    agent allocates addresses in production; the supervisor requires one on
+    every networked create."""
+    return str(IPv6Network(f"fc00:1:2:3:{type_hextet}:{vm_id[0:4]}:{vm_id[4:8]}:{vm_id[8:11]}0/124"))
+
+
 def fresh_vm_id() -> VmId:
     """A unique, ItemHash-shaped (64 hex chars) VM id per test VM."""
     return VmId(secrets.token_hex(32))
@@ -540,7 +548,11 @@ def fc_program_spec(
         vcpus=vcpus,
         memory_mib=memory_mib,
         tee=None,
-        network=NetworkConfig(internet_access=internet, requested_ipv6="", ipv6_prefix_len=0),
+        network=NetworkConfig(
+            internet_access=internet,
+            requested_ipv6=guest_ipv6(vm_id, "1") if internet else "",
+            ipv6_prefix_len=124 if internet else 0,
+        ),
         gpus=[],
         numa_node=None,
         persistent=False,
@@ -625,7 +637,7 @@ def qemu_instance_spec(
         vcpus=vcpus,
         memory_mib=memory_mib,
         tee=None,
-        network=NetworkConfig(internet_access=True, requested_ipv6="", ipv6_prefix_len=0),
+        network=NetworkConfig(internet_access=True, requested_ipv6=guest_ipv6(vm_id), ipv6_prefix_len=124),
         gpus=[],
         numa_node=None,
         persistent=True,
