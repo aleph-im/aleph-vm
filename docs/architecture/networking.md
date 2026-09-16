@@ -4,8 +4,8 @@
 
 ## What this covers
 
-How a CRN node wires a VM's tap device to the network: IPv4/IPv6 address
-derivation (static pool math and, for IPv6, an optional dynamic scheme),
+How a CRN node wires a VM's tap device to the network: IPv4 address
+derivation (static pool math) and the agent-allocated IPv6 addresses,
 the nftables ruleset the supervisor builds and maintains, the port-forward
 store and its healing behavior, the NDP proxy for routed IPv6, the per-VM
 DHCP server that exists only for SEV-SNP measured guests, and the host
@@ -35,10 +35,7 @@ last subnet on a corrupt index is a list-indexing accident, and two VMs
 could then share a subnet).
 
 `derive_tap_assignment` (`rust/crates/supervisor-daemon/src/world.rs`) turns
-`(vm_index, vm_hash, vm_type)` into an IPv4 pair and an IPv6 pair; `TapAssignment`
-(`rust/crates/supervisor-daemon/src/tap.rs`) wraps them with the device name and
-the CIDR-formatted host/guest address strings the tap creation and
-cloud-init paths consume.
+`(vm_index, requested IPv6 network)` intocloud-init paths consume.
 
 **IPv4** is always static pool math (`ipv4_assignment` in `world.rs`): the
 pool (`IPV4_ADDRESS_POOL`, default `172.16.0.0/12`) is split into
@@ -47,28 +44,31 @@ and `vm_index` selects the subnet at that position. Inside the subnet, the
 gateway (host side) is network+1 and the guest address is network+2; both
 must fit inside the subnet, or derivation fails.
 
-**IPv6** has two policies, selected by `IPV6_ALLOCATION_POLICY`
-(`Ipv6AllocationPolicy::Static` is the default):
+**IPv6** is allocated by the agent, never by the supervisor. The agent
+(`src/aleph/vm/agent/guest_ipv6.py`) applies `IPV6_ALLOCATION_POLICY`:
 
-- **Static** (`ipv6_static_assignment`): the pool (`IPV6_ADDRESS_POOL`,
-  default `fc00:1:2:3::/64`) must be a `/56` or `/64`. The VM's `/124`
-  subnet is built from the pool's first four hextets, a fifth hextet that
-  encodes the VM type (`VmType::prefix()`: `0x1` for microvms, `0x3` for
-  instances), and three more hextets sliced out of the VM hash (bytes
-  `0..4`, `4..8`, and `8..11` with a trailing zero nibble appended) parsed
-  as hex. Guest = network+1, gateway = the network address itself. Because
-  the address is a pure function of `vm_index`-independent inputs (VM type
-  plus hash), it is reproducible without any allocator state, which is why
-  it is the default: the CRN and the publisher can agree on the exact
-  address before boot, which SEV-SNP's measured-image requirement (no
-  per-VM data in the image or kernel cmdline) depends on.
-- **Dynamic** (`ipv6_dynamic_assignment`): the ordinal-th
-  `/{IPV6_SUBNET_PREFIX}` subnet of the pool (default prefix 124), ordinal 0
-  reserved for the host. `WorldView::ipv6_dynamic_ordinal` is seeded at boot
-  from every adopted running VM (sorted config order) and advances by one on
-  every subsequent derivation, so it behaves like the Python generator: it
-  never rewinds within a daemon's lifetime, and a restart replays the same
-  count from the same adopted set before handing out anything new.
+- **Static** (the default): the pool (`IPV6_ADDRESS_POOL`, default
+  `fc00:1:2:3::/64`) contributes its first four hextets, a fifth hextet
+  encodes the VM type (`0x1` microvms, `0x3` instances, `0x4` V-PROGRAMs),
+  and three more hextets are sliced out of the VM hash (bytes `0..4`,
+  `4..8`, and `8..11` with a trailing zero nibble). The address is a pure
+  function of type and hash, so the CRN and the publisher can agree on it
+  before boot.
+- **Dynamic**: the first free `/{IPV6_SUBNET_PREFIX}` subnet of the pool,
+  subnet 0 reserved for the host, skipping every subnet a VM the supervisor
+  knows holds (live or persisted) and the agent's own in-flight
+  allocations. A VM that already holds an address keeps it.
+
+Every networked `CreateVm` carries the result in
+`network.requested_ipv6`; the daemon refuses a spec without one, and
+refuses one that overlaps a subnet another entry holds (live, or persisted
+for a stopped VM) as a backstop. The address is persisted as
+`guest_ipv6_cidr` in the controller config and adopted verbatim after a
+restart. A legacy config without it adopts the address still configured on
+its live tap (`TapBackend::global_ipv6_address`); with neither, a running
+VM is hidden like a failed reattach and a stopped one refuses to start
+(the agent then rebuilds it through a fresh create). Guest = network+1,
+gateway = the network address.
 
 Both parsers (`parse_ipv4_cidr`/`parse_ipv6_cidr`) reject a pool with host
 bits set and a prefix that does not actually subnet the pool, matching
@@ -144,8 +144,8 @@ running. `RecreateNetwork` (the operator-facing RPC, `recreate_network` in
 explicitly flushes every aleph-prefixed chain, reinitializes the base
 ruleset, and rebuilds the per-VM chains and persisted port redirects of
 every running VM from scratch. Before filtering to running VMs it also
-rederives any missing `ipv4`/`ipv6` assignment from `vm_index`/`vm_hash`
-for entries whose IP was never populated (e.g. adopted during a D-Bus
+rederives any missing `ipv4`/`ipv6` assignment from `vm_index` and the
+persisted (or tap-configured) IPv6 network for entries whose IP was never populated (e.g. adopted during a D-Bus
 outage), so a node that booted degraded can heal its chains through this
 one RPC rather than staying permanently unnetworked. A failed per-chain
 removal is excluded from the reported `removed_chains` (logged, not fatal);
@@ -278,11 +278,10 @@ exactly.
 
 ## Key invariants
 
-- IPv4 addressing is always static pool math derived from `vm_index`; IPv6
-  is static (derived from VM type + hash, the default) or dynamic
-  (allocator-ordinal-based), selected once per node by
-  `IPV6_ALLOCATION_POLICY`
-  (`rust/crates/supervisor-daemon/src/world.rs`).
+- IPv4 addressing is always static pool math derived from `vm_index`; the
+  guest IPv6 network always comes from the agent (static or dynamic policy,
+  `src/aleph/vm/agent/guest_ipv6.py`) and the supervisor only stores and
+  serves it (`rust/crates/supervisor-daemon/src/world.rs`).
 - A negative or otherwise invalid `vm_index`/derivation input hides the VM
   instead of silently serving a fallback subnet; two VMs never share a tap
   network (`rust/crates/supervisor-daemon/src/world.rs`).
@@ -329,8 +328,8 @@ exactly.
 ## Pointers into code
 
 - `rust/crates/supervisor-daemon/src/world.rs`: `derive_tap_assignment`,
-  `ipv4_assignment`, `ipv6_static_assignment`, `ipv6_dynamic_assignment`,
-  `unique_vm_index`, `VmType`.
+  `ipv4_assignment`, `ipv6_from_cidr`, `ipv6_from_tap`,
+  `WorldView::ipv6_holder`, `unique_vm_index`.
 - `rust/crates/supervisor-daemon/src/tap.rs`: `TapAssignment`, the
   `TapBackend` trait and its `ip(8)` production implementation.
 - `rust/crates/supervisor-daemon/src/nft.rs`: the pure ruleset-diff layer

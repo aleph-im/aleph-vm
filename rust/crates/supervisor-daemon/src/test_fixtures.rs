@@ -6,6 +6,11 @@
 //! the sqlite database) by the since-removed `scripts/generate_rust_fixtures.py`,
 //! captured from the Python daemon's own models before that daemon was removed (2026-08); they are frozen goldens now, edit them only to record a deliberate change.
 //!
+//! The three controller-config fixtures carry a hand-added `guest_ipv6_cidr`
+//! (the address the Python static scheme gave them): the daemon no longer
+//! derives guest IPv6 addresses, so a fixture VM adopted running needs one.
+//! Tests of legacy configs strip it.
+//!
 //! The hashes are `sha256("rust-fixture-<name>")`, so the generator and these
 //! constants stayed in sync without copy-paste drift risk.
 

@@ -27,7 +27,7 @@ use crate::firecracker::{ProgramBootError, ProgramBootRequest};
 use crate::service::DaemonState;
 use crate::tap::TapAssignment;
 use crate::units::{self, UnitLiveness, UnitsError, controller_unit_name};
-use crate::world::{self, AttachedGpu, ProgramEntry, VmEntry, VmTimes, VmType, now_ns};
+use crate::world::{self, AttachedGpu, IpPair, ProgramEntry, VmEntry, VmTimes, WorldView, now_ns};
 use crate::{checks, cloudinit, dhcp, nft, ports};
 
 /// The closed error vocabulary slice these RPCs can produce, mapped in
@@ -555,6 +555,23 @@ fn chain_prefix(state: &DaemonState) -> &str {
     &state.host.settings.nftables_chain_prefix
 }
 
+/// The guest IPv6 network an entry without a stored pair can use: its
+/// persisted /124, or for a legacy config the address still live on its tap.
+/// The daemon never derives one, so with neither this is an error.
+fn known_ipv6_cidr(state: &DaemonState, entry: &VmEntry) -> Result<String, world::WorldError> {
+    entry
+        .config
+        .guest_ipv6_cidr
+        .clone()
+        .filter(|cidr| !cidr.is_empty())
+        .or_else(|| {
+            world::ipv6_from_tap(&*state.taps, entry.vm_index).map(|pair| pair.network_cidr)
+        })
+        .ok_or_else(|| world::WorldError::NoKnownIpv6 {
+            vm_id: entry.vm_hash.clone(),
+        })
+}
+
 /// The tap assignment of an entry; derives (and stores) it when absent
 /// (adopted-stopped entries have none until StartVm).
 fn tap_assignment(state: &DaemonState, vm_id: &str) -> Result<TapAssignment, LifecycleError> {
@@ -569,35 +586,20 @@ fn tap_assignment(state: &DaemonState, vm_id: &str) -> Result<TapAssignment, Lif
         ));
     }
     // No stored pair: an entry adopted stopped (or during a bus outage).
-    // The persisted guest /124 is the address the VM was created with, so
-    // it wins; a legacy config without one prefers the address live on its
-    // tap under the dynamic policy (a readopted or still-running VM), and
-    // only then falls back to the settings-driven derivation.
-    let known_ipv6 = entry
-        .config
-        .guest_ipv6_cidr
-        .clone()
-        .filter(|cidr| !cidr.is_empty())
-        .or_else(|| {
-            world::legacy_dynamic_ipv6_from_tap(&state.host.settings, &*state.taps, entry.vm_index)
-                .map(|pair| pair.network_cidr)
-        });
+    // The daemon never derives a guest IPv6: the persisted /124 is the
+    // address the agent allocated, and a legacy config without one can only
+    // use the address still live on its tap (a readopted or still-running
+    // VM). With neither, fail: the agent rebuilds such a VM with a fresh
+    // create that carries an address.
+    let cidr = known_ipv6_cidr(state, &entry)?;
+    let (ipv4, ipv6) = world::derive_tap_assignment(&state.host.settings, entry.vm_index, &cidr)?;
     let mut world = state.world.blocking_write();
-    let held_ipv6 = world.held_ipv6_networks();
-    let mut ordinal = world.ipv6_dynamic_ordinal;
-    let (ipv4, ipv6) = world::derive_tap_assignment(
-        &state.host.settings,
-        entry.vm_index,
-        vm_id,
-        entry.vm_type(),
-        &mut ordinal,
-        known_ipv6.as_deref(),
-        &held_ipv6,
-    )?;
-    world.ipv6_dynamic_ordinal = ordinal;
     if let Some(entry) = world.entries.get_mut(vm_id) {
         entry.ipv4 = Some(ipv4.clone());
         entry.ipv6 = Some(ipv6.clone());
+        // A tap-read legacy address is kept, so the reconstructed spec and
+        // the next start agree with it.
+        entry.config.guest_ipv6_cidr = Some(ipv6.network_cidr.clone());
     }
     Ok(TapAssignment::new(entry.vm_index, ipv4, ipv6))
 }
@@ -774,19 +776,9 @@ fn guest_ipv4(state: &DaemonState, entry: &VmEntry) -> String {
     if let Some(ipv4) = &entry.ipv4 {
         return ipv4.address.clone();
     }
-    let mut ordinal = 0;
-    world::derive_tap_assignment(
-        &state.host.settings,
-        entry.vm_index,
-        &entry.vm_hash,
-        entry.vm_type(),
-        &mut ordinal,
-        // Only the IPv4 result is read here; the IPv6 derivation is irrelevant.
-        None,
-        &world::HeldIpv6::new(),
-    )
-    .map(|(ipv4, _)| ipv4.address)
-    .unwrap_or_default()
+    world::ipv4_for_index(&state.host.settings, entry.vm_index)
+        .map(|ipv4| ipv4.address)
+        .unwrap_or_default()
 }
 
 /// Drop everything the CC-mode cache holds about a VM's cards. Once QEMU is
@@ -1093,6 +1085,12 @@ fn start_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> 
         for gpu in &entry.config.gpus {
             require_gpu_cc_mode(state, &gpu.pci_host, state.gpu_cc_probe)?;
         }
+    }
+    // A VM with no known guest IPv6 (a legacy config) cannot get a tap; refuse
+    // before touching anything, so it stays STOPPED and the agent can rebuild
+    // it through a fresh create that carries an address.
+    if networking_enabled(state, &entry) && entry.ipv6.is_none() {
+        known_ipv6_cidr(state, &entry).map_err(|error| RpcError::Internal(error.to_string()))?;
     }
     // The stop stamps are cleared here while the unit stays down through the
     // tap, the rules, RestartUnit and the readiness wait: that is the
@@ -1697,24 +1695,61 @@ pub fn remove_port_forward(
 
 // ── CreateVm ────────────────────────────────────────────────────────────
 
+/// The guest IPv6 pair a networked create must carry: the agent allocates
+/// every guest address (static and dynamic policies alike) and the daemon
+/// never derives one, so an empty `requested_ipv6` is a malformed spec.
+fn requested_ipv6_pair(request: &pb::VmSpec) -> Result<IpPair, RpcError> {
+    let network = request.network.as_ref();
+    let cidr = network.map_or("", |network| network.requested_ipv6.as_str());
+    if cidr.is_empty() {
+        return Err(RpcError::InvalidBackend(
+            "A networked VmSpec requires network.requested_ipv6: the agent allocates \
+             guest IPv6 addresses, the supervisor never derives one"
+                .to_string(),
+        ));
+    }
+    let pair = world::ipv6_from_cidr(cidr).map_err(|error| {
+        RpcError::InvalidBackend(format!("Invalid network.requested_ipv6 {cidr:?}: {error}"))
+    })?;
+    let prefix_len = network.map_or(0, |network| network.ipv6_prefix_len);
+    let cidr_prefix = pair
+        .network_cidr
+        .rsplit_once('/')
+        .and_then(|(_, len)| len.parse::<u32>().ok());
+    if prefix_len != 0 && Some(prefix_len) != cidr_prefix {
+        return Err(RpcError::InvalidBackend(format!(
+            "network.ipv6_prefix_len {prefix_len} disagrees with network.requested_ipv6 {cidr:?}"
+        )));
+    }
+    Ok(pair)
+}
+
+/// Refuse a requested guest network that overlaps one another VM holds
+/// (live, or persisted for a stopped VM). The agent is supposed to never
+/// ask for one; this is the backstop against two guests sharing a subnet.
+fn ensure_ipv6_free(world: &WorldView, ipv6: &IpPair, vm_id: &str) -> Result<(), RpcError> {
+    match world.ipv6_holder(ipv6, vm_id) {
+        Some((holder, held)) => Err(RpcError::InvalidBackend(
+            world::WorldError::Ipv6Overlap {
+                requested: ipv6.network_cidr.clone(),
+                held,
+                holder,
+            }
+            .to_string(),
+        )),
+        None => Ok(()),
+    }
+}
+
 /// Python `_require_same_spec`: an identical spec returns the live VM
 /// (safe retry), a different one conflicts.
 ///
-/// An empty `requested_ipv6` asks the daemon to pick the address (the
-/// dynamic policy), so it matches whatever address the VM was assigned: the
-/// reconstruction of an adopted VM echoes the persisted /124 even when the
-/// agent never sent one.
+/// The requested IPv6 is compared as a network, not as text: the agent
+/// sends the Python notation and an adopted VM's reconstruction echoes the
+/// Rust one, which may differ in formatting for the same address.
 fn same_spec_or_conflict(entry: &VmEntry, request: &pb::VmSpec) -> Result<VmEntry, RpcError> {
-    let mut current = crate::service::vm_spec_message(entry);
-    let daemon_picks_ipv6 = request
-        .network
-        .as_ref()
-        .is_some_and(|network| network.requested_ipv6.is_empty());
-    if daemon_picks_ipv6 && let Some(network) = current.network.as_mut() {
-        network.requested_ipv6.clear();
-        network.ipv6_prefix_len = 0;
-    }
-    if current == *request {
+    let current = canonical_ipv6_spec(crate::service::vm_spec_message(entry));
+    if current == canonical_ipv6_spec(request.clone()) {
         Ok(entry.clone())
     } else {
         Err(RpcError::AlreadyExists(format!(
@@ -1722,6 +1757,17 @@ fn same_spec_or_conflict(entry: &VmEntry, request: &pb::VmSpec) -> Result<VmEntr
             request.vm_id
         )))
     }
+}
+
+/// `spec` with its requested IPv6 in the daemon's own notation (left as is
+/// when it does not parse, so a malformed value still compares unequal).
+fn canonical_ipv6_spec(mut spec: pb::VmSpec) -> pb::VmSpec {
+    if let Some(network) = spec.network.as_mut()
+        && let Ok(pair) = world::ipv6_from_cidr(&network.requested_ipv6)
+    {
+        network.requested_ipv6 = pair.network_cidr;
+    }
+    spec
 }
 
 /// The host inventory entry for a pci address, if the host has such a card.
@@ -2897,21 +2943,24 @@ fn create_vm_inner(
     // (prepare() raises it from require_rootfs) and before any side effect.
     require_rootfs(&request)?;
 
-    // The agent computes the Aleph static IPv6 (the address does not depend on
-    // the vm_index) and hands it over in the network config; the daemon honors
-    // it verbatim rather than re-deriving the scheme. Empty under the dynamic
-    // policy, where the daemon still assigns from its own ordinal.
-    let requested_ipv6 = request
-        .network
-        .as_ref()
-        .map(|network| network.requested_ipv6.clone())
-        .filter(|cidr| !cidr.is_empty());
+    // A QEMU VM always gets a tap when networking is on (Python parity), so
+    // the spec must carry the guest IPv6 the agent allocated.
+    let requested_ipv6 = if state.host.settings.allow_vm_networking {
+        Some(requested_ipv6_pair(&request)?)
+    } else {
+        None
+    };
 
     // Register the entry (Python registers the execution before prepare so
     // duplicate creates and Health see it), allocating the vm_index and the
     // tap assignment under one world lock.
     let (vm_index, assignment, mut written, stale_numa) = {
         let mut world = state.world.blocking_write();
+        // Before touching the world: a refused create leaves a stale entry
+        // in place.
+        if let Some(ipv6) = &requested_ipv6 {
+            ensure_ipv6_free(&world, ipv6, &vm_id)?;
+        }
         // A stale stopped entry is replaced, like the Python
         // `self.executions[vm_id] = execution` overwrite; a dict overwrite
         // keeps the key's insertion position, so the ordinal survives.
@@ -2929,42 +2978,16 @@ fn create_vm_inner(
             })
         });
         let vm_index = world.unique_vm_index(state.host.settings.start_id_index)?;
-        let assignment = if state.host.settings.allow_vm_networking {
-            // `snp` (computed above from `request.tee`) is the V-PROGRAM
-            // signal: SEV-SNP measured boot is its exclusive launch path, so
-            // it is the only QEMU-create shape that gets the VProgram
-            // hextet; a plain or SEV/SEV-ES confidential create is Instance.
-            // This is only the fallback for an empty requested_ipv6 (the agent
-            // supplies the address, and its hextet, under the static policy).
-            let create_vm_type = if snp {
-                VmType::VProgram
-            } else {
-                VmType::Instance
-            };
-            let held_ipv6 = world.held_ipv6_networks();
-            let mut ordinal = world.ipv6_dynamic_ordinal;
-            let pair = world::derive_tap_assignment(
-                &state.host.settings,
-                vm_index,
-                &vm_id,
-                create_vm_type,
-                &mut ordinal,
-                requested_ipv6.as_deref(),
-                &held_ipv6,
-            )?;
-            world.ipv6_dynamic_ordinal = ordinal;
-            Some(pair)
-        } else {
-            None
+        let assignment = match requested_ipv6 {
+            Some(ipv6) => Some((world::ipv4_for_index(&state.host.settings, vm_index)?, ipv6)),
+            None => None,
         };
 
         let interface_name = assignment.as_ref().map(|_| format!("vmtap{vm_index}"));
         let mut written = build_written_config(state, &request, vm_index, interface_name)?;
-        // Always persist the assigned guest /124, whoever computed it and
-        // under whichever policy: adoption reads it back verbatim. A dynamic
-        // address in particular cannot be recomputed after a restart (the
-        // adoption order is not the allocation order), and a recompute would
-        // serve an address the VM, its tap and its DHCP server do not use.
+        // Always persist the guest /124 the agent allocated: adoption reads
+        // it back verbatim, since the daemon never derives one (a dynamic
+        // address in particular cannot be recomputed after a restart).
         written.vm_configuration.guest_ipv6_cidr = assignment
             .as_ref()
             .map(|(_, ipv6)| ipv6.network_cidr.clone());
@@ -3239,7 +3262,7 @@ fn create_vm_inner(
 
 /// Python `VmPool._create_firecracker_from_spec` + `VmExecution.start` for
 /// a non-persistent program: register, tap when the spec asks for internet
-/// (VmType.microvm addressing), boot through the launcher (config JSON,
+/// (addressed as the agent requested), boot through the launcher (config JSON,
 /// spawn, vsock ready handshake) and record the channel facts. No
 /// controller config is written and no persisted port mappings are
 /// preloaded (both Python behaviors).
@@ -3294,37 +3317,27 @@ fn create_program_vm(
         .network
         .as_ref()
         .is_some_and(|network| network.internet_access);
-    // An agent-computed static IPv6, honored verbatim like the QEMU create
-    // path; empty under the dynamic policy.
-    let requested_ipv6 = request
-        .network
-        .as_ref()
-        .map(|network| network.requested_ipv6.clone())
-        .filter(|cidr| !cidr.is_empty());
+    // A networked program gets a tap, so the spec must carry the guest IPv6
+    // the agent allocated, like the QEMU create path.
+    let requested_ipv6 = if state.host.settings.allow_vm_networking && internet_access {
+        Some(requested_ipv6_pair(&request)?)
+    } else {
+        None
+    };
 
     // Register the entry (Python registers the execution before prepare),
     // allocating the vm_index and the microvm tap assignment under one
     // world lock.
     let (vm_index, assignment) = {
         let mut world = state.world.blocking_write();
+        if let Some(ipv6) = &requested_ipv6 {
+            ensure_ipv6_free(&world, ipv6, &vm_id)?;
+        }
         let stale_ordinal = world.entries.remove(&vm_id).map(|stale| stale.ordinal);
         let vm_index = world.unique_vm_index(state.host.settings.start_id_index)?;
-        let assignment = if state.host.settings.allow_vm_networking && internet_access {
-            let held_ipv6 = world.held_ipv6_networks();
-            let mut ordinal = world.ipv6_dynamic_ordinal;
-            let pair = world::derive_tap_assignment(
-                &state.host.settings,
-                vm_index,
-                &vm_id,
-                VmType::Microvm,
-                &mut ordinal,
-                requested_ipv6.as_deref(),
-                &held_ipv6,
-            )?;
-            world.ipv6_dynamic_ordinal = ordinal;
-            Some(pair)
-        } else {
-            None
+        let assignment = match requested_ipv6 {
+            Some(ipv6) => Some((world::ipv4_for_index(&state.host.settings, vm_index)?, ipv6)),
+            None => None,
         };
         let now = now_ns();
         let mut entry = VmEntry {
@@ -3929,9 +3942,20 @@ mod tests {
     use crate::test_fixtures;
     use crate::units::{FakeSystemd, UnitStateSource};
 
-    /// A 64-hex vm_id (the static IPv6 scheme slices it).
+    /// A 64-character vm_id.
     fn hash(fill: char) -> String {
         fill.to_string().repeat(64)
+    }
+
+    /// A per-VM guest /124 standing in for the agent's allocation: distinct
+    /// for distinct vm_ids, stable for one, in the daemon's own notation.
+    fn test_ipv6(vm_id: &str) -> String {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        vm_id.hash(&mut hasher);
+        let host_bits = (u128::from(hasher.finish()) << 4) & u128::from(u64::MAX);
+        let network = std::net::Ipv6Addr::from((0xfc00_0001_0002_0003u128 << 64) | host_bits);
+        format!("{network}/124")
     }
 
     /// The bare-host nftables fixture: base chains exist, no aleph state,
@@ -4107,8 +4131,8 @@ mod tests {
             tee: None,
             network: Some(pb::NetworkConfig {
                 internet_access: true,
-                requested_ipv6: String::new(),
-                ipv6_prefix_len: 0,
+                requested_ipv6: test_ipv6(vm_id),
+                ipv6_prefix_len: 124,
             }),
             gpus: Vec::new(),
             numa_node: None,
@@ -4712,31 +4736,6 @@ mod tests {
             entry_ipv6.address, entry_ipv6.address
         )));
         assert!(harness.dhcp.is_running(&vm_id));
-    }
-
-    #[test]
-    fn create_snp_allocates_the_v_program_ipv6_hextet() {
-        // SEV-SNP is the V-PROGRAM's exclusive launch path, so an SNP create
-        // must key the 0x4 vm-type nibble into its /124, not the
-        // plain-instance 0x3.
-        let harness = harness();
-        let state = &harness.state;
-        let root = state.host.settings.execution_root.clone();
-        let vm_id = hash('e');
-        let firmware = root.join("OVMF.fd");
-        std::fs::write(&firmware, b"ovmf").unwrap();
-        let request = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
-
-        let (entry, _running) = create_vm(state, request).unwrap();
-        assert_eq!(entry.vm_type(), world::VmType::VProgram);
-        let ipv6 = entry
-            .ipv6
-            .expect("networking is enabled in the harness; SNP create allocates an IPv6 pair");
-        assert!(
-            ipv6.address.starts_with("fc00:1:2:3:4:"),
-            "an SNP (V-PROGRAM) create must get the 0x4 vm-type hextet, got {}",
-            ipv6.address
-        );
     }
 
     #[test]
@@ -7293,8 +7292,12 @@ mod tests {
             tee: None,
             network: Some(pb::NetworkConfig {
                 internet_access: internet,
-                requested_ipv6: String::new(),
-                ipv6_prefix_len: 0,
+                requested_ipv6: if internet {
+                    test_ipv6(vm_id)
+                } else {
+                    String::new()
+                },
+                ipv6_prefix_len: if internet { 124 } else { 0 },
             }),
             gpus: Vec::new(),
             numa_node: None,
@@ -7329,18 +7332,11 @@ mod tests {
             crate::firecracker::FAKE_READY_PAYLOAD
         );
 
-        // The microvm addressing: IPv4 from vm_index 4, IPv6 static scheme
-        // with the VmType.microvm prefix hextet 1 (instances use 3).
+        // The addressing: IPv4 from vm_index 4, IPv6 as the agent asked.
         assert_eq!(entry.ipv4.as_ref().unwrap().address, "172.16.4.2");
-        assert!(
-            entry
-                .ipv6
-                .as_ref()
-                .unwrap()
-                .network_cidr
-                .starts_with("fc00:1:2:3:1:aaaa:aaaa:aaa"),
-            "got {:?}",
-            entry.ipv6
+        assert_eq!(
+            entry.ipv6,
+            Some(world::ipv6_from_cidr(&test_ipv6(&vm_id)).unwrap())
         );
         assert!(harness.taps.interface_exists("vmtap4"));
 
@@ -7384,10 +7380,9 @@ mod tests {
 
     #[test]
     fn ephemeral_program_create_honors_the_agent_supplied_guest_ipv6() {
-        // The program path honors an agent-supplied static /124 verbatim, like
-        // the QEMU create path. The value here is deliberately off-scheme to
-        // prove it took precedence over the daemon's own microvm computation.
-        // Programs never persist config to disk, so there is nothing to adopt.
+        // The program path honors the agent-supplied /124 verbatim, like the
+        // QEMU create path. Programs never persist config to disk, so there
+        // is nothing to adopt.
         let harness = harness();
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -8432,10 +8427,9 @@ mod tests {
 
     #[test]
     fn create_honors_and_persists_the_agent_supplied_guest_ipv6() {
-        // The agent computes the Aleph static /124 and hands it over in the
-        // network config. The daemon must serve that exact pair (not re-derive
-        // it from the hash) and persist it so a restart adopts it. The value
-        // here is deliberately off-scheme to prove it took precedence.
+        // The agent allocates the /124 and hands it over in the network
+        // config. The daemon must serve that exact pair and persist it so a
+        // restart adopts it.
         let harness = harness();
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -8463,138 +8457,179 @@ mod tests {
     }
 
     #[test]
-    fn create_persists_the_computed_guest_ipv6_when_the_agent_sends_none() {
-        // Backward compatibility: an agent that does not yet compute the
-        // address sends an empty requested_ipv6; the daemon computes the
-        // static address itself and still persists it, so the field is present
-        // for the next adoption regardless of which side computed it.
+    fn a_networked_create_without_a_requested_ipv6_is_rejected() {
+        // The daemon never derives a guest IPv6: an empty requested_ipv6 is a
+        // malformed spec, refused before any side effect.
         let harness = harness();
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
         let vm_id = hash('a');
-
-        let (entry, _) = create_vm(state, spec(&vm_id, &root)).unwrap();
-        let ipv6 = entry
-            .ipv6
-            .as_ref()
-            .expect("networked create allocates IPv6");
-
-        let json = written_config_json(state, &vm_id);
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(
-            value["vm_configuration"]["guest_ipv6_cidr"],
-            serde_json::json!(ipv6.network_cidr),
-            "the daemon-computed guest IPv6 must be persisted: {json}"
-        );
-    }
-
-    #[test]
-    fn create_persists_an_agent_ipv6_even_under_a_dynamic_daemon_policy() {
-        // Silent-shift guard: if the agent computes a static address while the
-        // daemon's own policy is dynamic (the process-coupling this refactor
-        // removes), the daemon serves the agent address and does not advance
-        // the dynamic ordinal, so it MUST persist the address. Otherwise a
-        // restart would adopt via the dynamic recompute and serve a different
-        // one. Persist it, and adoption must read it back verbatim.
-        let harness = harness_with_ruleset_and_policy(
-            bare_host_ruleset(),
-            crate::config::Ipv6AllocationPolicy::Dynamic,
-        );
-        let state = &harness.state;
-        let root = state.host.settings.execution_root.clone();
-        let vm_id = hash('a');
-        let requested = "fc00:1:2:3:3:dead:beef:0aa0/124";
         let mut request = spec(&vm_id, &root);
-        request.network.as_mut().unwrap().requested_ipv6 = requested.to_string();
-        request.network.as_mut().unwrap().ipv6_prefix_len = 124;
+        request.network.as_mut().unwrap().requested_ipv6 = String::new();
+        request.network.as_mut().unwrap().ipv6_prefix_len = 0;
+        match create_vm(state, request) {
+            Err(RpcError::InvalidBackend(message)) => {
+                assert!(message.contains("requested_ipv6"), "got {message:?}");
+            }
+            other => panic!("expected InvalidBackend, got {other:?}"),
+        }
+        assert!(state.world.blocking_read().entries.is_empty());
+        assert!(harness.taps.devices().is_empty());
+        assert!(!root.join(format!("{vm_id}-controller.json")).exists());
 
-        let (entry, _) = create_vm(state, request).unwrap();
-        let expected = world::ipv6_from_cidr(requested).unwrap();
-        assert_eq!(
-            entry.ipv6,
-            Some(expected.clone()),
-            "the daemon must honor the agent IPv6 regardless of its own policy"
-        );
+        // The program path too, when it wants a tap.
+        let mut program = fc_spec(&hash('b'), &root, true);
+        program.network.as_mut().unwrap().requested_ipv6 = String::new();
+        assert!(matches!(
+            create_vm(state, program),
+            Err(RpcError::InvalidBackend(_))
+        ));
+        assert!(harness.programs.boots().is_empty());
 
-        let json = written_config_json(state, &vm_id);
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(
-            value["vm_configuration"]["guest_ipv6_cidr"],
-            serde_json::json!(expected.network_cidr),
-            "an agent-supplied IPv6 must be persisted even under a dynamic policy: {json}"
-        );
-
-        // A restart adopts the persisted address, not a recomputed dynamic one.
-        let units = crate::units::StaticUnitStates::with_active_vms(&[vm_id.as_str()]);
-        let world = world::build_world_view(&state.host.settings, &units, &[], &*state.taps);
-        assert_eq!(
-            world.entries[vm_id.as_str()].ipv6,
-            Some(expected),
-            "adoption must read back the persisted agent IPv6, with no shift"
-        );
+        // A malformed or inconsistent address is refused as well.
+        let mut malformed = spec(&vm_id, &root);
+        malformed.network.as_mut().unwrap().requested_ipv6 = "fc00::1/124".to_string();
+        assert!(matches!(
+            create_vm(state, malformed),
+            Err(RpcError::InvalidBackend(_))
+        ));
+        let mut mismatched = spec(&vm_id, &root);
+        mismatched.network.as_mut().unwrap().ipv6_prefix_len = 120;
+        assert!(matches!(
+            create_vm(state, mismatched),
+            Err(RpcError::InvalidBackend(_))
+        ));
     }
 
     #[test]
-    fn create_persists_a_dynamic_guest_ipv6_and_a_restart_adopts_it_verbatim() {
-        // Production regression: under the dynamic policy the agent sends no
-        // address and the daemon assigns one from its ordinal. That address
-        // must be persisted, because adoption order does not reproduce
-        // allocation order: here only the second VM is running at the
-        // restart, and a recompute would hand it the first subnet.
-        let harness = harness_with_ruleset_and_policy(
-            bare_host_ruleset(),
-            crate::config::Ipv6AllocationPolicy::Dynamic,
-        );
+    fn a_create_without_networking_needs_no_requested_ipv6() {
+        let harness = harness();
+        let mut state = Arc::try_unwrap(harness.state).ok().expect("sole owner");
+        state.host.settings.allow_vm_networking = false;
+        let state = Arc::new(state);
+        let root = state.host.settings.execution_root.clone();
+        let mut request = spec(&hash('a'), &root);
+        request.network.as_mut().unwrap().requested_ipv6 = String::new();
+        request.network.as_mut().unwrap().ipv6_prefix_len = 0;
+        let (entry, _) = create_vm(&state, request).unwrap();
+        assert_eq!(entry.ipv6, None);
+    }
+
+    #[test]
+    fn a_create_overlapping_another_vms_ipv6_subnet_is_rejected() {
+        // The agent allocates; the daemon is the backstop against two guests
+        // sharing a subnet, live or persisted for a stopped VM.
+        let harness = harness();
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
-        let (first, _) = create_vm(state, spec(&hash('a'), &root)).unwrap();
-        let (second, _) = create_vm(state, spec(&hash('b'), &root)).unwrap();
-        let first_ipv6 = first.ipv6.expect("networked create allocates IPv6");
-        let second_ipv6 = second.ipv6.expect("networked create allocates IPv6");
-        assert_eq!(first_ipv6.network_cidr, "fc00:1:2:3::10/124");
-        assert_eq!(second_ipv6.network_cidr, "fc00:1:2:3::20/124");
+        let running = hash('a');
+        let stopped = hash('b');
+        let mut request = spec(&running, &root);
+        request.network.as_mut().unwrap().requested_ipv6 = "fc00:1:2:3::10/124".to_string();
+        create_vm(state, request).unwrap();
+        let mut request = spec(&stopped, &root);
+        request.network.as_mut().unwrap().requested_ipv6 = "fc00:1:2:3::20/124".to_string();
+        create_vm(state, request).unwrap();
+        stop_vm(state, &stopped).unwrap();
 
-        for (vm_id, ipv6) in [(hash('a'), &first_ipv6), (hash('b'), &second_ipv6)] {
-            let json = written_config_json(state, &vm_id);
-            let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        for (taken, holder) in [
+            ("fc00:1:2:3::10/124", &running),
+            ("fc00:1:2:3::20/124", &stopped),
+            ("fc00:1:2:3::/120", &running),
+        ] {
+            let mut request = spec(&hash('c'), &root);
+            request.network.as_mut().unwrap().requested_ipv6 = taken.to_string();
+            request.network.as_mut().unwrap().ipv6_prefix_len = 0;
+            match create_vm(state, request) {
+                Err(RpcError::InvalidBackend(message)) => {
+                    assert!(
+                        message.contains("overlaps") && message.contains(holder.as_str()),
+                        "got {message:?}"
+                    );
+                }
+                other => panic!("{taken} must be refused, got {other:?}"),
+            }
+        }
+        assert!(!state.world.blocking_read().entries.contains_key(&hash('c')));
+
+        // A free subnet is fine.
+        let mut request = spec(&hash('c'), &root);
+        request.network.as_mut().unwrap().requested_ipv6 = "fc00:1:2:3::30/124".to_string();
+        create_vm(state, request).unwrap();
+    }
+
+    #[test]
+    fn a_refused_recreate_keeps_the_stale_stopped_entry() {
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let (holder, stale) = (hash('a'), hash('b'));
+        let mut request = spec(&holder, &root);
+        request.network.as_mut().unwrap().requested_ipv6 = "fc00:1:2:3::10/124".to_string();
+        create_vm(state, request).unwrap();
+        create_vm(state, spec(&stale, &root)).unwrap();
+        stop_vm(state, &stale).unwrap();
+
+        let mut request = spec(&stale, &root);
+        request.network.as_mut().unwrap().requested_ipv6 = "fc00:1:2:3::10/124".to_string();
+        assert!(matches!(
+            create_vm(state, request),
+            Err(RpcError::InvalidBackend(_))
+        ));
+        assert!(state.world.blocking_read().entries.contains_key(&stale));
+    }
+
+    #[test]
+    fn a_restart_adopts_the_persisted_ipv6_whatever_the_policy() {
+        // Production regression: under the dynamic policy the adoption
+        // recomputed the address from adoption order and served one the VM,
+        // its tap and its DHCP server did not use. Adoption now reads the
+        // persisted value back verbatim, and the policy plays no part.
+        for policy in [
+            crate::config::Ipv6AllocationPolicy::Static,
+            crate::config::Ipv6AllocationPolicy::Dynamic,
+        ] {
+            let harness = harness_with_ruleset_and_policy(bare_host_ruleset(), policy);
+            let state = &harness.state;
+            let root = state.host.settings.execution_root.clone();
+            let (first, second) = (hash('a'), hash('b'));
+            let mut request = spec(&first, &root);
+            request.network.as_mut().unwrap().requested_ipv6 = "fc00:1:2:3::10/124".to_string();
+            create_vm(state, request).unwrap();
+            let mut request = spec(&second, &root);
+            request.network.as_mut().unwrap().requested_ipv6 = "fc00:1:2:3::b0/124".to_string();
+            let (created, _) = create_vm(state, request).unwrap();
+
+            // Only the second VM is running at the restart, and its tap is gone.
+            let units = crate::units::StaticUnitStates::with_active_vms(&[second.as_str()]);
+            let world =
+                world::build_world_view(&state.host.settings, &units, &[], &FakeTapBackend::new());
+            assert_eq!(world.entries[second.as_str()].ipv6, created.ipv6);
             assert_eq!(
-                value["vm_configuration"]["guest_ipv6_cidr"],
-                serde_json::json!(ipv6.network_cidr),
-                "a dynamic guest IPv6 must be persisted: {json}"
+                world.entries[first.as_str()]
+                    .config
+                    .guest_ipv6_cidr
+                    .as_deref(),
+                Some("fc00:1:2:3::10/124"),
+                "the stopped VM keeps its persisted subnet"
             );
         }
-
-        // Restart with only the second VM running, on a host whose taps are
-        // gone (no live-tap hint): the persisted value alone must decide.
-        let units = crate::units::StaticUnitStates::with_active_vms(&[hash('b').as_str()]);
-        let world =
-            world::build_world_view(&state.host.settings, &units, &[], &FakeTapBackend::new());
-        assert_eq!(
-            world.entries[hash('b').as_str()].ipv6,
-            Some(second_ipv6),
-            "adoption must serve the persisted dynamic IPv6, not an adoption-order recompute"
-        );
-        assert_eq!(
-            world.ipv6_dynamic_ordinal, 2,
-            "the allocator must be seeded past every adopted subnet"
-        );
     }
 
     #[test]
-    fn a_create_after_a_restart_never_reuses_an_adopted_vms_ipv6_subnet() {
-        // Before the fix the rebuilt dynamic ordinal restarted from the
-        // number of adopted running VMs, so the next create was handed a
-        // subnet a running VM already used.
-        let harness = harness_with_ruleset_and_policy(
-            bare_host_ruleset(),
-            crate::config::Ipv6AllocationPolicy::Dynamic,
-        );
+    fn a_create_after_a_restart_cannot_take_an_adopted_vms_subnet() {
+        let harness = harness();
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
-        let (first, _) = create_vm(state, spec(&hash('a'), &root)).unwrap();
-        let (second, _) = create_vm(state, spec(&hash('b'), &root)).unwrap();
+        let (stopped, running) = (hash('a'), hash('b'));
+        let mut request = spec(&stopped, &root);
+        request.network.as_mut().unwrap().requested_ipv6 = "fc00:1:2:3::10/124".to_string();
+        create_vm(state, request).unwrap();
+        let mut request = spec(&running, &root);
+        request.network.as_mut().unwrap().requested_ipv6 = "fc00:1:2:3::20/124".to_string();
+        create_vm(state, request).unwrap();
 
-        let units = crate::units::StaticUnitStates::with_active_vms(&[hash('b').as_str()]);
+        let units = crate::units::StaticUnitStates::with_active_vms(&[running.as_str()]);
         let adopted = world::build_world_view(
             &state.host.settings,
             &units,
@@ -8603,48 +8638,29 @@ mod tests {
         );
         *state.world.blocking_write() = adopted;
 
-        let (third, _) = create_vm(state, spec(&hash('c'), &root)).unwrap();
-        let third_ipv6 = third.ipv6.expect("networked create allocates IPv6");
-        assert_ne!(
-            Some(&third_ipv6),
-            first.ipv6.as_ref(),
-            "the stopped VM's subnet"
-        );
-        assert_ne!(
-            Some(&third_ipv6),
-            second.ipv6.as_ref(),
-            "the running VM's subnet"
-        );
-        assert_eq!(third_ipv6.network_cidr, "fc00:1:2:3::30/124");
-
-        // Defensive skip: even an allocator position that lags behind never
-        // hands out a subnet an entry holds (live or persisted).
-        state.world.blocking_write().ipv6_dynamic_ordinal = 0;
-        let (fourth, _) = create_vm(state, spec(&hash('d'), &root)).unwrap();
-        assert_eq!(
-            fourth
-                .ipv6
-                .expect("networked create allocates IPv6")
-                .network_cidr,
-            "fc00:1:2:3::40/124",
-            "the allocator must skip every held subnet"
-        );
+        for taken in ["fc00:1:2:3::10/124", "fc00:1:2:3::20/124"] {
+            let mut request = spec(&hash('c'), &root);
+            request.network.as_mut().unwrap().requested_ipv6 = taken.to_string();
+            assert!(
+                matches!(create_vm(state, request), Err(RpcError::InvalidBackend(_))),
+                "{taken} is held by an adopted VM"
+            );
+        }
     }
 
     #[test]
-    fn an_adopted_dynamic_vm_matches_a_retry_without_a_requested_ipv6() {
-        // The reconstruction now echoes the persisted dynamic /124, while the
-        // agent's retry under the dynamic policy still carries none: that must
-        // stay an idempotent match, not a conflict.
-        let harness = harness_with_ruleset_and_policy(
-            bare_host_ruleset(),
-            crate::config::Ipv6AllocationPolicy::Dynamic,
-        );
+    fn an_adopted_vm_matches_a_retry_in_python_notation() {
+        // The agent sends `str(IPv6Network)`; the reconstruction of an adopted
+        // VM echoes the Rust notation. The same network must compare equal,
+        // a different one must conflict.
+        let harness = harness();
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
         let vm_id = hash('a');
-        let request = spec(&vm_id, &root);
-        let (created, _) = create_vm(state, request.clone()).unwrap();
+        let mut request = spec(&vm_id, &root);
+        request.network.as_mut().unwrap().requested_ipv6 =
+            "fc00:1:2:3:3:dead:beef:0aa0/124".to_string();
+        create_vm(state, request).unwrap();
 
         let units = crate::units::StaticUnitStates::with_active_vms(&[vm_id.as_str()]);
         let adopted = world::build_world_view(
@@ -8656,17 +8672,20 @@ mod tests {
         let entry = adopted.entries[vm_id.as_str()].clone();
         assert_eq!(
             vm_spec_message(&entry).network.unwrap().requested_ipv6,
-            created.ipv6.unwrap().network_cidr,
-            "the reconstruction reports the assigned address"
+            "fc00:1:2:3:3:dead:beef:aa0/124",
+            "the reconstruction reports the persisted address"
         );
-        same_spec_or_conflict(&entry, &request)
-            .expect("an empty requested_ipv6 matches the assigned address");
+        // The agent's retry of this adopted VM, in the Python notation. The
+        // other fields are the reconstruction's (it cannot recover the
+        // cloud-init inputs), which is not what this test is about.
+        let mut retry = vm_spec_message(&entry);
+        retry.network.as_mut().unwrap().requested_ipv6 =
+            "fc00:1:2:3:3:dead:beef:0aa0/124".to_string();
+        same_spec_or_conflict(&entry, &retry).expect("the same network in another notation");
 
-        // A different explicit address is still a conflict.
-        let mut other = request;
+        let mut other = retry;
         other.network.as_mut().unwrap().requested_ipv6 =
-            "fc00:1:2:3:3:dead:beef:aa0/124".to_string();
-        other.network.as_mut().unwrap().ipv6_prefix_len = 124;
+            "fc00:1:2:3:3:dead:beef:bb0/124".to_string();
         assert!(matches!(
             same_spec_or_conflict(&entry, &other),
             Err(RpcError::AlreadyExists(_))
@@ -8674,18 +8693,105 @@ mod tests {
     }
 
     #[test]
-    fn a_lazy_rederive_serves_the_persisted_dynamic_ipv6() {
-        // Entries adopted during a bus outage carry no derived IPs; the
-        // later rederive must read back the persisted /124, not advance the
-        // dynamic ordinal to a fresh (wrong) subnet.
-        let harness = harness_with_ruleset_and_policy(
-            bare_host_ruleset(),
-            crate::config::Ipv6AllocationPolicy::Dynamic,
-        );
+    fn a_legacy_vm_adopted_from_its_tap_matches_a_retry_with_that_address() {
+        // A config written before the address was persisted: adoption reads
+        // the tap, and the agent's retry (which reuses the VM's address) must
+        // stay an idempotent match.
+        let harness = harness();
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
-        create_vm(state, spec(&hash('a'), &root)).unwrap();
-        let (second, _) = create_vm(state, spec(&hash('b'), &root)).unwrap();
+        let vm_id = hash('a');
+        create_vm(state, spec(&vm_id, &root)).unwrap();
+        strip_persisted_ipv6(state, &vm_id);
+
+        let units = crate::units::StaticUnitStates::with_active_vms(&[vm_id.as_str()]);
+        let adopted = world::build_world_view(
+            &state.host.settings,
+            &units,
+            &state.host.gpus,
+            harness.taps.as_ref(),
+        );
+        let entry = adopted.entries[vm_id.as_str()].clone();
+        assert_eq!(
+            entry.ipv6,
+            Some(world::ipv6_from_cidr(&test_ipv6(&vm_id)).unwrap()),
+            "read back from the tap the create set up"
+        );
+        let reconstructed = vm_spec_message(&entry);
+        assert_eq!(
+            reconstructed.network.as_ref().unwrap().requested_ipv6,
+            test_ipv6(&vm_id),
+            "the reconstruction echoes the tap's address"
+        );
+        let mut retry = reconstructed;
+        retry.network.as_mut().unwrap().requested_ipv6 = test_ipv6(&vm_id);
+        same_spec_or_conflict(&entry, &retry).expect("the retry carries the tap's address");
+    }
+
+    /// Rewrite a VM's controller config as a legacy daemon wrote it: no
+    /// persisted guest IPv6.
+    fn strip_persisted_ipv6(state: &DaemonState, vm_id: &str) {
+        let path =
+            controller_config::controller_config_path(&state.host.settings.execution_root, vm_id);
+        let mut value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        value["vm_configuration"]
+            .as_object_mut()
+            .unwrap()
+            .remove("guest_ipv6_cidr")
+            .expect("the create persisted it");
+        std::fs::write(&path, value.to_string()).unwrap();
+    }
+
+    #[test]
+    fn starting_a_legacy_stopped_vm_with_no_known_ipv6_fails_and_stays_stopped() {
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+        create_vm(state, spec(&vm_id, &root)).unwrap();
+        stop_vm(state, &vm_id).unwrap();
+        strip_persisted_ipv6(state, &vm_id);
+
+        // A restart adopts it stopped; its tap is gone with the stop.
+        let adopted = world::build_world_view(
+            &state.host.settings,
+            harness.systemd.as_ref(),
+            &state.host.gpus,
+            harness.taps.as_ref(),
+        );
+        *state.world.blocking_write() = adopted;
+
+        match start_vm(state, &vm_id) {
+            Err(RpcError::Internal(message)) => {
+                assert!(message.contains("no known guest IPv6"), "got {message:?}");
+            }
+            other => panic!("expected a clear refusal, got {other:?}"),
+        }
+        let entry = entry_snapshot(state, &vm_id).unwrap();
+        assert_ne!(entry.times.stopped_at_ns, 0, "the VM stays STOPPED");
+        assert_eq!(entry.times.starting_at_ns, 0);
+        assert_eq!(
+            harness
+                .systemd
+                .get_active_state(&controller_unit_name(&vm_id)),
+            "inactive"
+        );
+        assert!(harness.taps.devices().is_empty());
+
+        // The lazy rederive refuses too.
+        assert!(tap_assignment(state, &vm_id).is_err());
+    }
+
+    #[test]
+    fn a_lazy_rederive_serves_the_persisted_ipv6() {
+        // Entries adopted during a bus outage carry no derived IPs; the
+        // later rederive reads back the persisted /124.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('b');
+        let (created, _) = create_vm(state, spec(&vm_id, &root)).unwrap();
 
         let adopted = world::build_world_view(
             &state.host.settings,
@@ -8695,13 +8801,13 @@ mod tests {
         );
         *state.world.blocking_write() = adopted;
         assert_eq!(
-            state.world.blocking_read().entries[hash('b').as_str()].ipv6,
+            state.world.blocking_read().entries[vm_id.as_str()].ipv6,
             None,
             "bus-outage adoption"
         );
 
-        let tap = tap_assignment(state, &hash('b')).unwrap();
-        assert_eq!(Some(tap.ipv6), second.ipv6);
+        let tap = tap_assignment(state, &vm_id).unwrap();
+        assert_eq!(Some(tap.ipv6), created.ipv6);
     }
 
     #[test]

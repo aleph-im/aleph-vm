@@ -222,11 +222,10 @@ pub struct QemuVmConfig {
     #[serde(default)]
     pub pci_mmio64_mb: Option<u64>,
 
-    // The guest IPv6 /124 CIDR the daemon assigned at create time, Rust-only.
-    // The agent computes the Aleph static address now, so adoption reads this
-    // back rather than re-deriving it from (pool, vm_hash, vm_type). Absent on
-    // configs written before the agent took over allocation (and under the
-    // dynamic policy); adoption then falls back to the recompute.
+    // The guest IPv6 /124 CIDR the agent allocated, persisted at create time,
+    // Rust-only. The daemon never derives a guest IPv6, so adoption reads this
+    // back. Absent on configs written by older daemons; adoption then reads
+    // the address live on the VM's tap, or hides the VM when there is none.
     #[serde(default)]
     pub guest_ipv6_cidr: Option<String>,
 
