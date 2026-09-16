@@ -80,6 +80,13 @@ pub trait TapBackend: Send + Sync {
     /// addresses and the device. A missing device is a warning, not an
     /// error.
     fn delete_tap(&self, tap: &TapAssignment) -> Result<(), TapError>;
+
+    /// The global IPv6 address configured on a live device, in
+    /// `address/prefix` form (the host side of the tap, i.e. the guest
+    /// network address), or `None` when the device or address is absent or
+    /// unreadable. Adoption reads it back for legacy configs that did not
+    /// persist the guest /124, where recomputing it is unreliable.
+    fn global_ipv6_address(&self, device_name: &str) -> Option<String>;
 }
 
 /// Failures creating or deleting a tap device via `ip(8)`.
@@ -90,6 +97,22 @@ pub enum TapError {
 
     #[error("ip {argv} failed: {stderr}")]
     Command { argv: String, stderr: String },
+}
+
+/// The first global IPv6 `address/prefix` in `ip -6 -o addr show` output.
+fn parse_global_ipv6(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let mut tokens = line.split_whitespace();
+        tokens.find(|token| *token == "inet6")?;
+        let cidr = tokens.next()?;
+        if !line.contains("scope global") {
+            return None;
+        }
+        let (address, prefix) = cidr.split_once('/')?;
+        address.parse::<std::net::Ipv6Addr>().ok()?;
+        prefix.parse::<u8>().ok().filter(|prefix| *prefix <= 128)?;
+        Some(cidr.to_string())
+    })
 }
 
 /// Production backend over `ip(8)`.
@@ -205,6 +228,41 @@ impl TapBackend for IpCommand {
         }
         Ok(())
     }
+
+    fn global_ipv6_address(&self, device_name: &str) -> Option<String> {
+        if !self.interface_exists(device_name) {
+            return None;
+        }
+        let output = Command::new("ip")
+            .args([
+                "-6",
+                "-o",
+                "addr",
+                "show",
+                "dev",
+                device_name,
+                "scope",
+                "global",
+            ])
+            .output();
+        match output {
+            Ok(output) if output.status.success() => {
+                parse_global_ipv6(&String::from_utf8_lossy(&output.stdout))
+            }
+            Ok(output) => {
+                tracing::warn!(
+                    device = device_name,
+                    stderr = %String::from_utf8_lossy(&output.stderr).trim(),
+                    "cannot read the tap's IPv6 address"
+                );
+                None
+            }
+            Err(error) => {
+                tracing::warn!(device = device_name, %error, "cannot run ip");
+                None
+            }
+        }
+    }
 }
 
 /// Test backend: an in-memory device set, every call recorded. Failures
@@ -226,6 +284,8 @@ type TapErrorFn = Box<dyn Fn() -> TapError + Send + Sync>;
 #[derive(Default)]
 struct FakeTapState {
     devices: std::collections::HashSet<String>,
+    /// Host-side IPv6 `address/prefix` per device, as `create_tap` sets it.
+    ipv6_addresses: std::collections::HashMap<String, String>,
     pub actions: Vec<String>,
     fail_create: Option<TapErrorFn>,
     fail_delete: Option<TapErrorFn>,
@@ -247,6 +307,19 @@ impl FakeTapBackend {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// A live device carrying `host_ipv6_cidr`, as if an earlier daemon
+    /// created it.
+    pub fn with_ipv6_device(self, device_name: &str, host_ipv6_cidr: &str) -> Self {
+        {
+            let mut inner = self.lock();
+            inner.devices.insert(device_name.to_string());
+            inner
+                .ipv6_addresses
+                .insert(device_name.to_string(), host_ipv6_cidr.to_string());
+        }
+        self
     }
 
     pub fn actions(&self) -> Vec<String> {
@@ -308,6 +381,9 @@ impl TapBackend for FakeTapBackend {
             tap.host_ipv6_cidr()
         ));
         inner.devices.insert(tap.device_name.clone());
+        inner
+            .ipv6_addresses
+            .insert(tap.device_name.clone(), tap.host_ipv6_cidr());
         drop(inner);
         self.record(format!("tap: create {}", tap.device_name));
         Ok(())
@@ -320,9 +396,18 @@ impl TapBackend for FakeTapBackend {
         }
         inner.actions.push(format!("delete {}", tap.device_name));
         inner.devices.remove(&tap.device_name);
+        inner.ipv6_addresses.remove(&tap.device_name);
         drop(inner);
         self.record(format!("tap: delete {}", tap.device_name));
         Ok(())
+    }
+
+    fn global_ipv6_address(&self, device_name: &str) -> Option<String> {
+        let inner = self.lock();
+        if !inner.devices.contains(device_name) {
+            return None;
+        }
+        inner.ipv6_addresses.get(device_name).cloned()
     }
 }
 
@@ -381,6 +466,36 @@ mod tests {
             error.to_string(),
             "ip tuntap add name vmtap3 mode tap failed: Operation not permitted"
         );
+    }
+
+    #[test]
+    fn the_fake_backend_reports_the_created_host_ipv6() {
+        let backend = FakeTapBackend::new();
+        let tap = assignment();
+        assert_eq!(backend.global_ipv6_address("vmtap3"), None);
+        backend.create_tap(&tap).unwrap();
+        assert_eq!(
+            backend.global_ipv6_address("vmtap3").as_deref(),
+            Some("fc00:1:2:3::10/124")
+        );
+        backend.delete_tap(&tap).unwrap();
+        assert_eq!(backend.global_ipv6_address("vmtap3"), None);
+    }
+
+    #[test]
+    fn the_global_ipv6_is_parsed_from_ip_addr_show() {
+        let output = "12: vmtap8    inet6 2001:bc8:702:32d::b0/124 scope global \\       \
+                      valid_lft forever preferred_lft forever\n";
+        assert_eq!(
+            parse_global_ipv6(output).as_deref(),
+            Some("2001:bc8:702:32d::b0/124")
+        );
+        // Link-local only (the filter failed or was ignored): nothing global.
+        let link_local = "12: vmtap8    inet6 fe80::1/64 scope link \\       \
+                          valid_lft forever preferred_lft forever\n";
+        assert_eq!(parse_global_ipv6(link_local), None);
+        assert_eq!(parse_global_ipv6(""), None);
+        assert_eq!(parse_global_ipv6("1: x inet6 garbage scope global"), None);
     }
 
     #[test]

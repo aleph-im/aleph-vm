@@ -142,7 +142,9 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
     // Blocking on purpose: no runtime is up yet, and the sources (files,
     // one D-Bus round trip, sqlite) are all local.
     let units = Arc::new(ZbusUnitStates::new());
-    let world = world::build_world_view(&host.settings, units.as_ref(), &host.gpus);
+    // Adoption reads a legacy VM's IPv6 back from its live tap.
+    let taps: Arc<dyn supervisor_daemon::tap::TapBackend> = Arc::new(IpCommand);
+    let world = world::build_world_view(&host.settings, units.as_ref(), &host.gpus, taps.as_ref());
     tracing::info!(vm_count = world.len(), "adopted the on-disk world view");
     let allow_networking = host.settings.allow_vm_networking;
     // NUMA topology (increment C1): detected once. A detection failure (no
@@ -184,7 +186,7 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
         units,
         logs: Arc::new(JournalctlLogSource),
         nft: Arc::new(NftCli),
-        taps: Arc::new(IpCommand),
+        taps,
         dhcp: Arc::new(supervisor_daemon::dhcp::SystemdRunDhcp),
         ndp,
         port_cursor: Default::default(),

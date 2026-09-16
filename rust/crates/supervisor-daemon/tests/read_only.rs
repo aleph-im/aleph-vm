@@ -101,7 +101,12 @@ fn fixture_daemon_state_probing(root: &Path, probe: CcProbe) -> Arc<DaemonState>
         ],
         dns_nameservers: None,
     };
-    let world = build_world_view(&host.settings, units.as_ref(), &host.gpus);
+    let world = build_world_view(
+        &host.settings,
+        units.as_ref(),
+        &host.gpus,
+        &supervisor_daemon::tap::FakeTapBackend::new(),
+    );
     let mut state = DaemonState::hermetic(
         host,
         world,
