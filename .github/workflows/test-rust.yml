@@ -87,8 +87,10 @@ jobs:
 
       - name: aleph-tee publish dry run
         # The crate ships to crates.io; a manifest that no longer packages
-        # (a path dependency, a missing file in `include`) must fail here,
-        # not at release time.
+        # (a path dependency, a file the library embeds missing from
+        # `include`) must fail here, not at release time. The dry run builds
+        # the library only, so test fixtures dropped from `include` would
+        # slip past it.
         working-directory: rust
         run: cargo publish --locked --dry-run -p aleph-tee
 
