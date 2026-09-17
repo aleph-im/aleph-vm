@@ -19,7 +19,9 @@ description = "In-guest attested-TLS HTTPS sidecar: key-bound SEV-SNP report emb
 [workspace]
 
 [dependencies]
-aleph-tee = { path = "../aleph-tee" }
+# guest only: the agent embeds reports, it never verifies them, and the
+# verifier's crypto and HTTP closure must stay out of the measured binary.
+aleph-tee = { path = "../aleph-tee", default-features = false, features = ["guest"] }
 actix-web = { version = "4", features = ["rustls-0_23"] }
 # rustls provider reconciliation, same pin as the root workspace: default
 # features OFF and only the ring provider enabled, so aws-lc-rs never enters
