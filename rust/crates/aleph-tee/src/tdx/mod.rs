@@ -12,6 +12,7 @@
 pub mod certs;
 pub mod collateral;
 pub mod pck_extension;
+pub mod pcs;
 pub mod quote;
 pub mod tcb;
 pub mod verify;

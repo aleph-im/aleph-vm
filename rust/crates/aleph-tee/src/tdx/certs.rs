@@ -28,7 +28,7 @@ use super::collateral::TdxCollateral;
 const INTEL_SGX_ROOT_CA_PEM: &[u8] = include_bytes!("intel_sgx_root_ca.pem");
 
 /// Number of certificates in a PCK chain: leaf, intermediate CA, root CA.
-const PCK_CHAIN_LEN: usize = 3;
+pub(crate) const PCK_CHAIN_LEN: usize = 3;
 
 /// Number of certificates in a collateral issuer chain: signer, root CA.
 const SIGNER_CHAIN_LEN: usize = 2;
