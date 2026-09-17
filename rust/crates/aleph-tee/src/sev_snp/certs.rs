@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use openssl::x509::X509;
 use tracing::debug;
 
 /// A complete AMD SEV-SNP certificate chain containing the VCEK, ASK, and ARK
@@ -212,16 +211,16 @@ pub async fn fetch_ca_chain(product: &str) -> Result<(Vec<u8>, Vec<u8>)> {
 
     // AMD KDS returns PEM-encoded certificates. Parse them and convert to DER.
     let (ask_der, ark_der) = if bytes.starts_with(b"-----BEGIN") {
-        let certs = X509::stack_from_pem(&bytes)
-            .context("failed to parse PEM certificate chain from AMD KDS")?;
+        let mut certs =
+            crate::pki::pem_certs_to_der("the PEM certificate chain from AMD KDS", &bytes)?;
         if certs.len() < 2 {
             anyhow::bail!(
                 "expected 2 certificates (ASK + ARK) in CA chain, got {}",
                 certs.len()
             );
         }
-        let ask_der = certs[0].to_der().context("failed to convert ASK to DER")?;
-        let ark_der = certs[1].to_der().context("failed to convert ARK to DER")?;
+        let ark_der = certs.swap_remove(1);
+        let ask_der = certs.swap_remove(0);
         (ask_der, ark_der)
     } else {
         // Fallback: try splitting as concatenated DER
