@@ -322,6 +322,11 @@ pub struct FailedReattach {
     pub vm_index: i64,
     pub attempts: u32,
     pub exhausted: bool,
+    /// The guest IPv6 network the hidden VM's live controller still holds
+    /// (its persisted /124, else the address on its tap), when known. The
+    /// overlap backstop ([`WorldView::ipv6_holder`]) checks it so no create
+    /// can take the subnet while the VM runs untracked.
+    pub ipv6: Option<IpPair>,
 }
 
 impl FailedReattach {
@@ -330,7 +335,14 @@ impl FailedReattach {
             vm_index,
             attempts: 1,
             exhausted: false,
+            ipv6: None,
         }
+    }
+
+    /// Record the network the hidden VM holds.
+    pub fn holding(mut self, ipv6: Option<IpPair>) -> Self {
+        self.ipv6 = ipv6;
+        self
     }
 }
 
@@ -388,22 +400,44 @@ impl WorldView {
         entries
     }
 
-    /// The entry (other than `except_vm`) whose guest IPv6 network overlaps
-    /// `requested`, with the network it holds: its live assignment or, for
-    /// an entry without one (stopped), its persisted /124, which it gets
-    /// back on start. The agent allocates addresses; this is the backstop
-    /// that keeps two VMs from ever sharing a subnet.
+    /// The VM (other than `except_vm`) whose guest IPv6 network overlaps
+    /// `requested`, with the network it holds: an entry's live assignment
+    /// or, for an entry without one (stopped), its persisted /124, which it
+    /// gets back on start; or the network a hidden VM (queued for reattach)
+    /// still holds, when known. The agent allocates addresses; this is the
+    /// backstop that refuses a create overlapping any network known here.
+    /// It cannot cover a hidden VM whose network is unknown (no persisted
+    /// address, no tap address), nor make the agent skip a hidden VM's
+    /// subnet: ListVms does not report hidden VMs, so such a create is
+    /// refused rather than moved to another subnet.
     pub fn ipv6_holder(&self, requested: &IpPair, except_vm: &str) -> Option<(String, String)> {
         let wanted = ipv6_network_of(requested)?;
-        self.entries
+        let overlapping =
+            |held: &IpPair| ipv6_networks_overlap(ipv6_network_of(held), Some(wanted));
+        let tracked = self
+            .entries
             .values()
             .filter(|entry| entry.vm_hash != except_vm)
             .find_map(|entry| {
                 entry_ipv6_networks(entry)
                     .into_iter()
-                    .find(|held| ipv6_networks_overlap(ipv6_network_of(held), Some(wanted)))
+                    .find(&overlapping)
                     .map(|held| (entry.vm_hash.clone(), held.network_cidr))
-            })
+            });
+        tracked.or_else(|| {
+            self.failed_reattach
+                .iter()
+                .filter(|(vm_hash, _)| {
+                    vm_hash.as_str() != except_vm && !self.entries.contains_key(vm_hash.as_str())
+                })
+                .find_map(|(vm_hash, queued)| {
+                    queued
+                        .ipv6
+                        .as_ref()
+                        .filter(|held| overlapping(held))
+                        .map(|held| (vm_hash.clone(), held.network_cidr.clone()))
+                })
+        })
     }
 
     /// Python `get_unique_vm_index`: the first free index from
@@ -485,6 +519,24 @@ pub fn derive_tap_assignment(
 /// [`ipv6_pair`]). The fallback for a legacy config that predates the
 /// persisted `guest_ipv6_cidr`: the tap is what the running guest uses.
 /// `None` when the tap is gone or carries no global IPv6.
+/// The network a hidden VM's live controller holds: its persisted /124,
+/// else the address on its tap. None when networking is off or neither is
+/// known.
+fn hidden_vm_ipv6(
+    settings: &Settings,
+    persisted: Option<&str>,
+    taps: &dyn TapBackend,
+    vm_index: i64,
+) -> Option<IpPair> {
+    if !settings.allow_vm_networking {
+        return None;
+    }
+    persisted
+        .filter(|cidr| !cidr.is_empty())
+        .and_then(|cidr| ipv6_from_cidr(cidr).ok())
+        .or_else(|| ipv6_from_tap(taps, vm_index))
+}
+
 pub fn ipv6_from_tap(taps: &dyn TapBackend, vm_index: i64) -> Option<IpPair> {
     let cidr = taps.global_ipv6_address(&format!("vmtap{vm_index}"))?;
     let (address, prefix) = cidr.split_once('/')?;
@@ -602,9 +654,10 @@ pub fn build_world_view(
                 // ones (spec_from_controller_configuration is QEMU-only on
                 // every retry too); they exhaust after the attempt cap.
                 if active {
+                    let held = hidden_vm_ipv6(settings, None, taps, config.vm_index);
                     world
                         .failed_reattach
-                        .insert(vm_hash, FailedReattach::new(config.vm_index));
+                        .insert(vm_hash, FailedReattach::new(config.vm_index).holding(held));
                 }
                 continue;
             }
@@ -642,9 +695,16 @@ pub fn build_world_view(
                                 "cannot compute the IPv4 assignment; hiding the VM \
                                  like a failed Python reattach"
                             );
-                            world
-                                .failed_reattach
-                                .insert(vm_hash, FailedReattach::new(config.vm_index));
+                            let held = hidden_vm_ipv6(
+                                settings,
+                                qemu.guest_ipv6_cidr.as_deref(),
+                                taps,
+                                config.vm_index,
+                            );
+                            world.failed_reattach.insert(
+                                vm_hash,
+                                FailedReattach::new(config.vm_index).holding(held),
+                            );
                             continue;
                         }
                     }
@@ -1300,6 +1360,59 @@ mod tests {
             world.ipv6_holder(&pair("fc00:1:2:3::10/124"), &running),
             None
         );
+    }
+
+    #[test]
+    fn a_hidden_vm_keeps_holding_its_subnet() {
+        // A running VM hidden at adoption (here: its IPv4 cannot be derived)
+        // still owns its subnet through its live controller, so the backstop
+        // must refuse creates on it: from its persisted address, else from
+        // the address on its tap.
+        let tmp = tempfile::tempdir().unwrap();
+        let persisted = "5".repeat(64);
+        let from_tap = "6".repeat(64);
+        write_config(
+            tmp.path(),
+            &persisted,
+            1_000_000_000,
+            Some("fc00:1:2:3::60/124"),
+        );
+        write_config(tmp.path(), &from_tap, 1_000_000_001, None);
+        let settings = test_settings(tmp.path());
+        let units = StaticUnitStates::with_active_vms(&[persisted.as_str(), from_tap.as_str()]);
+        let taps = FakeTapBackend::new().with_ipv6_device("vmtap1000000001", "fc00:1:2:3::70/124");
+        let world = build_world_view(&settings, &units, &[], &taps);
+        let pair = |cidr: &str| ipv6_from_cidr(cidr).unwrap();
+
+        assert!(world.entries.is_empty(), "both VMs are hidden");
+        assert_eq!(
+            world.ipv6_holder(&pair("fc00:1:2:3::60/124"), "new"),
+            Some((persisted.clone(), "fc00:1:2:3::60/124".to_string()))
+        );
+        assert_eq!(
+            world.ipv6_holder(&pair("fc00:1:2:3::70/124"), "new"),
+            Some((from_tap.clone(), "fc00:1:2:3::70/124".to_string()))
+        );
+        assert_eq!(world.ipv6_holder(&pair("fc00:1:2:3::80/124"), "new"), None);
+        // The hidden VM itself may be re-created on its own subnet.
+        assert_eq!(
+            world.ipv6_holder(&pair("fc00:1:2:3::60/124"), &persisted),
+            None
+        );
+    }
+
+    #[test]
+    fn a_dequeued_hidden_vm_releases_its_subnet() {
+        let mut world = WorldView::default();
+        let held = ipv6_from_cidr("fc00:1:2:3::60/124").unwrap();
+        world.failed_reattach.insert(
+            "hidden".to_string(),
+            FailedReattach::new(7).holding(Some(held.clone())),
+        );
+        assert!(world.ipv6_holder(&held, "new").is_some());
+
+        world.failed_reattach.remove("hidden");
+        assert_eq!(world.ipv6_holder(&held, "new"), None);
     }
 
     #[test]

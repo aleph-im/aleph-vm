@@ -35,7 +35,10 @@ last subnet on a corrupt index is a list-indexing accident, and two VMs
 could then share a subnet).
 
 `derive_tap_assignment` (`rust/crates/supervisor-daemon/src/world.rs`) turns
-`(vm_index, requested IPv6 network)` intocloud-init paths consume.
+`(vm_index, requested IPv6 network)` into an IPv4 pair and an IPv6 pair;
+`TapAssignment` (`rust/crates/supervisor-daemon/src/tap.rs`) wraps them with
+the device name and the CIDR-formatted host/guest address strings the tap
+creation and cloud-init paths consume.
 
 **IPv4** is always static pool math (`ipv4_assignment` in `world.rs`): the
 pool (`IPV4_ADDRESS_POOL`, default `172.16.0.0/12`) is split into
@@ -61,8 +64,11 @@ must fit inside the subnet, or derivation fails.
 
 Every networked `CreateVm` carries the result in
 `network.requested_ipv6`; the daemon refuses a spec without one, and
-refuses one that overlaps a subnet another entry holds (live, or persisted
-for a stopped VM) as a backstop. The address is persisted as
+refuses one that overlaps a subnet another VM holds as a backstop: an
+entry's live or persisted (stopped VM) network, or the network a running VM
+hidden at adoption still holds on its live controller, when known. ListVms
+does not report hidden VMs, so the agent cannot skip their subnets; a create
+landing on one is refused rather than moved. The address is persisted as
 `guest_ipv6_cidr` in the controller config and adopted verbatim after a
 restart. A legacy config without it adopts the address still configured on
 its live tap (`TapBackend::global_ipv6_address`); with neither, a running

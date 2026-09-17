@@ -764,10 +764,12 @@ pub fn vm_spec_message(entry: &VmEntry) -> pb::VmSpec {
             })
         });
     // Echo back the assigned /124 (persisted as `guest_ipv6_cidr` under
-    // either policy), so an adopted static-policy VM compares equal on an
-    // idempotent re-create. A dynamic-policy agent sends no address; the
-    // create path's comparison treats that as matching any assigned one.
-    // Empty only for a legacy config that predates the persisted field.
+    // either policy), so an adopted VM compares equal on an idempotent
+    // re-create: the agent sends the same network on a retry (a static
+    // address is recomputed, a dynamic one is reused from the supervisor's
+    // view by create_vm_with_ipv6), and the create path compares the
+    // canonicalized specs. Empty only for a legacy config that predates the
+    // persisted field and was not adopted from its tap (a stopped legacy VM).
     let (requested_ipv6, ipv6_prefix_len) = match &config.guest_ipv6_cidr {
         Some(cidr) => {
             let prefix = cidr

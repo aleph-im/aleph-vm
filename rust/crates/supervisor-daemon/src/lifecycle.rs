@@ -3784,10 +3784,19 @@ pub fn reconcile_boot(state: &DaemonState) {
                 world.reserved_vm_indices.insert(entry.vm_index);
                 // Queue it for background retry (run_reattach_retry_loop):
                 // a transient cause may clear and let us adopt it without
-                // downtime, like the Python `_failed_reattach` queue.
-                world
-                    .failed_reattach
-                    .insert(vm_id, world::FailedReattach::new(entry.vm_index));
+                // downtime, like the Python `_failed_reattach` queue. Its
+                // controller still runs on its subnet, so keep holding it.
+                let held = entry.ipv6.clone().or_else(|| {
+                    entry
+                        .config
+                        .guest_ipv6_cidr
+                        .as_deref()
+                        .and_then(|cidr| world::ipv6_from_cidr(cidr).ok())
+                });
+                world.failed_reattach.insert(
+                    vm_id,
+                    world::FailedReattach::new(entry.vm_index).holding(held),
+                );
             }
         }
     }
@@ -8555,6 +8564,40 @@ mod tests {
         // A free subnet is fine.
         let mut request = spec(&hash('c'), &root);
         request.network.as_mut().unwrap().requested_ipv6 = "fc00:1:2:3::30/124".to_string();
+        create_vm(state, request).unwrap();
+    }
+
+    #[test]
+    fn a_create_overlapping_a_hidden_vms_subnet_is_rejected() {
+        // A VM queued for reattach is not an entry, but its controller still
+        // runs on its subnet: the backstop must refuse to hand it out.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let hidden = seed_hidden_vm(&harness);
+        {
+            let mut world = state.world.blocking_write();
+            let queued = world.failed_reattach.remove(&hidden).unwrap();
+            let held = world::ipv6_from_cidr("fc00:1:2:3::60/124").unwrap();
+            world
+                .failed_reattach
+                .insert(hidden.clone(), queued.holding(Some(held)));
+        }
+
+        let mut request = spec(&hash('c'), &root);
+        request.network.as_mut().unwrap().requested_ipv6 = "fc00:1:2:3::60/124".to_string();
+        match create_vm(state, request) {
+            Err(RpcError::InvalidBackend(message)) => {
+                assert!(
+                    message.contains("overlaps") && message.contains(hidden.as_str()),
+                    "got {message:?}"
+                );
+            }
+            other => panic!("the hidden VM's subnet must be refused, got {other:?}"),
+        }
+
+        let mut request = spec(&hash('c'), &root);
+        request.network.as_mut().unwrap().requested_ipv6 = "fc00:1:2:3::70/124".to_string();
         create_vm(state, request).unwrap();
     }
 
