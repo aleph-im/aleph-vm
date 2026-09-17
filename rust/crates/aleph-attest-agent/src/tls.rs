@@ -101,7 +101,7 @@ pub fn build_rustls_config(identity: &AttestedTlsIdentity) -> Result<rustls::Ser
 mod tests {
     use super::*;
     use aleph_tee::types::{AttestationReport, TeeType};
-    use aleph_tee::x509::extract_attestation_from_cert;
+    use aleph_tee::x509::decode_attestation_extension;
 
     /// Mock backend that returns a report with the given report_data.
     struct MockBackend;
@@ -132,13 +132,37 @@ mod tests {
         assert!(!identity.cert_der.is_empty());
         assert!(!identity.key_der.is_empty());
 
-        // The report should be embedded in the cert.
-        let extracted = extract_attestation_from_cert(&identity.cert_der)
-            .unwrap()
-            .expect("cert should contain attestation extension");
+        // The report should be embedded in the cert. Pulling it back out via a
+        // full X.509 extension parse is a relying-party (verify-side)
+        // concern, already covered by aleph_tee's own x509 tests; here we
+        // only need to know the exact DER-encoded extension value made it
+        // into the certificate bytes, and that it still decodes correctly.
+        let extension_value = encode_attestation_extension(&identity.report)
+            .expect("re-encoding the identity's report should succeed");
+        assert!(
+            identity
+                .cert_der
+                .windows(extension_value.len())
+                .any(|window| window == extension_value.as_slice()),
+            "attestation extension bytes should be embedded in the certificate"
+        );
 
-        assert_eq!(extracted.tee_type, TeeType::SevSnp);
-        assert_eq!(extracted.data, vec![0xDE, 0xAD]);
+        // And under our OID: the DER encoding of 1.3.6.1.4.1.60000.1.1.
+        let oid_der = [
+            0x06, 0x0A, 0x2B, 0x06, 0x01, 0x04, 0x01, 0x83, 0xD4, 0x60, 0x01, 0x01,
+        ];
+        assert!(
+            identity
+                .cert_der
+                .windows(oid_der.len())
+                .any(|window| window == oid_der),
+            "the attestation extension should be attached under ATTESTATION_OID"
+        );
+
+        let decoded = decode_attestation_extension(&extension_value)
+            .expect("the embedded extension should decode");
+        assert_eq!(decoded.tee_type, TeeType::SevSnp);
+        assert_eq!(decoded.data, vec![0xDE, 0xAD]);
     }
 
     #[test]
