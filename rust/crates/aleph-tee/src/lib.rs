@@ -1,3 +1,4 @@
+mod fetch;
 pub mod none;
 pub mod owner_auth;
 mod pki;
