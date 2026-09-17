@@ -10,8 +10,8 @@ description = "AMD SEV-SNP and Intel TDX attestation library: report and quote g
 sev.workspace = true
 rcgen.workspace = true
 x509-parser.workspace = true
+ring.workspace = true
 der.workspace = true
-openssl.workspace = true
 hex.workspace = true
 sha2.workspace = true
 sha3.workspace = true
@@ -23,6 +23,10 @@ anyhow.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-# Runtime for the #[ignore]d network test that checks the pinned AMD ARK
-# against what the live KDS currently serves. Offline `cargo test` never runs it.
+# Runtime for the #[ignore]d network tests that check the pinned AMD and
+# Intel roots against what the vendors currently serve. Offline `cargo test`
+# never runs them.
 tokio = { workspace = true }
+# Absolute validity windows for fabricated test certificates.
+time = { workspace = true }
+tempfile = { workspace = true }

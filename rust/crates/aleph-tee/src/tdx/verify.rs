@@ -19,14 +19,9 @@
 use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
-use openssl::bn::BigNum;
-use openssl::ec::{EcGroup, EcKey};
-use openssl::hash::MessageDigest;
-use openssl::nid::Nid;
-use openssl::x509::X509;
 use sha2::{Digest, Sha256};
 
-use crate::pki::ecdsa_from_raw;
+use crate::pki::{Curve, ec_public_key, parse_cert, verify_raw_ecdsa};
 
 use super::certs::verify_pck_chain;
 use super::collateral::TdxCollateral;
@@ -37,21 +32,17 @@ use super::tcb::{TdxTcbOutcome, TdxTcbPolicy, evaluate_tcb};
 const QE_REPORT_DATA_OFFSET: usize = 320;
 
 /// Verify the QE report signature under the PCK leaf key.
-fn verify_qe_report_signature(quote: &TdxQuote, pck_leaf: &X509) -> Result<()> {
-    let key = pck_leaf
-        .public_key()
-        .context("failed to extract the PCK leaf public key")?;
-    let ec = key.ec_key().context("the PCK leaf key is not an EC key")?;
-    let digest = openssl::hash::hash(MessageDigest::sha256(), &quote.signature.qe_report)
-        .context("failed to hash the QE report")?;
-    let sig = ecdsa_from_raw(&quote.signature.qe_report_signature)?;
-    if !sig
-        .verify(&digest, &ec)
-        .context("failed to check the QE report signature")?
-    {
-        bail!("the QE report signature does not verify under the PCK key");
-    }
-    Ok(())
+fn verify_qe_report_signature(quote: &TdxQuote, pck_leaf_der: &[u8]) -> Result<()> {
+    let pck_leaf = parse_cert("the PCK leaf certificate", pck_leaf_der)?;
+    let key = ec_public_key("PCK leaf", pck_leaf.public_key(), Curve::P256)?;
+    verify_raw_ecdsa(
+        "the QE report",
+        Curve::P256,
+        key,
+        &quote.signature.qe_report,
+        &quote.signature.qe_report_signature,
+    )
+    .context("the QE report signature does not verify under the PCK key")
 }
 
 /// Verify that the QE report binds the attestation key: its `report_data`
@@ -70,41 +61,32 @@ fn check_attestation_key_binding(quote: &TdxQuote) -> Result<()> {
 }
 
 /// Verify the quote signature over the signed region under the attestation
-/// key (an uncompressed P-256 point, x || y).
+/// key (a P-256 point given as `x || y`, which is the SEC1 uncompressed
+/// form without its leading 0x04).
 fn verify_quote_signature(quote: &TdxQuote) -> Result<()> {
-    let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1)
-        .context("failed to load the P-256 group")?;
-    let x = BigNum::from_slice(&quote.signature.attestation_key[..32])
-        .context("failed to load the attestation key x coordinate")?;
-    let y = BigNum::from_slice(&quote.signature.attestation_key[32..])
-        .context("failed to load the attestation key y coordinate")?;
-    let key = EcKey::from_public_key_affine_coordinates(&group, &x, &y)
-        .context("the attestation key is not a valid P-256 point")?;
-    let digest = openssl::hash::hash(MessageDigest::sha256(), &quote.signed_region)
-        .context("failed to hash the signed region")?;
-    let sig = ecdsa_from_raw(&quote.signature.quote_signature)?;
-    if !sig
-        .verify(&digest, &key)
-        .context("failed to check the quote signature")?
-    {
-        bail!("the quote signature does not verify under the attestation key");
-    }
-    Ok(())
+    let mut key = Vec::with_capacity(65);
+    key.push(0x04);
+    key.extend_from_slice(&quote.signature.attestation_key);
+    verify_raw_ecdsa(
+        "the quote",
+        Curve::P256,
+        &key,
+        &quote.signed_region,
+        &quote.signature.quote_signature,
+    )
+    .context("the quote signature does not verify under the attestation key")
 }
 
 /// Verify a parsed TDX quote's certificate chain and signatures.
 ///
 /// On success the quote is genuinely Intel-attested, and the returned PCK
-/// leaf certificate carries the platform identity (FMSPC, SVNs) the TCB
-/// walk consumes. See the module docs for what this does NOT establish.
-///
-/// Crate-private because it hands back an openssl certificate: outside
-/// callers go through [`verify_tdx_quote`], which returns owned data.
+/// leaf certificate (DER) carries the platform identity (FMSPC, SVNs) the
+/// TCB walk consumes. See the module docs for what this does NOT establish.
 pub(crate) fn verify_tdx_quote_chain(
     quote: &TdxQuote,
     collateral: &TdxCollateral,
     now: SystemTime,
-) -> Result<X509> {
+) -> Result<Vec<u8>> {
     if quote.header.qe_vendor_id != INTEL_QE_VENDOR_ID {
         bail!(
             "unknown QE vendor id {}: only Intel's quoting enclave is supported",
@@ -183,7 +165,8 @@ mod tests {
         let quote = parse_tdx_quote(QUOTE_V4).expect("quote parses");
         let collateral = TdxCollateral::from_json(COLLATERAL_V4).expect("collateral parses");
         let leaf = verify_tdx_quote_chain(&quote, &collateral, now_v4()).expect("chain verifies");
-        let subject = format!("{:?}", leaf.subject_name());
+        let leaf = parse_cert("leaf", &leaf).unwrap();
+        let subject = leaf.subject().to_string();
         assert!(
             subject.contains("PCK"),
             "leaf must be a PCK cert, got {subject}"
@@ -327,26 +310,26 @@ mod tests {
         // Replace the embedded chain's root with a same-subject self-signed
         // impostor: the byte-level pin must reject it before any signature
         // logic runs.
-        use openssl::asn1::Asn1Time;
+        use crate::pki::testing::{Name, cert, p256_key, pem_blocks};
 
         let quote = parse_tdx_quote(QUOTE_V4).expect("quote parses");
         let collateral = TdxCollateral::from_json(COLLATERAL_V4).expect("collateral parses");
 
-        let impostor = crate::pki::test_cert(
-            &["Intel SGX Root CA"],
-            &crate::pki::test_p256_key(),
+        let impostor = cert(
+            &Name {
+                common_names: vec!["Intel SGX Root CA"],
+                organization: None,
+            },
+            &p256_key(),
             None,
-            &Asn1Time::days_from_now(0).unwrap(),
-            &Asn1Time::days_from_now(365).unwrap(),
+            1_700_000_000,
+            1_900_000_000,
         );
 
-        let chain = X509::stack_from_pem(&quote.signature.pck_chain_pem).unwrap();
-        let mut pem = Vec::new();
-        pem.extend_from_slice(&chain[0].to_pem().unwrap());
-        pem.extend_from_slice(&chain[1].to_pem().unwrap());
-        pem.extend_from_slice(&impostor.to_pem().unwrap());
+        let chain = pem_blocks(&String::from_utf8_lossy(&quote.signature.pck_chain_pem));
+        let pem = format!("{}{}{}", chain[0], chain[1], impostor.pem());
         let mut tampered = quote.clone();
-        tampered.signature.pck_chain_pem = pem;
+        tampered.signature.pck_chain_pem = pem.into_bytes();
 
         // {:#} prints the whole context chain; the pin rejection is the
         // inner cause under the "PCK chain verification failed" wrapper.

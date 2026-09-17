@@ -1,13 +1,13 @@
 use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
-use openssl::hash::MessageDigest;
-use openssl::x509::X509;
 use serde_json::json;
 use sev::certs::snp::builtin;
+use x509_parser::certificate::X509Certificate;
 
 use crate::pki::{
-    asn1_now, check_cert_window, check_pinned_root_key, check_signed_by, ecdsa_from_components,
+    Curve, check_cert_window, check_pinned_root_key, check_signed_by, ec_public_key,
+    p384_signature_from_le, parse_cert, unix_seconds, verify_raw_ecdsa,
 };
 use crate::types::{AttestationReport, SevSnpRegisters, TeeType, VerificationResult};
 
@@ -211,9 +211,9 @@ pub(crate) fn verify_cert_chain_at(
     pinned_ark_der: &[u8],
     now: SystemTime,
 ) -> Result<()> {
-    let ark = X509::from_der(&chain.ark_der).context("failed to parse ARK certificate")?;
-    let ask = X509::from_der(&chain.ask_der).context("failed to parse ASK certificate")?;
-    let vcek = X509::from_der(&chain.vcek_der).context("failed to parse VCEK certificate")?;
+    let ark = parse_cert("ARK certificate", &chain.ark_der)?;
+    let ask = parse_cert("ASK certificate", &chain.ask_der)?;
+    let vcek = parse_cert("VCEK certificate", &chain.vcek_der)?;
 
     // Secondary, non-security metadata check (CN/O). Not a trust decision on
     // its own: the pinning below is what actually ties the chain to AMD.
@@ -222,91 +222,61 @@ pub(crate) fn verify_cert_chain_at(
     check_signed_by("ARK certificate", &ark, "its own key", &ark)?;
 
     // SECURITY-CRITICAL: pin the chain's ARK to AMD's genuine root.
-    verify_ark_matches_pinned_root(&ark, pinned_ark_der)
+    let pinned = parse_cert("pinned AMD ARK", pinned_ark_der)?;
+    check_pinned_root_key("the chain ARK", &ark, "the pinned AMD root", &pinned)
         .context("ARK does not match the pinned AMD root")?;
 
     check_signed_by("ASK certificate", &ask, "ARK", &ark)?;
     check_signed_by("VCEK certificate", &vcek, "ASK", &ask)?;
 
     // Reject expired or not-yet-valid certificates.
-    let now = asn1_now(now)?;
-    check_cert_window("the ARK certificate", &ark, &now)?;
-    check_cert_window("the ASK certificate", &ask, &now)?;
-    check_cert_window("the VCEK certificate", &vcek, &now)?;
+    let now = unix_seconds(now)?;
+    check_cert_window("the ARK certificate", &ark, now)?;
+    check_cert_window("the ASK certificate", &ask, now)?;
+    check_cert_window("the VCEK certificate", &vcek, now)?;
 
     Ok(())
-}
-
-/// Verify that the chain's ARK carries the same public key
-/// (SubjectPublicKeyInfo) as AMD's pinned genuine ARK.
-///
-/// The key is compared, not the whole certificate: AMD re-issues an ARK with
-/// the same key, so pinning the bytes would turn a routine re-issue into a
-/// fleet-wide verification outage. A mismatch rejects the chain.
-fn verify_ark_matches_pinned_root(ark: &X509, pinned_ark_der: &[u8]) -> Result<()> {
-    let pinned = X509::from_der(pinned_ark_der).context("failed to parse pinned AMD ARK")?;
-    check_pinned_root_key("the chain ARK", ark, "the pinned AMD root", &pinned)
 }
 
 /// Check an ARK certificate's subject metadata against AMD's expected values.
 ///
 /// This is SECONDARY, non-security validation: the CN/O strings are forgeable,
 /// so passing this check proves nothing on its own. The actual tie to AMD is
-/// [`verify_ark_matches_pinned_root`], which pins the ARK public key to AMD's
-/// genuine root. This check exists only to give a clearer error when a cert
-/// that is not even shaped like an AMD ARK is supplied.
+/// the pin against AMD's genuine root in [`verify_cert_chain_at`], which pins
+/// the ARK public key. This check exists only to give a clearer error when a
+/// cert that is not even shaped like an AMD ARK is supplied.
 ///
 /// Checks:
 /// - Subject CN starts with "ARK-" (e.g., "ARK-Milan", "ARK-Genoa", "ARK-Turin")
 /// - Subject O is "Advanced Micro Devices"
 /// - Issuer matches subject (self-issued)
-fn verify_ark_identity(ark: &X509) -> Result<()> {
-    let subject = ark.subject_name();
-    let issuer = ark.issuer_name();
+fn verify_ark_identity(ark: &X509Certificate<'_>) -> Result<()> {
+    let subject = ark.subject();
 
-    // Extract CN from subject
-    let cn_nid = openssl::nid::Nid::COMMONNAME;
     let cn = subject
-        .entries_by_nid(cn_nid)
+        .iter_common_name()
         .next()
-        .context("ARK certificate has no Common Name in subject")?;
-    let cn_str =
-        String::from_utf8(cn.data().as_slice().to_vec()).context("ARK CN is not valid UTF-8")?;
-
-    let cn_str: &str = &cn_str;
-    if !cn_str.starts_with(AMD_ARK_CN_PREFIX) {
+        .context("ARK certificate has no Common Name in subject")?
+        .as_str()
+        .context("ARK CN is not valid UTF-8")?;
+    if !cn.starts_with(AMD_ARK_CN_PREFIX) {
         bail!(
-            "ARK certificate CN '{}' does not start with expected prefix '{}'",
-            cn_str,
-            AMD_ARK_CN_PREFIX,
+            "ARK certificate CN '{cn}' does not start with expected prefix '{AMD_ARK_CN_PREFIX}'"
         );
     }
 
-    // Extract O (Organization) from subject
-    let org_nid = openssl::nid::Nid::ORGANIZATIONNAME;
     let org = subject
-        .entries_by_nid(org_nid)
+        .iter_organization()
         .next()
-        .context("ARK certificate has no Organization in subject")?;
-    let org_str = String::from_utf8(org.data().as_slice().to_vec())
+        .context("ARK certificate has no Organization in subject")?
+        .as_str()
         .context("ARK Organization is not valid UTF-8")?;
-
-    let org_str: &str = &org_str;
-    if org_str != AMD_ORG_NAME {
-        bail!(
-            "ARK certificate Organization '{}' does not match expected '{}'",
-            org_str,
-            AMD_ORG_NAME,
-        );
+    if org != AMD_ORG_NAME {
+        bail!("ARK certificate Organization '{org}' does not match expected '{AMD_ORG_NAME}'");
     }
 
-    // Verify issuer == subject (ARK must be self-issued)
-    // Compare the DER encoding of issuer and subject names.
-    let subject_der = subject
-        .to_der()
-        .context("failed to encode subject to DER")?;
-    let issuer_der = issuer.to_der().context("failed to encode issuer to DER")?;
-    if subject_der != issuer_der {
+    // The ARK must be self-issued: same DER for issuer and subject.
+    if subject.as_raw() != ark.issuer().as_raw() {
         bail!("ARK certificate issuer does not match subject (not self-issued)");
     }
 
@@ -315,8 +285,8 @@ fn verify_ark_identity(ark: &X509) -> Result<()> {
 
 /// Verify the SEV-SNP report signature using the VCEK public key.
 ///
-/// The signed portion of the report is bytes 0x000..0x2A0, hashed with SHA-384.
-/// The signature is an ECDSA P-384 signature with r and s components of 72 bytes each
+/// The signed portion of the report is bytes 0x000..0x2A0, hashed with
+/// SHA-384. The signature is ECDSA P-384 with r and s of 72 bytes each
 /// (little-endian, zero-padded), starting at offset 0x2A0 in the raw report.
 pub fn verify_report_signature(report_raw: &[u8], vcek_der: &[u8]) -> Result<()> {
     if report_raw.len() < SIGNED_REPORT_SIZE + 144 {
@@ -327,166 +297,108 @@ pub fn verify_report_signature(report_raw: &[u8], vcek_der: &[u8]) -> Result<()>
         );
     }
 
-    // Extract the signed portion (bytes 0..0x2A0)
     let signed_data = &report_raw[..SIGNED_REPORT_SIZE];
+    let r_le = &report_raw[SIGNED_REPORT_SIZE..SIGNED_REPORT_SIZE + 72];
+    let s_le = &report_raw[SIGNED_REPORT_SIZE + 72..SIGNED_REPORT_SIZE + 144];
+    let signature = p384_signature_from_le(r_le, s_le)?;
 
-    // Extract signature components (r and s, each 72 bytes, little-endian)
-    let sig_offset = SIGNED_REPORT_SIZE;
-    let r_bytes_le = &report_raw[sig_offset..sig_offset + 72];
-    let s_bytes_le = &report_raw[sig_offset + 72..sig_offset + 144];
-
-    // The report carries r and s little-endian; openssl reads them
-    // big-endian, leading zeros and all.
-    let r_bytes_be: Vec<u8> = r_bytes_le.iter().rev().copied().collect();
-    let s_bytes_be: Vec<u8> = s_bytes_le.iter().rev().copied().collect();
-
-    let ecdsa_sig = ecdsa_from_components(&r_bytes_be, &s_bytes_be)?;
-
-    // Hash the signed portion with SHA-384
-    let digest = openssl::hash::hash(MessageDigest::sha384(), signed_data)
-        .context("failed to compute SHA-384 digest")?;
-
-    // Extract VCEK public key
-    let vcek = X509::from_der(vcek_der)
+    let vcek = parse_cert("VCEK certificate", vcek_der)
         .context("failed to parse VCEK certificate for signature verification")?;
-    let vcek_pkey = vcek
-        .public_key()
-        .context("failed to extract VCEK public key")?;
-    let ec_key = vcek_pkey
-        .ec_key()
-        .context("VCEK public key is not an EC key")?;
+    let key = ec_public_key("VCEK public", vcek.public_key(), Curve::P384)?;
 
-    // Verify the ECDSA signature
-    let valid = ecdsa_sig
-        .verify(&digest, &ec_key)
-        .context("ECDSA signature verification failed")?;
-
-    if !valid {
-        bail!("SEV-SNP report signature is invalid");
-    }
-
-    Ok(())
+    verify_raw_ecdsa(
+        "the SEV-SNP report",
+        Curve::P384,
+        key,
+        signed_data,
+        &signature,
+    )
+    .context("SEV-SNP report signature is invalid")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openssl::bn::{BigNum, MsbOption};
-    use openssl::ec::{EcGroup, EcKey};
-    use openssl::ecdsa::EcdsaSig;
-    use openssl::hash::hash;
-    use openssl::nid::Nid;
-    use openssl::pkey::{PKey, Private};
-    use openssl::x509::{X509Builder, X509NameBuilder};
+    use crate::pki::testing::{Name, cert, p384_key};
+    use rcgen::KeyPair;
+    use std::time::{Duration, UNIX_EPOCH};
 
-    // ---- test helpers: synthetic P-384 keys and certificates (no hardware) ----
+    const MILAN_REPORT_HEX: &[u8] = include_bytes!("../../tests/fixtures/sev_snp/report_milan.hex");
+    const MILAN_VCEK_DER: &[u8] = include_bytes!("../../tests/fixtures/sev_snp/vcek_milan.der");
 
-    /// Generate a fresh P-384 (secp384r1) key pair.
-    fn gen_p384() -> PKey<Private> {
-        let group = EcGroup::from_curve_name(Nid::SECP384R1).unwrap();
-        let ec = EcKey::generate(&group).unwrap();
-        PKey::from_ec_key(ec).unwrap()
+    /// 2026-08-18T00:00:00Z: inside the fixture VCEK window (2023 to 2030)
+    /// and the ARK/ASK windows (through 2045).
+    fn milan_now() -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(1_787_011_200)
     }
 
-    /// Absolute Asn1Time at `offset_secs` from now (negative = in the past).
-    fn asn1_time(offset_secs: i64) -> openssl::asn1::Asn1Time {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
-        openssl::asn1::Asn1Time::from_unix(now + offset_secs).unwrap()
+    fn milan_report() -> Vec<u8> {
+        let hex_text = std::str::from_utf8(MILAN_REPORT_HEX).unwrap().trim();
+        hex::decode(hex_text).unwrap()
     }
 
-    /// Build an X.509 certificate whose subject public key is `subject_key`,
-    /// signed by `signer_key`, with the given subject/issuer CN and O and a
-    /// validity window (in seconds relative to now).
-    #[allow(clippy::too_many_arguments)]
-    fn build_cert(
-        subject_key: &PKey<Private>,
-        signer_key: &PKey<Private>,
-        subject_cn: &str,
-        subject_org: &str,
-        issuer_cn: &str,
-        issuer_org: &str,
-        not_before_secs: i64,
-        not_after_secs: i64,
-    ) -> X509 {
-        let mut b = X509Builder::new().unwrap();
-        b.set_version(2).unwrap();
-
-        let mut serial = BigNum::new().unwrap();
-        serial.rand(128, MsbOption::MAYBE_ZERO, false).unwrap();
-        b.set_serial_number(&serial.to_asn1_integer().unwrap())
-            .unwrap();
-
-        let mut sub = X509NameBuilder::new().unwrap();
-        sub.append_entry_by_nid(Nid::COMMONNAME, subject_cn)
-            .unwrap();
-        sub.append_entry_by_nid(Nid::ORGANIZATIONNAME, subject_org)
-            .unwrap();
-        b.set_subject_name(&sub.build()).unwrap();
-
-        let mut iss = X509NameBuilder::new().unwrap();
-        iss.append_entry_by_nid(Nid::COMMONNAME, issuer_cn).unwrap();
-        iss.append_entry_by_nid(Nid::ORGANIZATIONNAME, issuer_org)
-            .unwrap();
-        b.set_issuer_name(&iss.build()).unwrap();
-
-        b.set_pubkey(subject_key).unwrap();
-        b.set_not_before(&asn1_time(not_before_secs)).unwrap();
-        b.set_not_after(&asn1_time(not_after_secs)).unwrap();
-        b.sign(signer_key, MessageDigest::sha384()).unwrap();
-        b.build()
+    /// AMD's genuine Milan chain: the fixture VCEK under the crate's builtin
+    /// ASK and ARK. Every certificate is RSASSA-PSS signed, as AMD ships them.
+    fn milan_chain() -> CertChain {
+        CertChain {
+            vcek_der: MILAN_VCEK_DER.to_vec(),
+            ask_der: builtin::milan::ask().unwrap().to_der().unwrap(),
+            ark_der: builtin::milan::ark().unwrap().to_der().unwrap(),
+        }
     }
+
+    // ---- synthetic P-384 chains (no hardware, no AMD key) ----
 
     const AMD_CN: &str = "ARK-Milan";
     const ASK_CN: &str = "SEV-Milan";
     const VCEK_CN: &str = "SEV-VCEK-Milan";
 
-    /// Build a valid synthetic ARK/ASK/VCEK chain and return the chain plus the
-    /// three keys (so tests can re-sign individual certs to break links).
-    fn valid_chain() -> (CertChain, PKey<Private>, PKey<Private>, PKey<Private>, X509) {
-        let ark_key = gen_p384();
-        let ask_key = gen_p384();
-        let vcek_key = gen_p384();
+    /// A window containing the wall clock for the `verify_cert_chain` entry
+    /// point (which reads the clock): 2020-01-01 to 2099-01-01.
+    const NOT_BEFORE: i64 = 1_577_836_800;
+    const NOT_AFTER: i64 = 4_070_908_800;
 
-        let ark = build_cert(
-            &ark_key,
-            &ark_key,
-            AMD_CN,
-            AMD_ORG_NAME,
-            AMD_CN,
-            AMD_ORG_NAME,
-            -3600,
-            3600,
-        );
-        let ask = build_cert(
+    fn amd_name(common_name: &str) -> Name<'_> {
+        Name {
+            common_names: vec![common_name],
+            organization: Some(AMD_ORG_NAME),
+        }
+    }
+
+    /// Build a synthetic ARK/ASK/VCEK chain with the given windows and
+    /// return it with its three keys, so tests can re-sign individual certs
+    /// to break links.
+    fn synthetic_chain(not_before: i64, not_after: i64) -> (CertChain, KeyPair, KeyPair, KeyPair) {
+        let ark_key = p384_key();
+        let ask_key = p384_key();
+        let vcek_key = p384_key();
+        let ark_name = amd_name(AMD_CN);
+        let ask_name = amd_name(ASK_CN);
+        let ark = cert(&ark_name, &ark_key, None, not_before, not_after);
+        let ask = cert(
+            &ask_name,
             &ask_key,
-            &ark_key,
-            ASK_CN,
-            AMD_ORG_NAME,
-            AMD_CN,
-            AMD_ORG_NAME,
-            -3600,
-            3600,
+            Some((&ark_name, &ark_key)),
+            not_before,
+            not_after,
         );
-        let vcek = build_cert(
+        let vcek = cert(
+            &amd_name(VCEK_CN),
             &vcek_key,
-            &ask_key,
-            VCEK_CN,
-            AMD_ORG_NAME,
-            ASK_CN,
-            AMD_ORG_NAME,
-            -3600,
-            3600,
+            Some((&ask_name, &ask_key)),
+            not_before,
+            not_after,
         );
-
         let chain = CertChain {
-            vcek_der: vcek.to_der().unwrap(),
-            ask_der: ask.to_der().unwrap(),
-            ark_der: ark.to_der().unwrap(),
+            vcek_der: vcek.der().to_vec(),
+            ask_der: ask.der().to_vec(),
+            ark_der: ark.der().to_vec(),
         };
-        (chain, ark_key, ask_key, vcek_key, ark)
+        (chain, ark_key, ask_key, vcek_key)
+    }
+
+    fn valid_chain() -> (CertChain, KeyPair, KeyPair, KeyPair) {
+        synthetic_chain(NOT_BEFORE, NOT_AFTER)
     }
 
     #[test]
@@ -532,129 +444,84 @@ mod tests {
         assert!(check_vmpl(3).is_err());
     }
 
-    // ---- report signature (kills `if !valid` -> `if false`) ----
+    // ---- report signature: genuine Milan fixtures ----
 
-    /// Write a big-endian integer into a 72-byte little-endian field.
-    fn write_le72(dst: &mut [u8], be: &[u8]) {
-        for (i, byte) in be.iter().rev().enumerate() {
-            dst[i] = *byte;
-        }
+    #[test]
+    fn genuine_milan_report_signature_verifies() {
+        verify_report_signature(&milan_report(), MILAN_VCEK_DER)
+            .expect("AMD's P-384 report signature verifies under the fixture VCEK");
     }
 
     #[test]
-    fn test_verify_report_signature_good_and_tampered() {
-        use super::super::report::REPORT_SIZE;
+    fn tampered_milan_report_is_rejected() {
+        // One bit in the measurement (inside the signed region).
+        let mut report = milan_report();
+        report[0x90] ^= 0x01;
+        let err = verify_report_signature(&report, MILAN_VCEK_DER)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("signature is invalid"), "got: {err}");
 
-        let vcek_key = gen_p384();
-        // VCEK cert only needs to carry the P-384 public key; verify_report_signature
-        // extracts the key and does not re-check the cert chain.
-        let vcek = build_cert(
-            &vcek_key,
-            &vcek_key,
-            VCEK_CN,
-            AMD_ORG_NAME,
-            VCEK_CN,
-            AMD_ORG_NAME,
-            -3600,
-            3600,
-        );
-        let vcek_der = vcek.to_der().unwrap();
+        // One bit in the signature itself.
+        let mut report = milan_report();
+        report[SIGNED_REPORT_SIZE] ^= 0x01;
+        assert!(verify_report_signature(&report, MILAN_VCEK_DER).is_err());
+    }
 
-        // Build a raw report and sign its signed range [0..0x2A0].
-        let mut raw = vec![0u8; REPORT_SIZE];
-        for (i, byte) in raw[..SIGNED_REPORT_SIZE].iter_mut().enumerate() {
-            *byte = (i % 251) as u8;
-        }
-        let digest = hash(MessageDigest::sha384(), &raw[..SIGNED_REPORT_SIZE]).unwrap();
-        let ec = vcek_key.ec_key().unwrap();
-        let sig = EcdsaSig::sign(&digest, &ec).unwrap();
-
-        write_le72(
-            &mut raw[SIGNED_REPORT_SIZE..SIGNED_REPORT_SIZE + 72],
-            &sig.r().to_vec(),
-        );
-        write_le72(
-            &mut raw[SIGNED_REPORT_SIZE + 72..SIGNED_REPORT_SIZE + 144],
-            &sig.s().to_vec(),
-        );
-
-        // Good signature verifies.
-        assert!(
-            verify_report_signature(&raw, &vcek_der).is_ok(),
-            "genuine signature must verify"
-        );
-
-        // Tampering the signed body invalidates the signature.
-        let mut tampered_body = raw.clone();
-        tampered_body[10] ^= 0xFF;
-        assert!(
-            verify_report_signature(&tampered_body, &vcek_der).is_err(),
-            "tampered report body must be rejected"
-        );
-
-        // Tampering the signature itself is rejected.
-        let mut tampered_sig = raw.clone();
-        tampered_sig[SIGNED_REPORT_SIZE] ^= 0xFF;
-        assert!(
-            verify_report_signature(&tampered_sig, &vcek_der).is_err(),
-            "tampered signature must be rejected"
-        );
+    #[test]
+    fn report_signature_needs_a_p384_vcek() {
+        // A P-256 certificate where the VCEK belongs: refused on the curve,
+        // not on a failed signature.
+        use crate::pki::testing::{cert as make_cert, p256_key};
+        let wrong = make_cert(&amd_name(VCEK_CN), &p256_key(), None, NOT_BEFORE, NOT_AFTER);
+        let err = verify_report_signature(&milan_report(), wrong.der())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not on P-384"), "got: {err}");
     }
 
     // ---- certificate chain (kills the AMD_ORG identity mutation, etc.) ----
 
     #[test]
     fn test_verify_cert_chain_happy_path() {
-        let (chain, _ark_key, _ask_key, _vcek_key, ark) = valid_chain();
-        let pinned = ark.to_der().unwrap();
-        verify_cert_chain(&chain, &pinned).expect("valid chain should verify");
+        let (chain, _ark_key, _ask_key, _vcek_key) = valid_chain();
+        verify_cert_chain(&chain, &chain.ark_der).expect("valid chain should verify");
     }
 
     #[test]
     fn test_verify_cert_chain_wrong_ark_identity() {
         // ARK with a non-AMD Organization: identity check must fire.
-        let ark_key = gen_p384();
-        let ask_key = gen_p384();
-        let vcek_key = gen_p384();
-
-        let ark = build_cert(
-            &ark_key,
-            &ark_key,
-            AMD_CN,
-            "Evil Corp",
-            AMD_CN,
-            "Evil Corp",
-            -3600,
-            3600,
-        );
-        let ask = build_cert(
+        let ark_key = p384_key();
+        let ask_key = p384_key();
+        let vcek_key = p384_key();
+        let evil_ark = Name {
+            common_names: vec![AMD_CN],
+            organization: Some("Evil Corp"),
+        };
+        let ark = cert(&evil_ark, &ark_key, None, NOT_BEFORE, NOT_AFTER);
+        let ask = cert(
+            &amd_name(ASK_CN),
             &ask_key,
-            &ark_key,
-            ASK_CN,
-            AMD_ORG_NAME,
-            AMD_CN,
-            "Evil Corp",
-            -3600,
-            3600,
+            Some((&evil_ark, &ark_key)),
+            NOT_BEFORE,
+            NOT_AFTER,
         );
-        let vcek = build_cert(
+        let vcek = cert(
+            &amd_name(VCEK_CN),
             &vcek_key,
-            &ask_key,
-            VCEK_CN,
-            AMD_ORG_NAME,
-            ASK_CN,
-            AMD_ORG_NAME,
-            -3600,
-            3600,
+            Some((&amd_name(ASK_CN), &ask_key)),
+            NOT_BEFORE,
+            NOT_AFTER,
         );
         let chain = CertChain {
-            vcek_der: vcek.to_der().unwrap(),
-            ask_der: ask.to_der().unwrap(),
-            ark_der: ark.to_der().unwrap(),
+            vcek_der: vcek.der().to_vec(),
+            ask_der: ask.der().to_vec(),
+            ark_der: ark.der().to_vec(),
         };
-        let pinned = ark.to_der().unwrap();
 
-        let err = verify_cert_chain(&chain, &pinned).unwrap_err().to_string();
+        let err = verify_cert_chain(&chain, &chain.ark_der)
+            .unwrap_err()
+            .to_string();
         assert!(
             err.contains("identity") || err.contains("Organization"),
             "expected ARK identity failure, got: {err}"
@@ -665,61 +532,46 @@ mod tests {
     fn test_verify_cert_chain_ark_not_self_signed() {
         // ARK carries the pinned public key but is signed by a DIFFERENT key,
         // so the self-signature check must fire (pinning still matches).
-        let ark_key = gen_p384();
-        let other_key = gen_p384();
-        let ask_key = gen_p384();
-        let vcek_key = gen_p384();
+        let ark_key = p384_key();
+        let other_key = p384_key();
+        let ask_key = p384_key();
+        let vcek_key = p384_key();
+        let ark_name = amd_name(AMD_CN);
 
         // Pinned ARK: genuine self-signed cert with ark_key.
-        let pinned_ark = build_cert(
+        let pinned_ark = cert(&ark_name, &ark_key, None, NOT_BEFORE, NOT_AFTER);
+        // Chain ARK: same subject key (ark_key), same issuer name, but
+        // signed by other_key.
+        let ark = cert(
+            &ark_name,
             &ark_key,
-            &ark_key,
-            AMD_CN,
-            AMD_ORG_NAME,
-            AMD_CN,
-            AMD_ORG_NAME,
-            -3600,
-            3600,
+            Some((&ark_name, &other_key)),
+            NOT_BEFORE,
+            NOT_AFTER,
         );
-        // Chain ARK: same subject key (ark_key) but signed by other_key.
-        let ark = build_cert(
-            &ark_key,
-            &other_key,
-            AMD_CN,
-            AMD_ORG_NAME,
-            AMD_CN,
-            AMD_ORG_NAME,
-            -3600,
-            3600,
-        );
-        let ask = build_cert(
+        let ask = cert(
+            &amd_name(ASK_CN),
             &ask_key,
-            &ark_key,
-            ASK_CN,
-            AMD_ORG_NAME,
-            AMD_CN,
-            AMD_ORG_NAME,
-            -3600,
-            3600,
+            Some((&ark_name, &ark_key)),
+            NOT_BEFORE,
+            NOT_AFTER,
         );
-        let vcek = build_cert(
+        let vcek = cert(
+            &amd_name(VCEK_CN),
             &vcek_key,
-            &ask_key,
-            VCEK_CN,
-            AMD_ORG_NAME,
-            ASK_CN,
-            AMD_ORG_NAME,
-            -3600,
-            3600,
+            Some((&amd_name(ASK_CN), &ask_key)),
+            NOT_BEFORE,
+            NOT_AFTER,
         );
         let chain = CertChain {
-            vcek_der: vcek.to_der().unwrap(),
-            ask_der: ask.to_der().unwrap(),
-            ark_der: ark.to_der().unwrap(),
+            vcek_der: vcek.der().to_vec(),
+            ask_der: ask.der().to_vec(),
+            ark_der: ark.der().to_vec(),
         };
-        let pinned = pinned_ark.to_der().unwrap();
 
-        let err = verify_cert_chain(&chain, &pinned).unwrap_err().to_string();
+        let err = verify_cert_chain(&chain, pinned_ark.der())
+            .unwrap_err()
+            .to_string();
         assert!(
             err.contains("ARK certificate is not signed by its own key"),
             "expected self-signature failure, got: {err}"
@@ -730,57 +582,49 @@ mod tests {
     /// must keep verifying against the vendored copy.
     #[test]
     fn test_verify_cert_chain_accepts_a_same_key_reissued_ark() {
-        let (chain, ark_key, _ask_key, _vcek_key, _ark) = valid_chain();
-        let reissued = build_cert(
+        let (chain, ark_key, _ask_key, _vcek_key) = valid_chain();
+        // Same key, different envelope: a wider window and a fresh serial.
+        let reissued = cert(
+            &amd_name(AMD_CN),
             &ark_key,
-            &ark_key,
-            AMD_CN,
-            AMD_ORG_NAME,
-            AMD_CN,
-            AMD_ORG_NAME,
-            -7200,
-            7200,
+            None,
+            NOT_BEFORE - 3600,
+            NOT_AFTER + 3600,
         );
         assert_ne!(
-            reissued.to_der().unwrap(),
-            chain.ark_der,
+            reissued.der().as_ref(),
+            chain.ark_der.as_slice(),
             "the re-issued certificate must differ from the chain's"
         );
 
-        verify_cert_chain(&chain, &reissued.to_der().unwrap())
+        verify_cert_chain(&chain, reissued.der())
             .expect("a re-issue carrying the pinned key must still verify");
     }
 
     #[test]
     fn test_verify_cert_chain_broken_ask_link() {
         // ASK signed by a rogue key, not the ARK.
-        let (mut chain, _ark_key, _ask_key, vcek_key, ark) = valid_chain();
-        let rogue = gen_p384();
-        let ask_key = gen_p384();
-        let bad_ask = build_cert(
+        let (mut chain, _ark_key, _ask_key, vcek_key) = valid_chain();
+        let rogue = p384_key();
+        let ask_key = p384_key();
+        let bad_ask = cert(
+            &amd_name(ASK_CN),
             &ask_key,
-            &rogue,
-            ASK_CN,
-            AMD_ORG_NAME,
-            AMD_CN,
-            AMD_ORG_NAME,
-            -3600,
-            3600,
+            Some((&amd_name(AMD_CN), &rogue)),
+            NOT_BEFORE,
+            NOT_AFTER,
         );
         // VCEK must chain to the (bad) ASK so the failure is the ASK<-ARK link.
-        let vcek = build_cert(
+        let vcek = cert(
+            &amd_name(VCEK_CN),
             &vcek_key,
-            &ask_key,
-            VCEK_CN,
-            AMD_ORG_NAME,
-            ASK_CN,
-            AMD_ORG_NAME,
-            -3600,
-            3600,
+            Some((&amd_name(ASK_CN), &ask_key)),
+            NOT_BEFORE,
+            NOT_AFTER,
         );
-        chain.ask_der = bad_ask.to_der().unwrap();
-        chain.vcek_der = vcek.to_der().unwrap();
-        let pinned = ark.to_der().unwrap();
+        chain.ask_der = bad_ask.der().to_vec();
+        chain.vcek_der = vcek.der().to_vec();
+        let pinned = chain.ark_der.clone();
 
         let err = verify_cert_chain(&chain, &pinned).unwrap_err().to_string();
         assert!(
@@ -792,20 +636,17 @@ mod tests {
     #[test]
     fn test_verify_cert_chain_broken_vcek_link() {
         // VCEK signed by a rogue key, not the ASK.
-        let (mut chain, _ark_key, _ask_key, vcek_key, ark) = valid_chain();
-        let rogue = gen_p384();
-        let bad_vcek = build_cert(
+        let (mut chain, _ark_key, _ask_key, vcek_key) = valid_chain();
+        let rogue = p384_key();
+        let bad_vcek = cert(
+            &amd_name(VCEK_CN),
             &vcek_key,
-            &rogue,
-            VCEK_CN,
-            AMD_ORG_NAME,
-            ASK_CN,
-            AMD_ORG_NAME,
-            -3600,
-            3600,
+            Some((&amd_name(ASK_CN), &rogue)),
+            NOT_BEFORE,
+            NOT_AFTER,
         );
-        chain.vcek_der = bad_vcek.to_der().unwrap();
-        let pinned = ark.to_der().unwrap();
+        chain.vcek_der = bad_vcek.der().to_vec();
+        let pinned = chain.ark_der.clone();
 
         let err = verify_cert_chain(&chain, &pinned).unwrap_err().to_string();
         assert!(
@@ -817,17 +658,14 @@ mod tests {
     /// The window check follows the injected instant, not the wall clock.
     #[test]
     fn test_cert_windows_follow_the_injected_clock() {
-        use std::time::Duration;
+        // Certificates valid from 2023-11-14 to 2027-01-15.
+        let (chain, _ark_key, _ask_key, _vcek_key) = synthetic_chain(1_700_000_000, 1_800_000_000);
+        let pinned = chain.ark_der.clone();
 
-        // valid_chain() builds certificates valid one hour either side of
-        // the present.
-        let (chain, _ark_key, _ask_key, _vcek_key, ark) = valid_chain();
-        let pinned = ark.to_der().unwrap();
-        let now = SystemTime::now();
+        let inside = UNIX_EPOCH + Duration::from_secs(1_750_000_000);
+        verify_cert_chain_at(&chain, &pinned, inside).expect("valid inside the window");
 
-        verify_cert_chain_at(&chain, &pinned, now).expect("valid inside the window");
-
-        let later = now + Duration::from_secs(7200);
+        let later = UNIX_EPOCH + Duration::from_secs(1_900_000_000);
         let err = verify_cert_chain_at(&chain, &pinned, later)
             .unwrap_err()
             .to_string();
@@ -836,7 +674,7 @@ mod tests {
             "expected an expiry failure, got: {err}"
         );
 
-        let earlier = now - Duration::from_secs(7200);
+        let earlier = UNIX_EPOCH + Duration::from_secs(1_600_000_000);
         let err = verify_cert_chain_at(&chain, &pinned, earlier)
             .unwrap_err()
             .to_string();
@@ -865,23 +703,62 @@ mod tests {
             let der = pinned_amd_ark_der(product).expect("pinned ARK should resolve");
             assert!(!der.is_empty());
             // Must parse as an X.509 cert.
-            X509::from_der(&der).expect("pinned ARK must be a valid certificate");
+            parse_cert("pinned ARK", &der).expect("pinned ARK must be a valid certificate");
         }
         assert!(pinned_amd_ark_der("Bogus").is_err());
     }
 
     /// A freshly generated self-signed cert carrying AMD's CN/O strings (plus an
     /// attacker ASK/VCEK) must be REJECTED: the CN/O check alone is not enough,
-    /// the ARK must match AMD's pinned root. This is the FIX 1 blocker scenario.
+    /// the ARK must match AMD's pinned root.
     #[test]
     fn test_forged_amd_ark_is_rejected_against_real_pin() {
-        let (chain, _ark_key, _ask_key, _vcek_key, _ark) = valid_chain();
+        let (chain, _ark_key, _ask_key, _vcek_key) = valid_chain();
         // Pin against AMD's genuine Milan ARK: our synthetic (forged) ARK cannot match.
         let pinned = pinned_amd_ark_der("Milan").unwrap();
         let err = verify_cert_chain(&chain, &pinned).unwrap_err().to_string();
         assert!(
             err.contains("pinned"),
             "forged ARK must be rejected by the pin, got: {err}"
+        );
+    }
+
+    #[test]
+    fn genuine_milan_chain_verifies_under_the_pin() {
+        let pinned = pinned_amd_ark_der("Milan").unwrap();
+        verify_cert_chain_at(&milan_chain(), &pinned, milan_now())
+            .expect("AMD's RSASSA-PSS chain verifies to the pinned ARK");
+    }
+
+    #[test]
+    fn genuine_milan_chain_expires() {
+        let pinned = pinned_amd_ark_der("Milan").unwrap();
+        // 2200-01-01: every certificate is long expired.
+        let later = UNIX_EPOCH + Duration::from_secs(7_258_118_400);
+        let err = verify_cert_chain_at(&milan_chain(), &pinned, later)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("expired"), "got: {err}");
+    }
+
+    #[test]
+    fn genuine_milan_vcek_under_the_wrong_ask_is_rejected() {
+        // Genoa's ASK did not sign a Milan VCEK: the ASK -> VCEK link fails,
+        // before that the pin fails because Genoa's ARK is not Milan's.
+        let chain = CertChain {
+            vcek_der: MILAN_VCEK_DER.to_vec(),
+            ask_der: builtin::genoa::ask().unwrap().to_der().unwrap(),
+            ark_der: builtin::genoa::ark().unwrap().to_der().unwrap(),
+        };
+        let pinned = pinned_amd_ark_der("Milan").unwrap();
+        assert!(verify_cert_chain_at(&chain, &pinned, milan_now()).is_err());
+        let pinned = pinned_amd_ark_der("Genoa").unwrap();
+        let err = verify_cert_chain_at(&chain, &pinned, milan_now())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("VCEK certificate is not signed by ASK"),
+            "got: {err}"
         );
     }
 
@@ -897,13 +774,14 @@ mod tests {
             let (_ask_der, ark_der) = fetch_ca_chain(product)
                 .await
                 .unwrap_or_else(|e| panic!("KDS fetch for {product} failed: {e}"));
-            let kds_ark = X509::from_der(&ark_der).unwrap();
-            let pinned = X509::from_der(&pinned_amd_ark_der(product).unwrap()).unwrap();
+            let kds_ark = parse_cert("KDS ARK", &ark_der).unwrap();
+            let pinned_der = pinned_amd_ark_der(product).unwrap();
+            let pinned = parse_cert("pinned ARK", &pinned_der).unwrap();
             // The key, because that is what the pin compares: AMD may
             // re-issue the certificate around it.
             assert_eq!(
-                kds_ark.public_key().unwrap().public_key_to_der().unwrap(),
-                pinned.public_key().unwrap().public_key_to_der().unwrap(),
+                kds_ark.public_key().raw,
+                pinned.public_key().raw,
                 "pinned ARK for {product} diverged from live KDS"
             );
         }
