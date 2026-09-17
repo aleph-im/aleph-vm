@@ -382,6 +382,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::pki::testing::pem_blocks;
     use crate::tdx::quote::parse_tdx_quote;
 
     const QUOTE_V4: &[u8] = include_bytes!("../../tests/fixtures/tdx/tdx_quote_v4.bin");
@@ -398,6 +399,43 @@ mod tests {
         let request = collateral_request(&quote.signature.pck_chain_pem).unwrap();
         assert_eq!(hex::encode(request.fmspc), "b0c06f000000");
         assert_eq!(request.pck_ca, PckCa::Platform);
+    }
+
+    #[test]
+    fn collateral_request_rejects_short_and_foreign_chains() {
+        let quote = parse_tdx_quote(QUOTE_V4).unwrap();
+        let blocks = pem_blocks(std::str::from_utf8(&quote.signature.pck_chain_pem).unwrap());
+        assert_eq!(blocks.len(), 3);
+
+        let short = format!("{}{}", blocks[0], blocks[1]);
+        let err = collateral_request(short.as_bytes()).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("expected 3 certificates"),
+            "got: {err:#}"
+        );
+
+        // The root in the intermediate's slot: not a PCK CA.
+        let swapped = format!("{}{}{}", blocks[0], blocks[2], blocks[1]);
+        let err = collateral_request(swapped.as_bytes()).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("not one of Intel's two PCK CAs"),
+            "got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn pck_ca_maps_both_intel_cas() {
+        assert_eq!(
+            PckCa::from_common_name("Intel SGX PCK Platform CA").unwrap(),
+            PckCa::Platform
+        );
+        assert_eq!(PckCa::Platform.query_value(), "platform");
+        assert_eq!(
+            PckCa::from_common_name("Intel SGX PCK Processor CA").unwrap(),
+            PckCa::Processor
+        );
+        assert_eq!(PckCa::Processor.query_value(), "processor");
+        assert!(PckCa::from_common_name("Intel SGX Root CA").is_err());
     }
 
     /// The body must come back byte-identical whatever the envelope's key
@@ -514,13 +552,18 @@ mod tests {
         );
     }
 
-    /// A client whose every network request is refused immediately (port 9
-    /// on the loopback is closed), so tests never leave the machine.
-    fn offline_client(cache: &Path) -> PcsClient {
+    /// A client whose every network request is refused immediately, so tests
+    /// never leave the machine: bind an ephemeral loopback port and drop it.
+    fn offline_client(cache: Option<&Path>) -> PcsClient {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
         PcsClient {
-            base_url: "http://127.0.0.1:9".to_string(),
-            root_ca_crl_url: "http://127.0.0.1:9/rootcrl".to_string(),
-            cache_dir: Some(cache.to_path_buf()),
+            base_url: format!("http://127.0.0.1:{port}"),
+            root_ca_crl_url: format!("http://127.0.0.1:{port}/rootcrl"),
+            cache_dir: cache.map(Path::to_path_buf),
         }
     }
 
@@ -537,7 +580,7 @@ mod tests {
         seed_cache(dir.path());
         let quote = parse_tdx_quote(QUOTE_V4).unwrap();
         let request = collateral_request(&quote.signature.pck_chain_pem).unwrap();
-        let fetched = offline_client(dir.path())
+        let fetched = offline_client(Some(dir.path()))
             .fetch(&request, now_v4())
             .await
             .expect("the cache satisfies every item");
@@ -554,7 +597,7 @@ mod tests {
         let request = collateral_request(&quote.signature.pck_chain_pem).unwrap();
         // 2026-01-01: past every nextUpdate in the fixture.
         let later = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_767_225_600);
-        let err = offline_client(dir.path())
+        let err = offline_client(Some(dir.path()))
             .fetch(&request, later)
             .await
             .expect_err("an expired cache must not be served");
@@ -564,16 +607,51 @@ mod tests {
         );
     }
 
+    /// A cache entry that no longer parses (torn write, foreign content) is
+    /// a miss, not an error in itself: the refetch decides.
+    #[tokio::test]
+    async fn a_corrupt_cache_entry_is_a_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let quote = parse_tdx_quote(QUOTE_V4).unwrap();
+        let request = collateral_request(&quote.signature.pck_chain_pem).unwrap();
+
+        seed_cache(dir.path());
+        std::fs::write(dir.path().join("tcb-b0c06f000000.json"), b"{not json").unwrap();
+        let err = offline_client(Some(dir.path()))
+            .fetch(&request, now_v4())
+            .await
+            .expect_err("a corrupt entry must be refetched, not served");
+        assert!(
+            format!("{err:#}").contains("failed to obtain the TCB Info"),
+            "got: {err:#}"
+        );
+
+        seed_cache(dir.path());
+        std::fs::write(
+            dir.path().join("pckcrl-platform.json"),
+            br#"{"der_hex":"zz","chain":""}"#,
+        )
+        .unwrap();
+        let err = offline_client(Some(dir.path()))
+            .fetch(&request, now_v4())
+            .await
+            .expect_err("a corrupt CRL entry must be refetched, not served");
+        assert!(
+            format!("{err:#}").contains("failed to obtain the PCK CRL"),
+            "got: {err:#}"
+        );
+    }
+
     #[tokio::test]
     async fn no_cache_and_no_network_is_an_error() {
         let quote = parse_tdx_quote(QUOTE_V4).unwrap();
         let request = collateral_request(&quote.signature.pck_chain_pem).unwrap();
-        let client = PcsClient {
-            base_url: "http://127.0.0.1:9".to_string(),
-            root_ca_crl_url: "http://127.0.0.1:9/rootcrl".to_string(),
-            cache_dir: None,
-        };
-        assert!(client.fetch(&request, now_v4()).await.is_err());
+        assert!(
+            offline_client(None)
+                .fetch(&request, now_v4())
+                .await
+                .is_err()
+        );
     }
 
     /// Live: Intel's PCS serves collateral for the fixture platform, and the
