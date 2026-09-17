@@ -119,6 +119,10 @@ pub(crate) fn percent_decode(s: &str) -> Result<String> {
             let hex = bytes
                 .get(i + 1..i + 3)
                 .context("truncated percent-escape in a PCS header")?;
+            // from_str_radix would also take a sign; only two hex digits will do.
+            if !hex.iter().all(u8::is_ascii_hexdigit) {
+                bail!("invalid percent-escape in a PCS header");
+            }
             let hex = std::str::from_utf8(hex).context("non-ASCII percent-escape")?;
             out.push(u8::from_str_radix(hex, 16).context("invalid percent-escape")?);
             i += 3;
@@ -446,6 +450,8 @@ mod tests {
         assert_eq!(percent_decode("plain").unwrap(), "plain");
         assert!(percent_decode("bad%2").is_err());
         assert!(percent_decode("bad%zz").is_err());
+        assert!(percent_decode("bad%+5").is_err());
+        assert!(percent_decode("bad%").is_err());
     }
 
     #[test]
