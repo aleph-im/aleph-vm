@@ -1,5 +1,6 @@
 import logging
 import math
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -20,7 +21,7 @@ from aleph.vm.agent.vm.reclaimable import reclaimable_bytes
 from aleph.vm.conf import settings
 from aleph.vm.resources import GpuDevice
 from aleph.vm.sevclient import SevClient
-from aleph.vm.storage_pools import pools_disk_usage
+from aleph.vm.storage_pools import eligible_pool_free_bytes, pools_disk_usage
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.errors import SupervisorError
 from aleph.vm.utils import (
@@ -75,6 +76,42 @@ class CpuUsage(BaseModel):
 class MemoryUsage(BaseModel):
     total_kB: int
     available_kB: int
+
+
+class PoolUsage(BaseModel):
+    available_kB: int
+
+
+def _pool_usage_from_pools() -> list[PoolUsage]:
+    """Room on each eligible pool, the figure admission judges a volume by.
+
+    Free bytes plus that pool's reclaimable bytes, because a placement evicts
+    its retained directories before it refuses a volume, and ``_check_max_volume``
+    counts them for the same reason. A node advertising less than it will take
+    is a node the scheduler stops feeding.
+
+    Deduplicated by ``st_dev``: ``eligible_pool_free_bytes`` does not dedup,
+    since its only other caller takes a max() and duplicates are harmless
+    there. They are not harmless here. The scheduler packs volumes across this
+    list, so two pool directories on one filesystem would advertise twice the
+    room that exists.
+
+    A pool that cannot be stat'd drops out rather than failing the endpoint,
+    matching how ``pools_disk_usage`` treats an inaccessible pool.
+    """
+    seen_devices: set[int] = set()
+    pools: list[PoolUsage] = []
+    for pool, free in eligible_pool_free_bytes():
+        try:
+            st_dev = os.stat(pool.path).st_dev
+        except OSError:
+            logger.warning("Volume pool %s not accessible, not advertising it", pool.path)
+            continue
+        if st_dev in seen_devices:
+            continue
+        seen_devices.add(st_dev)
+        pools.append(PoolUsage(available_kB=(free + reclaimable_bytes(pool.path)) // 1000))
+    return pools
 
 
 class DiskUsage(BaseModel):
