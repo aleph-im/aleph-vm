@@ -144,3 +144,37 @@ def test_pool_usage_skips_an_unreachable_pool(mocker, tmp_path):
     mocker.patch("aleph.vm.agent.resources.reclaimable_bytes", return_value=0)
     pools = resources._pool_usage_from_pools()
     assert [p.available_kB for p in pools] == [2000]
+
+
+def test_disk_usage_advertises_each_pool(mocker):
+    """The aggregate figures are untouched; pools is added beside them."""
+    mocker.patch(
+        "aleph.vm.agent.resources.pools_disk_usage",
+        return_value=(4_000_000, 3_000_000),
+    )
+    mocker.patch("aleph.vm.agent.resources.reclaimable_bytes", return_value=0)
+    mocker.patch(
+        "aleph.vm.agent.resources._pool_usage_from_pools",
+        return_value=[
+            resources.PoolUsage(available_kB=1000),
+            resources.PoolUsage(available_kB=2000),
+        ],
+    )
+    host_info = mocker.Mock(available_disk_bytes=3_000_000)
+    usage = resources._disk_usage_from_pools(host_info)
+    assert usage.total_kB == 4000
+    assert usage.available_kB == 3000
+    assert [p.available_kB for p in usage.pools] == [1000, 2000]
+
+
+def test_disk_usage_serialises_pools_under_the_wire_key(mocker):
+    """The scheduler parses disk.pools[].available_kB; lock the spelling in."""
+    mocker.patch("aleph.vm.agent.resources.pools_disk_usage", return_value=(10, 10))
+    mocker.patch("aleph.vm.agent.resources.reclaimable_bytes", return_value=0)
+    mocker.patch(
+        "aleph.vm.agent.resources._pool_usage_from_pools",
+        return_value=[resources.PoolUsage(available_kB=7)],
+    )
+    host_info = mocker.Mock(available_disk_bytes=10)
+    dumped = resources._disk_usage_from_pools(host_info).model_dump()
+    assert dumped["pools"] == [{"available_kB": 7}]
