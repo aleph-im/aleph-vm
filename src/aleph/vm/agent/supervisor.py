@@ -18,7 +18,6 @@ from aiohttp_cors import ResourceOptions, setup
 from aleph.vm.agent.allocation.reconciler import AllocationReconciler
 from aleph.vm.agent.capacity import CapacityManager
 from aleph.vm.agent.expiry import ExpiryManager
-from aleph.vm.agent.migration.reaper import reap_orphan_migration_files
 from aleph.vm.agent.update_watcher import UpdateWatcher
 from aleph.vm.agent.vcpu_probe import get_snp_launch_capability
 from aleph.vm.agent.vm.backup import BackupManager
@@ -473,15 +472,6 @@ async def stop_program_client(app: web.Application) -> None:
         await program_client.forget_all()
 
 
-async def _run_migration_reaper(app: web.Application) -> None:
-    """on_startup hook: delete the export files a prior agent run left behind.
-
-    Cold migration staging is agent-owned, so this runs agent-side. Only
-    export files go; directories are the storage reconciler's.
-    """
-    await reap_orphan_migration_files()
-
-
 async def _rehydrate_vm_registry(app: web.Application) -> None:
     """on_startup hook: refill the agent's message registry from its DB."""
     count = await rehydrate_registry(app["vm_registry"])
@@ -538,7 +528,6 @@ def run():
         domain_name=settings.DOMAIN_NAME,
         cache_dir=settings.EXECUTION_ROOT,
     )
-    app.on_startup.append(_run_migration_reaper)
     app.on_startup.append(_rehydrate_vm_registry)
     app.on_startup.append(log_snp_launch_capability)
     # After _rehydrate_vm_registry, which fills half of the live set the
