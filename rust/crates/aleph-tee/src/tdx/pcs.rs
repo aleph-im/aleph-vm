@@ -15,11 +15,13 @@
 //! An expired cached copy is refetched, and if the refetch fails the error
 //! propagates: an out-of-window collateral is not evidence.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 
 use super::collateral::TdxCollateral;
 use super::pck_extension::parse_pck_platform;
@@ -82,92 +84,28 @@ pub fn collateral_request(pck_chain_pem: &[u8]) -> Result<CollateralRequest> {
     })
 }
 
-/// Slice the value of a top-level `key` out of a JSON object, verbatim.
+/// Split a PCS signed-document envelope into the verbatim bytes of its
+/// top-level `key` object and the detached hex signature.
 ///
-/// Walks the text with a depth counter that understands strings and
-/// escapes, so the returned slice is exactly the bytes between the value's
-/// braces as they appear in the response.
-pub(crate) fn extract_top_level_object<'a>(json: &'a str, key: &str) -> Result<&'a str> {
-    /// Index one past the closing quote of the string opening at `open`.
-    fn string_end(bytes: &[u8], open: usize) -> Result<usize> {
-        let mut j = open + 1;
-        while j < bytes.len() {
-            match bytes[j] {
-                b'\\' => j += 2,
-                b'"' => return Ok(j + 1),
-                _ => j += 1,
-            }
-        }
-        bail!("unterminated string in the PCS response")
-    }
-
-    /// Index of the brace closing the object opening at `open`.
-    fn object_end(bytes: &[u8], open: usize) -> Result<usize> {
-        let mut depth = 0usize;
-        let mut k = open;
-        while k < bytes.len() {
-            match bytes[k] {
-                b'"' => {
-                    k = string_end(bytes, k)?;
-                    continue;
-                }
-                b'{' => depth += 1,
-                b'}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Ok(k);
-                    }
-                }
-                _ => {}
-            }
-            k += 1;
-        }
-        bail!("unterminated object in the PCS response")
-    }
-
-    let bytes = json.as_bytes();
-    // The scan stays at depth 1 (inside the envelope) and skips nested
-    // values whole, so a same-named key deeper down is never matched.
-    let mut depth = 0usize;
-    let mut i = 0usize;
-    let mut last_string: Option<&str> = None;
-    let mut pending_key: Option<&str> = None;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'"' => {
-                let end = string_end(bytes, i)?;
-                last_string = Some(&json[i + 1..end - 1]);
-                i = end;
-                continue;
-            }
-            b':' if depth == 1 => pending_key = last_string,
-            b',' if depth == 1 => pending_key = None,
-            b'{' if depth == 1 && pending_key == Some(key) => {
-                let end = object_end(bytes, i)?;
-                return Ok(&json[i..=end]);
-            }
-            b'{' => {
-                depth += 1;
-                pending_key = None;
-            }
-            b'}' => depth = depth.saturating_sub(1),
-            _ => {}
-        }
-        i += 1;
-    }
-    bail!("the PCS response carries no top-level {key:?} object")
-}
-
-#[derive(Deserialize)]
-struct SignedEnvelope {
-    signature: String,
-}
-
-/// The detached hex signature a PCS signed-document response carries.
-pub(crate) fn signature_of(json: &str) -> Result<String> {
-    let envelope: SignedEnvelope =
+/// The body comes back as a slice of the response text: `RawValue` borrows
+/// the value's exact span from the input, so the bytes the signature covers
+/// are never re-serialized.
+pub(crate) fn split_envelope<'a>(json: &'a str, key: &str) -> Result<(&'a str, String)> {
+    let envelope: BTreeMap<String, &'a RawValue> =
         serde_json::from_str(json).context("failed to parse the PCS response envelope")?;
-    Ok(envelope.signature)
+    let body = envelope
+        .get(key)
+        .with_context(|| format!("the PCS response carries no top-level {key:?} object"))?
+        .get();
+    if !body.starts_with('{') {
+        bail!("the PCS response's top-level {key:?} is not an object");
+    }
+    let signature = envelope
+        .get("signature")
+        .context("the PCS response carries no signature")?;
+    let signature: String = serde_json::from_str(signature.get())
+        .context("the PCS response's signature is not a string")?;
+    Ok((body, signature))
 }
 
 /// Decode the percent-encoding Intel applies to PEM chains in response
@@ -334,10 +272,9 @@ impl PcsClient {
 
         let (text, headers) = self.get(url).await?;
         let chain = header_chain(&headers, chain_header)?;
-        let body = extract_top_level_object(&text, key)?.to_string();
-        let signature = signature_of(&text)?;
+        let (body, signature) = split_envelope(&text, key)?;
         let document = SignedDocument {
-            body,
+            body: body.to_string(),
             signature,
             chain,
         };
@@ -461,33 +398,42 @@ mod tests {
     /// The body must come back byte-identical whatever the envelope's key
     /// order or whitespace: the detached signature covers those bytes.
     #[test]
-    fn extract_top_level_object_returns_the_exact_bytes() {
+    fn split_envelope_returns_the_exact_bytes() {
         let c = collateral();
         let sig = &c.tcb_info_signature;
         let body = &c.tcb_info;
         let compact = format!(r#"{{"tcbInfo":{body},"signature":"{sig}"}}"#);
-        assert_eq!(extract_top_level_object(&compact, "tcbInfo").unwrap(), body);
-        assert_eq!(signature_of(&compact).unwrap(), *sig);
+        assert_eq!(
+            split_envelope(&compact, "tcbInfo").unwrap(),
+            (body.as_str(), sig.clone())
+        );
 
         let reordered = format!("{{ \"signature\" : \"{sig}\" ,\n \"tcbInfo\" : {body} }}");
+        assert_eq!(split_envelope(&reordered, "tcbInfo").unwrap().0, body);
+
+        // Whitespace inside the body is part of what Intel signed.
+        let spaced = format!("{{\"tcbInfo\": {{ \"a\" : [1, 2] }} ,\"signature\":\"{sig}\"}}");
         assert_eq!(
-            extract_top_level_object(&reordered, "tcbInfo").unwrap(),
-            body
+            split_envelope(&spaced, "tcbInfo").unwrap().0,
+            "{ \"a\" : [1, 2] }"
         );
 
         // A nested key of the same name must not be picked up.
-        let decoy = format!(r#"{{"other":{{"tcbInfo":{{}}}},"tcbInfo":{body}}}"#);
-        assert_eq!(extract_top_level_object(&decoy, "tcbInfo").unwrap(), body);
+        let decoy =
+            format!(r#"{{"other":{{"tcbInfo":{{}}}},"tcbInfo":{body},"signature":"{sig}"}}"#);
+        assert_eq!(split_envelope(&decoy, "tcbInfo").unwrap().0, body);
 
         // Braces inside strings do not count.
-        let tricky = r#"{"a":"}{","tcbInfo":{"s":"{"}}"#;
-        assert_eq!(
-            extract_top_level_object(tricky, "tcbInfo").unwrap(),
-            r#"{"s":"{"}"#
-        );
+        let tricky = r#"{"a":"}{","tcbInfo":{"s":"{"},"signature":"00"}"#;
+        assert_eq!(split_envelope(tricky, "tcbInfo").unwrap().0, r#"{"s":"{"}"#);
 
-        assert!(extract_top_level_object(r#"{"tcbInfo":"not an object"}"#, "tcbInfo").is_err());
-        assert!(extract_top_level_object(r#"{"x":{}}"#, "tcbInfo").is_err());
+        assert!(
+            split_envelope(r#"{"tcbInfo":"not an object","signature":"00"}"#, "tcbInfo").is_err()
+        );
+        assert!(split_envelope(r#"{"x":{},"signature":"00"}"#, "tcbInfo").is_err());
+        assert!(split_envelope(r#"{"tcbInfo":{}}"#, "tcbInfo").is_err());
+        assert!(split_envelope(r#"{"tcbInfo":{},"signature":1}"#, "tcbInfo").is_err());
+        assert!(split_envelope("not json", "tcbInfo").is_err());
     }
 
     #[test]

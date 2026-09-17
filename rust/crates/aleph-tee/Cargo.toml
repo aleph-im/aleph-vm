@@ -18,7 +18,7 @@ sha3.workspace = true
 k256.workspace = true
 reqwest.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 anyhow.workspace = true
 tracing.workspace = true
 
