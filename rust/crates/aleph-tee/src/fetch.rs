@@ -83,13 +83,21 @@ pub(crate) fn read_cached(path: &Path) -> Option<Vec<u8>> {
 }
 
 /// Write data to the cache; a failure is logged, never fatal.
+///
+/// Written to a sibling temporary file and renamed into place, so a
+/// concurrent reader sees either the previous copy or the whole new one.
 pub(crate) fn write_cache(path: &Path, data: &[u8]) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    match std::fs::write(path, data) {
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    let result = std::fs::write(&tmp, data).and_then(|()| std::fs::rename(&tmp, path));
+    match result {
         Ok(()) => debug!(path = %path.display(), "cached"),
-        Err(e) => debug!(path = %path.display(), error = %e, "failed to write the cache"),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            debug!(path = %path.display(), error = %e, "failed to write the cache");
+        }
     }
 }
 
@@ -104,6 +112,8 @@ mod tests {
         assert!(read_cached(&path).is_none());
         write_cache(&path, b"data");
         assert_eq!(read_cached(&path).unwrap(), b"data");
+        // The temporary file is gone once the rename lands.
+        assert_eq!(std::fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
         std::fs::write(&path, b"").unwrap();
         assert!(read_cached(&path).is_none());
     }
