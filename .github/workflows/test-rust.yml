@@ -79,7 +79,7 @@ jobs:
         # build and test on its own.
         working-directory: rust
         run: |
-          cargo check --locked -p aleph-tee --no-default-features
+          cargo clippy --locked -p aleph-tee --no-default-features --all-targets -- -D warnings
           cargo clippy --locked -p aleph-tee --no-default-features --features guest --all-targets -- -D warnings
           cargo clippy --locked -p aleph-tee --no-default-features --features verify --all-targets -- -D warnings
           cargo test --locked -p aleph-tee --no-default-features --features verify
