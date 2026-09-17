@@ -147,6 +147,18 @@ mod tests {
             "attestation extension bytes should be embedded in the certificate"
         );
 
+        // And under our OID: the DER encoding of 1.3.6.1.4.1.60000.1.1.
+        let oid_der = [
+            0x06, 0x0A, 0x2B, 0x06, 0x01, 0x04, 0x01, 0x83, 0xD4, 0x60, 0x01, 0x01,
+        ];
+        assert!(
+            identity
+                .cert_der
+                .windows(oid_der.len())
+                .any(|window| window == oid_der),
+            "the attestation extension should be attached under ATTESTATION_OID"
+        );
+
         let decoded = decode_attestation_extension(&extension_value)
             .expect("the embedded extension should decode");
         assert_eq!(decoded.tee_type, TeeType::SevSnp);
