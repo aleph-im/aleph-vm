@@ -73,8 +73,8 @@ ring = "0.17"
 # got this feature transitively via x509-cert, which we do not port here.
 der = { version = "0.7", features = ["alloc"] }
 # rcgen and time are dev-dependencies of aleph-tee (test-only certificate
-# fabrication); the pins stay here so the version is shared with other
-# workspace members that use them.
+# fabrication); dev-dependencies inherit from here like any other, so the
+# pins live here.
 time = "0.3"
 hex = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "charset", "http2"] }

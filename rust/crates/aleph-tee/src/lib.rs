@@ -7,9 +7,10 @@
 //! - `guest`: the SEV-SNP firmware backend, for the in-guest agent.
 //! - `verify`: everything a relying party needs, for client SDKs.
 //!
-//! Both are on by default. The report and quote parsers, the `report_data`
+//! Both are on by default. The SEV-SNP report parser, the `report_data`
 //! binding schemes, the owner-auth envelope and the X.509 extension are
-//! always available, since both sides share them.
+//! always available, since both sides share them. TDX, its quote parser
+//! included, is verify-only: no guest parses quotes.
 
 #[cfg(feature = "verify")]
 mod fetch;
