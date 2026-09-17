@@ -217,7 +217,8 @@ async def build_snp_instance_spec(vm_hash: ItemHash, content: InstanceContent, s
     session_base = settings.CONFIDENTIAL_SESSION_DIRECTORY or (Path(settings.EXECUTION_ROOT) / "sessions")
 
     # A confidential instance's static IPv6 depends only on the type and item
-    # hash, so the agent computes it upfront (empty under the dynamic policy).
+    # hash, so the agent computes it upfront (under the dynamic policy it is
+    # allocated right before the create).
     requested_ipv6, ipv6_prefix_len = compute_requested_ipv6(vm_hash, VmType.instance)
 
     # Same rule as a V-PROGRAM: the launched CPU model must be one the

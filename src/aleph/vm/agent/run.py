@@ -32,6 +32,7 @@ from aleph.vm.agent.capacity import (
 )
 from aleph.vm.agent.create_lock import vm_create_lock
 from aleph.vm.agent.expiry import ExpiryManager
+from aleph.vm.agent.guest_ipv6 import create_vm_with_ipv6, lacks_known_ipv6
 from aleph.vm.agent.snp_instance_launch import (
     build_snp_instance_spec,
     is_snp_instance,
@@ -567,7 +568,7 @@ async def create_vm_execution(
             try:
                 _admit_create(content, vm_hash, capacity=capacity, rebuild=rebuild)
                 spec, _resources = await build_program_create_vm_spec(vm_hash, content)
-                info = await supervisor.create_vm(spec)
+                info = await create_vm_with_ipv6(supervisor, spec)
                 await _wait_until_running(supervisor, info.vm_id)
             except VmAlreadyExistsError:
                 _log_lost_create_race(vm_hash, "Program VM")
@@ -635,7 +636,7 @@ async def create_vm_execution(
                     if requested_gpus:
                         resolved_gpus = await capacity.resolve_gpus(requested_gpus, owner=content.address)
                         spec = replace(spec, gpus=resolved_gpus)
-                info = await supervisor.create_vm(spec)
+                info = await create_vm_with_ipv6(supervisor, spec)
             except VmAlreadyExistsError:
                 _log_lost_create_race(vm_hash, "Instance")
                 return None
@@ -711,7 +712,7 @@ async def create_vm_execution(
                         arch=gpu.arch, count=gpu.count, models=gpu.models, owner=content.address
                     )
                     spec = replace(spec, gpus=resolved)
-                info = await supervisor.create_vm(spec)
+                info = await create_vm_with_ipv6(supervisor, spec)
             except VmAlreadyExistsError:
                 _log_lost_create_race(vm_hash, "V-PROGRAM")
                 return None
@@ -886,7 +887,7 @@ async def _ensure_program_vm(
                 # above), and a failed create must not wipe them.
                 had_volumes = await asyncio.to_thread(vm_has_volumes, vm_hash)
                 spec, resources = await build_program_create_vm_spec(vm_hash, content)
-                await supervisor.create_vm(spec)
+                await create_vm_with_ipv6(supervisor, spec)
                 record = registry.record(
                     vm_hash, message=content, original=original, persistent=bool(content.on.persistent)
                 )
@@ -1168,6 +1169,14 @@ async def start_persistent_vm(
             elif info.status == VmStatus.STOPPING:
                 logger.info(f"{vm_hash} is stopping, waiting before restart")
                 await _wait_until_gone(supervisor, vm_id)
+                info = None
+            elif info.status == VmStatus.STOPPED and await lacks_known_ipv6(supervisor, vm_id):
+                # A stopped VM whose config predates the persisted guest IPv6
+                # (older supervisor): the supervisor never derives an address,
+                # so it refuses to start it. Rebuild it instead, like a FAILED
+                # VM: the fresh create carries an address this agent allocates.
+                logger.info(f"{vm_hash} is stopped with no known guest IPv6, recreating")
+                await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
                 info = None
             elif info.status == VmStatus.STOPPED:
                 # A cleanly stopped VM is resumed in place: stop/start is a

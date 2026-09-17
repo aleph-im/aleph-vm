@@ -104,6 +104,13 @@ def _fake_supervisor(*, create_status: VmStatus = VmStatus.RUNNING, get_status: 
         add_port_forward=AsyncMock(),
         delete_vm=AsyncMock(),
         start_vm=AsyncMock(return_value=_info(VmStatus.RUNNING)),
+        # A stopped VM's spec carries its guest IPv6, so it resumes in place.
+        get_vm_spec=AsyncMock(
+            return_value=replace(
+                _spec(),
+                network=NetworkConfig(internet_access=True, requested_ipv6="fc00:1:2:3::10/124", ipv6_prefix_len=124),
+            )
+        ),
     )
 
 
@@ -615,6 +622,37 @@ async def test_start_persistent_resumes_stopped(monkeypatch):
     sup.start_vm.assert_awaited_once()  # STOPPED -> resume in place
     sup.delete_vm.assert_not_awaited()  # not deleted
     created.assert_not_awaited()  # not recreated
+
+
+@pytest.mark.asyncio
+async def test_start_persistent_rebuilds_a_stopped_vm_with_no_known_ipv6(monkeypatch):
+    # A config written by an older supervisor carries no guest IPv6; the
+    # supervisor refuses to start it, so the agent rebuilds it through a fresh
+    # create (which carries an address) instead of resuming it.
+    monkeypatch.setattr(settings, "ALLOW_VM_NETWORKING", True)
+    sup = _fake_supervisor(get_status=VmStatus.STOPPED)
+    sup.get_vm_spec = AsyncMock(return_value=_spec())  # requested_ipv6 == ""
+    created = AsyncMock()
+    retired = AsyncMock()
+    monkeypatch.setattr(run_module, "create_vm_execution", created)
+    monkeypatch.setattr(run_module, "retire_vm", retired)
+    monkeypatch.setattr(run_module, "_wait_until_running", AsyncMock())
+
+    await run_module.start_persistent_vm(
+        ItemHash(_HASH),
+        None,
+        supervisor=sup,
+        registry=AgentVmRegistry(),
+        capacity=_fake_capacity(),
+        expiry=MagicMock(),
+        update_watcher=MagicMock(),
+        recreate=True,
+    )
+    sup.start_vm.assert_not_awaited()
+    retired.assert_awaited_once()
+    assert retired.await_args is not None
+    assert retired.await_args.args[1] is run_module.RetireReason.RECREATE
+    created.assert_awaited_once()
 
 
 def _readopt_supervisor(*, get_status: VmStatus = VmStatus.RUNNING, current_forwards: list | None = None):

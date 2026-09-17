@@ -20,6 +20,7 @@
         "vcpu_count": 2,
         "mem_size_mb": 2048,
         "interface_name": "vmtap5",
+        "guest_ipv6_cidr": "fc00:1:2:3:3:1806:f348:aa0/124",
         "host_volumes": [],
         "gpus": [],
         "ovmf_path": "/opt/aleph-vm/firmware/OVMF_CSV.fd",

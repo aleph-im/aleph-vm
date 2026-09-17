@@ -132,9 +132,9 @@ async def build_create_vm_spec(
         for v in resources.volumes
     ]
 
-    # The agent computes the static IPv6 (the address does not depend on the
-    # vm_index) so the supervisor is told the address rather than deriving the
-    # Aleph scheme; empty under the dynamic policy, where the supervisor assigns.
+    # The agent owns the guest IPv6: the static address is computed here (it
+    # depends only on the type and item hash); under the dynamic policy it is
+    # left empty and allocated right before the create (create_vm_with_ipv6).
     requested_ipv6, ipv6_prefix_len = compute_requested_ipv6(vm_hash, VmType.from_message_content(message))
 
     return CreateVmSpec(
@@ -214,7 +214,8 @@ async def build_program_create_vm_spec(
     ]
 
     # A program's static IPv6 also depends only on the type and item hash, so
-    # the agent computes it upfront (empty under the dynamic policy). The
+    # the agent computes it upfront (under the dynamic policy it is allocated
+    # right before the create). The
     # daemon and the scheduler fold every Firecracker program (persistent or
     # not) into the microvm hextet: their VmType has no persistent_program
     # variant, and VmType::ipv6_value() maps them to 0x1. Passing the

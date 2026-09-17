@@ -34,6 +34,10 @@
 //!   like a failed Python reattach that excludes the VM from ListVms via
 //!   the retry queue. A negative vm_index is one such failure: Python's list
 //!   indexing serves the pool's LAST subnet for it, aliasing two VMs.
+//! - The daemon never derives a guest IPv6: the agent owns allocation and
+//!   every create carries the address, persisted as `guest_ipv6_cidr`. A
+//!   legacy config without it adopts the address live on its tap, and is
+//!   hidden (like a failed reattach) when there is none.
 //!
 //! A controller unit without a config file gets a WARN and is left alone.
 //!
@@ -44,11 +48,12 @@ use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::config::{Ipv6AllocationPolicy, Settings};
+use crate::config::Settings;
 use crate::controller_config::{
     self, ControllerConfig, QemuVmConfig, VmConfiguration, parse_controller_config,
 };
 use crate::ports::{self, PortForward};
+use crate::tap::TapBackend;
 use crate::units::{UnitLiveness, UnitStateSource, controller_unit_name};
 
 const CONFIG_SUFFIX: &str = "-controller.json";
@@ -79,23 +84,17 @@ pub enum WorldError {
     #[error("no guest address in a /{prefix} subnet")]
     NoGuestAddress { prefix: u8 },
 
-    #[error("the static IPv6 allocation scheme requires a /64 or /56 pool, got /{pool_len}")]
-    StaticIpv6PoolLength { pool_len: u8 },
+    #[error(
+        "VM {vm_id} has no known guest IPv6: its config predates the persisted address and its tap carries none; delete it and create it again with a requested address"
+    )]
+    NoKnownIpv6 { vm_id: String },
 
-    #[error("vm_hash {vm_hash:?} is too short for the static IPv6 scheme")]
-    VmHashTooShort { vm_hash: String },
-
-    #[error("non-hex vm_hash slice {text:?}")]
-    NonHexHashSlice { text: String },
-
-    #[error("subnet prefix /{subnet_prefix} does not subnet the pool {pool}")]
-    SubnetPrefixNotSubnet { subnet_prefix: u8, pool: String },
-
-    #[error("subnet prefix /0 cannot hold guest networks")]
-    ZeroSubnetPrefix,
-
-    #[error("the IPv6 pool {pool} is out of /{subnet_prefix} subnets")]
-    Ipv6PoolExhausted { pool: String, subnet_prefix: u8 },
+    #[error("the requested IPv6 network {requested} overlaps {held}, held by VM {holder}")]
+    Ipv6Overlap {
+        requested: String,
+        held: String,
+        holder: String,
+    },
 
     #[error("invalid IPv{family} pool {pool:?}")]
     InvalidCidr { family: &'static str, pool: String },
@@ -193,47 +192,6 @@ pub struct ProgramEntry {
     pub ready_payload: Vec<u8>,
     /// Handle on the firecracker child; teardown is kill-based, idempotent.
     pub handle: std::sync::Arc<dyn crate::firecracker::ProgramHandle>,
-}
-
-/// Python `VmType`: the vm-type hextet of the static IPv6 scheme.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VmType {
-    Microvm,
-    Instance,
-    /// A V-PROGRAM (`aleph_message.models.VerifiableProgramContent`): the
-    /// QEMU SEV-SNP measured-boot launch path is its exclusive hypervisor,
-    /// unconditionally and by schema, so `QemuVmConfig::snp().is_some()`
-    /// identifies one on this side (see [`VmEntry::vm_type`]).
-    VProgram,
-}
-
-impl VmType {
-    /// `StaticIPv6Allocator.VM_TYPE_PREFIX`. Must match the scheduler's
-    /// `VmType::ipv6_value()` (scheduler-events) and the Python
-    /// `StaticIPv6Allocator.VM_TYPE_PREFIX` (hostnetwork.py).
-    fn prefix(self) -> u16 {
-        match self {
-            VmType::Microvm => 0x1,
-            VmType::Instance => 0x3,
-            VmType::VProgram => 0x4,
-        }
-    }
-
-    /// The vm type of a QEMU controller config: SEV-SNP measured boot is the
-    /// exclusive V-PROGRAM launch path (see [`VmType::VProgram`]), everything
-    /// else is a plain instance. This classifies the static-IPv6 recompute
-    /// fallback only (an empty requested_ipv6): the agent supplies the address
-    /// and its hextet for confidential instances under the static policy, so
-    /// this never misclassifies one there. Shared by [`VmEntry::vm_type`] and
-    /// the adoption path in [`build_world_view`], which classifies persisted
-    /// configs before any `VmEntry` exists, so the two can never diverge.
-    pub fn of_qemu(config: &QemuVmConfig) -> VmType {
-        if config.snp().is_some() {
-            VmType::VProgram
-        } else {
-            VmType::Instance
-        }
-    }
 }
 
 /// One adopted VM.
@@ -351,20 +309,6 @@ impl VmEntry {
     pub fn is_stopping(&self) -> bool {
         self.times.stopping_at_ns != 0 && self.times.stopped_at_ns == 0
     }
-
-    /// The vm-type hextet input to the static IPv6 scheme (mirrors the
-    /// Python `VmType.from_message_content` split, ported as the equivalent
-    /// config shape check: there is no message content on this side). An
-    /// ephemeral Firecracker program is `Microvm`; a QEMU SEV-SNP
-    /// measured-boot config is `VProgram` (its exclusive launch path, see
-    /// [`VmType::VProgram`]); everything else is `Instance`.
-    pub fn vm_type(&self) -> VmType {
-        if self.is_program {
-            VmType::Microvm
-        } else {
-            VmType::of_qemu(&self.config)
-        }
-    }
 }
 
 /// Python `_FailedReattach` (pool.py): a VM left running-but-untracked
@@ -378,6 +322,11 @@ pub struct FailedReattach {
     pub vm_index: i64,
     pub attempts: u32,
     pub exhausted: bool,
+    /// The guest IPv6 network the hidden VM's live controller still holds
+    /// (its persisted /124, else the address on its tap), when known. The
+    /// overlap backstop ([`WorldView::ipv6_holder`]) checks it so no create
+    /// can take the subnet while the VM runs untracked.
+    pub ipv6: Option<IpPair>,
 }
 
 impl FailedReattach {
@@ -386,7 +335,14 @@ impl FailedReattach {
             vm_index,
             attempts: 1,
             exhausted: false,
+            ipv6: None,
         }
+    }
+
+    /// Record the network the hidden VM holds.
+    pub fn holding(mut self, ipv6: Option<IpPair>) -> Self {
+        self.ipv6 = ipv6;
+        self
     }
 }
 
@@ -408,9 +364,6 @@ pub struct WorldView {
     /// entries are removed once re-adopted (retry pass, readopt or an
     /// explicit delete), kept exhausted once given up.
     pub failed_reattach: std::collections::HashMap<String, FailedReattach>,
-    /// The dynamic IPv6 allocator's position: the Python generator advances
-    /// once per prepare_tap (adoption and create), never rewinds.
-    pub ipv6_dynamic_ordinal: usize,
     /// The next [`VmEntry::ordinal`] to hand out.
     pub next_ordinal: u64,
 }
@@ -447,6 +400,46 @@ impl WorldView {
         entries
     }
 
+    /// The VM (other than `except_vm`) whose guest IPv6 network overlaps
+    /// `requested`, with the network it holds: an entry's live assignment
+    /// or, for an entry without one (stopped), its persisted /124, which it
+    /// gets back on start; or the network a hidden VM (queued for reattach)
+    /// still holds, when known. The agent allocates addresses; this is the
+    /// backstop that refuses a create overlapping any network known here.
+    /// It cannot cover a hidden VM whose network is unknown (no persisted
+    /// address, no tap address), nor make the agent skip a hidden VM's
+    /// subnet: ListVms does not report hidden VMs, so such a create is
+    /// refused rather than moved to another subnet.
+    pub fn ipv6_holder(&self, requested: &IpPair, except_vm: &str) -> Option<(String, String)> {
+        let wanted = ipv6_network_of(requested)?;
+        let overlapping =
+            |held: &IpPair| ipv6_networks_overlap(ipv6_network_of(held), Some(wanted));
+        let tracked = self
+            .entries
+            .values()
+            .filter(|entry| entry.vm_hash != except_vm)
+            .find_map(|entry| {
+                entry_ipv6_networks(entry)
+                    .into_iter()
+                    .find(&overlapping)
+                    .map(|held| (entry.vm_hash.clone(), held.network_cidr))
+            });
+        tracked.or_else(|| {
+            self.failed_reattach
+                .iter()
+                .filter(|(vm_hash, _)| {
+                    vm_hash.as_str() != except_vm && !self.entries.contains_key(vm_hash.as_str())
+                })
+                .find_map(|(vm_hash, queued)| {
+                    queued
+                        .ipv6
+                        .as_ref()
+                        .filter(|held| overlapping(held))
+                        .map(|held| (vm_hash.clone(), held.network_cidr.clone()))
+                })
+        })
+    }
+
     /// Python `get_unique_vm_index`: the first free index from
     /// START_ID_INDEX, skipping live entries and hidden VMs' claims.
     pub fn unique_vm_index(&self, start_id_index: i64) -> Result<i64, WorldError> {
@@ -463,46 +456,94 @@ impl WorldView {
     }
 }
 
-/// The IPv4/IPv6 pair of a tap, the Python `prepare_tap` derivation.
-/// Advances `ipv6_dynamic_ordinal` under the dynamic policy, like the
-/// Python generator.
-///
-/// `requested_ipv6` is the agent-computed static `/124` CIDR: when non-empty
-/// it is honored verbatim (the agent owns the Aleph static scheme now), and
-/// the daemon does not recompute the address from `(pool, vm_hash, vm_type)`.
-/// The dynamic policy leaves it empty, so the daemon still assigns those from
-/// its supervisor-side ordinal, which the agent cannot know.
-pub fn derive_tap_assignment(
-    settings: &Settings,
-    vm_index: i64,
-    vm_hash: &str,
-    vm_type: VmType,
-    ipv6_dynamic_ordinal: &mut usize,
-    requested_ipv6: Option<&str>,
-) -> Result<(IpPair, IpPair), WorldError> {
-    let ipv4 = ipv4_assignment(
+/// The guest IPv6 networks an entry holds: its live assignment and its
+/// persisted /124 (a stopped entry has only the latter).
+fn entry_ipv6_networks(entry: &VmEntry) -> Vec<IpPair> {
+    let persisted = entry
+        .config
+        .guest_ipv6_cidr
+        .as_deref()
+        .and_then(|cidr| ipv6_from_cidr(cidr).ok());
+    entry.ipv6.clone().into_iter().chain(persisted).collect()
+}
+
+/// A pair's network as (address bits, prefix length).
+fn ipv6_network_of(pair: &IpPair) -> Option<(u128, u8)> {
+    parse_ipv6_cidr(&pair.network_cidr)
+        .ok()
+        .map(|(network, prefix)| (u128::from(network), prefix))
+}
+
+fn ipv6_mask(prefix: u8) -> u128 {
+    if prefix == 0 {
+        0
+    } else {
+        u128::MAX << (128 - u32::from(prefix.min(128)))
+    }
+}
+
+/// Two networks overlap when they agree on the shorter prefix.
+fn ipv6_networks_overlap(a: Option<(u128, u8)>, b: Option<(u128, u8)>) -> bool {
+    let (Some((a, a_len)), Some((b, b_len))) = (a, b) else {
+        return false;
+    };
+    let mask = ipv6_mask(a_len.min(b_len));
+    a & mask == b & mask
+}
+
+/// The vm_index-th IPv4 tap subnet from the settings (guest = network+2,
+/// gateway = network+1). IPv4 stays daemon-derived: it is host-local.
+pub fn ipv4_for_index(settings: &Settings, vm_index: i64) -> Result<IpPair, WorldError> {
+    ipv4_assignment(
         &settings.ipv4_address_pool,
         settings.ipv4_network_prefix_length,
         vm_index,
-    )?;
-    let ipv6 = if let Some(cidr) = requested_ipv6.filter(|cidr| !cidr.is_empty()) {
-        ipv6_from_cidr(cidr)?
-    } else {
-        match settings.ipv6_allocation_policy {
-            Ipv6AllocationPolicy::Static => {
-                ipv6_static_assignment(&settings.ipv6_address_pool, vm_hash, vm_type)?
-            }
-            Ipv6AllocationPolicy::Dynamic => {
-                *ipv6_dynamic_ordinal += 1;
-                ipv6_dynamic_assignment(
-                    &settings.ipv6_address_pool,
-                    settings.ipv6_subnet_prefix,
-                    *ipv6_dynamic_ordinal,
-                )?
-            }
-        }
-    };
+    )
+}
+
+/// The IPv4/IPv6 pair of a tap. The IPv4 half is the vm_index-th subnet;
+/// the IPv6 half is the `network/prefix` the agent allocated (the daemon
+/// never derives a guest IPv6 itself), guest = network+1.
+pub fn derive_tap_assignment(
+    settings: &Settings,
+    vm_index: i64,
+    ipv6_cidr: &str,
+) -> Result<(IpPair, IpPair), WorldError> {
+    let ipv4 = ipv4_for_index(settings, vm_index)?;
+    let ipv6 = ipv6_from_cidr(ipv6_cidr)?;
     Ok((ipv4, ipv6))
+}
+
+/// The IPv6 configured on a VM's live tap (`vmtap{vm_index}`) as a guest
+/// pair: the host side of the tap holds the guest network address (see
+/// [`ipv6_pair`]). The fallback for a legacy config that predates the
+/// persisted `guest_ipv6_cidr`: the tap is what the running guest uses.
+/// `None` when the tap is gone or carries no global IPv6.
+/// The network a hidden VM's live controller holds: its persisted /124,
+/// else the address on its tap. None when networking is off or neither is
+/// known.
+fn hidden_vm_ipv6(
+    settings: &Settings,
+    persisted: Option<&str>,
+    taps: &dyn TapBackend,
+    vm_index: i64,
+) -> Option<IpPair> {
+    if !settings.allow_vm_networking {
+        return None;
+    }
+    persisted
+        .filter(|cidr| !cidr.is_empty())
+        .and_then(|cidr| ipv6_from_cidr(cidr).ok())
+        .or_else(|| ipv6_from_tap(taps, vm_index))
+}
+
+pub fn ipv6_from_tap(taps: &dyn TapBackend, vm_index: i64) -> Option<IpPair> {
+    let cidr = taps.global_ipv6_address(&format!("vmtap{vm_index}"))?;
+    let (address, prefix) = cidr.split_once('/')?;
+    let address: Ipv6Addr = address.parse().ok()?;
+    let prefix: u8 = prefix.parse().ok().filter(|prefix| *prefix <= 128)?;
+    let network = Ipv6Addr::from(u128::from(address) & ipv6_mask(prefix));
+    ipv6_from_cidr(&format!("{network}/{prefix}")).ok()
 }
 
 /// Unix nanoseconds now, truncated to microsecond precision like the
@@ -521,6 +562,7 @@ pub fn build_world_view(
     settings: &Settings,
     units: &dyn UnitStateSource,
     gpu_inventory: &[crate::lspci::GpuDevice],
+    taps: &dyn TapBackend,
 ) -> WorldView {
     let configs = scan_controller_configs(settings);
 
@@ -572,10 +614,6 @@ pub fn build_world_view(
     }
 
     let mut world = WorldView::default();
-    // The dynamic IPv6 allocator hands out pool subnets in allocation order
-    // (first subnet reserved for the host); adoption order is the sorted
-    // config order, running VMs only, like the Python generator.
-    let mut dynamic_ordinal: usize = 0;
     // Python's claimed_vm_ids guard (pool.load_persistent_executions): a
     // stale config can reuse a vm_index; only the first active one (sorted
     // file order) is adopted, so two VMs never share a tap interface.
@@ -603,7 +641,7 @@ pub fn build_world_view(
             continue;
         }
 
-        let qemu = match config.vm {
+        let mut qemu = match config.vm {
             VmConfiguration::Qemu(qemu) => *qemu,
             VmConfiguration::Firecracker => {
                 tracing::warn!(
@@ -616,9 +654,10 @@ pub fn build_world_view(
                 // ones (spec_from_controller_configuration is QEMU-only on
                 // every retry too); they exhaust after the attempt cap.
                 if active {
+                    let held = hidden_vm_ipv6(settings, None, taps, config.vm_index);
                     world
                         .failed_reattach
-                        .insert(vm_hash, FailedReattach::new(config.vm_index));
+                        .insert(vm_hash, FailedReattach::new(config.vm_index).holding(held));
                 }
                 continue;
             }
@@ -647,11 +686,7 @@ pub fn build_world_view(
                     // derivation failure fails the whole per-VM reattach
                     // there, hiding the VM from ListVms (retry queue); hide
                     // it here too instead of serving empty assignments.
-                    match ipv4_assignment(
-                        &settings.ipv4_address_pool,
-                        settings.ipv4_network_prefix_length,
-                        config.vm_index,
-                    ) {
+                    match ipv4_for_index(settings, config.vm_index) {
                         Ok(pair) => ipv4 = Some(pair),
                         Err(error) => {
                             tracing::warn!(
@@ -660,39 +695,45 @@ pub fn build_world_view(
                                 "cannot compute the IPv4 assignment; hiding the VM \
                                  like a failed Python reattach"
                             );
-                            world
-                                .failed_reattach
-                                .insert(vm_hash, FailedReattach::new(config.vm_index));
+                            let held = hidden_vm_ipv6(
+                                settings,
+                                qemu.guest_ipv6_cidr.as_deref(),
+                                taps,
+                                config.vm_index,
+                            );
+                            world.failed_reattach.insert(
+                                vm_hash,
+                                FailedReattach::new(config.vm_index).holding(held),
+                            );
                             continue;
                         }
                     }
-                    // A config written after the agent took over IPv6
-                    // allocation carries the assigned guest /124; adopt it
-                    // verbatim instead of re-deriving the Aleph static scheme.
-                    // A legacy config (no persisted address) falls back to
-                    // today's recompute, keeping already-running VMs unchanged.
-                    let persisted_ipv6 = qemu
-                        .guest_ipv6_cidr
-                        .as_deref()
-                        .filter(|cidr| !cidr.is_empty());
-                    let ipv6_result = match (persisted_ipv6, settings.ipv6_allocation_policy) {
-                        (Some(cidr), _) => ipv6_from_cidr(cidr),
-                        (None, Ipv6AllocationPolicy::Static) => {
-                            let adopted_vm_type = VmType::of_qemu(&qemu);
-                            ipv6_static_assignment(
-                                &settings.ipv6_address_pool,
-                                &vm_hash,
-                                adopted_vm_type,
-                            )
-                        }
-                        (None, Ipv6AllocationPolicy::Dynamic) => {
-                            dynamic_ordinal += 1;
-                            ipv6_dynamic_assignment(
-                                &settings.ipv6_address_pool,
-                                settings.ipv6_subnet_prefix,
-                                dynamic_ordinal,
-                            )
-                        }
+                    // A current config carries the guest /124 the agent
+                    // allocated; adopt it verbatim. A legacy config (written
+                    // before the address was persisted) adopts the address
+                    // live on the VM's tap, recorded in memory so the
+                    // reconstructed spec and a later start agree with it.
+                    // With neither, the daemon has no address to serve (it
+                    // never derives one): hide the VM like a failed reattach.
+                    let persisted_ipv6 =
+                        qemu.guest_ipv6_cidr.clone().filter(|cidr| !cidr.is_empty());
+                    let ipv6_result = match persisted_ipv6 {
+                        Some(cidr) => ipv6_from_cidr(&cidr),
+                        None => match ipv6_from_tap(taps, config.vm_index) {
+                            Some(pair) => {
+                                tracing::info!(
+                                    vm_hash,
+                                    network = pair.network_cidr,
+                                    "legacy config without a persisted guest IPv6; \
+                                     adopting the address live on its tap"
+                                );
+                                qemu.guest_ipv6_cidr = Some(pair.network_cidr.clone());
+                                Ok(pair)
+                            }
+                            None => Err(WorldError::NoKnownIpv6 {
+                                vm_id: vm_hash.clone(),
+                            }),
+                        },
                     };
                     match ipv6_result {
                         Ok(pair) => ipv6 = Some(pair),
@@ -700,7 +741,7 @@ pub fn build_world_view(
                             tracing::warn!(
                                 vm_hash,
                                 %error,
-                                "cannot compute the IPv6 assignment; hiding the VM \
+                                "cannot determine the IPv6 assignment; hiding the VM \
                                  like a failed Python reattach"
                             );
                             world
@@ -806,8 +847,6 @@ pub fn build_world_view(
         .into_iter()
         .filter(|index| !adopted.contains(index))
         .collect();
-    world.ipv6_dynamic_ordinal = dynamic_ordinal;
-
     tracing::info!(count = world.len(), "world view built");
     world
 }
@@ -902,10 +941,11 @@ fn scan_controller_configs(settings: &Settings) -> Vec<ControllerConfig> {
 // ── IP assignment math ──────────────────────────────────────────────────
 //
 // Ports of the Python derivations the reattach path performs:
-// Network.get_network_for_tap (IPv4), StaticIPv6Allocator /
-// DynamicIPv6Allocator (IPv6) and the TapInterface properties
+// Network.get_network_for_tap (IPv4) and the TapInterface properties
 // (guest_ip/host_ip/guest_ipv6/host_ipv6) in
-// src/aleph/vm/network/{hostnetwork,interfaces,ipaddresses}.py.
+// src/aleph/vm/network/{hostnetwork,interfaces}.py. The guest IPv6 network
+// itself is never derived here: the agent allocates it (static or dynamic
+// policy) and the daemon only turns the CIDR into the tap pair.
 
 /// The vm_index-th /{prefix} subnet of the pool: guest = network+2,
 /// gateway = network+1, like `TapInterface.guest_ip`/`host_ip`.
@@ -943,84 +983,6 @@ fn ipv4_assignment(pool: &str, prefix: u8, vm_index: i64) -> Result<IpPair, Worl
     })
 }
 
-/// StaticIPv6Allocator: the /124 subnet is the pool's first four hextets,
-/// the vm-type prefix hextet (1 for microvms, 3 for instances), then 44
-/// bits of the item hash with a trailing zero nibble. guest = network+1,
-/// gateway = network address.
-fn ipv6_static_assignment(
-    pool: &str,
-    vm_hash: &str,
-    vm_type: VmType,
-) -> Result<IpPair, WorldError> {
-    let (base, pool_len) = parse_ipv6_cidr(pool)?;
-    if pool_len != 56 && pool_len != 64 {
-        // Python: StaticIPv6Allocator refuses anything but /56 or /64.
-        return Err(WorldError::StaticIpv6PoolLength { pool_len });
-    }
-    // Checked slicing: get() returns None both for a short hash and for a
-    // range that splits a multibyte character, where byte indexing would
-    // panic. The hash comes from a request-reachable path in increment 3.
-    let slice = |range: std::ops::Range<usize>| -> Result<&str, WorldError> {
-        vm_hash
-            .get(range)
-            .ok_or_else(|| WorldError::VmHashTooShort {
-                vm_hash: vm_hash.to_string(),
-            })
-    };
-    let hextet = |text: &str| -> Result<u16, WorldError> {
-        u16::from_str_radix(text, 16).map_err(|_| WorldError::NonHexHashSlice {
-            text: text.to_string(),
-        })
-    };
-    let segments = base.segments();
-    let network = Ipv6Addr::new(
-        segments[0],
-        segments[1],
-        segments[2],
-        segments[3],
-        vm_type.prefix(),
-        hextet(slice(0..4)?)?,
-        hextet(slice(4..8)?)?,
-        hextet(&format!("{}0", slice(8..11)?))?,
-    );
-    Ok(ipv6_pair(network, 124))
-}
-
-/// DynamicIPv6Allocator: the ordinal-th /{subnet_prefix} subnet of the
-/// pool, the zeroth being reserved for the host. Ordinals start at 1 and
-/// advance per adopted running VM, like the Python generator advancing on
-/// each prepare_tap call.
-fn ipv6_dynamic_assignment(
-    pool: &str,
-    subnet_prefix: u8,
-    ordinal: usize,
-) -> Result<IpPair, WorldError> {
-    let (base, pool_len) = parse_ipv6_cidr(pool)?;
-    if subnet_prefix > 128 || subnet_prefix < pool_len {
-        return Err(WorldError::SubnetPrefixNotSubnet {
-            subnet_prefix,
-            pool: pool.to_string(),
-        });
-    }
-    // subnet_prefix 0 would shift step by 128 below (a /0 "subnet" is not a
-    // guest network); reject it so both shifts in this function are provably
-    // in range.
-    if subnet_prefix == 0 {
-        return Err(WorldError::ZeroSubnetPrefix);
-    }
-    let subnet_count = 1u128 << (subnet_prefix - pool_len).min(127);
-    let ordinal = ordinal as u128;
-    if ordinal >= subnet_count {
-        return Err(WorldError::Ipv6PoolExhausted {
-            pool: pool.to_string(),
-            subnet_prefix,
-        });
-    }
-    let step = 1u128 << (128 - subnet_prefix);
-    let network = Ipv6Addr::from(u128::from(base) + ordinal * step);
-    Ok(ipv6_pair(network, subnet_prefix))
-}
-
 fn ipv6_pair(network: Ipv6Addr, prefix: u8) -> IpPair {
     let guest = Ipv6Addr::from(u128::from(network) + 1);
     IpPair {
@@ -1030,15 +992,18 @@ fn ipv6_pair(network: Ipv6Addr, prefix: u8) -> IpPair {
     }
 }
 
-/// Build the guest IPv6 pair from a `network/prefix` CIDR the agent computed
-/// (the static `/124` subnet) or that the daemon persisted at create time.
-/// The CIDR's network address becomes the gateway, guest = network + 1, so the
-/// pair is byte-identical to what `ipv6_static_assignment` produces for the
-/// same `(pool, vm_hash, vm_type)`. The agent sends the Python
-/// `str(IPv6Network(...))` form; Rust re-emits `network_cidr` in its own
-/// notation, so the served string never depends on the sender's formatting.
+/// Build the guest IPv6 pair from a `network/prefix` CIDR the agent
+/// allocated or that the daemon persisted at create time. The CIDR's network
+/// address becomes the gateway, guest = network + 1. The agent sends the
+/// Python `str(IPv6Network(...))` form; Rust re-emits `network_cidr` in its
+/// own notation, so the served string never depends on the sender's
+/// formatting.
 pub fn ipv6_from_cidr(cidr: &str) -> Result<IpPair, WorldError> {
     let (network, prefix) = parse_ipv6_cidr(cidr)?;
+    if prefix >= 127 {
+        // No room for a guest next to the gateway.
+        return Err(WorldError::NoGuestAddress { prefix });
+    }
     Ok(ipv6_pair(network, prefix))
 }
 
@@ -1116,6 +1081,7 @@ fn parse_ipv6_cidr(pool: &str) -> Result<(Ipv6Addr, u8), WorldError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tap::FakeTapBackend;
     use crate::test_fixtures;
     use crate::units::StaticUnitStates;
 
@@ -1157,7 +1123,7 @@ mod tests {
 
         let settings = test_settings(tmp.path());
         let units = StaticUnitStates::with_active_vms(&[test_fixtures::QEMU_HASH]);
-        let world = build_world_view(&settings, &units, &[]);
+        let world = build_world_view(&settings, &units, &[], &FakeTapBackend::new());
 
         assert_eq!(world.len(), 3, "the broken config is skipped");
         let qemu = &world.entries[test_fixtures::QEMU_HASH];
@@ -1220,72 +1186,7 @@ mod tests {
     }
 
     #[test]
-    fn adopting_a_persisted_snp_config_gives_the_v_program_ipv6_hextet() {
-        // The adoption arm derives adopted_vm_type from
-        // `qemu.snp().is_some()` (world.rs, around the QEMU adoption match
-        // arm); a persisted SNP controller config must adopt with the
-        // VProgram (0x4) hextet, not the plain-instance (0x3) one. This is
-        // the branch's central no-drift invariant: reverting that
-        // derivation to `VmType::Instance` must fail this test while
-        // leaving every other test green.
-        let tmp = tempfile::tempdir().unwrap();
-        let snp_hash = "d".repeat(64);
-        let fixture = std::fs::read_to_string(
-            test_fixtures::fixtures_dir()
-                .join(format!("{}-controller.json", test_fixtures::QEMU_HASH)),
-        )
-        .unwrap();
-        let mut value: serde_json::Value = serde_json::from_str(&fixture).unwrap();
-        value["vm_id"] = 9.into();
-        value["vm_hash"] = snp_hash.clone().into();
-        // Persisted SNP measured-boot slice, matching what the QEMU config
-        // writer (lifecycle.rs snp_config_slice / create_vm) stamps for an
-        // SNP VM: `sev_snp: true` plus the four measured-boot fields, so
-        // `QemuVmConfig::snp()` resolves `Some`.
-        let config = value["vm_configuration"].as_object_mut().unwrap();
-        config.insert("sev_snp".to_string(), true.into());
-        config.insert("kernel_path".to_string(), "/boot/bzImage".into());
-        config.insert("initrd_path".to_string(), "/boot/initrd".into());
-        config.insert("kernel_cmdline".to_string(), "console=ttyS0".into());
-        config.insert(
-            "ovmf_path".to_string(),
-            "/opt/aleph-vm/firmware/OVMF.fd".into(),
-        );
-        config.insert("sev_policy".to_string(), 196608.into());
-        std::fs::write(
-            tmp.path().join(format!("{snp_hash}-controller.json")),
-            value.to_string(),
-        )
-        .unwrap();
-
-        let settings = test_settings(tmp.path());
-        let units = StaticUnitStates::with_active_vms(&[snp_hash.as_str()]);
-        let world = build_world_view(&settings, &units, &[]);
-
-        let entry = &world.entries[snp_hash.as_str()];
-        assert!(entry.adopted_running);
-        assert!(
-            entry.config.snp().is_some(),
-            "the persisted config must resolve as SNP"
-        );
-        let expected =
-            ipv6_static_assignment(&settings.ipv6_address_pool, &snp_hash, VmType::VProgram)
-                .unwrap();
-        assert_eq!(
-            entry.ipv6,
-            Some(expected),
-            "an adopted SNP VM must carry the V-PROGRAM (0x4) ipv6 hextet, \
-             not the plain-instance (0x3) one"
-        );
-        let address = entry.ipv6.as_ref().unwrap().address.clone();
-        assert!(
-            address.split(':').nth(4) == Some("4"),
-            "ipv6 address {address} must carry the 0x4 vm-type hextet"
-        );
-    }
-
-    #[test]
-    fn adoption_prefers_a_persisted_guest_ipv6_over_the_recompute() {
+    fn adoption_serves_the_persisted_guest_ipv6() {
         // A config written after the agent took over IPv6 allocation carries
         // the assigned /124. Adoption must read it back verbatim instead of
         // re-deriving the scheme, so a deliberately off-scheme persisted value
@@ -1313,64 +1214,223 @@ mod tests {
 
         let settings = test_settings(tmp.path());
         let units = StaticUnitStates::with_active_vms(&[hash.as_str()]);
-        let world = build_world_view(&settings, &units, &[]);
+        let world = build_world_view(&settings, &units, &[], &FakeTapBackend::new());
 
         let entry = &world.entries[hash.as_str()];
         assert!(entry.adopted_running);
         assert_eq!(
             entry.ipv6,
             Some(ipv6_from_cidr(persisted).unwrap()),
-            "adoption must serve the persisted guest IPv6, not the recompute"
-        );
-        // The recompute would have produced a different address (the scheme
-        // uses the hash), proving the persisted value really took precedence.
-        assert_ne!(
-            entry.ipv6.as_ref().unwrap().address,
-            ipv6_static_assignment(&settings.ipv6_address_pool, &hash, VmType::Instance)
-                .unwrap()
-                .address
+            "adoption must serve the persisted guest IPv6 verbatim"
         );
     }
 
     #[test]
-    fn adoption_recomputes_the_ipv6_for_a_legacy_config() {
-        // A config written before the agent took over allocation has no
-        // persisted address; adoption must fall back to today's static
-        // recompute so already-running VMs are unaffected.
+    fn a_legacy_config_with_no_address_anywhere_is_hidden() {
+        // No persisted address and no live tap: the daemon never derives
+        // one, so the VM is hidden and queued like a failed reattach.
         let tmp = tempfile::tempdir().unwrap();
         let hash = "f".repeat(64);
+        write_config(tmp.path(), &hash, 13, None);
+        let settings = test_settings(tmp.path());
+        let units = StaticUnitStates::with_active_vms(&[hash.as_str()]);
+
+        let world = build_world_view(&settings, &units, &[], &FakeTapBackend::new());
+
+        assert!(!world.entries.contains_key(hash.as_str()));
+        assert!(world.failed_reattach.contains_key(hash.as_str()));
+        assert!(world.reserved_vm_indices.contains(&13));
+    }
+
+    #[test]
+    fn a_legacy_stopped_config_adopts_without_an_address() {
+        // A stopped VM needs no address until it starts, so a legacy config
+        // is still listed (STOPPED); the start is what fails.
+        let tmp = tempfile::tempdir().unwrap();
+        let hash = "f".repeat(64);
+        write_config(tmp.path(), &hash, 13, None);
+        let settings = test_settings(tmp.path());
+        let units = StaticUnitStates::default();
+
+        let world = build_world_view(&settings, &units, &[], &FakeTapBackend::new());
+
+        let entry = &world.entries[hash.as_str()];
+        assert!(!entry.adopted_running);
+        assert_eq!(entry.ipv6, None);
+        assert_eq!(entry.config.guest_ipv6_cidr, None);
+    }
+
+    /// Write a copy of the QEMU fixture config under `hash` / `vm_id`,
+    /// with an optional persisted guest IPv6.
+    fn write_config(root: &std::path::Path, hash: &str, vm_id: i64, persisted: Option<&str>) {
         let fixture = std::fs::read_to_string(
             test_fixtures::fixtures_dir()
                 .join(format!("{}-controller.json", test_fixtures::QEMU_HASH)),
         )
         .unwrap();
         let mut value: serde_json::Value = serde_json::from_str(&fixture).unwrap();
-        value["vm_id"] = 13.into();
-        value["vm_hash"] = hash.clone().into();
-        assert!(
-            value["vm_configuration"].get("guest_ipv6_cidr").is_none(),
-            "the legacy fixture must not carry a persisted address"
-        );
+        value["vm_id"] = vm_id.into();
+        value["vm_hash"] = hash.into();
+        let vm = value["vm_configuration"].as_object_mut().unwrap();
+        vm.remove("guest_ipv6_cidr");
+        if let Some(cidr) = persisted {
+            vm.insert("guest_ipv6_cidr".to_string(), cidr.into());
+        }
         std::fs::write(
-            tmp.path().join(format!("{hash}-controller.json")),
+            root.join(format!("{hash}-controller.json")),
             value.to_string(),
         )
         .unwrap();
+    }
 
+    #[test]
+    fn a_legacy_config_adopts_the_address_live_on_its_tap() {
+        // The production shape: allocated ::b0/124 by an older daemon, the
+        // config predates persistence. The tap is the truth, whatever the
+        // node's allocation policy, and the address is kept in memory.
+        let tmp = tempfile::tempdir().unwrap();
+        let hash = "1".repeat(64);
+        write_config(tmp.path(), &hash, 8, None);
         let settings = test_settings(tmp.path());
         let units = StaticUnitStates::with_active_vms(&[hash.as_str()]);
-        let world = build_world_view(&settings, &units, &[]);
+        let taps = FakeTapBackend::new().with_ipv6_device("vmtap8", "fc00:1:2:3::b0/124");
+
+        let world = build_world_view(&settings, &units, &[], &taps);
 
         let entry = &world.entries[hash.as_str()];
-        assert!(entry.adopted_running);
         assert_eq!(
             entry.ipv6,
-            Some(
-                ipv6_static_assignment(&settings.ipv6_address_pool, &hash, VmType::Instance)
-                    .unwrap()
-            ),
-            "a legacy config must adopt via the static recompute"
+            Some(ipv6_from_cidr("fc00:1:2:3::b0/124").unwrap()),
+            "the live tap address must be adopted"
         );
+        assert_eq!(
+            entry.config.guest_ipv6_cidr.as_deref(),
+            Some("fc00:1:2:3::b0/124"),
+            "kept for the reconstructed spec and the next start"
+        );
+    }
+
+    #[test]
+    fn a_persisted_address_wins_over_the_tap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hash = "2".repeat(64);
+        write_config(tmp.path(), &hash, 8, Some("fc00:1:2:3::20/124"));
+        let settings = test_settings(tmp.path());
+        let units = StaticUnitStates::with_active_vms(&[hash.as_str()]);
+        let taps = FakeTapBackend::new().with_ipv6_device("vmtap8", "fc00:1:2:3::b0/124");
+
+        let world = build_world_view(&settings, &units, &[], &taps);
+
+        assert_eq!(
+            world.entries[hash.as_str()].ipv6,
+            Some(ipv6_from_cidr("fc00:1:2:3::20/124").unwrap())
+        );
+    }
+
+    #[test]
+    fn ipv6_holder_finds_live_and_persisted_overlaps() {
+        let tmp = tempfile::tempdir().unwrap();
+        let running = "3".repeat(64);
+        let stopped = "4".repeat(64);
+        write_config(tmp.path(), &running, 8, Some("fc00:1:2:3::10/124"));
+        write_config(tmp.path(), &stopped, 9, Some("fc00:1:2:3::50/124"));
+        let settings = test_settings(tmp.path());
+        let units = StaticUnitStates::with_active_vms(&[running.as_str()]);
+        let world = build_world_view(&settings, &units, &[], &FakeTapBackend::new());
+        let pair = |cidr: &str| ipv6_from_cidr(cidr).unwrap();
+
+        assert_eq!(
+            world.ipv6_holder(&pair("fc00:1:2:3::10/124"), "new"),
+            Some((running.clone(), "fc00:1:2:3::10/124".to_string()))
+        );
+        assert_eq!(
+            world.ipv6_holder(&pair("fc00:1:2:3::50/124"), "new"),
+            Some((stopped.clone(), "fc00:1:2:3::50/124".to_string())),
+            "a stopped VM keeps its persisted subnet"
+        );
+        // A wider request covering a held /124 overlaps too.
+        assert!(
+            world
+                .ipv6_holder(&pair("fc00:1:2:3::/120"), "new")
+                .is_some()
+        );
+        assert_eq!(world.ipv6_holder(&pair("fc00:1:2:3::20/124"), "new"), None);
+        // A VM never collides with itself (an idempotent re-create).
+        assert_eq!(
+            world.ipv6_holder(&pair("fc00:1:2:3::10/124"), &running),
+            None
+        );
+    }
+
+    #[test]
+    fn a_hidden_vm_keeps_holding_its_subnet() {
+        // A running VM hidden at adoption (here: its IPv4 cannot be derived)
+        // still owns its subnet through its live controller, so the backstop
+        // must refuse creates on it: from its persisted address, else from
+        // the address on its tap.
+        let tmp = tempfile::tempdir().unwrap();
+        let persisted = "5".repeat(64);
+        let from_tap = "6".repeat(64);
+        write_config(
+            tmp.path(),
+            &persisted,
+            1_000_000_000,
+            Some("fc00:1:2:3::60/124"),
+        );
+        write_config(tmp.path(), &from_tap, 1_000_000_001, None);
+        let settings = test_settings(tmp.path());
+        let units = StaticUnitStates::with_active_vms(&[persisted.as_str(), from_tap.as_str()]);
+        let taps = FakeTapBackend::new().with_ipv6_device("vmtap1000000001", "fc00:1:2:3::70/124");
+        let world = build_world_view(&settings, &units, &[], &taps);
+        let pair = |cidr: &str| ipv6_from_cidr(cidr).unwrap();
+
+        assert!(world.entries.is_empty(), "both VMs are hidden");
+        assert_eq!(
+            world.ipv6_holder(&pair("fc00:1:2:3::60/124"), "new"),
+            Some((persisted.clone(), "fc00:1:2:3::60/124".to_string()))
+        );
+        assert_eq!(
+            world.ipv6_holder(&pair("fc00:1:2:3::70/124"), "new"),
+            Some((from_tap.clone(), "fc00:1:2:3::70/124".to_string()))
+        );
+        assert_eq!(world.ipv6_holder(&pair("fc00:1:2:3::80/124"), "new"), None);
+        // The hidden VM itself may be re-created on its own subnet.
+        assert_eq!(
+            world.ipv6_holder(&pair("fc00:1:2:3::60/124"), &persisted),
+            None
+        );
+    }
+
+    #[test]
+    fn a_dequeued_hidden_vm_releases_its_subnet() {
+        let mut world = WorldView::default();
+        let held = ipv6_from_cidr("fc00:1:2:3::60/124").unwrap();
+        world.failed_reattach.insert(
+            "hidden".to_string(),
+            FailedReattach::new(7).holding(Some(held.clone())),
+        );
+        assert!(world.ipv6_holder(&held, "new").is_some());
+
+        world.failed_reattach.remove("hidden");
+        assert_eq!(world.ipv6_holder(&held, "new"), None);
+    }
+
+    #[test]
+    fn ipv6_from_tap_masks_the_host_address_to_its_network() {
+        let taps = FakeTapBackend::new()
+            .with_ipv6_device("vmtap3", "fc00:1:2:3::b0/124")
+            .with_ipv6_device("vmtap4", "fc00:1:2:3::b5/124")
+            .with_ipv6_device("vmtap5", "fc00:1:2:3::1/128");
+        assert_eq!(
+            ipv6_from_tap(&taps, 3),
+            Some(ipv6_from_cidr("fc00:1:2:3::b0/124").unwrap())
+        );
+        assert_eq!(
+            ipv6_from_tap(&taps, 4),
+            Some(ipv6_from_cidr("fc00:1:2:3::b0/124").unwrap())
+        );
+        assert_eq!(ipv6_from_tap(&taps, 5), None, "no room for a guest");
+        assert_eq!(ipv6_from_tap(&taps, 6), None, "no such tap");
     }
 
     #[test]
@@ -1378,7 +1438,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let settings = test_settings(&tmp.path().join("does-not-exist"));
         let units = StaticUnitStates::default();
-        assert!(build_world_view(&settings, &units, &[]).is_empty());
+        assert!(build_world_view(&settings, &units, &[], &FakeTapBackend::new()).is_empty());
     }
 
     #[test]
@@ -1388,7 +1448,7 @@ mod tests {
         let mut settings = test_settings(tmp.path());
         settings.allow_vm_networking = false;
         let units = StaticUnitStates::with_active_vms(&[test_fixtures::QEMU_HASH]);
-        let world = build_world_view(&settings, &units, &[]);
+        let world = build_world_view(&settings, &units, &[], &FakeTapBackend::new());
         let qemu = &world.entries[test_fixtures::QEMU_HASH];
         assert_eq!(qemu.ipv4, None);
         assert_eq!(qemu.ipv6, None);
@@ -1405,7 +1465,7 @@ mod tests {
         let units = crate::units::FakeSystemd::new();
         units.set_state(&controller_unit_name(test_fixtures::QEMU_HASH), "failed");
 
-        let world = build_world_view(&settings, &units, &[]);
+        let world = build_world_view(&settings, &units, &[], &FakeTapBackend::new());
 
         let entry = &world.entries[test_fixtures::QEMU_HASH];
         assert!(entry.adopted_failed);
@@ -1433,7 +1493,7 @@ mod tests {
         crate::units::stop_and_disable(&units, &unit).unwrap();
         assert_eq!(units.get_active_state(&unit), "inactive");
 
-        let world = build_world_view(&settings, &units, &[]);
+        let world = build_world_view(&settings, &units, &[], &FakeTapBackend::new());
 
         let entry = &world.entries[test_fixtures::QEMU_HASH];
         assert!(!entry.adopted_failed);
@@ -1459,7 +1519,7 @@ mod tests {
             "activating",
         );
 
-        let world = build_world_view(&settings, &units, &[]);
+        let world = build_world_view(&settings, &units, &[], &FakeTapBackend::new());
 
         let entry = &world.entries[test_fixtures::QEMU_HASH];
         assert!(!entry.adopted_failed);
@@ -1475,7 +1535,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         populate_execution_root(tmp.path());
         let settings = test_settings(tmp.path());
-        let world = build_world_view(&settings, &crate::units::UnreachableBus, &[]);
+        let world = build_world_view(
+            &settings,
+            &crate::units::UnreachableBus,
+            &[],
+            &FakeTapBackend::new(),
+        );
 
         assert_eq!(world.len(), 3);
         for entry in world.entries.values() {
@@ -1505,7 +1570,7 @@ mod tests {
 
         let settings = test_settings(tmp.path());
         let units = StaticUnitStates::with_active_vms(&[test_fixtures::QEMU_HASH]);
-        let world = build_world_view(&settings, &units, &[]);
+        let world = build_world_view(&settings, &units, &[], &FakeTapBackend::new());
         assert_eq!(world.len(), 3, "only the three real fixture configs");
     }
 
@@ -1522,7 +1587,7 @@ mod tests {
         let settings = test_settings(tmp.path());
         // The unit lookup must also use the embedded hash.
         let units = StaticUnitStates::with_active_vms(&[test_fixtures::QEMU_HASH]);
-        let world = build_world_view(&settings, &units, &[]);
+        let world = build_world_view(&settings, &units, &[], &FakeTapBackend::new());
 
         assert_eq!(world.len(), 1);
         let entry = &world.entries[test_fixtures::QEMU_HASH];
@@ -1559,7 +1624,7 @@ mod tests {
         let settings = test_settings(tmp.path());
         let units =
             StaticUnitStates::with_active_vms(&[clone_hash.as_str(), test_fixtures::QEMU_HASH]);
-        let world = build_world_view(&settings, &units, &[]);
+        let world = build_world_view(&settings, &units, &[], &FakeTapBackend::new());
 
         assert!(world.entries.contains_key(clone_hash.as_str()));
         assert!(
@@ -1587,7 +1652,7 @@ mod tests {
 
             let settings = test_settings(tmp.path());
             let units = StaticUnitStates::with_active_vms(&[test_fixtures::QEMU_HASH]);
-            let world = build_world_view(&settings, &units, &[]);
+            let world = build_world_view(&settings, &units, &[], &FakeTapBackend::new());
             assert!(
                 !world.entries.contains_key(test_fixtures::QEMU_HASH),
                 "vm_index {bad_index} must hide the VM"
@@ -1607,7 +1672,7 @@ mod tests {
         populate_execution_root(tmp.path());
         let settings = test_settings(tmp.path());
         let units = StaticUnitStates::with_active_vms(&[test_fixtures::QEMU_HASH]);
-        let mut world = build_world_view(&settings, &units, &[]);
+        let mut world = build_world_view(&settings, &units, &[], &FakeTapBackend::new());
 
         let order: Vec<&str> = world
             .ordered_entries()
@@ -1675,158 +1740,36 @@ mod tests {
     }
 
     #[test]
-    fn ipv6_static_math_matches_the_python_allocator() {
-        // Python: StaticIPv6Allocator(IPv6Network("2a01:240:2:c8::/64"), 124)
-        // .allocate_vm_ipv6_subnet(3, "abcdef0123...", VmType.instance)
-        // == 2a01:240:2:c8:3:abcd:ef01:2340/124 (hash[0:4], hash[4:8],
-        // hash[8:11] + "0").
-        let pair = ipv6_static_assignment(
-            "2a01:240:2:c8::/64",
-            "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
-            VmType::Instance,
-        )
-        .unwrap();
+    fn a_requested_ipv6_becomes_the_tap_pair() {
+        // The agent sends the Python `str(IPv6Network(...))` CIDR; the pair
+        // is gateway = network, guest = network + 1, in Rust notation.
+        let pair = ipv6_from_cidr("2a01:240:2:c8:3:abcd:ef01:2340/124").unwrap();
         assert_eq!(pair.network_cidr, "2a01:240:2:c8:3:abcd:ef01:2340/124");
         assert_eq!(pair.address, "2a01:240:2:c8:3:abcd:ef01:2341");
         assert_eq!(pair.gateway, "2a01:240:2:c8:3:abcd:ef01:2340");
-
-        assert!(
-            ipv6_static_assignment("fc00::/48", "aabbccddeeff", VmType::Instance).is_err(),
-            "the static scheme requires a /56 or /64 pool"
+        // Re-parsing the daemon's own notation is idempotent.
+        assert_eq!(ipv6_from_cidr(&pair.network_cidr).unwrap(), pair);
+        // Leading zeros are re-emitted canonically.
+        assert_eq!(
+            ipv6_from_cidr("fc00:1:2:3:3:dead:beef:0aa0/124")
+                .unwrap()
+                .network_cidr,
+            "fc00:1:2:3:3:dead:beef:aa0/124"
         );
-        assert!(
-            ipv6_static_assignment("fc00:1:2:3::/64", "nothex-----", VmType::Instance).is_err()
-        );
+        assert!(ipv6_from_cidr("fc00::1/124").is_err(), "host bits set");
+        assert!(ipv6_from_cidr("fc00::/127").is_err(), "no guest address");
+        assert!(ipv6_from_cidr("").is_err());
+        assert!(ipv6_from_cidr("not-an-address/124").is_err());
     }
 
     #[test]
-    fn ipv6_static_math_gives_v_programs_the_0x4_hextet() {
-        // Python: StaticIPv6Allocator(...).allocate_vm_ipv6_subnet(3, hash,
-        // VmType.v_program) uses VM_TYPE_PREFIX[VmType.v_program] == "4"
-        // (hostnetwork.py), matching the scheduler's VmType::ipv6_value().
-        // Same hash as ipv6_static_math_matches_the_python_allocator, only
-        // the vm-type hextet differs: 4 instead of 3.
-        let pair = ipv6_static_assignment(
-            "2a01:240:2:c8::/64",
-            "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
-            VmType::VProgram,
-        )
-        .unwrap();
-        assert_eq!(pair.network_cidr, "2a01:240:2:c8:4:abcd:ef01:2340/124");
-        assert_eq!(pair.address, "2a01:240:2:c8:4:abcd:ef01:2341");
-        assert_eq!(pair.gateway, "2a01:240:2:c8:4:abcd:ef01:2340");
-    }
-
-    #[test]
-    fn a_requested_ipv6_round_trips_to_the_static_address() {
-        // The agent computes the Aleph static /124 and sends it as the Python
-        // `str(IPv6Network(...))` CIDR; parsing it back on the daemon must
-        // reproduce the exact pair `ipv6_static_assignment` computes for the
-        // same (pool, vm_hash, vm_type). This pins the cross-language format:
-        // the literal below is what the Python StaticIPv6Allocator emits for
-        // this hash/type, and the Rust static math must agree with it.
-        let pool = "2a01:240:2:c8::/64";
-        let hash = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
-        let computed = ipv6_static_assignment(pool, hash, VmType::Instance).unwrap();
-
-        // What the agent's `str(allocate_vm_ipv6_subnet(...))` yields.
-        let agent_cidr = "2a01:240:2:c8:3:abcd:ef01:2340/124";
-        assert_eq!(computed.network_cidr, agent_cidr);
-
-        // Honoring the agent string reproduces the daemon's own computation
-        // byte-for-byte (address, gateway, cidr all identical).
-        assert_eq!(ipv6_from_cidr(agent_cidr).unwrap(), computed);
-        // And parsing the daemon's own emitted cidr is idempotent.
-        assert_eq!(ipv6_from_cidr(&computed.network_cidr).unwrap(), computed);
-    }
-
-    #[test]
-    fn derive_tap_assignment_honors_a_requested_ipv6_over_the_static_math() {
-        // With a requested address present, the daemon must use it verbatim
-        // and not re-derive the scheme from the hash. The requested /124 here
-        // is deliberately unrelated to what the hash would compute.
+    fn derive_tap_assignment_pairs_the_index_ipv4_with_the_given_ipv6() {
         let tmp = tempfile::tempdir().unwrap();
         let settings = test_settings(tmp.path());
         let requested = "2a01:240:2:c8:3:dead:beef:caf0/124";
-        let mut ordinal = 0;
-        let (_ipv4, ipv6) = derive_tap_assignment(
-            &settings,
-            3,
-            "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
-            VmType::Instance,
-            &mut ordinal,
-            Some(requested),
-        )
-        .unwrap();
+        let (ipv4, ipv6) = derive_tap_assignment(&settings, 3, requested).unwrap();
+        assert_eq!(ipv4.network_cidr, "172.16.3.0/24");
         assert_eq!(ipv6, ipv6_from_cidr(requested).unwrap());
-        // An empty requested string falls through to the static computation.
-        let (_ipv4, computed) = derive_tap_assignment(
-            &settings,
-            3,
-            "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
-            VmType::Instance,
-            &mut ordinal,
-            Some(""),
-        )
-        .unwrap();
-        assert_eq!(
-            computed,
-            ipv6_static_assignment(
-                &settings.ipv6_address_pool,
-                "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
-                VmType::Instance,
-            )
-            .unwrap()
-        );
-    }
-
-    #[test]
-    fn a_multibyte_vm_hash_errors_instead_of_panicking() {
-        // R6: byte-index slicing panicked on a range splitting a multibyte
-        // character; the checked path must return the error instead (the
-        // hash becomes request-reachable in increment 3).
-        // U+00E9 spans bytes 3..5, so 0..4 is not a char boundary.
-        assert!(
-            ipv6_static_assignment(
-                "fc00:1:2:3::/64",
-                "abc\u{00e9}56789012345",
-                VmType::Instance
-            )
-            .is_err()
-        );
-        // A long enough hash whose 8..11 range splits a character
-        // (U+00E9 spans bytes 10..12 here).
-        assert!(
-            ipv6_static_assignment(
-                "fc00:1:2:3::/64",
-                "abcdef0123\u{00e9}45678",
-                VmType::Instance
-            )
-            .is_err()
-        );
-        // Multibyte characters past the sliced ranges do not matter.
-        assert!(
-            ipv6_static_assignment("fc00:1:2:3::/64", "abcdef01234\u{00e9}", VmType::Instance)
-                .is_ok()
-        );
-    }
-
-    #[test]
-    fn ipv6_dynamic_math_skips_the_host_subnet() {
-        // Python: DynamicIPv6Allocator(IPv6Network("fc00::/64"), 124) skips
-        // the first /124 and hands out the second on the first call.
-        let pair = ipv6_dynamic_assignment("fc00::/64", 124, 1).unwrap();
-        assert_eq!(pair.network_cidr, "fc00::10/124");
-        assert_eq!(pair.address, "fc00::11");
-        assert_eq!(pair.gateway, "fc00::10");
-    }
-
-    #[test]
-    fn ipv6_dynamic_math_rejects_a_zero_subnet_prefix() {
-        // Without the guard, `1u128 << (128 - 0)` overflows the shift
-        // (panic in debug builds) instead of failing cleanly.
-        let result = ipv6_dynamic_assignment("::/0", 0, 0);
-        assert!(matches!(&result, Err(WorldError::ZeroSubnetPrefix)));
-        assert!(result.unwrap_err().to_string().contains("/0"));
+        assert!(derive_tap_assignment(&settings, 3, "").is_err());
     }
 }
