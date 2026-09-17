@@ -410,29 +410,30 @@ mod tests {
         // signature covers exactly signed_region, which for v5 includes
         // the body descriptor. A signed_region off by even one byte fails
         // here for both fixtures.
-        use openssl::bn::BigNum;
-        use openssl::ec::{EcGroup, EcKey};
-        use openssl::ecdsa::EcdsaSig;
-        use openssl::nid::Nid;
+        use crate::pki::{Curve, verify_raw_ecdsa};
 
         for (name, raw) in [("v4", QUOTE_V4), ("v5", QUOTE_V5)] {
             let quote = parse_tdx_quote(raw).expect(name);
-            let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
-            let x = BigNum::from_slice(&quote.signature.attestation_key[..32]).unwrap();
-            let y = BigNum::from_slice(&quote.signature.attestation_key[32..]).unwrap();
-            let key = EcKey::from_public_key_affine_coordinates(&group, &x, &y).unwrap();
-            let r = BigNum::from_slice(&quote.signature.quote_signature[..32]).unwrap();
-            let s = BigNum::from_slice(&quote.signature.quote_signature[32..]).unwrap();
-            let sig = EcdsaSig::from_private_components(r, s).unwrap();
-            let digest: [u8; 32] = Sha256::digest(&quote.signed_region).into();
+            let mut key = vec![0x04];
+            key.extend_from_slice(&quote.signature.attestation_key);
+            verify_raw_ecdsa(
+                name,
+                Curve::P256,
+                &key,
+                &quote.signed_region,
+                &quote.signature.quote_signature,
+            )
+            .unwrap_or_else(|e| panic!("{name}: signature must verify over signed_region: {e}"));
+            let truncated = &quote.signed_region[..quote.signed_region.len() - 1];
             assert!(
-                sig.verify(&digest, &key).unwrap(),
-                "{name}: signature must verify over signed_region"
-            );
-            let truncated: [u8; 32] =
-                Sha256::digest(&quote.signed_region[..quote.signed_region.len() - 1]).into();
-            assert!(
-                !sig.verify(&truncated, &key).unwrap(),
+                verify_raw_ecdsa(
+                    name,
+                    Curve::P256,
+                    &key,
+                    truncated,
+                    &quote.signature.quote_signature
+                )
+                .is_err(),
                 "{name}: any other framing must not verify"
             );
         }

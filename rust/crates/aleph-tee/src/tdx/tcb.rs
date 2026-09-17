@@ -13,11 +13,9 @@ use std::collections::BTreeSet;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
-use openssl::hash::MessageDigest;
-use openssl::x509::X509;
 use serde::Deserialize;
 
-use crate::pki::ecdsa_from_raw;
+use crate::pki::{Curve, ec_public_key, parse_cert, verify_raw_ecdsa};
 
 use super::certs::verify_signer_chain;
 use super::collateral::TdxCollateral;
@@ -233,31 +231,15 @@ fn verify_signed_document(
     chain_pem: &str,
     now: SystemTime,
 ) -> Result<()> {
-    let signer = verify_signer_chain(chain_pem.as_bytes(), now)
+    let signer_der = verify_signer_chain(chain_pem.as_bytes(), now)
         .with_context(|| format!("{what} issuer chain is not trusted"))?;
-    let key = signer
-        .public_key()
-        .with_context(|| format!("failed to extract the {what} signer key"))?;
-    let ec = key
-        .ec_key()
-        .with_context(|| format!("the {what} signer key is not an EC key"))?;
+    let signer = parse_cert("the collateral signer certificate", &signer_der)?;
+    let key = ec_public_key(&format!("{what} signer"), signer.public_key(), Curve::P256)?;
 
-    let sig_raw =
+    let signature =
         hex::decode(signature_hex).with_context(|| format!("{what} signature is not valid hex"))?;
-    if sig_raw.len() != 64 {
-        bail!("{what} signature is {} bytes, expected 64", sig_raw.len());
-    }
-    let sig =
-        ecdsa_from_raw(&sig_raw).with_context(|| format!("failed to read the {what} signature"))?;
-    let digest = openssl::hash::hash(MessageDigest::sha256(), body.as_bytes())
-        .with_context(|| format!("failed to hash the {what} body"))?;
-    if !sig
-        .verify(&digest, &ec)
-        .with_context(|| format!("failed to check the {what} signature"))?
-    {
-        bail!("{what} signature does not verify under its Intel signer");
-    }
-    Ok(())
+    verify_raw_ecdsa(what, Curve::P256, key, body.as_bytes(), &signature)
+        .with_context(|| format!("{what} signature does not verify under its Intel signer"))
 }
 
 /// Parse the fixed `YYYY-MM-DDTHH:MM:SSZ` timestamp Intel uses in its signed
@@ -642,12 +624,12 @@ fn check_platform_gates(quote: &TdxQuote) -> Result<()> {
 ///
 /// Assumes the caller has already verified the quote's chain and signatures
 /// (`certs`/`verify`); this decides the acceptable-TCB question on top.
-/// Crate-private because it takes an openssl certificate: outside callers go
-/// through `verify_tdx_quote`.
+/// Crate-private: outside callers go through `verify_tdx_quote`, which
+/// supplies a chain-verified leaf.
 pub(crate) fn evaluate_tcb(
     quote: &TdxQuote,
     collateral: &TdxCollateral,
-    pck_leaf: &X509,
+    pck_leaf_der: &[u8],
     now: SystemTime,
     policy: &TdxTcbPolicy,
 ) -> Result<TdxTcbOutcome> {
@@ -656,7 +638,7 @@ pub(crate) fn evaluate_tcb(
     let tcb_info = verify_tcb_info(collateral, now)?;
     let qe_identity = verify_qe_identity(collateral, now)?;
 
-    let platform = parse_pck_platform(pck_leaf)?;
+    let platform = parse_pck_platform(pck_leaf_der)?;
     let tcb_fmspc: [u8; 6] = hex_fixed("TCB Info fmspc", &tcb_info.fmspc)?;
     if platform.fmspc != tcb_fmspc {
         bail!(
@@ -701,13 +683,11 @@ mod tests {
         UNIX_EPOCH + Duration::from_secs(1_771_459_200)
     }
 
-    fn pck_leaf(raw: &[u8]) -> X509 {
+    fn pck_leaf(raw: &[u8]) -> Vec<u8> {
         let quote = parse_tdx_quote(raw).expect("quote parses");
-        X509::stack_from_pem(&quote.signature.pck_chain_pem)
-            .expect("chain")
-            .into_iter()
-            .next()
-            .expect("leaf")
+        crate::pki::pem_certs_to_der("chain", &quote.signature.pck_chain_pem)
+            .expect("chain parses")
+            .swap_remove(0)
     }
 
     #[test]
@@ -899,28 +879,26 @@ mod tests {
     fn rejects_tcb_info_under_an_impostor_chain() {
         // A TCB Info signed by a chain with the same subject names but fresh
         // keys: the chain carries its own root, so only the root pin refuses it.
-        use openssl::asn1::Asn1Time;
+        use crate::pki::testing::{Name, cert, p256_key};
 
-        let not_before = Asn1Time::from_unix(1_700_000_000).unwrap();
-        let not_after = Asn1Time::from_unix(1_900_000_000).unwrap();
-        let root_key = crate::pki::test_p256_key();
-        let signer_key = crate::pki::test_p256_key();
-        let impostor_root = crate::pki::test_cert(
-            &["Intel SGX Root CA"],
-            &root_key,
-            None,
-            &not_before,
-            &not_after,
-        );
-        let impostor_signer = crate::pki::test_cert(
-            &["Intel SGX TCB Signing"],
+        let root_key = p256_key();
+        let signer_key = p256_key();
+        let root_name = Name {
+            common_names: vec!["Intel SGX Root CA"],
+            organization: None,
+        };
+        let impostor_root = cert(&root_name, &root_key, None, 1_700_000_000, 1_900_000_000);
+        let impostor_signer = cert(
+            &Name {
+                common_names: vec!["Intel SGX TCB Signing"],
+                organization: None,
+            },
             &signer_key,
-            Some(("Intel SGX Root CA", &root_key)),
-            &not_before,
-            &not_after,
+            Some((&root_name, &root_key)),
+            1_700_000_000,
+            1_900_000_000,
         );
-        let mut pem = String::from_utf8(impostor_signer.to_pem().unwrap()).unwrap();
-        pem.push_str(&String::from_utf8(impostor_root.to_pem().unwrap()).unwrap());
+        let pem = format!("{}{}", impostor_signer.pem(), impostor_root.pem());
 
         let quote = parse_tdx_quote(QUOTE_V4).unwrap();
         let mut collateral = TdxCollateral::from_json(COLLATERAL_V4).unwrap();
