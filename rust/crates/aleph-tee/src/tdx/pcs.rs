@@ -23,6 +23,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
+use super::certs::PCK_CHAIN_LEN;
 use super::collateral::TdxCollateral;
 use super::pck_extension::parse_pck_platform;
 use super::tcb::parse_rfc3339_z;
@@ -68,9 +69,9 @@ pub struct CollateralRequest {
 /// that chain later (FMSPC mismatch, CRL under the wrong CA).
 pub fn collateral_request(pck_chain_pem: &[u8]) -> Result<CollateralRequest> {
     let chain = pem_certs_to_der("the PCK chain PEM", pck_chain_pem)?;
-    if chain.len() != 3 {
+    if chain.len() != PCK_CHAIN_LEN {
         bail!(
-            "expected 3 certificates in the PCK chain (leaf, intermediate, root), got {}",
+            "expected {PCK_CHAIN_LEN} certificates in the PCK chain (leaf, intermediate, root), got {}",
             chain.len()
         );
     }
