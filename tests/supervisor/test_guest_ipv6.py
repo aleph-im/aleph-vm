@@ -312,8 +312,8 @@ async def test_lacks_known_ipv6_ignores_vms_without_a_tap(dynamic, monkeypatch):
     async def program_spec(vm_id):
         return _spec(vm_id, backend=Backend.FIRECRACKER, internet=False)
 
-    supervisor.get_vm_spec = program_spec
+    monkeypatch.setattr(supervisor, "get_vm_spec", program_spec)
     assert await lacks_known_ipv6(supervisor, VmId("p")) is False
     monkeypatch.setattr(settings, "ALLOW_VM_NETWORKING", False)
-    supervisor.get_vm_spec = FakeSupervisor(stopped={"legacy": ""}).get_vm_spec
+    monkeypatch.setattr(supervisor, "get_vm_spec", FakeSupervisor(stopped={"legacy": ""}).get_vm_spec)
     assert await lacks_known_ipv6(supervisor, VmId("legacy")) is False

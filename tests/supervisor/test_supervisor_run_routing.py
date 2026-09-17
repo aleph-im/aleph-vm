@@ -650,6 +650,7 @@ async def test_start_persistent_rebuilds_a_stopped_vm_with_no_known_ipv6(monkeyp
     )
     sup.start_vm.assert_not_awaited()
     retired.assert_awaited_once()
+    assert retired.await_args is not None
     assert retired.await_args.args[1] is run_module.RetireReason.RECREATE
     created.assert_awaited_once()
 
