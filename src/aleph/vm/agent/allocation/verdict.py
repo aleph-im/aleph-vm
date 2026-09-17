@@ -278,7 +278,7 @@ def compute_verdict(
         if plan.lists(vm_hash):
             verdict.retained[vm_hash] = "refused"
             continue
-        reason = retention_reason(record, info)
+        reason = retention_reason(record)
         if reason is None:
             verdict.removing.append(vm_hash)
         else:

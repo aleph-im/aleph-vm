@@ -1,12 +1,11 @@
 """Stopping a VM because the scheduler's plan no longer lists it.
 
-Removability is not uniform. A credit-paid VM, one holding GPUs, or a
-confidential one is retained: the scheduler is not the authority on those. A
-v-program inverts that, because the scheduler IS its single source of truth,
-and it is credit-paid and confidential by construction. So does a stream-paid
-(PAYG) VM: the scheduler's payment gate validates the stream and drops an
-unpaid instance from the plan, and that decision only takes effect if the node
-honours the absence.
+The scheduler is the single source of truth for what runs on this node,
+whatever the payment tier, GPU or confidential mode: the CCN removes an
+instance message its balance no longer covers, the scheduler validates PAYG
+streams, and anything failing either leaves the plan. The node matches the
+allocation rather than forming its own opinion. The one VM it keeps is one it
+never started persistent, which no allocation ever listed.
 
 Stopping means retiring as GONE: the scheduler said this VM should not exist,
 so the record and side state go, and the disks follow VOLUME_RETENTION. The
@@ -19,39 +18,23 @@ from aleph_message.models import ItemHash
 from aleph.vm.agent.vm.retire import RetireReason, retire_vm
 from aleph.vm.agent.vm_registry import AgentVmRecord, AgentVmRegistry
 from aleph.vm.supervisor_interface.abc import Supervisor
-from aleph.vm.supervisor_interface.types import ConfidentialMode, VmInfo
 
 
-def retention_reason(record: AgentVmRecord, info: VmInfo) -> str | None:
+def retention_reason(record: AgentVmRecord) -> str | None:
     """Why an allocation push may not stop this VM, None when it may.
 
     The one rule, and the answer the push is given for a VM it asked to have
-    stopped and did not get. The two used to be written out separately, here
-    and in the verdict, and a reason the list grew that the other did not
-    would have had a retained VM reported under a reason for retaining a
-    different one.
+    stopped and did not get: the verdict reports this rather than keeping a
+    list of its own that could drift from the loop's.
     """
     if not record.persistent:
         return "non_persistent"
-    if record.is_vprogram or record.uses_payment_stream:
-        # The scheduler is a v-program's single source of truth, so none of
-        # the reasons below hold against it, credit-paid and confidential
-        # though it is by construction. PAYG is scheduler-owned too, GPU and
-        # confidential included: the exclusions below exist for hold-tier VMs
-        # the scheduler does not place, and most of the PAYG fleet has a GPU.
-        return None
-    if record.uses_payment_credit:
-        return "payment_credit"
-    if info.gpus:
-        return "gpu"
-    if info.confidential_mode is not ConfidentialMode.NONE:
-        return "confidential"
     return None
 
 
-def is_removable_by_allocation(record: AgentVmRecord, info: VmInfo) -> bool:
+def is_removable_by_allocation(record: AgentVmRecord) -> bool:
     """Whether an allocation push may stop this VM when the plan drops it."""
-    return retention_reason(record, info) is None
+    return retention_reason(record) is None
 
 
 async def teardown_vm(vm_hash: ItemHash, *, supervisor: Supervisor, registry: AgentVmRegistry) -> None:

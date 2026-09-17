@@ -193,23 +193,34 @@ def test_a_stream_paid_vm_absent_from_the_plan_is_removed():
     assert HASH_B not in verdict.retained
 
 
-@pytest.mark.parametrize(
-    ("record", "info", "reason"),
-    [
-        (_record(persistent=False), _info(HASH_B), "non_persistent"),
-        (_record(credit=True), _info(HASH_B), "payment_credit"),
-        (_record(), _info(HASH_B, gpus=["0000:01:00.0"]), "gpu"),
-        (_record(), _info(HASH_B, confidential=ConfidentialMode.SEV_SNP), "confidential"),
-    ],
-)
-def test_every_reason_an_allocation_may_not_stop_a_vm_is_reported(record, info, reason):
-    """_retention_reason has to stay a mirror of is_removable_by_allocation:
-    a VM the one keeps and the other has no reason for comes back as
-    operator_policy, which says nothing to the scheduler."""
-    verdict = compute_verdict(_plan(), infos=[info], registry=_registry({HASH_B: record}), capacity=_capacity([]))
+def test_a_non_persistent_vm_absent_from_the_plan_is_reported_with_its_reason():
+    """The verdict answers with the loop's own retention_reason, so a VM the
+    loop keeps can never come back as operator_policy, which says nothing to
+    the scheduler."""
+    verdict = compute_verdict(
+        _plan(), infos=[_info(HASH_B)], registry=_registry({HASH_B: _record(persistent=False)}), capacity=_capacity([])
+    )
 
     assert verdict.removing == []
-    assert verdict.retained[HASH_B] == reason
+    assert verdict.retained[HASH_B] == "non_persistent"
+
+
+@pytest.mark.parametrize(
+    ("record", "info"),
+    [
+        (_record(credit=True), _info(HASH_B)),
+        (_record(), _info(HASH_B, gpus=["0000:01:00.0"])),
+        (_record(), _info(HASH_B, confidential=ConfidentialMode.SEV_SNP)),
+    ],
+    ids=["credit", "gpu", "confidential"],
+)
+def test_payment_tier_gpus_and_confidential_mode_do_not_keep_a_vm_the_plan_dropped(record, info):
+    """The scheduler validated all three when it placed the VM; the node
+    does not second-guess the plan that now leaves it out."""
+    verdict = compute_verdict(_plan(), infos=[info], registry=_registry({HASH_B: record}), capacity=_capacity([]))
+
+    assert verdict.removing == [HASH_B]
+    assert HASH_B not in verdict.retained
 
 
 def test_a_vm_waiting_on_its_confidential_session_is_left_alone():
