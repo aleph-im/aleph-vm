@@ -117,6 +117,11 @@ def _pool_usage_from_pools() -> list[PoolUsage]:
 class DiskUsage(BaseModel):
     total_kB: int
     available_kB: int
+    # Per-pool room, so a client can tell whether one volume fits. None from a
+    # node that predates pools; [] from a node with no eligible pool at all.
+    # Does not sum to available_kB: that figure is the supervisor's usage-aware
+    # one, while these are what each pool would accept. Different questions.
+    pools: list[PoolUsage] | None = None
 
 
 class UsagePeriod(BaseModel):
@@ -465,6 +470,7 @@ def _disk_usage_from_pools(host_info) -> DiskUsage:
     return DiskUsage(
         total_kB=total_bytes // 1000,
         available_kB=(available_bytes + reclaimable_bytes()) // 1000,
+        pools=_pool_usage_from_pools(),
     )
 
 
