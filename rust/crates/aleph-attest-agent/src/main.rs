@@ -199,8 +199,9 @@ async fn main() -> Result<()> {
     // signature field. Raise the cap to 2 MiB, matching the prior
     // `web::Json` default, to restore headroom for both the unauthenticated
     // v-program path and the new owner-authenticated path. Scoped to this
-    // route only: the attestation GET and the proxy default-service never
-    // read `web::Bytes`/`web::String` bodies, so they are unaffected either way.
+    // route only: the attestation GET reads no body and the proxy
+    // default-service streams its request body through (`web::Payload`, no
+    // extractor cap), so they are unaffected either way.
     const INJECT_SECRET_BODY_LIMIT: usize = 2 * 1024 * 1024;
 
     // Dual-stack: [::] accepts IPv6 AND IPv4 connections (Linux default
