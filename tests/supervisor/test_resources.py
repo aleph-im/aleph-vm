@@ -1,6 +1,7 @@
 from pathlib import Path
 from unittest import mock
 
+from aleph.vm.agent import resources
 from aleph.vm.agent.resources import hugepages_free_bytes
 from aleph.vm.resources import get_gpu_devices
 
@@ -92,3 +93,88 @@ def test_disk_usage_adds_reclaimable_to_the_supervisors_figure(mocker):
     usage = _disk_usage_from_pools(SimpleNamespace(available_disk_bytes=200_000))
 
     assert usage.available_kB == 300
+
+
+def test_pool_usage_deduplicates_pools_sharing_a_filesystem(mocker, tmp_path):
+    """Two pool dirs on one disk are one pool's worth of room, not two."""
+    first, second = tmp_path / "a", tmp_path / "b"
+    first.mkdir()
+    second.mkdir()
+    pool_a = mocker.Mock(path=first)
+    pool_b = mocker.Mock(path=second)
+    mocker.patch(
+        "aleph.vm.agent.resources.eligible_pool_free_bytes",
+        return_value=[(pool_a, 1_000_000), (pool_b, 1_000_000)],
+    )
+    mocker.patch("aleph.vm.agent.resources.reclaimable_bytes", return_value=0)
+    # Same tmp_path, so both really do share an st_dev.
+    pools = resources._pool_usage_from_pools()
+    assert len(pools) == 1
+    assert pools[0].available_kB == 1000
+
+
+def test_pool_usage_adds_each_pools_reclaimable_bytes(mocker, tmp_path):
+    """Admission counts reclaimable bytes as free, so advertising must too."""
+    pool = mocker.Mock(path=tmp_path)
+    mocker.patch(
+        "aleph.vm.agent.resources.eligible_pool_free_bytes",
+        return_value=[(pool, 1_000_000)],
+    )
+    mocker.patch("aleph.vm.agent.resources.reclaimable_bytes", return_value=500_000)
+    pools = resources._pool_usage_from_pools()
+    assert pools[0].available_kB == 1500
+
+
+def test_pool_usage_is_empty_when_no_pool_is_eligible(mocker):
+    """No eligible pool is an empty list, never None: the node has no room."""
+    mocker.patch("aleph.vm.agent.resources.eligible_pool_free_bytes", return_value=[])
+    assert resources._pool_usage_from_pools() == []
+
+
+def test_pool_usage_skips_an_unreachable_pool(mocker, tmp_path):
+    """A pool whose stat fails drops out rather than failing the endpoint."""
+    good = tmp_path / "good"
+    good.mkdir()
+    reachable = mocker.Mock(path=good)
+    dead = mocker.Mock(path=tmp_path / "does-not-exist")
+    mocker.patch(
+        "aleph.vm.agent.resources.eligible_pool_free_bytes",
+        return_value=[(reachable, 2_000_000), (dead, 9_000_000)],
+    )
+    mocker.patch("aleph.vm.agent.resources.reclaimable_bytes", return_value=0)
+    pools = resources._pool_usage_from_pools()
+    assert [p.available_kB for p in pools] == [2000]
+
+
+def test_disk_usage_advertises_each_pool(mocker):
+    """The aggregate figures are untouched; pools is added beside them."""
+    mocker.patch(
+        "aleph.vm.agent.resources.pools_disk_usage",
+        return_value=(4_000_000, 3_000_000),
+    )
+    mocker.patch("aleph.vm.agent.resources.reclaimable_bytes", return_value=0)
+    mocker.patch(
+        "aleph.vm.agent.resources._pool_usage_from_pools",
+        return_value=[
+            resources.PoolUsage(available_kB=1000),
+            resources.PoolUsage(available_kB=2000),
+        ],
+    )
+    host_info = mocker.Mock(available_disk_bytes=3_000_000)
+    usage = resources._disk_usage_from_pools(host_info)
+    assert usage.total_kB == 4000
+    assert usage.available_kB == 3000
+    assert [p.available_kB for p in usage.pools] == [1000, 2000]
+
+
+def test_disk_usage_serialises_pools_under_the_wire_key(mocker):
+    """The scheduler parses disk.pools[].available_kB; lock the spelling in."""
+    mocker.patch("aleph.vm.agent.resources.pools_disk_usage", return_value=(10, 10))
+    mocker.patch("aleph.vm.agent.resources.reclaimable_bytes", return_value=0)
+    mocker.patch(
+        "aleph.vm.agent.resources._pool_usage_from_pools",
+        return_value=[resources.PoolUsage(available_kB=7)],
+    )
+    host_info = mocker.Mock(available_disk_bytes=10)
+    dumped = resources._disk_usage_from_pools(host_info).model_dump()
+    assert dumped["pools"] == [{"available_kB": 7}]
