@@ -6,27 +6,45 @@ license.workspace = true
 repository.workspace = true
 description = "AMD SEV-SNP and Intel TDX attestation library: report and quote generation/parsing, AMD KDS and Intel DCAP collateral verification, QEMU arg generation, and attestation-embedded X.509"
 
+[features]
+default = ["guest", "verify"]
+# The in-guest side: the SEV-SNP firmware backend over /dev/sev-guest.
+guest = []
+# The verifier side: AMD and Intel chains, the KDS and PCS clients, TDX.
+# Pulls the crypto and HTTP closure the measured guest agent does not need.
+verify = [
+    "sev/crypto_nossl",
+    "serde_json/raw_value",
+    "dep:ring",
+    "dep:x509-parser",
+    "dep:reqwest",
+]
+
 [dependencies]
+# The root pin is snp only; crypto_nossl (the builtin AMD roots'
+# certificate type) rides the verify feature.
 sev.workspace = true
-rcgen.workspace = true
-x509-parser.workspace = true
-ring.workspace = true
+x509-parser = { workspace = true, optional = true }
+ring = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+# Non-optional: sev_snp::qemu (always on) logs a fallback warning for a
+# malformed guest policy, not just the verify-side fetch client.
+tracing.workspace = true
 der.workspace = true
 hex.workspace = true
 sha2.workspace = true
 sha3.workspace = true
 k256.workspace = true
-reqwest.workspace = true
 serde.workspace = true
-serde_json = { workspace = true, features = ["raw_value"] }
+serde_json.workspace = true
 anyhow.workspace = true
-tracing.workspace = true
 
 [dev-dependencies]
-# Runtime for the #[ignore]d network tests that check the pinned AMD and
-# Intel roots against what the vendors currently serve. Offline `cargo test`
-# never runs them.
-tokio = { workspace = true }
-# Absolute validity windows for fabricated test certificates.
+# Attested-TLS certificate fabrication in the x509 tests and the impostor
+# chains in the verifier tests.
+rcgen = { workspace = true }
 time = { workspace = true }
 tempfile = { workspace = true }
+# Runtime for the #[ignore]d network tests that check the pinned AMD and
+# Intel roots against what the vendors currently serve.
+tokio = { workspace = true }

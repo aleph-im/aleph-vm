@@ -58,11 +58,12 @@ tower = { version = "0.5", features = ["util"] }
 
 # aleph-tee: SEV-SNP and TDX attestation stack. Pure Rust throughout, since
 # this crate is compiled into the measured guest agent and into client SDKs
-# that cross-compile: sev's crypto_nossl backend for the AMD builtin roots
-# and report parsing, x509-parser for certificate and CRL structure, ring
-# for signature math (ECDSA P-256/P-384 and AMD's RSASSA-PSS/SHA-384).
-# reqwest uses rustls-tls so the KDS and PCS fetches carry no system TLS.
-sev = { version = "8", default-features = false, features = ["snp", "crypto_nossl"] }
+# that cross-compile: x509-parser for certificate and CRL structure, ring
+# for signature math (ECDSA P-256/P-384 and AMD's RSASSA-PSS/SHA-384); the
+# crate's `verify` feature turns on sev's `crypto_nossl` for the builtin AMD
+# roots. reqwest uses rustls-tls so the KDS and PCS fetches carry no system
+# TLS.
+sev = { version = "8", default-features = false, features = ["snp"] }
 # x509-parser: rcgen's SubjectPublicKeyInfo::from_der, which the tests use
 # to re-issue a pinned root's key under a new envelope.
 rcgen = { version = "0.14", features = ["x509-parser"] }
@@ -71,7 +72,9 @@ ring = "0.17"
 # alloc: needed for der::Encode::to_der (returns Vec<u8>); the donor workspace
 # got this feature transitively via x509-cert, which we do not port here.
 der = { version = "0.7", features = ["alloc"] }
-# Test-only: absolute validity windows for the certificates tests fabricate.
+# rcgen and time are dev-dependencies of aleph-tee (test-only certificate
+# fabrication); dev-dependencies inherit from here like any other, so the
+# pins live here.
 time = "0.3"
 hex = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "charset", "http2"] }
