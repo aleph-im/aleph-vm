@@ -12,12 +12,18 @@ default = ["guest", "verify"]
 guest = []
 # The verifier side: AMD and Intel chains, the KDS and PCS clients, TDX.
 # Pulls the crypto and HTTP closure the measured guest agent does not need.
-verify = ["sev/crypto_nossl", "dep:ring", "dep:x509-parser", "dep:reqwest"]
+verify = [
+    "sev/crypto_nossl",
+    "serde_json/raw_value",
+    "dep:ring",
+    "dep:x509-parser",
+    "dep:reqwest",
+]
 
 [dependencies]
-# snp only here; crypto_nossl (the builtin AMD roots' certificate type)
-# rides the verify feature.
-sev = { version = "8", default-features = false, features = ["snp"] }
+# The root pin is snp only; crypto_nossl (the builtin AMD roots'
+# certificate type) rides the verify feature.
+sev.workspace = true
 x509-parser = { workspace = true, optional = true }
 ring = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
@@ -30,7 +36,7 @@ sha2.workspace = true
 sha3.workspace = true
 k256.workspace = true
 serde.workspace = true
-serde_json = { workspace = true, features = ["raw_value"] }
+serde_json.workspace = true
 anyhow.workspace = true
 
 [dev-dependencies]
