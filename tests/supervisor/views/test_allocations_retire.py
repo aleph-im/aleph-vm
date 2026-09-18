@@ -21,7 +21,9 @@ from aleph.vm.conf import settings
 from aleph.vm.supervisor_interface.types import (
     Backend,
     ConfidentialMode,
+    GpuDevice,
     IpAssignment,
+    PciAddress,
     VmId,
     VmInfo,
     VmStatus,
@@ -29,8 +31,8 @@ from aleph.vm.supervisor_interface.types import (
 
 VM_HASH = ItemHash("decadecadecadecadecadecadecadecadecadecadecadecadecadecadecadeca")
 
-# A non-stream, non-credit payment type, so the stop-loop condition is
-# satisfied (superfluid / credit executions are excluded from the dealloc loop).
+# A hold-tier instance: neither credit-paid, GPU-bearing nor confidential, so
+# the stop loop's retention rule has nothing to keep it for.
 _HOLD_INSTANCE_CONTENT = {
     "address": "0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9",
     "time": 1713874241.800818,
@@ -51,6 +53,13 @@ _HOLD_INSTANCE_CONTENT = {
         "persistence": "host",
         "size_mib": 1000,
     },
+}
+
+
+# The same instance paid by a Superfluid stream to this node.
+_STREAM_INSTANCE_CONTENT = {
+    **_HOLD_INSTANCE_CONTENT,
+    "payment": {"type": "superfluid", "chain": "BASE", "receiver": "0x101d8D16372dBf5f1614adaE95Ee5CCE61998Fc9"},
 }
 
 
@@ -88,7 +97,7 @@ def scheduler_auth(monkeypatch):
     return _sign
 
 
-def _running_vm_info(vm_hash=VM_HASH):
+def _running_vm_info(vm_hash=VM_HASH, *, gpus=(), confidential_mode=ConfidentialMode.NONE):
     return VmInfo(
         vm_id=VmId(str(vm_hash)),
         status=VmStatus.RUNNING,
@@ -98,9 +107,12 @@ def _running_vm_info(vm_hash=VM_HASH):
         backend=Backend.QEMU,
         numa_node=None,
         status_message="",
-        confidential_mode=ConfidentialMode.NONE,
-        gpus=[],
+        confidential_mode=confidential_mode,
+        gpus=list(gpus),
     )
+
+
+_A_GPU = GpuDevice(pci_host=PciAddress("0000:01:00.0"), device_id="10de:27b0", model="RTX 4000", supports_x_vga=True)
 
 
 def _make_app_with_supervisor(supervisor):
@@ -169,3 +181,58 @@ async def test_stop_loop_stops_eligible_vm(aiohttp_client, mocker, scheduler_aut
     assert str(VM_HASH) in resp_json["stopped"]
     retire.assert_awaited_once_with(VM_HASH, RetireReason.GONE, supervisor=fake_supervisor, registry=app["vm_registry"])
     fake_supervisor.delete_vm.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "info",
+    [
+        _running_vm_info(),
+        _running_vm_info(gpus=[_A_GPU]),
+        _running_vm_info(confidential_mode=ConfidentialMode.SEV),
+    ],
+    ids=["plain", "gpu", "confidential"],
+)
+@pytest.mark.asyncio
+async def test_stop_loop_stops_a_payg_vm_absent_from_the_allocation(aiohttp_client, mocker, scheduler_auth, info):
+    """PAYG is scheduler-owned: the scheduler's payment gate validates the
+    stream and drops an unpaid instance from the plan, and that decision only
+    takes effect if the stop loop honours the absence. GPU-bearing and
+    confidential PAYG included: those exclusions exist for hold-tier VMs the
+    scheduler does not place, and most of the PAYG fleet carries a GPU."""
+    message = InstanceContent.model_validate(_STREAM_INSTANCE_CONTENT)
+
+    fake_supervisor = MagicMock(delete_vm=AsyncMock(), list_vms=AsyncMock(return_value=[info]))
+    app = _make_app_with_supervisor(fake_supervisor)
+    app["vm_registry"].record(VM_HASH, message=message, original=message, persistent=True)
+    retire = mocker.patch("aleph.vm.agent.allocation.teardown.retire_vm", new_callable=AsyncMock)
+
+    client = await aiohttp_client(app)
+    body, headers = scheduler_auth({"persistent_vms": []})
+    response = await client.post("/control/allocations", data=body, headers=headers)
+    assert response.status == 200
+    resp_json = await response.json()
+
+    assert str(VM_HASH) in resp_json["stopped"]
+    retire.assert_awaited_once_with(VM_HASH, RetireReason.GONE, supervisor=fake_supervisor, registry=app["vm_registry"])
+
+
+@pytest.mark.asyncio
+async def test_update_allocations_starts_a_payg_instance(aiohttp_client, mocker, scheduler_auth):
+    """The scheduler dispatches validated PAYG through /control/allocations,
+    so the start path must not gate on payment tier. Pins that the allocating
+    half already works, since the stop half now relies on it."""
+    message = InstanceContent.model_validate(_STREAM_INSTANCE_CONTENT)
+
+    fake_supervisor = MagicMock(delete_vm=AsyncMock(), list_vms=AsyncMock(return_value=[]))
+    app = _make_app_with_supervisor(fake_supervisor)
+    app["vm_registry"].record(VM_HASH, message=message, original=message, persistent=True)
+    start = mocker.patch("aleph.vm.agent.views.start_persistent_vm", new_callable=AsyncMock)
+
+    client = await aiohttp_client(app)
+    body, headers = scheduler_auth({"instances": [str(VM_HASH)]})
+    response = await client.post("/control/allocations", data=body, headers=headers)
+    assert response.status == 200
+    resp_json = await response.json()
+
+    assert str(VM_HASH) in resp_json["successful"]
+    assert start.await_args.args[0] == VM_HASH
