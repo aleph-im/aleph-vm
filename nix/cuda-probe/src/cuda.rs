@@ -35,6 +35,66 @@ macro_rules! sym {
     }};
 }
 
+/// A device allocation, freed on drop. Every exit path from a function
+/// holding one, including an early `?`, releases the buffer.
+struct DevAlloc<'a> {
+    cuda: &'a Cuda,
+    ptr: DevPtr,
+}
+
+impl<'a> DevAlloc<'a> {
+    fn new(cuda: &'a Cuda, bytes: usize) -> Result<Self> {
+        let ptr = cuda.alloc(bytes)?;
+        Ok(Self { cuda, ptr })
+    }
+}
+
+impl Drop for DevAlloc<'_> {
+    fn drop(&mut self) {
+        self.cuda.free(self.ptr);
+    }
+}
+
+/// A loaded module, unloaded on drop.
+struct ModuleGuard<'a> {
+    cuda: &'a Cuda,
+    module: Module,
+}
+
+impl<'a> ModuleGuard<'a> {
+    fn load(cuda: &'a Cuda, ptx: &str) -> Result<Self> {
+        let load = sym!(
+            cuda.lib,
+            b"cuModuleLoadData",
+            unsafe extern "C" fn(*mut Module, *const c_void) -> c_int
+        );
+        let mut module: Module = std::ptr::null_mut();
+        check("cuModuleLoadData", unsafe {
+            load(&mut module, ptx.as_ptr().cast())
+        })?;
+        Ok(Self { cuda, module })
+    }
+
+    fn function(&self, name: &CStr) -> Result<Function> {
+        let get_fn = sym!(
+            self.cuda.lib,
+            b"cuModuleGetFunction",
+            unsafe extern "C" fn(*mut Function, Module, *const c_char) -> c_int
+        );
+        let mut func: Function = std::ptr::null_mut();
+        check("cuModuleGetFunction", unsafe {
+            get_fn(&mut func, self.module, name.as_ptr())
+        })?;
+        Ok(func)
+    }
+}
+
+impl Drop for ModuleGuard<'_> {
+    fn drop(&mut self) {
+        self.cuda.unload(self.module);
+    }
+}
+
 impl Cuda {
     pub fn open() -> Result<Self> {
         let lib = unsafe { Library::new("libcuda.so.1") }.context("dlopen libcuda.so.1")?;
@@ -98,6 +158,15 @@ impl Cuda {
         }
     }
 
+    fn unload(&self, m: Module) {
+        if let Ok(f) = unsafe {
+            self.lib
+                .get::<unsafe extern "C" fn(Module) -> c_int>(b"cuModuleUnload")
+        } {
+            unsafe { f(m) };
+        }
+    }
+
     fn h2d<T>(&self, dst: DevPtr, src: &[T]) -> Result<()> {
         let f = sym!(
             self.lib,
@@ -124,91 +193,65 @@ impl Cuda {
     /// exactly 5i (all values stay below 2^24, so f32 is exact).
     pub fn saxpy(&self, n: u32) -> Result<bool> {
         self.bind()?;
-        let load = sym!(
-            self.lib,
-            b"cuModuleLoadData",
-            unsafe extern "C" fn(*mut Module, *const c_void) -> c_int
-        );
-        let mut module: Module = std::ptr::null_mut();
-        check("cuModuleLoadData", unsafe {
-            load(&mut module, PTX.as_ptr().cast())
-        })?;
-        let get_fn = sym!(
-            self.lib,
-            b"cuModuleGetFunction",
-            unsafe extern "C" fn(*mut Function, Module, *const c_char) -> c_int
-        );
-        let mut func: Function = std::ptr::null_mut();
+        let module = ModuleGuard::load(self, PTX)?;
         let name = CString::new("saxpy")?;
-        check("cuModuleGetFunction", unsafe {
-            get_fn(&mut func, module, name.as_ptr())
-        })?;
+        let func = module.function(&name)?;
 
         let x: Vec<f32> = (0..n).map(|i| i as f32).collect();
         let mut y: Vec<f32> = (0..n).map(|i| 2.0 * i as f32).collect();
         let bytes = n as usize * 4;
-        let (dx, dy) = (self.alloc(bytes)?, self.alloc(bytes)?);
-        let run = (|| -> Result<()> {
-            self.h2d(dx, &x)?;
-            self.h2d(dy, &y)?;
-            let mut a: f32 = 3.0;
-            let (mut px, mut py, mut pn) = (dx, dy, n);
-            let mut params: [*mut c_void; 4] = [
-                (&mut a as *mut f32).cast(),
-                (&mut px as *mut DevPtr).cast(),
-                (&mut py as *mut DevPtr).cast(),
-                (&mut pn as *mut u32).cast(),
-            ];
-            let launch = sym!(
-                self.lib,
-                b"cuLaunchKernel",
-                unsafe extern "C" fn(
-                    Function,
-                    c_uint,
-                    c_uint,
-                    c_uint,
-                    c_uint,
-                    c_uint,
-                    c_uint,
-                    c_uint,
-                    *mut c_void,
-                    *mut *mut c_void,
-                    *mut *mut c_void,
-                ) -> c_int
-            );
-            let block = 256u32;
-            check("cuLaunchKernel", unsafe {
-                launch(
-                    func,
-                    n.div_ceil(block),
-                    1,
-                    1,
-                    block,
-                    1,
-                    1,
-                    0,
-                    std::ptr::null_mut(),
-                    params.as_mut_ptr(),
-                    std::ptr::null_mut(),
-                )
-            })?;
-            let sync = sym!(
-                self.lib,
-                b"cuCtxSynchronize",
-                unsafe extern "C" fn() -> c_int
-            );
-            check("cuCtxSynchronize", unsafe { sync() })?;
-            self.d2h(&mut y, dy)
-        })();
-        self.free(dx);
-        self.free(dy);
-        let unload = sym!(
+        let dx = DevAlloc::new(self, bytes)?;
+        let dy = DevAlloc::new(self, bytes)?;
+        self.h2d(dx.ptr, &x)?;
+        self.h2d(dy.ptr, &y)?;
+        let mut a: f32 = 3.0;
+        let (mut px, mut py, mut pn) = (dx.ptr, dy.ptr, n);
+        let mut params: [*mut c_void; 4] = [
+            (&mut a as *mut f32).cast(),
+            (&mut px as *mut DevPtr).cast(),
+            (&mut py as *mut DevPtr).cast(),
+            (&mut pn as *mut u32).cast(),
+        ];
+        let launch = sym!(
             self.lib,
-            b"cuModuleUnload",
-            unsafe extern "C" fn(Module) -> c_int
+            b"cuLaunchKernel",
+            unsafe extern "C" fn(
+                Function,
+                c_uint,
+                c_uint,
+                c_uint,
+                c_uint,
+                c_uint,
+                c_uint,
+                c_uint,
+                *mut c_void,
+                *mut *mut c_void,
+                *mut *mut c_void,
+            ) -> c_int
         );
-        unsafe { unload(module) };
-        run?;
+        let block = 256u32;
+        check("cuLaunchKernel", unsafe {
+            launch(
+                func,
+                n.div_ceil(block),
+                1,
+                1,
+                block,
+                1,
+                1,
+                0,
+                std::ptr::null_mut(),
+                params.as_mut_ptr(),
+                std::ptr::null_mut(),
+            )
+        })?;
+        let sync = sym!(
+            self.lib,
+            b"cuCtxSynchronize",
+            unsafe extern "C" fn() -> c_int
+        );
+        check("cuCtxSynchronize", unsafe { sync() })?;
+        self.d2h(&mut y, dy.ptr)?;
         Ok(y.iter().enumerate().all(|(i, v)| *v == 5.0 * i as f32))
     }
 
@@ -227,17 +270,13 @@ impl Cuda {
             })
             .collect();
         let mut back = vec![0u64; src.len()];
-        let d = self.alloc(bytes)?;
-        let run = (|| -> Result<(f64, f64)> {
-            let t = Instant::now();
-            self.h2d(d, &src)?;
-            let up = mib as f64 / t.elapsed().as_secs_f64();
-            let t = Instant::now();
-            self.d2h(&mut back, d)?;
-            Ok((up, mib as f64 / t.elapsed().as_secs_f64()))
-        })();
-        self.free(d);
-        let (up, down) = run?;
+        let d = DevAlloc::new(self, bytes)?;
+        let t = Instant::now();
+        self.h2d(d.ptr, &src)?;
+        let up = mib as f64 / t.elapsed().as_secs_f64();
+        let t = Instant::now();
+        self.d2h(&mut back, d.ptr)?;
+        let down = mib as f64 / t.elapsed().as_secs_f64();
         Ok((up, down, src == back))
     }
 }
