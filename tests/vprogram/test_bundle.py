@@ -56,9 +56,10 @@ def gpu_image_dir(image_dir: Path) -> Path:
     """The nix gpuImage output: same layout as image_dir, plus the gpu.json
     facts sidecar the gpu flavor reads."""
     (image_dir / "gpu.json").write_text(
-        '{"vendor":"nvidia","arch":"blackwell","driver_version":"595.71.05",'
-        '"accepted_models":["NVIDIA RTX PRO 6000 Blackwell Server Edition"],'
-        '"library_path":"/opt/nvidia/lib"}'
+        '{"vendor":"nvidia","driver_version":"595.71.05",'
+        '"library_path":"/opt/nvidia/lib",'
+        '"archs":{"blackwell":{"accepted_models":'
+        '["NVIDIA RTX PRO 6000 Blackwell Server Edition"]}}}'
     )
     return image_dir
 

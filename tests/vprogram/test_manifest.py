@@ -173,17 +173,24 @@ def test_gpu_block_is_optional_and_strict() -> None:
     with_gpu = deepcopy(REFERENCE_MANIFEST)
     with_gpu["gpu"] = {
         "vendor": "nvidia",
-        "arch": "blackwell",
         "driver_version": "595.71.05",
-        "accepted_models": ["NVIDIA RTX PRO 6000 Blackwell Server Edition"],
         "library_path": "/opt/nvidia/lib",
+        "archs": {
+            "hopper": {"accepted_models": ["GH100 A01 GSP BROM"]},
+            "blackwell": {"accepted_models": ["NVIDIA RTX PRO 6000 Blackwell Server Edition"]},
+        },
     }
-    assert RuntimeManifest.model_validate(with_gpu).gpu.driver_version == "595.71.05"
+    parsed = RuntimeManifest.model_validate(with_gpu).gpu
+    assert parsed.driver_version == "595.71.05"
+    assert parsed.archs["hopper"].accepted_models == ["GH100 A01 GSP BROM"]
     for bad in (
         {"vendor": "amd"},
         {"driver_version": "r595"},
-        {"accepted_models": []},
         {"library_path": "opt/nvidia"},
+        {"archs": {}},
+        {"archs": {"hopper": {"accepted_models": []}}},
+        {"archs": {"ampere": {"accepted_models": ["x"]}}},
+        {"arch": "hopper"},  # the flat shape is gone; extra keys are rejected
         {"extra": 1},
     ):
         broken = deepcopy(with_gpu)
