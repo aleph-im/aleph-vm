@@ -231,20 +231,22 @@ class SourceInfo(StrictModel):
     build: str = Field(min_length=1)
 
 
+class GpuArchSpec(StrictModel):
+    accepted_models: list[str] = Field(
+        min_length=1, description="hwmodel claim strings NVIDIA attestation reports carry"
+    )
+
+
 class GpuRuntimeSpec(StrictModel):
-    """What a client pins about the confidential GPU this runtime drives.
-    Properties of the measured runtime (the driver is inside the image), so
-    they live here, pinned through runtime.ref, and never in the message."""
+    """What a client pins about the confidential GPUs this runtime drives.
+    One image serves every listed architecture (same driver, same verifier)."""
 
     vendor: Literal["nvidia"]
-    arch: Literal["blackwell", "hopper"]
     driver_version: str = Field(pattern=DRIVER_VERSION_PATTERN)
-    accepted_models: list[str] = Field(
-        min_length=1, description="Hardware model strings NVIDIA device certificates carry"
-    )
     library_path: str = Field(
         pattern=r"^/[a-z0-9/_-]+$", description="Where the driver userland is mounted in the workload chroot"
     )
+    archs: dict[Literal["blackwell", "hopper"], GpuArchSpec] = Field(min_length=1)
 
 
 class RuntimeManifest(StrictModel):

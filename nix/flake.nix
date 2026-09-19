@@ -480,10 +480,10 @@
 
       # Convenience: all measured-image artifacts in one directory, for the
       # confidential-GPU flavor. Mirrors `image` above, plus gpu.json: the
-      # runtime's GPU contract (vendor, architecture, driver version, the
-      # models the node will accept, and the in-guest library path the
-      # workload gets its driver userland at), which the bundle builder
-      # copies into the published manifest.
+      # runtime's GPU contract (vendor, driver version, the in-guest library
+      # path the workload gets its driver userland at, and per-architecture
+      # models the node will accept), which the bundle builder copies into
+      # the published manifest.
       gpuImage = pkgs.runCommand "aleph-gpu-image" {} ''
         mkdir -p $out
         ln -s ${gpuKernel}/bzImage $out/bzImage
@@ -495,7 +495,7 @@
         cp ${gpuVerity}/roothash $out/rootfs.ext4.roothash
         echo "${sourceRev}" > $out/source-rev
         cat > $out/gpu.json <<EOF
-{"vendor":"nvidia","arch":"blackwell","driver_version":"${nvidiaDriver.version}","accepted_models":["NVIDIA RTX PRO 6000 Blackwell Server Edition"],"library_path":"/opt/nvidia/lib"}
+{"vendor":"nvidia","driver_version":"${nvidiaDriver.version}","library_path":"/opt/nvidia/lib","archs":{"hopper":{"accepted_models":["GH100 A01 GSP BROM"]},"blackwell":{"accepted_models":["NVIDIA RTX PRO 6000 Blackwell Server Edition"]}}}
 EOF
       '';
 

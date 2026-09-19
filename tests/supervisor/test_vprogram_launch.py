@@ -713,10 +713,11 @@ def test_remove_vprogram_staging_is_idempotent(tmp_path, monkeypatch):
 
 GPU_BLOCK = {
     "vendor": "nvidia",
-    "arch": "blackwell",
     "driver_version": "595.71.05",
-    "accepted_models": ["NVIDIA RTX PRO 6000 Blackwell Server Edition"],
     "library_path": "/opt/nvidia/lib",
+    "archs": {
+        "blackwell": {"accepted_models": ["NVIDIA RTX PRO 6000 Blackwell Server Edition"]},
+    },
 }
 VOLUME_SLOT_TEMPLATE = (
     MANIFEST_TEMPLATE["boot"]["cmdline_template"]
@@ -804,13 +805,13 @@ async def test_gpu_vprogram_rejects_a_foreign_vendor(tmp_path, storage_files, sn
 
 
 @pytest.mark.asyncio
-async def test_gpu_vprogram_rejects_an_architecture_the_runtime_does_not_drive(tmp_path, storage_files, snp_vcpu_types):
+async def test_gpu_arch_missing_from_runtime_is_refused(tmp_path, storage_files, snp_vcpu_types):
     # The driver lives inside the measured runtime, so a hopper request
-    # against a blackwell runtime would boot a guest whose driver cannot
-    # bring the card up, let alone attest it.
-    _stage_bundle(tmp_path, storage_files, gpu=GPU_BLOCK)  # GPU_BLOCK is blackwell
+    # against a runtime that only drives blackwell would boot a guest whose
+    # driver cannot bring the card up, let alone attest it.
+    _stage_bundle(tmp_path, storage_files, gpu=GPU_BLOCK)  # GPU_BLOCK only drives blackwell
     message = _with_gpu(load_vprogram_message(), arch="hopper")
-    with pytest.raises(VmSetupError, match="asks for a hopper GPU but runtime"):
+    with pytest.raises(VmSetupError, match="does not drive hopper"):
         await build_vprogram_spec(message.item_hash, message.content)
 
 
