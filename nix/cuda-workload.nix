@@ -18,10 +18,13 @@ in pkgs.runCommand "cuda-workload.ext4" {
   mkdir -p w/sbin w/nix/store w/opt/nvidia/lib w/proc w/sys w/dev w/etc w/tmp/secrets w/volumes
   while read -r path; do cp -a "$path" w/nix/store/; done < ${closure}/store-paths
 
-  # /sbin/init is a symlink into the closure (not a copy): the binary's own
-  # store path is already present above, and the kernel resolves its ELF
-  # interpreter (also in the closure) from that same absolute path.
-  ln -s ${cuda-probe}/bin/cuda-probe w/sbin/init
+  # /sbin/init must be a regular file, not a symlink into the closure: the
+  # initrd tests it for executability from OUTSIDE the chroot (init.sh,
+  # init-gpu.sh), before /nix/store is reachable at that absolute path, so
+  # an absolute symlink fails that check even though it would resolve fine
+  # once chrooted.
+  cp ${cuda-probe}/bin/cuda-probe w/sbin/init
+  chmod +x w/sbin/init
 
   # Mount-point targets for init.sh's prepare_chroot, same rationale as
   # workload.nix: the volume is read-only under dm-verity, so these can't be
