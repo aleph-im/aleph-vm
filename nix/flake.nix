@@ -147,6 +147,10 @@
           fileset = lib.fileset.unions [ ./cuda-probe/Cargo.toml ./cuda-probe/Cargo.lock ./cuda-probe/src ./cuda-probe/kernels ];
         };
         doCheck = false;
+        # CC-mode libcuda needs OpenSSL 3 for its pkcs11 shim, but only
+        # driver libraries are injected into the workload; baking this path
+        # in makes it a runtime reference, so the workload closure ships it.
+        CUDA_PROBE_LIBCRYPTO = "${pkgs.openssl.out}/lib/libcrypto.so.3";
       };
 
       # OVMF firmware built with the AmdSev variant (kernel hashing support), so
