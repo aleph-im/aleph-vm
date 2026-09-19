@@ -21,6 +21,10 @@ implements it.
 - **BIOS settings**: IOMMU on, above-4G decoding on, resizable BAR on. All
   three are needed for `vfio-pci` to bind the card and for OVMF to place its
   BAR1 in the 64-bit MMIO window the daemon sizes for it.
+- **VFIO mapping limit**: `vfio_iommu_type1 dma_entry_limit=16777216`
+  (`/etc/modprobe.d/`). An SNP guest's memory is tracked at page granularity,
+  and the default limit of 65535 makes QEMU refuse the card with "possibly
+  running out of DMA mappings".
 - **QEMU**: 9.1 or newer. This is the existing SEV-SNP requirement, not a
   GPU-specific one: any host that can already launch a plain SNP guest meets
   it. See "Host requirements for SEV-SNP" in
