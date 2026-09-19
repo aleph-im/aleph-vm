@@ -134,6 +134,21 @@
         CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = "${muslCC}/bin/x86_64-unknown-linux-musl-cc";
       };
 
+      # cuda-probe: the confidential-GPU smoke-test workload (actix-web +
+      # libloading, dlopens libcuda.so.1 at runtime). Unlike fib-service this
+      # is NOT built for the musl target: dlopen needs a real glibc dynamic
+      # loader, so this uses craneToolchain's default host toolchain instead
+      # of the musl cross env fib-service sets up above. Not cleanCargoSource:
+      # it would drop the kernels/ directory (the .cu/.ptx source the probe
+      # loads at runtime).
+      cuda-probe = craneToolchain.buildPackage {
+        src = lib.fileset.toSource {
+          root = ./cuda-probe;
+          fileset = lib.fileset.unions [ ./cuda-probe/Cargo.toml ./cuda-probe/Cargo.lock ./cuda-probe/src ./cuda-probe/kernels ];
+        };
+        doCheck = false;
+      };
+
       # OVMF firmware built with the AmdSev variant (kernel hashing support), so
       # the SEV-SNP launch measurement covers OVMF + kernel + initrd + cmdline.
       ovmf = import ./ovmf.nix { inherit pkgs; };
@@ -249,6 +264,12 @@
       # platform image (kernel/initrd/OS chain).
       workloadImage = pkgs.callPackage ./workload.nix { inherit fib-service; };
 
+      # cuda-probe V-PROGRAM workload volume: same role as workloadImage, for
+      # the confidential-GPU smoke test instead of the plain demo. See
+      # cuda-workload.nix for why this one ships a full glibc closure rather
+      # than a single static binary.
+      cudaWorkloadImage = pkgs.callPackage ./cuda-workload.nix { inherit cuda-probe; };
+
       # dm-verity hash tree + root hash for the rootfs. The root hash is baked
       # into the kernel cmdline, binding rootfs integrity into the SEV-SNP
       # measurement.
@@ -341,6 +362,32 @@
         ln -s ${workloadImage} $out/workload.ext4
         cp ${workloadVerity}/hashtree $out/workload.ext4.verity
         cp ${workloadVerity}/roothash $out/workload.ext4.roothash
+      '';
+
+      # dm-verity hash tree + root hash for the cuda-probe workload volume.
+      # Same mechanism as `workloadVerity` above, applied to cudaWorkloadImage.
+      cudaWorkloadVerity = pkgs.runCommand "cuda-workload-verity" {
+        nativeBuildInputs = [ pkgs.cryptsetup ];
+      } ''
+        mkdir -p $out
+        veritysetup format \
+          --salt=${veritySalt} \
+          --uuid=${verityUuid} \
+          ${cudaWorkloadImage} \
+          $out/hashtree \
+          | tee /dev/stderr \
+          | grep "Root hash:" \
+          | awk '{print $NF}' \
+          | tr -d '\n' > $out/roothash
+      '';
+
+      # Convenience: the cuda-probe workload volume + its dm-verity sidecars,
+      # same staging convention as `workload` above.
+      cudaWorkload = pkgs.runCommand "aleph-vm-cuda-workload" {} ''
+        mkdir -p $out
+        ln -s ${cudaWorkloadImage} $out/workload.ext4
+        cp ${cudaWorkloadVerity}/hashtree $out/workload.ext4.verity
+        cp ${cudaWorkloadVerity}/roothash $out/workload.ext4.roothash
       '';
 
       # Parameterized SEV-SNP launch measurement builder.
@@ -447,6 +494,17 @@
         vcpus = 2;
         vcpuType = "EPYC-v4";
         workloadRoothash = builtins.readFile "${workloadVerity}/roothash";
+      };
+
+      # Convenience: the workload-form measurement for the cuda-probe
+      # workload on the GPU flavor (2 vCPUs, EPYC-v4), using
+      # cudaWorkloadVerity's root hash. Same non-goal as workloadMeasurement
+      # above: not baked into gpuImage/measurement.hex, just build coverage
+      # and a sanity check for the GPU workload cmdline template.
+      cudaWorkloadMeasurement = gpuMeasurementFor {
+        vcpus = 2;
+        vcpuType = "EPYC-v4";
+        workloadRoothash = builtins.readFile "${cudaWorkloadVerity}/roothash";
       };
 
       # Convenience: all measured-image artifacts in one directory.
@@ -582,8 +640,13 @@ EOF
           workloadImage
           workloadVerity
           workload
+          cuda-probe
+          cudaWorkloadImage
+          cudaWorkloadVerity
+          cudaWorkload
           measurement
           workloadMeasurement
+          cudaWorkloadMeasurement
           composeMeasurement
           gpuMeasurement
           image
