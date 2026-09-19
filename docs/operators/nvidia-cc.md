@@ -12,11 +12,12 @@ implements it.
 
 ## 1. Requirements
 
-- **Card**: NVIDIA RTX PRO 6000 Blackwell **Server Edition** (SPT CC), or
-  NVIDIA Hopper H100/H200, PCIe or NVL (SPT CC, one card per VM). Verified
-  end to end on an H200 NVL (`10de:233b`). The Workstation and Max-Q
-  editions of the RTX PRO 6000 have no CC mode; only the Server Edition
-  does.
+- **Card**: NVIDIA RTX PRO 6000 Blackwell **Server Edition**, or NVIDIA
+  Hopper H100/H200, PCIe or NVL. Verified end to end on an H200 NVL
+  (`10de:233b`). The Workstation and Max-Q editions of the RTX PRO 6000
+  have no CC mode; only the Server Edition does. Both run in NVIDIA's
+  single-GPU passthrough CC mode (SPT in NVIDIA's documentation): one
+  whole card per VM, no MIG, no vGPU, no multi-GPU.
 - **VBIOS**: the card's VBIOS must be a version NVIDIA has published a
   reference manifest (RIM) for. The guest's verifier fetches the RIM for
   the card's exact VBIOS version at boot; there is no fallback if none is
