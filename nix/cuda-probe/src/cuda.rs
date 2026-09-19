@@ -13,6 +13,9 @@ type DevPtr = u64;
 
 pub struct Cuda {
     lib: Library,
+    // Keeps the preloaded libcrypto resident; declared after `lib` so it
+    // drops after libcuda.
+    _libcrypto: Option<libloading::os::unix::Library>,
     ctx: Ctx,
     pub device: String,
 }
@@ -97,6 +100,22 @@ impl Drop for ModuleGuard<'_> {
 
 impl Cuda {
     pub fn open() -> Result<Self> {
+        // In confidential-computing mode libcuda dlopens a pkcs11 OpenSSL
+        // shim needing libcrypto.so.3, but only driver libraries are
+        // injected into this volume; preload our own into the global scope
+        // so the shim's NEEDED entry resolves without a search path.
+        let _libcrypto = match option_env!("CUDA_PROBE_LIBCRYPTO") {
+            Some(path) => Some(
+                unsafe {
+                    libloading::os::unix::Library::open(
+                        Some(path),
+                        libloading::os::unix::RTLD_NOW | libloading::os::unix::RTLD_GLOBAL,
+                    )
+                }
+                .context("dlopen libcrypto")?,
+            ),
+            None => None,
+        };
         let lib = unsafe { Library::new("libcuda.so.1") }.context("dlopen libcuda.so.1")?;
         let init = sym!(lib, b"cuInit", unsafe extern "C" fn(c_uint) -> c_int);
         check("cuInit", unsafe { init(0) })?;
@@ -126,7 +145,12 @@ impl Cuda {
             unsafe extern "C" fn(*mut Ctx, c_uint, Dev) -> c_int
         );
         check("cuCtxCreate", unsafe { create(&mut ctx, 0, dev) })?;
-        Ok(Self { lib, ctx, device })
+        Ok(Self {
+            lib,
+            _libcrypto,
+            ctx,
+            device,
+        })
     }
 
     fn bind(&self) -> Result<()> {
