@@ -12,9 +12,26 @@ implements it.
 
 ## 1. Requirements
 
-- **Card**: NVIDIA RTX PRO 6000 Blackwell **Server Edition**. The
-  Workstation and Max-Q editions of the same card have no CC mode; only the
-  Server Edition does.
+- **Card**: NVIDIA RTX PRO 6000 Blackwell **Server Edition** (SPT CC), or
+  NVIDIA Hopper H100/H200, PCIe or NVL (SPT CC, one card per VM). Verified
+  end to end on an H200 NVL (`10de:233b`). The Workstation and Max-Q
+  editions of the RTX PRO 6000 have no CC mode; only the Server Edition
+  does.
+- **VBIOS**: the card's VBIOS must be a version NVIDIA has published a
+  reference manifest (RIM) for. The guest's verifier fetches the RIM for
+  the card's exact VBIOS version at boot; there is no fallback if none is
+  published. Check before deploying a card:
+
+  ```bash
+  curl -s https://rim.attestation.nvidia.com/v1/rim/ids | tr , '\n' | grep <board id>
+  ```
+
+  `<board id>` is the id as NVIDIA's RIM catalog spells it, e.g.
+  `NV_GPU_VBIOS_1010_0230_894_9600D9000E` (board id, then the VBIOS version
+  with the dots removed). A card whose VBIOS has no published RIM fails
+  attestation with `RIM Not Found` in the guest console, and the guest
+  powers off; update the VBIOS with the server vendor's firmware package to
+  fix it.
 - **Host CPU**: AMD EPYC Genoa or newer, with SEV-SNP enabled in the BIOS.
   A confidential GPU only ever attaches to an SEV-SNP guest; there is no
   confidential-GPU path for SEV or SEV-ES.
@@ -46,6 +63,33 @@ passthrough setup for this fleet (module blacklist for `nouveau`/`nvidia`,
 `vfio-pci.ids=` or a udev/driver-override binding at boot). A card that the
 host driver has grabbed is not vfio-bound and never appears in the
 supervisor's GPU inventory at all, confidential or not.
+
+If the NVIDIA host driver package is ever installed on this host, even
+temporarily, a `softdep nvidia pre: vfio-pci` ordering in
+`/etc/modprobe.d/` is not enough: on the next reboot the host driver still
+grabs the card before `vfio-pci` gets a turn. What works is blacklisting
+the driver outright:
+
+```
+blacklist nvidia
+blacklist nvidia_drm
+blacklist nvidia_modeset
+blacklist nvidia_uvm
+blacklist nouveau
+install nvidia /bin/false
+options vfio-pci ids=<vendor:device>
+```
+
+in `/etc/modprobe.d/`. Simplest is not installing the NVIDIA host driver
+package on this host at all.
+
+An unbound or vfio-bound card with no VM attached to it runtime-suspends
+into D3hot when idle; a manual BAR0 read of a suspended card comes back all
+ones, indistinguishable at a glance from a probe failure. This needs no
+operator action: the daemon's CC-mode probe pins the card awake for the
+duration of the read before touching BAR0, and releases it afterward, so a
+correctly bound and CC-mode card still probes cleanly regardless of how
+long it sat idle.
 
 ## 3. Enable CC mode once
 
@@ -153,6 +197,16 @@ If `nvidia_cc` is absent from `/about/capability` while
   Edition lists it as not yet validated. The guest's `swiotlb` reservation
   is also sized per VM, not per card. Until a multi-card host has run the
   hardware pass, expect a two-card V-PROGRAM to be an experiment.
+
+Quick reference for lower-level signatures, seen in the QEMU log or the
+guest console directly rather than in an API response:
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| QEMU log: `vfio ... possibly running out of DMA mappings ... Maximum possible DMA mappings: 65535` | Default `vfio_iommu_type1` `dma_entry_limit` is too small for an SNP guest's page-granular memory tracking | Set `dma_entry_limit=16777216` (section 1's VFIO mapping limit) |
+| Guest console: `libspdm_check_crypto_backend: Error - libspdm expects LKCA but found stubs!` followed by `RmInitAdapter failed` | The GPU runtime image predates the kernel-crypto fix | Use a current GPU runtime |
+| Guest console: `osInitNvMapping: *** Cannot attach gpu` on every client after the first one attached successfully | In CC mode the adapter initializes once per GPU reset; persistence mode was not enabled before the first client | Use a current GPU runtime (enables persistence mode before attestation) |
+| Guest console: `RIM Not Found`, then `init: FATAL: gpu attestation failed: ...` | The card's VBIOS has no published reference manifest | Update the VBIOS (see section 1) |
 
 ## 6. What the CRN never does
 
