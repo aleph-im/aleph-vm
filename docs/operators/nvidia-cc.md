@@ -24,7 +24,22 @@ implements it.
   attestation report, the first three fields of the RIM board id below)
   against the table the runtime publishes in its `gpu` block. A card whose
   model that table does not list yet cannot be requested by id; it needs a
-  runtime update, not a host change.
+  runtime update, not a host change. What the current runtime ships
+  (`archs.<arch>.boards` in `nix/flake.nix`):
+
+  | PCI id | Product | project / project_sku / chip_sku |
+  | --- | --- | --- |
+  | `10de:2321` | H100 NVL | `1010` / `0210` / `886` |
+  | `10de:2330` | H100 SXM5 80GB | `G520` / `0200` / `885` |
+  | `10de:2331` | H100 PCIe | `1010` / `0200` / `882` |
+  | `10de:2335` | H200 SXM5 141GB | `G520` / `0280` / `895` |
+  | `10de:233b` | H200 NVL | `1010` / `0230` / `894` |
+  | `10de:2bb5` | RTX PRO 6000 Blackwell Server Edition | `G153` / `0210` / `895` or `G153` / `0212` / `895` |
+
+  Only `10de:233b` has been read off real silicon so far; the other rows
+  come from NVIDIA's RIM board ids. Strings are compared byte for byte, so a
+  card whose report disagrees with its row powers the VM off rather than
+  being accepted as another model.
 - **VBIOS**: the card's VBIOS must be a version NVIDIA has published a
   reference manifest (RIM) for. The guest's verifier fetches the RIM for
   the card's exact VBIOS version at boot; there is no fallback if none is
@@ -182,17 +197,21 @@ If `nvidia_cc` is absent from `/about/capability` while
 - **A V-PROGRAM powers off with `init: FATAL: gpu attestation failed: GPU
   requirement not met`, preceded by a `gpu-policy: ...` line.** The cards
   the CRN attached are not the ones the message asked for: the
-  `gpu-policy` line names the rule that failed (wrong architecture, fewer
-  cards than `gpu_count`, or a board whose signed project/SKU triple is not
-  listed under any requested PCI id in the runtime's `gpu.json`). Compare
-  the requested `gpu_arch`/`gpu_count`/`gpu_models` tokens in the guest's
-  cmdline against the cards actually attached. A card whose model the
-  runtime's board table does not list yet is a runtime update, not an
-  operator fix.
+  `gpu-policy` line names the rule that failed: wrong architecture, a card
+  count (on the bus, in the evidence or in the claims) that is not
+  `gpu_count`, an evidence entry that does not answer the boot nonce, or a
+  board whose signed project/SKU triple is not listed under any requested
+  PCI id in the runtime's `gpu.json`. Compare the requested
+  `gpu_arch`/`gpu_count`/`gpu_models` tokens in the guest's cmdline against
+  the cards actually attached; attaching MORE cards than the message asked
+  for fails here too, by design. A card whose model the runtime's board
+  table does not list yet is a runtime update, not an operator fix.
 - **A V-PROGRAM powers off within a minute of boot, with
-  `init: FATAL: gpu attestation failed: ...` in its console log.** The
-  guest's `nvattest` calls (`nix/init-gpu.sh`) could not complete
-  RIM/OCSP verification. Two common causes: the guest could not reach
+  `init: FATAL: gpu attestation failed: ...` in its console log.** One of the
+  guest's `nvattest` steps (`nix/init-gpu.sh` collects the evidence, then
+  verifies that same file) failed; the reason string names which, and the
+  console carries nvattest's own log above it. Two common causes: the guest
+  could not reach
   `rim.attestation.nvidia.com` or `ocsp.ndis.nvidia.com` over the host's
   network (check egress from the VM's network namespace/bridge), or the
   driver RIM for the shipped driver version is not yet published on

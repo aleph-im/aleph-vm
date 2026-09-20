@@ -236,13 +236,9 @@ CMDLINE_TEMPLATE_EXEC_V1 = (
 # buffer for the passed-through confidential GPU. Byte-identity with what
 # the daemon emits matters the same way CMDLINE_TEMPLATE_EXEC_V1's does.
 #
-# The three trailing slots carry the GPU requirement into the measurement:
-# the architecture, the card count and, when the message names models, the
-# sorted PCI ids. The guest enforces them against the evidence its verifier
-# checked and powers off otherwise, so a client that pinned the measurement
-# knows which GPUs answered. gpu_models follows the verified_volumes
-# convention: the whole ` gpu_models=...` token is dropped when the message
-# names no model.
+# The three trailing slots carry the GPU requirement the guest enforces;
+# gpu_models is dropped whole when the message names no model, like
+# verified_volumes above it.
 CMDLINE_TEMPLATE_GPU_V1 = (
     "console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash}"
     " workload_roothash={workload_roothash}"

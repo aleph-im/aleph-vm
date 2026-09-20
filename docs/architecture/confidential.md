@@ -381,23 +381,38 @@ with no bounce-buffer exhaustion.
 and chroot preparation. An empty PCI bus is fatal there: this image only
 exists to run GPU workloads, so "no NVIDIA device present" powers the VM
 off instead of booting on. Otherwise it loads the open
-`nvidia.ko`/`nvidia-uvm.ko` modules, enables persistence mode (CC mode
-allows one RM init per GPU reset), collects the SPDM evidence once with
-`nvattest collect-evidence --device gpu --nonce <boot nonce>` (a 32-byte
-nonce from `/dev/urandom`) into `/run/aleph/gpu-evidence.json`, verifies
-exactly that file with `nvattest attest --device gpu --verifier local
---gpu-evidence-source file --gpu-evidence-file ... --nonce <boot nonce>`
-against `rim.attestation.nvidia.com` and `ocsp.ndis.nvidia.com`, checks
-`result_code == 0` and every claim's `measres` is `success`, enforces the
-measured GPU requirement (below), sets the GPU ready state with
-`nvidia-smi conf-compute -srs 1` and reads it back with `-grs` before
-continuing, and writes the claims to `/run/aleph/gpu-boot-claims.json`.
-The nonce goes to both calls: nvattest requires every entry in the
-evidence file to answer the `--nonce` it was given, and its verifier
-compares that entry nonce against the one inside the signed SPDM report,
-so the file source is still bound to this boot. Every one of those steps
-fails to `poweroff -f` on any error: a GPU runtime that could not prove its
-GPU never presents an attested endpoint. At request time, the attest-agent
+`nvidia.ko`/`nvidia-uvm.ko` modules, creates one `/dev/nvidiaN` node per
+card found on the bus, and enables persistence mode (CC mode allows one RM
+init per GPU reset). Then, once, with a 32-byte boot nonce from
+`/dev/urandom`:
+
+1. `nvattest collect-evidence --device gpu --nonce <boot nonce>` writes its
+   document to `/run/aleph/gpu-evidence-doc.json`; its top-level
+   `result_code` must be 0.
+2. init cuts the `evidences` array out of that document into
+   `/run/aleph/gpu-evidence.json`. The array file exists because the two
+   readers below disagree about shape: `collect-evidence` prints a wrapper
+   object, while `attest`'s file source parses a bare array. Both then read
+   the same bytes, which is the point: the board identity enforced in step 4
+   comes from exactly what step 3 verified.
+3. `nvattest attest --device gpu --verifier local --gpu-evidence-source file
+   --gpu-evidence-file /run/aleph/gpu-evidence.json --nonce <boot nonce>`
+   against `rim.attestation.nvidia.com` and `ocsp.ndis.nvidia.com`. Its
+   `result_code` must be 0 and every claim's `measres` must be `success`;
+   the claims land in `/run/aleph/gpu-boot-claims.json`. Attesting from a
+   file touches no GPU, so the one-RM-init rule still holds. The nonce is
+   not optional there: nvattest requires every entry in the file to answer
+   the `--nonce` it was given (and generates a random one when the flag is
+   absent, which nothing stored can answer), and its verifier compares that
+   entry nonce against the one inside the signed SPDM report, so the file
+   source stays bound to this boot.
+4. the measured GPU requirement (below).
+5. the GPU ready state: `nvidia-smi conf-compute -srs 1`, read back with
+   `-grs`.
+
+Every one of those steps fails to `poweroff -f` on any error: a GPU runtime
+that could not prove its GPU never presents an attested endpoint. At request
+time, the attest-agent
 (`rust/crates/aleph-attest-agent/src/gpu.rs`, `proxy.rs`) serves
 `GET /.well-known/attestation/gpu?nonce=<hex>` by deriving a fresh SPDM
 nonce, `SHA-256(DOMAIN_GPU_NONCE || served_public_key || client_nonce)`
@@ -416,21 +431,25 @@ narrows the models, `gpu_models=<vvvv:dddd>[,...]` (lowercase, sorted,
 de-duplicated; the whole token is dropped otherwise, like
 `verified_volumes`). Init hands them to
 `aleph-attest-agent gpu-policy --cmdline /proc/cmdline --gpu-json
-/mnt/root/etc/aleph/gpu.json --claims ... --evidence ... --nonce ...`
+/mnt/root/etc/aleph/gpu.json --claims /run/aleph/gpu-boot-claims.json
+--evidence /run/aleph/gpu-evidence.json --nonce <boot nonce>
+--observed-count <cards on the bus>`
 (`rust/crates/aleph-attest-agent/src/gpu_policy.rs`) after the `measres`
 checks and before the ready state, and any non-zero exit powers the VM off.
 The policy file is the same object the manifest publishes as its `gpu`
 block, shipped in the verity rootfs so the cmdline's root hash pins it. The
 check requires: the architecture is a known one and every evidence entry
 and claim agrees with it (`hwmodel` in that architecture's
-`accepted_models`, `x-nvidia-gpu-arch-check` true), as many evidence
-entries and claims as `gpu_count`, and, with models named, that each card's
-`(project, project_sku, chip_sku)` matches a board the policy lists under
-one of the requested PCI ids. Those three strings are read out of the
-signed SPDM opaque data of the evidence nvattest just verified, never from
-PCI config space, sysfs, `nvidia-smi` or the claims, which is what makes a
-PCI id in the message a statement about the silicon rather than about a
-value the host could spoof.
+`accepted_models`, `x-nvidia-gpu-arch-check` true); as many evidence
+entries and claims as `gpu_count`; every evidence entry answering the boot
+nonce; `--observed-count` equal to `gpu_count`, so the `/dev/nvidiaN` nodes
+init made from the PCI scan can never outnumber the verified cards; and,
+with models named, each card's `(project, project_sku, chip_sku)` matching a
+board the policy lists under one of the requested PCI ids. Those three
+strings are read out of the signed SPDM opaque data of the evidence nvattest
+just verified, never from PCI config space, sysfs, `nvidia-smi` or the
+claims, which is what makes a PCI id in the message a statement about the
+silicon rather than about a value the host could spoof.
 
 Adding a board row (`archs.<arch>.boards` in `nix/flake.nix`) is therefore
 a measured, safety-critical edit: the triple must come from real evidence
