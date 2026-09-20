@@ -862,6 +862,22 @@ async def test_gpu_models_are_staged_sorted_and_deduplicated(tmp_path, storage_f
     spec, _ = await build_vprogram_spec(message.item_hash, message.content)
     assert _gpu_sidecar(spec).read_text() == "gpu_arch=blackwell gpu_count=1 gpu_models=10de:2b85,10de:2bb5\n"
 
+    # The schema rejects a repeated id, so only the unvalidated construction
+    # routes can carry one; the token must still name each id once.
+    content = message.content.model_copy(
+        update={
+            "gpu": ConfidentialGpuRequirement.model_construct(
+                vendor="nvidia",
+                arch="blackwell",
+                count=1,
+                models=["10de:2bb5", "10de:2b85", "10de:2bb5"],
+                mode="cc",
+            )
+        }
+    )
+    spec, _ = await build_vprogram_spec(message.item_hash, content)
+    assert _gpu_sidecar(spec).read_text() == "gpu_arch=blackwell gpu_count=1 gpu_models=10de:2b85,10de:2bb5\n"
+
 
 @pytest.mark.asyncio
 async def test_gpu_vprogram_without_requirement_slots_is_refused(tmp_path, storage_files, snp_vcpu_types):
@@ -893,10 +909,20 @@ async def test_gpu_model_without_a_board_row_is_refused(tmp_path, storage_files,
 
 
 @pytest.mark.asyncio
-async def test_gpu_runtime_refuses_a_gpu_less_vprogram(tmp_path, storage_files, snp_vcpu_types):
+@pytest.mark.parametrize(
+    "template",
+    [
+        GPU_SLOT_TEMPLATE,
+        # Any single requirement slot is enough, as it is for the client: a
+        # runtime that measures part of a requirement still measures one.
+        VOLUME_SLOT_TEMPLATE + " gpu_count={gpu_count}",
+        VOLUME_SLOT_TEMPLATE + " gpu_models={gpu_models}",
+    ],
+)
+async def test_gpu_runtime_refuses_a_gpu_less_vprogram(tmp_path, storage_files, snp_vcpu_types, template):
     """Mirror image: a GPU runtime measures a GPU requirement the message
     does not carry, so its cmdline could never be reproduced."""
-    _stage_bundle(tmp_path, storage_files, gpu=GPU_BLOCK, **{"boot.cmdline_template": GPU_SLOT_TEMPLATE})
+    _stage_bundle(tmp_path, storage_files, gpu=GPU_BLOCK, **{"boot.cmdline_template": template})
     message = load_vprogram_message()
     with pytest.raises(VmSetupError, match="is a GPU runtime"):
         await build_vprogram_spec(message.item_hash, message.content)

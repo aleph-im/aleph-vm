@@ -82,6 +82,10 @@ CMDLINE_EXTRA_TOKEN = re.compile(r"(?<!\S)swiotlb=\d{1,9}(?!\S)")
 # GPU architectures the measured gpu_arch= token may name.
 GPU_ARCHS = frozenset({"hopper", "blackwell"})
 
+# The cmdline slots that make a runtime a GPU runtime: carrying any one of
+# them means its measured cmdline states a GPU requirement.
+GPU_CMDLINE_SLOTS = ("{gpu_arch}", "{gpu_count}", "{gpu_models}")
+
 
 def render_gpu_requirement(arch: str, count: int, models: list[str] | None) -> str:
     """The canonical measured GPU requirement tokens for a message's gpu block.
@@ -278,12 +282,13 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
                     f"{content.runtime.ref} lists no {gpu.arch} board under that id"
                 )
                 raise VmSetupError(msg)
-    elif "{gpu_arch}" in manifest.boot.cmdline_template:
+    elif any(slot in manifest.boot.cmdline_template for slot in GPU_CMDLINE_SLOTS):
         # Mirror image of the check above: a GPU runtime measures a GPU
-        # requirement, so it has nothing to run a GPU-less workload with.
+        # requirement, so it has nothing to run a GPU-less workload with. Any
+        # one of the slots makes it a GPU runtime, as it does for the client.
         msg = (
             f"V-PROGRAM {vm_hash} declares no GPU but runtime {content.runtime.ref} is a GPU runtime "
-            "(its cmdline template has a {gpu_arch} slot)"
+            "(its cmdline template has a GPU requirement slot)"
         )
         raise VmSetupError(msg)
 
@@ -400,9 +405,7 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
         extra_sidecar.unlink(missing_ok=True)
 
     # The measured GPU requirement closes the cmdline, the template's
-    # position. Same sidecar discipline as the volumes above: no GPU means no
-    # file, so neither a stale sidecar from a previous staging nor one shipped
-    # inside a mispackaged bundle can splice tokens the CLI never measured.
+    # position. No GPU means no file, same discipline as the volumes above.
     gpu_sidecar = rootfs_path.parent / f"{rootfs_path.name}.gpu_requirement"
     if gpu is not None:
         try:

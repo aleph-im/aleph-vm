@@ -2492,12 +2492,8 @@ fn snp_config_slice_with(
         }
         None => kernel_cmdline,
     };
-    // The measured GPU requirement: the launcher stages a
-    // {rootfs}.gpu_requirement sidecar holding the canonical tokens rendered
-    // from the message's gpu block, and they close the cmdline, matching the
-    // GPU runtime manifest's template order. Spliced verbatim, so only the
-    // canonical form passes; an absent sidecar leaves the cmdline
-    // byte-identical to a GPU-less V-PROGRAM.
+    // The measured GPU requirement closes the cmdline, the GPU manifest
+    // template's order. Absent sidecar, cmdline byte-identical to before.
     let gpu_requirement_path = format!("{rootfs_path}.gpu_requirement");
     let kernel_cmdline = match read_optional_sidecar(&gpu_requirement_path)? {
         Some(contents) => {
