@@ -18,6 +18,13 @@ implements it.
   have no CC mode; only the Server Edition does. Both run in NVIDIA's
   single-GPU passthrough CC mode (SPT in NVIDIA's documentation): one
   whole card per VM, no MIG, no vGPU, no multi-GPU.
+
+  **What is actually validated on hardware**: Hopper on the H200 NVL
+  (`10de:233b`) with `gpu_count=1`, end to end. Blackwell and multi-GPU
+  requirements (`gpu_count` above 1) are accepted by the schema and the
+  cmdline token format, but neither has been exercised on real cards yet;
+  the other rows in the board table below come from NVIDIA's published part
+  numbers, not from evidence read off silicon.
 - **Model in the runtime's board table**: a V-PROGRAM may narrow its
   request to exact PCI ids, and the guest then matches each card's signed
   board identity (the `project`/`project_sku`/`chip_sku` triple in its
