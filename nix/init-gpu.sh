@@ -296,6 +296,7 @@ if [ "$gpu_total" -gt 0 ]; then
     # the claims cut below: "evidences" sorts first, so its value runs from the
     # `    "evidences": [` line to the next line at that same four-space indent
     # starting with `]`, and nothing nested can sit there.
+    # shellcheck disable=SC2016  # $ is sed's last-line address, not a shell variable
     (umask 077; /bin/busybox sed -n '/^    "evidences": \[$/,/^    \]/p' "$gpu_evidence_doc" \
         | /bin/busybox sed -e '1s/^    "evidences": //' -e '$s/^    \].*/]/' > "$gpu_evidence")
     [ -s "$gpu_evidence" ] || gpu_fatal "could not extract the evidence array"

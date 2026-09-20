@@ -219,6 +219,6 @@ jobs:
           sudo apt-get install -y --no-install-recommends qemu-system-x86
           qemu-system-x86_64 --version | head -1
 
-      - name: Boot the GPU image under plain QEMU and check it refuses a GPU-less host
+      - name: Boot the GPU image without a GPU and check it refuses
         if: steps.gate.outputs.run == 'true'
         run: ./nix/boot-smoke.sh --gpu
