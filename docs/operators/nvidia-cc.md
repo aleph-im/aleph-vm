@@ -18,6 +18,13 @@ implements it.
   have no CC mode; only the Server Edition does. Both run in NVIDIA's
   single-GPU passthrough CC mode (SPT in NVIDIA's documentation): one
   whole card per VM, no MIG, no vGPU, no multi-GPU.
+- **Model in the runtime's board table**: a V-PROGRAM may narrow its
+  request to exact PCI ids, and the guest then matches each card's signed
+  board identity (the `project`/`project_sku`/`chip_sku` triple in its
+  attestation report, the first three fields of the RIM board id below)
+  against the table the runtime publishes in its `gpu` block. A card whose
+  model that table does not list yet cannot be requested by id; it needs a
+  runtime update, not a host change.
 - **VBIOS**: the card's VBIOS must be a version NVIDIA has published a
   reference manifest (RIM) for. The guest's verifier fetches the RIM for
   the card's exact VBIOS version at boot; there is no fallback if none is
@@ -164,9 +171,27 @@ If `nvidia_cc` is absent from `/about/capability` while
 
 ## 5. Failure signatures
 
+- **A V-PROGRAM powers off immediately with `init: FATAL: gpu attestation
+  failed: GPU runtime started without a GPU`.** No NVIDIA display-class
+  device was on the guest's PCI bus. The GPU runtime refuses to boot
+  without one (`nix/init-gpu.sh`): its measured cmdline states how many
+  cards it must find, and a client cannot tell an empty bus from a verified
+  card by the launch measurement alone. Check that the card is bound to
+  `vfio-pci` (section 2) and that the QEMU argv carries its `vfio-pci`
+  device.
+- **A V-PROGRAM powers off with `init: FATAL: gpu attestation failed: GPU
+  requirement not met`, preceded by a `gpu-policy: ...` line.** The cards
+  the CRN attached are not the ones the message asked for: the
+  `gpu-policy` line names the rule that failed (wrong architecture, fewer
+  cards than `gpu_count`, or a board whose signed project/SKU triple is not
+  listed under any requested PCI id in the runtime's `gpu.json`). Compare
+  the requested `gpu_arch`/`gpu_count`/`gpu_models` tokens in the guest's
+  cmdline against the cards actually attached. A card whose model the
+  runtime's board table does not list yet is a runtime update, not an
+  operator fix.
 - **A V-PROGRAM powers off within a minute of boot, with
   `init: FATAL: gpu attestation failed: ...` in its console log.** The
-  guest's `nvattest attest` call (`nix/init-gpu.sh`) could not complete
+  guest's `nvattest` calls (`nix/init-gpu.sh`) could not complete
   RIM/OCSP verification. Two common causes: the guest could not reach
   `rim.attestation.nvidia.com` or `ocsp.ndis.nvidia.com` over the host's
   network (check egress from the VM's network namespace/bridge), or the
