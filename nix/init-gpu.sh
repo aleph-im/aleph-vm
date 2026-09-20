@@ -4,8 +4,9 @@
 # Copy of init.sh (the v-program platform init) with one extra stage: between
 # the verity mounts and the chroot preparation it loads the NVIDIA open kernel
 # modules, verifies the GPU against NVIDIA's reference manifests with the
-# in-rootfs nvattest, flips the GPU ready state and records the resulting
-# claims for the attest-agent. Everything else (networking, dm-verity, the
+# in-rootfs nvattest, enforces the GPU requirement measured into the kernel
+# cmdline, flips the GPU ready state and records the resulting claims for the
+# attest-agent. Everything else (networking, dm-verity, the
 # workload volume, the guest firewall, fail-closed supervision) is identical
 # to init.sh, so the two files diff cleanly.
 #
@@ -168,9 +169,10 @@ if [ -n "$workload_roothash" ]; then
 fi
 
 # Confidential GPU: load the driver, verify the GPU against NVIDIA's
-# reference manifests, set the ready state, and record the claims for the
-# attest-agent. Every failure powers the VM off: a GPU runtime without a
-# verified GPU must never present an attested endpoint.
+# reference manifests, enforce the measured requirement, set the ready state,
+# and record the claims for the attest-agent. Every failure powers the VM
+# off, an empty PCI bus included: a GPU runtime without a verified GPU must
+# never present an attested endpoint.
 #
 # nvattest and nvidia-smi are dynamically linked and live in the verity
 # rootfs (nvattest at its nix store path, nvidia-smi as the raw, unpatched
@@ -272,10 +274,29 @@ if [ "$gpu_total" -gt 0 ]; then
         /bin/busybox cat /run/aleph/gpu-pm.log
         gpu_fatal "enabling persistence mode"
     fi
+    # Collect the SPDM evidence ONCE, to a file both nvattest and the
+    # gpu-policy check below read: the board identity that check enforces
+    # must come from the very bytes nvattest verified, not from a second,
+    # unverified read of the card. Attesting from the file also touches no
+    # GPU, which keeps the one-RM-init-per-reset rule above satisfied.
+    # Nothing here is secret, but everything under /run/aleph is 0600.
+    gpu_evidence=/run/aleph/gpu-evidence.json
+    if ! (umask 077; gpu_nvattest --format json collect-evidence --device gpu --nonce "$boot_nonce" \
+              > "$gpu_evidence" 2> /run/aleph/gpu-evidence.log); then
+        /bin/busybox cat /run/aleph/gpu-evidence.log
+        gpu_fatal "collecting GPU evidence"
+    fi
+    [ -s "$gpu_evidence" ] || gpu_fatal "nvattest collected no GPU evidence"
     # The full result carries the detached EAT and the log can echo it on
     # failure; neither is served, so both are created 0600 (the umask in the
     # subshell covers the redirections), same as the extracted claims below.
+    # --nonce is not redundant with the file source: nvattest compares the
+    # nonce of every entry in the file against it (and would otherwise
+    # generate a fresh one that no stored entry can answer), and its verifier
+    # then compares that entry nonce against the one inside the signed SPDM
+    # report, so the verdict stays bound to this boot.
     if ! (umask 077; gpu_nvattest --format json attest --device gpu --verifier local --nonce "$boot_nonce" \
+              --gpu-evidence-source file --gpu-evidence-file "$gpu_evidence" \
               --rim-url https://rim.attestation.nvidia.com --ocsp-url https://ocsp.ndis.nvidia.com \
               > /run/aleph/gpu-attest.json 2> /run/aleph/gpu-attest.log); then
         /bin/busybox cat /run/aleph/gpu-attest.log
@@ -314,6 +335,22 @@ if [ "$gpu_total" -gt 0 ]; then
     [ "$measres_total" = "$claims_count" ] || gpu_fatal "a claim carries no measurement result"
     [ "$measres_ok" = "$claims_count" ] || gpu_fatal "measurement comparison failed"
     /bin/busybox chmod 0600 "$gpu_claims"
+    # The measured requirement: the kernel cmdline names the architecture,
+    # the card count and (optionally) the exact board models this VM was
+    # launched for, and the agent checks all three against the policy table
+    # in the verity rootfs, the claims nvattest produced and the evidence it
+    # verified. Board identity is read from that evidence's signed SPDM
+    # opaque data, never from the PCI config space or nvidia-smi. Runs
+    # BEFORE the ready state: a card that does not answer the requirement
+    # must never be handed to a workload.
+    if ! /bin/aleph-attest-agent gpu-policy --cmdline /proc/cmdline \
+            --gpu-json /mnt/root/etc/aleph/gpu.json \
+            --claims "$gpu_claims" --evidence "$gpu_evidence" --nonce "$boot_nonce" \
+            > /run/aleph/gpu-policy.log 2>&1; then
+        /bin/busybox cat /run/aleph/gpu-policy.log
+        gpu_fatal "GPU requirement not met"
+    fi
+    /bin/busybox cat /run/aleph/gpu-policy.log
     # Ready state: the driver refuses CUDA work until it is set, and only a
     # verified GPU may be marked ready. nvidia-smi is the raw driver userland
     # in the rootfs; the agent is static and cannot drive NVML itself. Both
@@ -346,7 +383,12 @@ if [ "$gpu_total" -gt 0 ]; then
     fi
     echo "init: GPU verified and ready"
 else
-    echo "init: no NVIDIA GPU present; running without GPU attestation"
+    # Fatal, not a warning: this image exists to run GPU workloads, its
+    # measured cmdline states how many cards it must find, and a client
+    # cannot tell an empty bus from a verified card by the launch
+    # measurement alone. Booting on would serve an attested endpoint with
+    # no GPU behind it.
+    gpu_fatal "GPU runtime started without a GPU"
 fi
 
 # Prepare only the chroot that will actually run its /sbin/init: when a
