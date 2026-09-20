@@ -478,22 +478,27 @@ not weaken anything; it powers off every VM that requests that model.
 Two properties follow from this and matter to anyone building a client:
 
 - The guest verifies its own GPU against NVIDIA's RIM/OCSP chain at boot
-  and powers off on any failure; the client then independently re-checks
-  the evidence's certificate chain, signature and nonce binding over the
-  attested channel. The client trusts the guest's RIM verdict specifically
-  because the verifier binary and its pinned roots are inside the SNP
-  launch measurement, and init's fail-closed behavior means a guest that
-  reached a running, attested state necessarily passed that check.
+  and powers off on any failure. The client trusts that verdict rather than
+  re-checking it, specifically because the verifier binary and its pinned
+  roots are inside the SNP launch measurement, and init's fail-closed
+  behavior means a guest that reached a running, attested state necessarily
+  passed that check.
 - A launch measurement that includes `gpu_arch`/`gpu_count` (and, where
   present, `gpu_models`) is a statement about which GPUs the guest
   required, not proof that it got them: the measurement is computed before
   the guest runs. What makes it load-bearing is that the guest enforces
   exactly those tokens and powers off otherwise, so a running, attested GPU
   runtime is one whose cards answered the requirement the client pinned. A
-  client must still require GPU evidence whenever the runtime manifest it
-  pinned declares a `gpu` block, and treat a 404 from
-  `/.well-known/attestation/gpu` on such a runtime as a verification
-  failure, not as "no GPU requested".
+  caller gets these guarantees by pinning the launch measurement, the same
+  way it pins every other SNP measurement input: `aleph vprogram create`
+  renders the same canonical `gpu_arch`/`gpu_count`/`gpu_models` tokens into
+  the runtime template before computing that measurement, so a mismatched
+  requirement never reaches a real launch. `GET
+  /.well-known/attestation/gpu` serves the raw NVIDIA-signed evidence, bound
+  to the TLS key, for an operator or auditor to inspect after the fact; the
+  reference client does not fetch it. Liveness of the GPU itself past boot
+  rests on the driver's ongoing SPDM session with the card, not on a
+  repeated evidence fetch.
 
 **What a GPU workload must ship.** The guest bind-mounts only the raw
 NVIDIA driver userland into the workload's chroot, at `/opt/nvidia/lib`,
