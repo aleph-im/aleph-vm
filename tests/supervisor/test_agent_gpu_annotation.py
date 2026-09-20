@@ -9,7 +9,7 @@ import pytest
 
 from aleph.vm.agent import aggregate
 from aleph.vm.agent.aggregate import CompatibleGPU
-from aleph.vm.agent.resources import _gpus_from_host_info
+from aleph.vm.agent.resources import GpuProperties, _gpus_from_host_info
 
 
 def _raw_gpu(device_id: str, pci_host: str) -> dict:
@@ -43,8 +43,9 @@ async def test_agent_annotates_gpus_from_aggregate(mocker):
     whitelisted, unlisted = gpu.devices
     assert whitelisted.model == "RTX 4000 ADA"
     assert whitelisted.compatible is True
-    # A card the network does not support stays in the inventory, unannotated.
-    assert unlisted.model is None
+    # A card the network does not support stays in the inventory, its model
+    # falling back to the hardware name, and stays marked incompatible.
+    assert unlisted.model == "Device 10de:ffff"
     assert unlisted.compatible is False
     assert gpu.available_devices[0].model == "RTX 4000 ADA"
     assert gpu.available_devices[0].compatible is True
@@ -63,7 +64,7 @@ async def test_agent_annotation_survives_missing_aggregate(mocker):
 
     gpu = await _gpus_from_host_info(host_info)
 
-    assert gpu.devices[0].model is None
+    assert gpu.devices[0].model == "Device 10de:27b0"
     assert gpu.devices[0].compatible is False
     assert gpu.available_devices == []
 
@@ -92,3 +93,63 @@ def test_get_compatible_gpus_tolerates_missing_key(mocker):
     )
 
     assert aggregate.get_compatible_gpus() == []
+
+
+@pytest.mark.asyncio
+async def test_unwhitelisted_gpu_falls_back_to_device_name(mocker):
+    """Every released scheduler decodes `model` as a required string: a card
+    absent from the whitelist must still carry one, or the whole usage
+    response fails to decode and the node is marked unhealthy."""
+    mocker.patch("aleph.vm.agent.resources.update_aggregate_settings")
+    mocker.patch("aleph.vm.agent.resources.get_compatible_gpus", return_value=[])
+    host_info = SimpleNamespace(
+        gpu_inventory=[_raw_gpu("10de:233b", "01:00.0")],
+        available_gpus=[_raw_gpu("10de:233b", "01:00.0")],
+    )
+
+    gpu = await _gpus_from_host_info(host_info)
+
+    device = gpu.devices[0]
+    assert device.model == "Device 10de:233b"
+    assert device.compatible is False
+
+
+@pytest.mark.asyncio
+async def test_whitelisted_gpu_keeps_network_model(mocker):
+    mocker.patch("aleph.vm.agent.resources.update_aggregate_settings")
+    mocker.patch(
+        "aleph.vm.agent.resources.get_compatible_gpus",
+        return_value=[
+            CompatibleGPU(device_id="10de:27b0", model="RTX 4000 ADA", vendor="NVIDIA", name="AD104GL"),
+        ],
+    )
+    host_info = SimpleNamespace(
+        gpu_inventory=[_raw_gpu("10de:27b0", "01:00.0")],
+        available_gpus=[_raw_gpu("10de:27b0", "01:00.0")],
+    )
+
+    gpu = await _gpus_from_host_info(host_info)
+
+    device = gpu.devices[0]
+    assert device.model == "RTX 4000 ADA"
+    assert device.compatible is True
+
+
+@pytest.mark.asyncio
+async def test_unwhitelisted_gpu_model_survives_the_endpoint_serialisation(mocker):
+    """Regression for the scheduler decode failure: `model_dump_json(exclude_none=True)`,
+    the exact call /about/usage/system makes, must still carry a `model` key
+    for a device the network has no name for. Pydantic drops a field whose
+    value is None under exclude_none, which is how this bug reached prod."""
+    mocker.patch("aleph.vm.agent.resources.update_aggregate_settings")
+    mocker.patch("aleph.vm.agent.resources.get_compatible_gpus", return_value=[])
+    host_info = SimpleNamespace(
+        gpu_inventory=[_raw_gpu("10de:233b", "01:00.0")],
+        available_gpus=[_raw_gpu("10de:233b", "01:00.0")],
+    )
+
+    gpu: GpuProperties = await _gpus_from_host_info(host_info)
+    payload = gpu.model_dump_json(exclude_none=True)
+
+    assert '"model":"Device 10de:233b"' in payload
+    assert '"compatible":false' in payload

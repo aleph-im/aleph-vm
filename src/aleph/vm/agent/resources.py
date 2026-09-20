@@ -169,7 +169,10 @@ class AnnotatedGpuDevice(GpuDevice):
     fields are the agent's to add, from the settings aggregate's
     compatible_gpus whitelist."""
 
-    model: str | None = Field(description="GPU model name on Aleph Network", default=None)
+    model: str = Field(
+        description="GPU model name on Aleph Network, falling back to the hardware device_name "
+        "when the network has no name for this card"
+    )
     compatible: bool = Field(description="GPU compatibility with Aleph Network", default=False)
 
 
@@ -241,10 +244,14 @@ async def _gpus_from_host_info(host_info: "HostInfo", network_models: dict[str, 
         network_models = await _network_gpu_models()
 
     def annotate(gpu: dict) -> AnnotatedGpuDevice:
+        # The scheduler's model field is required: a card the network has no
+        # name for still needs one, so it falls back to the hardware name.
+        # `compatible` stays false and already says the network does not
+        # support it.
         return AnnotatedGpuDevice.model_validate(
             gpu
             | {
-                "model": network_models.get(gpu["device_id"]),
+                "model": network_models.get(gpu["device_id"], gpu["device_name"]),
                 "compatible": gpu["device_id"] in network_models,
             }
         )
