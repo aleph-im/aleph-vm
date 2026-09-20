@@ -15,28 +15,34 @@
 //! - `--gpu-json`: the measured policy, `{"archs":{"<arch>":{"accepted_models":
 //!   [...],"boards":{"vvvv:dddd":[{"project","project_sku","chip_sku",...}]}}}}`.
 //!   Other keys (vendor, driver version, library path) are not policy inputs.
-//! - `--claims`: the claims array init cut out of nvattest's result. GPU claims
-//!   v3.0 carries NO architecture string: `hwmodel` plus the boolean
+//! - `--claims`: the claims array init cut out of the result of the nvattest
+//!   run it just performed on the evidence file below. GPU claims v3.0 carries
+//!   NO architecture string: `hwmodel` plus the boolean
 //!   `x-nvidia-gpu-arch-check` are all NVIDIA emits, so a claim is bound to the
 //!   requested architecture by its `hwmodel` being one of THAT architecture's
 //!   accepted models, and that boolean must be present and true on every claim.
-//! - `--evidence`: either a bare array of `{"arch","nonce","evidence",
-//!   "certificate"}` entries, or the whole document `nvattest --format json
-//!   collect-evidence` prints around one,
-//!   `{"result_code":0,"result_message":"...","evidences":[...]}` (`evidences`
-//!   null when the collection failed). The bare array is the production form:
-//!   it is the only one `nvattest attest --gpu-evidence-source file` reads, so
-//!   init hands the same array file to nvattest and to this check. `evidence`
-//!   is base64 of the SPDM exchange, request then response.
+//!   `ueid` is what tells two claims apart.
+//! - `--evidence`: the bare array of `{"arch","nonce","evidence",
+//!   "certificate"}` entries init cut out of `nvattest --format json
+//!   collect-evidence` output, which is the only form
+//!   `nvattest attest --gpu-evidence-source file` reads, so nvattest and this
+//!   check are handed the same file. The whole printed document,
+//!   `{"result_code":0,"result_message":"...","evidences":[...]}`, is accepted
+//!   too. `evidence` is base64 of the SPDM exchange, request then response.
 //! - `--nonce`: this boot's nonce, the one init collected the evidence with
 //!   and had nvattest verify it against.
+//! - `--observed-count`: how many NVIDIA display functions init counted on the
+//!   PCI bus before loading the driver, which must be the verified count: init
+//!   makes one device node per function it saw.
 //!
 //! Board identity comes only from the SPDM opaque data of that response, never
 //! from PCI config space, sysfs, nvidia-smi or the claims. This code verifies
-//! no signature and cannot: what ties the bytes to the card is that nvattest
-//! verified this very evidence file, and that every blob in it carries this
-//! boot's nonce in its SPDM request, so neither file can be a replay from an
-//! earlier boot, another machine or a card that was never asked.
+//! no signature and cannot. What ties the bytes to the card is that every blob
+//! carries this boot's nonce in its SPDM request, so the evidence file cannot
+//! be a replay from an earlier boot, another machine or a card that was never
+//! asked, and that nvattest verified that same file (the claims are that run's
+//! output, not separately nonce-bound). No two entries may repeat a blob or a
+//! certificate, and no two claims a `ueid`, so one card cannot answer twice.
 //!
 //! Exit codes: 0 and a summary line on stdout when every rule holds, 1 and one
 //! reason line on stderr when a rule fails, 2 when an input is not the
@@ -113,6 +119,10 @@ pub struct Board {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Claim {
     pub hwmodel: String,
+    /// The GPU's unique entity id: what tells two claims apart. Untyped like
+    /// `arch_check`, so a claim without a usable one is a failed rule.
+    #[serde(default)]
+    pub ueid: Option<serde_json::Value>,
     /// No claims version NVIDIA ships names the architecture; enforced if one
     /// ever does.
     #[serde(default)]
@@ -230,6 +240,21 @@ pub enum PolicyError {
         observed: usize,
         required: usize,
     },
+    /// Two entries carry the same blob, so one GPU answered for two.
+    DuplicateEvidence {
+        what: &'static str,
+        first: usize,
+        second: usize,
+    },
+    /// Two claims name the same GPU.
+    DuplicateClaim {
+        first: usize,
+        second: usize,
+    },
+    /// A claim with no usable `ueid`: nothing tells it from another claim.
+    MissingUeid {
+        index: usize,
+    },
     ArchMismatch {
         what: &'static str,
         index: usize,
@@ -304,6 +329,17 @@ impl fmt::Display for PolicyError {
                 f,
                 "gpu_count demands {required} GPU(s), init saw {observed} NVIDIA function(s) on the bus"
             ),
+            Self::DuplicateEvidence {
+                what,
+                first,
+                second,
+            } => write!(f, "GPU {first} and GPU {second} report the same {what}"),
+            Self::DuplicateClaim { first, second } => {
+                write!(f, "claim {first} and claim {second} name the same GPU")
+            }
+            Self::MissingUeid { index } => {
+                write!(f, "claim {index} carries no ueid")
+            }
             Self::ArchMismatch {
                 what,
                 index,
@@ -671,14 +707,31 @@ pub fn evaluate(
             found: claims.len(),
         });
     }
-    // init makes one device node per NVIDIA function it saw, so a bus that
-    // carries more cards than the verified set would hand the workload a node
-    // for silicon nobody attested.
+    // init makes one device node per function it saw, so a bus carrying more
+    // cards than the verified set would expose unattested silicon.
     if observed_count != want.count {
         return Err(PolicyError::ObservedCountMismatch {
             observed: observed_count,
             required: want.count,
         });
+    }
+
+    // Counting the same GPU twice would satisfy any count with one card.
+    for (index, entry) in evidence.iter().enumerate() {
+        for (first, previous) in evidence.iter().enumerate().take(index) {
+            let what = if entry.evidence == previous.evidence {
+                "evidence blob"
+            } else if entry.certificate == previous.certificate {
+                "certificate"
+            } else {
+                continue;
+            };
+            return Err(PolicyError::DuplicateEvidence {
+                what,
+                first,
+                second: index,
+            });
+        }
     }
 
     for (index, entry) in evidence.iter().enumerate() {
@@ -692,6 +745,7 @@ pub fn evaluate(
         }
     }
 
+    let mut ueids: Vec<&str> = Vec::new();
     for (index, claim) in claims.iter().enumerate() {
         if let Some(found) = &claim.arch
             && !found.eq_ignore_ascii_case(&want.arch)
@@ -703,10 +757,8 @@ pub fn evaluate(
                 want: want.arch.clone(),
             });
         }
-        // What makes the evidence entry's architecture string worth anything:
-        // that string is unsigned collector metadata, this boolean is
-        // nvattest's verdict against the verified certificate chain. It must
-        // be there and it must be true.
+        // nvattest's verdict against the verified certificate chain, which is
+        // what the entry's unsigned architecture string rests on.
         match claim.arch_check.as_ref().map(serde_json::Value::as_bool) {
             Some(Some(true)) => {}
             Some(Some(false)) => return Err(PolicyError::ArchCheckFailed { index }),
@@ -724,10 +776,23 @@ pub fn evaluate(
                 hwmodel: claim.hwmodel.clone(),
             });
         }
+        let ueid = claim
+            .ueid
+            .as_ref()
+            .and_then(serde_json::Value::as_str)
+            .filter(|ueid| !ueid.is_empty())
+            .ok_or(PolicyError::MissingUeid { index })?;
+        if let Some(first) = ueids.iter().position(|seen| *seen == ueid) {
+            return Err(PolicyError::DuplicateClaim {
+                first,
+                second: index,
+            });
+        }
+        ueids.push(ueid);
     }
 
-    // The boards a model token asks for, before any evidence is read, so an
-    // id the policy answers for nothing is fatal on its own.
+    // Resolved before any evidence is read, so an id the policy answers for
+    // nothing is fatal on its own.
     let mut allowed: Vec<&Board> = Vec::new();
     if let Some(ids) = &want.models {
         for id in ids {
@@ -740,10 +805,8 @@ pub fn evaluate(
         }
     }
 
-    // Every entry is decoded and walked whole, whether or not a model token
-    // asked for a board: that is what proves these bytes are this boot's
-    // exchange. Board identity is read only when a model token asked for it,
-    // so a requirement that names no model does not depend on the opaque data.
+    // Every entry is walked whole for the nonce; the opaque data is only read
+    // when a model token asked for a board.
     let mut boards = Vec::new();
     for (index, entry) in evidence.iter().enumerate() {
         let fail = |source| PolicyError::Evidence { index, source };
@@ -751,9 +814,8 @@ pub fn evaluate(
             .decode(&entry.evidence)
             .map_err(|_| fail(EvidenceError::NotBase64))?;
         let exchange = parse_exchange(&blob).map_err(fail)?;
-        // The nonce ties the file to this boot: the request the card answered,
-        // the nonce the collector reported, and the nonce nvattest verified
-        // with must be one and the same.
+        // What the card answered, what the collector reported and what init
+        // asked for must be one nonce.
         let reported = hex_nonce(&entry.nonce).map_err(fail)?;
         if exchange.request_nonce != reported.as_slice() || reported != *boot_nonce {
             return Err(fail(EvidenceError::NonceMismatch));
@@ -821,9 +883,10 @@ enum Failure {
     Usage(anyhow::Error),
 }
 
-/// A command line, a policy file and a claims array are kilobytes. Anything
-/// past this is not the document we were called with.
-const MAX_SMALL_INPUT: u64 = 1024 * 1024;
+/// A command line, a policy file and a claims array are kilobytes, and eight
+/// GPUs with full certificate chains stay under a megabyte too. Anything past
+/// this is not the document we were called with.
+const MAX_INPUT_BYTES: u64 = 1024 * 1024;
 
 /// Read a whole file, refusing one larger than `cap`. The cap is enforced on
 /// the bytes read, not on the metadata: `/proc/cmdline` reports size 0.
@@ -877,18 +940,15 @@ fn decide(args: &GpuPolicyArgs) -> Result<Summary, Failure> {
         // Lossy: a command line that is not UTF-8 cannot spell a token we
         // accept, so it fails on the rules rather than on the encoding.
         let cmdline =
-            String::from_utf8_lossy(&read_capped(&args.cmdline, MAX_SMALL_INPUT)?).into_owned();
+            String::from_utf8_lossy(&read_capped(&args.cmdline, MAX_INPUT_BYTES)?).into_owned();
         let policy: GpuPolicy =
-            serde_json::from_slice(&read_capped(&args.gpu_json, MAX_SMALL_INPUT)?)
+            serde_json::from_slice(&read_capped(&args.gpu_json, MAX_INPUT_BYTES)?)
                 .with_context(|| format!("{} is not a GPU policy", args.gpu_json.display()))?;
         let claims: Vec<Claim> =
-            serde_json::from_slice(&read_capped(&args.claims, MAX_SMALL_INPUT)?)
+            serde_json::from_slice(&read_capped(&args.claims, MAX_INPUT_BYTES)?)
                 .with_context(|| format!("{} is not a claims array", args.claims.display()))?;
-        // Same bound the GPU route puts on collector output: eight GPUs with
-        // full certificate chains stay far under it.
-        let evidence =
-            parse_evidence_file(&read_capped(&args.evidence, crate::gpu::MAX_OUTPUT_BYTES)?)
-                .with_context(|| args.evidence.display().to_string())?;
+        let evidence = parse_evidence_file(&read_capped(&args.evidence, MAX_INPUT_BYTES)?)
+            .with_context(|| args.evidence.display().to_string())?;
         let nonce = parse_boot_nonce(&args.nonce)?;
         let observed = parse_observed_count(&args.observed_count)?;
         Ok((cmdline, policy, claims, evidence, nonce, observed))
@@ -968,11 +1028,14 @@ mod tests {
         hex_nonce(&real_evidence()[0].nonce).unwrap()
     }
 
-    /// Response 1 is the same card answering a different nonce.
+    /// Response 1: the same card answering a different nonce, which is the
+    /// only second evidence entry the vectors offer.
+    fn other_evidence() -> Vec<EvidenceEntry> {
+        serde_json::from_value(vectors()["responses"][1]["gpus"].clone()).unwrap()
+    }
+
     fn other_nonce() -> [u8; 32] {
-        let entries: Vec<EvidenceEntry> =
-            serde_json::from_value(vectors()["responses"][1]["gpus"].clone()).unwrap();
-        hex_nonce(&entries[0].nonce).unwrap()
+        hex_nonce(&other_evidence()[0].nonce).unwrap()
     }
 
     fn real_blob() -> Vec<u8> {
@@ -1655,9 +1718,8 @@ mod tests {
         assert_eq!(read_capped(&path, 64).unwrap().len(), 64);
         assert!(read_capped(&path, 63).is_err());
         assert!(read_capped(&dir.path().join("absent"), 64).is_err());
-        // The evidence document gets the same bound as collector output.
-        assert_eq!(crate::gpu::MAX_OUTPUT_BYTES, 16 * 1024 * 1024);
-        assert_eq!(MAX_SMALL_INPUT, 1024 * 1024);
+        // One bound for all four inputs, the evidence file included.
+        assert_eq!(MAX_INPUT_BYTES, 1024 * 1024);
     }
 
     #[test]
@@ -1750,6 +1812,87 @@ mod tests {
                 found: 0
             }
         );
+    }
+
+    /// One card must not answer for two: a requirement for several GPUs is
+    /// only met by several distinct GPUs.
+    #[test]
+    fn no_gpu_may_be_counted_twice() {
+        let two = "gpu_arch=hopper gpu_count=2";
+        let pair = |claims: &[Claim], evidence: &[EvidenceEntry]| {
+            evaluate(two, &policy(), claims, evidence, &real_nonce(), 2)
+        };
+        let claims = [real_claims(), real_claims()].concat();
+        // The vectors hold one card, so a second GPU has to be synthesised:
+        // response 1's exchange with a certificate of its own.
+        let mut second = other_evidence();
+        second[0].certificate =
+            base64::engine::general_purpose::STANDARD.encode("a second card's chain");
+        let distinct = [real_evidence(), second].concat();
+
+        // The same entry twice, which is what a host replaying one card gets.
+        assert_eq!(
+            pair(&claims, &[real_evidence(), real_evidence()].concat()).unwrap_err(),
+            PolicyError::DuplicateEvidence {
+                what: "evidence blob",
+                first: 0,
+                second: 1
+            }
+        );
+        // The same card collected twice: the blobs differ (each answers its
+        // own nonce) but the certificate chain is the card's.
+        assert_eq!(
+            pair(&claims, &[real_evidence(), other_evidence()].concat()).unwrap_err(),
+            PolicyError::DuplicateEvidence {
+                what: "certificate",
+                first: 0,
+                second: 1
+            }
+        );
+        // Distinct evidence, but both claims name the same GPU.
+        assert_eq!(
+            pair(&claims, &distinct).unwrap_err(),
+            PolicyError::DuplicateClaim {
+                first: 0,
+                second: 1
+            }
+        );
+        // A claim with no ueid tells us nothing about which GPU it is.
+        for ueid in [
+            None,
+            Some(serde_json::Value::Null),
+            Some(serde_json::json!("")),
+            Some(serde_json::json!(527_669_633_405_372_793_u64)),
+        ] {
+            let mut claims = real_claims();
+            claims[0].ueid = ueid.clone();
+            assert_eq!(
+                evaluate(
+                    "gpu_arch=hopper gpu_count=1",
+                    &policy(),
+                    &claims,
+                    &real_evidence(),
+                    &real_nonce(),
+                    ONE_GPU,
+                )
+                .unwrap_err(),
+                PolicyError::MissingUeid { index: 0 },
+                "{ueid:?}"
+            );
+        }
+        // Two distinct GPUs pass uniqueness and fail on the next rule instead:
+        // response 1 answers a nonce that is not this boot's.
+        let mut claims = claims;
+        claims[1].ueid = Some(serde_json::json!("another gpu"));
+        assert_eq!(
+            pair(&claims, &distinct).unwrap_err(),
+            PolicyError::Evidence {
+                index: 1,
+                source: EvidenceError::NonceMismatch
+            }
+        );
+        // And the real single card still carries a usable ueid.
+        assert!(real_claims()[0].ueid.as_ref().unwrap().is_string());
     }
 
     /// init makes one device node per NVIDIA function it saw before the driver
