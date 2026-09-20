@@ -19,7 +19,7 @@
 //!   v3.0 carries NO architecture string: `hwmodel` plus the boolean
 //!   `x-nvidia-gpu-arch-check` are all NVIDIA emits, so a claim is bound to the
 //!   requested architecture by its `hwmodel` being one of THAT architecture's
-//!   accepted models.
+//!   accepted models, and that boolean must be present and true on every claim.
 //! - `--evidence`: exactly what `nvattest --format json collect-evidence`
 //!   prints: `{"result_code":0,"result_message":"...","evidences":[{"arch",
 //!   "nonce","evidence","certificate"}]}`, `evidences` null when collection
@@ -98,9 +98,11 @@ pub struct Claim {
     /// ever does.
     #[serde(default)]
     pub arch: Option<String>,
-    /// nvattest's own "architecture supported" verdict.
+    /// nvattest's own statement that the architecture matched the verified
+    /// certificate chain. Untyped on purpose: anything but the boolean `true`
+    /// is a failed rule rather than a parse error.
     #[serde(default, rename = "x-nvidia-gpu-arch-check")]
-    pub arch_check: Option<bool>,
+    pub arch_check: Option<serde_json::Value>,
 }
 
 /// What the command line demands.
@@ -120,12 +122,13 @@ pub struct BoardIdentity {
 }
 
 impl BoardIdentity {
-    /// Case-insensitive: NVIDIA carries these strings verbatim from the opaque
-    /// data into its RIM ids, and board identity never differs by case alone.
+    /// Byte-exact: NVIDIA builds its RIM ids from these opaque strings as they
+    /// come off the card, and the published listing spells them upper case,
+    /// which is what the measured table carries.
     fn is(&self, board: &Board) -> bool {
-        self.project.eq_ignore_ascii_case(&board.project)
-            && self.project_sku.eq_ignore_ascii_case(&board.project_sku)
-            && self.chip_sku.eq_ignore_ascii_case(&board.chip_sku)
+        self.project == board.project
+            && self.project_sku == board.project_sku
+            && self.chip_sku == board.chip_sku
     }
 }
 
@@ -200,8 +203,13 @@ pub enum PolicyError {
         found: String,
         want: String,
     },
-    /// nvattest itself says the architecture is unsupported.
+    /// nvattest itself says the architecture did not match.
     ArchCheckFailed {
+        index: usize,
+    },
+    /// No `x-nvidia-gpu-arch-check` boolean at all: without nvattest's own
+    /// verdict the evidence entry's architecture string stands for nothing.
+    ArchCheckMissing {
         index: usize,
     },
     UnacceptedModel {
@@ -262,9 +270,12 @@ impl fmt::Display for PolicyError {
                 f,
                 "{what} {index} reports architecture {found}, gpu_arch demands {want}"
             ),
-            Self::ArchCheckFailed { index } => write!(
+            Self::ArchCheckFailed { index } => {
+                write!(f, "claim {index} reports the GPU architecture as unmatched")
+            }
+            Self::ArchCheckMissing { index } => write!(
                 f,
-                "claim {index} reports the GPU architecture as unsupported"
+                "claim {index} carries no x-nvidia-gpu-arch-check boolean"
             ),
             Self::UnacceptedModel { index, hwmodel } => write!(
                 f,
@@ -581,8 +592,14 @@ pub fn evaluate(
                 want: want.arch.clone(),
             });
         }
-        if claim.arch_check == Some(false) {
-            return Err(PolicyError::ArchCheckFailed { index });
+        // What makes the evidence entry's architecture string worth anything:
+        // that string is unsigned collector metadata, this boolean is
+        // nvattest's verdict against the verified certificate chain. It must
+        // be there and it must be true.
+        match claim.arch_check.as_ref().map(serde_json::Value::as_bool) {
+            Some(Some(true)) => {}
+            Some(Some(false)) => return Err(PolicyError::ArchCheckFailed { index }),
+            _ => return Err(PolicyError::ArchCheckMissing { index }),
         }
         // The architecture binding of a claim: v3.0 claims name no
         // architecture, and accepted_models is per architecture.
@@ -756,6 +773,20 @@ mod tests {
         evidence
     }
 
+    /// Rewrite the PROJECT opaque field in place, same length, so a test can
+    /// exercise a board string that carries letters. The TLV walk reads the
+    /// bytes and never checks the signature, so patching is enough.
+    fn blob_with_project(project: &[u8; 4]) -> Vec<u8> {
+        let mut blob = real_blob();
+        let pattern = b"\x11\x00\x05\x001010\x00";
+        let at = blob
+            .windows(pattern.len())
+            .position(|window| window == pattern)
+            .expect("the PROJECT field is in the real blob");
+        blob[at + 4..at + 8].copy_from_slice(project);
+        blob
+    }
+
     /// Offset of the 2-byte opaque length inside the exchange, read the same
     /// way the parser walks it.
     fn opaque_length_offset(blob: &[u8]) -> usize {
@@ -911,6 +942,42 @@ mod tests {
         );
     }
 
+    /// The board comparison is byte-exact: the measured table spells these
+    /// strings the way the card does, and a table that spells one differently
+    /// names a different board.
+    #[test]
+    fn a_board_string_must_match_byte_for_byte() {
+        let cmdline = "gpu_arch=hopper gpu_count=1 gpu_models=10de:233b";
+        let evidence = evidence_with_blob(&blob_with_project(b"G520"));
+        let with_project = |project: &str| {
+            let mut policy = policy();
+            policy.archs.get_mut("hopper").unwrap().boards.insert(
+                "10de:233b".to_string(),
+                vec![Board {
+                    project: project.to_string(),
+                    project_sku: "0230".to_string(),
+                    chip_sku: "894".to_string(),
+                }],
+            );
+            evaluate(cmdline, &policy, &real_claims(), &evidence)
+        };
+        assert_eq!(
+            with_project("G520").unwrap().boards[0].to_string(),
+            "G520/0230/894"
+        );
+        assert_eq!(
+            with_project("g520").unwrap_err(),
+            PolicyError::BoardMismatch {
+                index: 0,
+                found: BoardIdentity {
+                    project: "G520".to_string(),
+                    project_sku: "0230".to_string(),
+                    chip_sku: "894".to_string()
+                }
+            }
+        );
+    }
+
     #[test]
     fn a_model_list_must_be_canonical() {
         for value in [
@@ -965,20 +1032,51 @@ mod tests {
         );
     }
 
+    /// The real claims carry `x-nvidia-gpu-arch-check: true`, and only that
+    /// exact boolean passes: it is nvattest's verdict against the verified
+    /// certificate chain, and the evidence entry's architecture string is
+    /// unsigned collector metadata without it.
     #[test]
-    fn a_claim_that_denies_the_architecture_is_fatal() {
-        let mut claims = real_claims();
-        claims[0].arch_check = Some(false);
-        assert_eq!(
+    fn the_architecture_check_must_be_present_and_true() {
+        let verdict = |value: Option<serde_json::Value>| {
+            let mut claims = real_claims();
+            claims[0].arch_check = value;
             evaluate(
                 "gpu_arch=hopper gpu_count=1",
                 &policy(),
                 &claims,
-                &real_evidence()
+                &real_evidence(),
             )
-            .unwrap_err(),
+        };
+        assert!(verdict(Some(serde_json::Value::Bool(true))).is_ok());
+        assert_eq!(
+            verdict(Some(serde_json::Value::Bool(false))).unwrap_err(),
             PolicyError::ArchCheckFailed { index: 0 }
         );
+        // Absent, or anything that is not a boolean, is the same refusal: no
+        // verdict was made.
+        for value in [
+            None,
+            Some(serde_json::Value::Null),
+            Some(serde_json::json!("true")),
+            Some(serde_json::json!(1)),
+            Some(serde_json::json!({"x-nvidia-gpu-arch-check": true})),
+        ] {
+            assert_eq!(
+                verdict(value.clone()).unwrap_err(),
+                PolicyError::ArchCheckMissing { index: 0 },
+                "{value:?}"
+            );
+        }
+        // The claims document init extracts really does carry it.
+        assert_eq!(
+            real_claims()[0].arch_check,
+            Some(serde_json::Value::Bool(true))
+        );
+    }
+
+    #[test]
+    fn a_claim_that_names_a_foreign_architecture_is_fatal() {
         // A future claims version naming the architecture is enforced too.
         let mut claims = real_claims();
         claims[0].arch = Some("BLACKWELL".to_string());
