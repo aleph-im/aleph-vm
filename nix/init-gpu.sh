@@ -307,10 +307,12 @@ if [ "$gpu_total" -gt 0 ]; then
     # generate a fresh one that no stored entry can answer), and its verifier
     # then compares that entry nonce against the one inside the signed SPDM
     # report, so the verdict stays bound to this boot.
+    # nvattest runs chrooted into /mnt/root, where /run/aleph does not exist:
+    # the file reaches it as stdin, reopened through the bind-mounted /proc.
     if ! (umask 077; gpu_nvattest --format json attest --device gpu --verifier local --nonce "$boot_nonce" \
-              --gpu-evidence-source file --gpu-evidence-file "$gpu_evidence" \
+              --gpu-evidence-source file --gpu-evidence-file /proc/self/fd/0 \
               --rim-url https://rim.attestation.nvidia.com --ocsp-url https://ocsp.ndis.nvidia.com \
-              > /run/aleph/gpu-attest.json 2> /run/aleph/gpu-attest.log); then
+              < "$gpu_evidence" > /run/aleph/gpu-attest.json 2> /run/aleph/gpu-attest.log); then
         /bin/busybox cat /run/aleph/gpu-attest.log
         gpu_fatal "nvattest exited non-zero"
     fi
