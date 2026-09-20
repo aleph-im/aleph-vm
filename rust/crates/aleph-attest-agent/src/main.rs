@@ -335,15 +335,37 @@ mod tests {
             "/run/aleph/gpu-boot-claims.json",
             "--evidence",
             "/run/aleph/gpu-evidence.json",
+            "--nonce",
+            &"ab".repeat(32),
+            "--observed-count",
+            "1",
         ]);
         assert!(matches!(cli.command, Some(Command::GpuPolicy(_))));
-        // Every path is required.
+        // Every argument is required, the boot nonce and the observed count
+        // included.
         assert!(
             Cli::try_parse_from([
                 "aleph-attest-agent",
                 "gpu-policy",
                 "--cmdline",
                 "/proc/cmdline"
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "aleph-attest-agent",
+                "gpu-policy",
+                "--cmdline",
+                "/proc/cmdline",
+                "--gpu-json",
+                "/etc/aleph/gpu.json",
+                "--claims",
+                "/run/aleph/gpu-boot-claims.json",
+                "--evidence",
+                "/run/aleph/gpu-evidence.json",
+                "--nonce",
+                &"ab".repeat(32),
             ])
             .is_err()
         );
