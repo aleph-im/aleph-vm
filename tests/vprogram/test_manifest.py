@@ -156,6 +156,26 @@ REJECTION_CASES: list[tuple[str, Callable[[dict[str, Any]], None]]] = [
             )
         ),
     ),
+    (
+        "gpu slot before verified_volumes",
+        lambda d: d["boot"].update(
+            cmdline_template=(
+                "console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash} "
+                "workload_roothash={workload_roothash} gpu_arch={gpu_arch} "
+                "verified_volumes={verified_volumes} gpu_count={gpu_count} gpu_models={gpu_models}"
+            )
+        ),
+    ),
+    (
+        "gpu_count before gpu_arch",
+        lambda d: d["boot"].update(
+            cmdline_template=(
+                "console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash} "
+                "workload_roothash={workload_roothash} verified_volumes={verified_volumes} "
+                "gpu_count={gpu_count} gpu_arch={gpu_arch} gpu_models={gpu_models}"
+            )
+        ),
+    ),
 ]
 
 
@@ -189,7 +209,11 @@ def test_gpu_block_is_optional_and_strict() -> None:
         {"library_path": "opt/nvidia"},
         {"archs": {}},
         {"archs": {"hopper": {"accepted_models": []}}},
+        {"archs": {"hopper": {"accepted_models": [""]}}},  # empty entry, same as an empty list
+        {"archs": {"hopper": {"accepted_models": ["GH100 A01 GSP BROM", ""]}}},
         {"archs": {"ampere": {"accepted_models": ["x"]}}},
+        {"driver_version": "1234567890.71"},  # first component is 10 digits, over the client's u32 parse
+        {"driver_version": "595.71.1234567890"},
         {"arch": "hopper"},  # the flat shape is gone; extra keys are rejected
         {"extra": 1},
     ):
@@ -239,6 +263,51 @@ def test_gpu_boards_are_optional_and_validated() -> None:
         broken["gpu"]["archs"]["hopper"]["boards"] = bad_boards
         with pytest.raises(ValidationError):
             RuntimeManifest.model_validate(broken)
+
+
+def test_gpu_board_triple_cannot_be_shared_across_pci_ids() -> None:
+    """A board triple identifies one card; if the same triple appeared under
+    two PCI ids, a model requirement pinned to one id's triple would also be
+    satisfied by a card that shows up under the other id."""
+    with_gpu = deepcopy(REFERENCE_MANIFEST)
+    same_triple = {"name": "RTX PRO 6000", "project": "G153", "project_sku": "0210", "chip_sku": "895"}
+    with_gpu["gpu"] = {
+        "vendor": "nvidia",
+        "driver_version": "595.71.05",
+        "library_path": "/opt/nvidia/lib",
+        "archs": {
+            "blackwell": {
+                "accepted_models": ["RTX PRO 6000 Blackwell Server Edition"],
+                "boards": {
+                    "10de:2bb5": [same_triple],
+                    "10de:2bb6": [same_triple],
+                },
+            },
+        },
+    }
+    with pytest.raises(ValidationError):
+        RuntimeManifest.model_validate(with_gpu)
+
+    # The same triple twice under the SAME id is not a cross-id collision.
+    with_gpu["gpu"]["archs"]["blackwell"]["boards"] = {"10de:2bb5": [same_triple, same_triple]}
+    RuntimeManifest.model_validate(with_gpu)  # must not raise
+
+
+def test_driver_version_component_digit_count_is_bounded() -> None:
+    """The client parses each dot-separated component as a u32; a 9-digit
+    component always fits, a 10-digit one risks overflowing the parser."""
+    with_gpu = deepcopy(REFERENCE_MANIFEST)
+    with_gpu["gpu"] = {
+        "vendor": "nvidia",
+        "driver_version": "999999999.71.05",
+        "library_path": "/opt/nvidia/lib",
+        "archs": {"hopper": {"accepted_models": ["GH100 A01 GSP BROM"]}},
+    }
+    RuntimeManifest.model_validate(with_gpu)  # 9 digits: must not raise
+
+    with_gpu["gpu"]["driver_version"] = "9999999999.71.05"
+    with pytest.raises(ValidationError):
+        RuntimeManifest.model_validate(with_gpu)
 
 
 def test_gpu_cmdline_template_keeps_swiotlb_as_fixed_text_and_slots_the_requirement() -> None:
