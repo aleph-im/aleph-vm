@@ -2062,6 +2062,64 @@ const MAX_ROOTHASH_SIDECAR_BYTES: u64 = 4096;
 /// can address.
 const MAX_VERIFIED_VOLUMES: usize = 8;
 
+/// Mirrors aleph_message's MAX_CONFIDENTIAL_GPU_MODELS: the schema cap on the
+/// model narrowing a GPU requirement may carry.
+const MAX_GPU_MODELS: usize = 16;
+
+/// Whether the text is the canonical measured GPU requirement: exactly
+/// `gpu_arch=<hopper|blackwell> gpu_count=<1..8>`, optionally followed by
+/// `gpu_models=<vvvv:dddd,...>` (lowercase, strictly ascending, so also
+/// unique). Single spaces, nothing else: the string is spliced verbatim into
+/// the measured cmdline, and the client renders exactly this form.
+fn is_canonical_gpu_requirement(text: &str) -> bool {
+    let mut tokens = text.split(' ');
+    let arch_ok = tokens
+        .next()
+        .and_then(|token| token.strip_prefix("gpu_arch="))
+        .is_some_and(|arch| matches!(arch, "hopper" | "blackwell"));
+    // The kernel parses the value with base auto-detection, so a single
+    // digit 1..8 is the only spelling that cannot mean something else.
+    let count_ok = tokens
+        .next()
+        .and_then(|token| token.strip_prefix("gpu_count="))
+        .is_some_and(|count| matches!(count.as_bytes(), [b'1'..=b'8']));
+    if !arch_ok || !count_ok {
+        return false;
+    }
+    let models_ok = match tokens.next() {
+        None => true,
+        Some(token) => token
+            .strip_prefix("gpu_models=")
+            .is_some_and(is_canonical_gpu_models),
+    };
+    models_ok && tokens.next().is_none()
+}
+
+/// Whether the `gpu_models=` value is a comma-joined list of at most
+/// `MAX_GPU_MODELS` lowercase `vvvv:dddd` PCI ids in strictly ascending byte
+/// order.
+fn is_canonical_gpu_models(models: &str) -> bool {
+    let is_device_id = |id: &str| {
+        let bytes = id.as_bytes();
+        bytes.len() == 9
+            && bytes[4] == b':'
+            && bytes
+                .iter()
+                .enumerate()
+                .all(|(index, byte)| index == 4 || matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    };
+    let mut previous: Option<&str> = None;
+    let mut seen = 0usize;
+    for id in models.split(',') {
+        if !is_device_id(id) || previous.is_some_and(|before| before >= id) {
+            return false;
+        }
+        previous = Some(id);
+        seen += 1;
+    }
+    seen <= MAX_GPU_MODELS
+}
+
 /// Read a sidecar that is allowed to be entirely absent, capped at
 /// `MAX_ROOTHASH_SIDECAR_BYTES`. `Ok(None)` when the file does not exist;
 /// `Ok(Some(contents))` with the raw (untrimmed) bytes otherwise; an
@@ -2431,6 +2489,27 @@ fn snp_config_slice_with(
                 )));
             }
             format!("{kernel_cmdline} verified_volumes={joined}")
+        }
+        None => kernel_cmdline,
+    };
+    // The measured GPU requirement: the launcher stages a
+    // {rootfs}.gpu_requirement sidecar holding the canonical tokens rendered
+    // from the message's gpu block, and they close the cmdline, matching the
+    // GPU runtime manifest's template order. Spliced verbatim, so only the
+    // canonical form passes; an absent sidecar leaves the cmdline
+    // byte-identical to a GPU-less V-PROGRAM.
+    let gpu_requirement_path = format!("{rootfs_path}.gpu_requirement");
+    let kernel_cmdline = match read_optional_sidecar(&gpu_requirement_path)? {
+        Some(contents) => {
+            let requirement = contents.trim();
+            if !is_canonical_gpu_requirement(requirement) {
+                return Err(RpcError::InvalidBackend(format!(
+                    "the GPU requirement sidecar {gpu_requirement_path} carries {requirement:?}; \
+                     only gpu_arch=<hopper|blackwell> gpu_count=<1..8> \
+                     [gpu_models=<sorted vvvv:dddd list>] is allowed"
+                )));
+            }
+            format!("{kernel_cmdline} {requirement}")
         }
         None => kernel_cmdline,
     };
@@ -5851,6 +5930,117 @@ mod tests {
                 "{bad:?} must be refused"
             );
         }
+    }
+
+    #[test]
+    fn snp_gpu_requirement_sidecar_closes_the_measured_cmdline() {
+        // The three shared vectors: what the client renders into the GPU
+        // runtime template's trailing tokens, byte for byte.
+        for requirement in [
+            "gpu_arch=hopper gpu_count=1",
+            "gpu_arch=blackwell gpu_count=4 gpu_models=10de:2bb5",
+            "gpu_arch=hopper gpu_count=2 gpu_models=10de:2331,10de:2335,10de:233b",
+        ] {
+            let harness = harness();
+            let state = &harness.state;
+            let root = state.host.settings.execution_root.clone();
+            let firmware = root.join("OVMF.fd");
+            std::fs::write(&firmware, b"ovmf").unwrap();
+            let vm_id = hash('g');
+            let spec = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+            let rootfs = root.join(format!("{vm_id}-rootfs.ext4"));
+            std::fs::write(format!("{}.workload_roothash", rootfs.display()), b"beef\n").unwrap();
+            std::fs::write(
+                format!("{}.cmdline_extra", rootfs.display()),
+                b"swiotlb=262144\n",
+            )
+            .unwrap();
+            let volume = "aa".repeat(32);
+            std::fs::write(
+                format!("{}.verified_volumes", rootfs.display()),
+                format!("{volume}\n"),
+            )
+            .unwrap();
+            std::fs::write(
+                format!("{}.gpu_requirement", rootfs.display()),
+                format!("{requirement}\n"),
+            )
+            .unwrap();
+            let slice = snp_config_slice(state, &spec).unwrap().unwrap();
+            assert_eq!(
+                slice.kernel_cmdline,
+                format!(
+                    "console=ttyS0 root=/dev/mapper/verity-root ro roothash=deadbeef00 \
+                     workload_roothash=beef swiotlb=262144 verified_volumes={volume} {requirement}"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn snp_gpu_requirement_sidecar_rejects_anything_but_the_canonical_form() {
+        for bad in [
+            "",
+            "gpu_arch=hopper",                                     // no count
+            "gpu_count=1 gpu_arch=hopper",                         // wrong order
+            "gpu_arch=ampere gpu_count=1",                         // unknown arch
+            "gpu_arch=HOPPER gpu_count=1",                         // upper case arch
+            "gpu_arch=hopper gpu_count=0",                         // count floor
+            "gpu_arch=hopper gpu_count=01",                        // octal spelling
+            "gpu_arch=hopper gpu_count=9",                         // count ceiling
+            "gpu_arch=hopper  gpu_count=1",                        // double space
+            "gpu_arch=hopper gpu_count=1 init=/bin/sh",            // trailing text
+            "gpu_arch=hopper gpu_count=1 gpu_models=10de:2bb5 ro", // fourth token
+            "gpu_arch=hopper gpu_count=1 gpu_models=10de:2335,10de:2331", // unsorted
+            "gpu_arch=hopper gpu_count=1 gpu_models=10de:2331,10de:2331", // duplicate
+            "gpu_arch=hopper gpu_count=1 gpu_models=10DE:2331",    // upper case id
+            "gpu_arch=hopper gpu_count=1 gpu_models=",             // empty list
+            "gpu_arch=hopper gpu_count=1 gpu_models=10de:233",     // short id
+            "gpu_arch=hopper\ngpu_count=1",                        // newline inside
+        ] {
+            let harness = harness();
+            let state = &harness.state;
+            let root = state.host.settings.execution_root.clone();
+            let firmware = root.join("OVMF.fd");
+            std::fs::write(&firmware, b"ovmf").unwrap();
+            let vm_id = hash('h');
+            let spec = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+            let rootfs = root.join(format!("{vm_id}-rootfs.ext4"));
+            std::fs::write(
+                format!("{}.gpu_requirement", rootfs.display()),
+                format!("{bad}\n"),
+            )
+            .unwrap();
+            assert!(
+                matches!(
+                    snp_config_slice(state, &spec),
+                    Err(RpcError::InvalidBackend(_))
+                ),
+                "{bad:?} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn snp_config_slice_leaves_the_cmdline_unchanged_without_a_gpu_sidecar() {
+        // Byte-parity guard: a GPU-less V-PROGRAM must derive exactly the
+        // cmdline it did before the requirement mechanism existed, or every
+        // published runtime's measurement breaks.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let vm_id = hash('j');
+        let spec = snp_spec(&vm_id, &root, &firmware.to_string_lossy());
+        let rootfs = root.join(format!("{vm_id}-rootfs.ext4"));
+        std::fs::write(format!("{}.workload_roothash", rootfs.display()), b"beef\n").unwrap();
+        let slice = snp_config_slice(state, &spec).unwrap().unwrap();
+        assert_eq!(
+            slice.kernel_cmdline,
+            "console=ttyS0 root=/dev/mapper/verity-root ro roothash=deadbeef00 \
+             workload_roothash=beef",
+        );
     }
 
     #[test]

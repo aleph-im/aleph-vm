@@ -54,12 +54,18 @@ def image_dir(tmp_path: Path) -> Path:
 @pytest.fixture()
 def gpu_image_dir(image_dir: Path) -> Path:
     """The nix gpuImage output: same layout as image_dir, plus the gpu.json
-    facts sidecar the gpu flavor reads."""
+    facts sidecar the gpu flavor reads. Shaped like nix/flake.nix's gpuFacts,
+    board table included."""
     (image_dir / "gpu.json").write_text(
         '{"vendor":"nvidia","driver_version":"595.71.05",'
         '"library_path":"/opt/nvidia/lib",'
         '"archs":{"blackwell":{"accepted_models":'
-        '["NVIDIA RTX PRO 6000 Blackwell Server Edition"]}}}'
+        '["NVIDIA RTX PRO 6000 Blackwell Server Edition"],'
+        '"boards":{"10de:2bb5":['
+        '{"name":"RTX PRO 6000 Blackwell Server Edition",'
+        '"project":"G153","project_sku":"0210","chip_sku":"895"},'
+        '{"name":"RTX PRO 6000 Blackwell Server Edition",'
+        '"project":"G153","project_sku":"0212","chip_sku":"895"}]}}}}'
     )
     return image_dir
 
@@ -322,11 +328,18 @@ def test_exec_and_compose_templates_carry_the_verified_volumes_slot():
 def test_gpu_flavor_records_the_gpu_block(gpu_image_dir: Path, tmp_path: Path) -> None:
     info = build_bundle(gpu_image_dir, tmp_path, source_epoch=0, source=SOURCE, flavor="gpu")
     assert info.gpu.vendor == "nvidia"
+    # The board table is what makes a PCI id in a message a statement about
+    # the silicon: it must survive the build into the published manifest.
+    boards = info.gpu.archs["blackwell"].boards["10de:2bb5"]
+    assert [board.project_sku for board in boards] == ["0210", "0212"]
     manifest = make_manifest(
         info=info, bundle_ref=BUNDLE_REF, name="aleph-snp-gpu", runtime_version="1", gpu_runtime=True
     )
     assert manifest.gpu == info.gpu
     assert manifest.boot.cmdline_template == CMDLINE_TEMPLATE_GPU_V1
+    # The published bytes round-trip: a GPU runtime's manifest carries the
+    # requirement slots and the board table, and reparses to the same model.
+    assert RuntimeManifest.model_validate_json(manifest.to_canonical_json()) == manifest
 
 
 def test_gpu_flavor_requires_gpu_json(image_dir: Path, tmp_path: Path) -> None:

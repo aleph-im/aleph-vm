@@ -29,6 +29,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from aleph_message.models.execution.vprogram import (
+    CONFIDENTIAL_GPU_DEVICE_ID_PATTERN,
+    MAX_CONFIDENTIAL_GPU_MODELS,
+    MAX_CONFIDENTIAL_GPUS,
     MAX_VERIFIED_VOLUMES,
     VERITY_ROOTHASH_PATTERN,
 )
@@ -75,6 +78,40 @@ GPU_VPROGRAM_MIN_MEMORY_MIB = 2048
 # proto has no cmdline field for it, mirroring workload_roothash/
 # verified_volumes below).
 CMDLINE_EXTRA_TOKEN = re.compile(r"(?<!\S)swiotlb=\d{1,9}(?!\S)")
+
+# GPU architectures the measured gpu_arch= token may name.
+GPU_ARCHS = frozenset({"hopper", "blackwell"})
+
+
+def render_gpu_requirement(arch: str, count: int, models: list[str] | None) -> str:
+    """The canonical measured GPU requirement tokens for a message's gpu block.
+
+    The aleph CLI renders the same string into the runtime template's trailing
+    slots before it computes the launch measurement, so this must produce it
+    byte for byte: `gpu_arch=<arch> gpu_count=<n>`, then, only when the
+    message narrows the models, ` gpu_models=<ids>` with the ids lowercase,
+    sorted and de-duplicated (the whole token is dropped otherwise, like
+    verified_volumes). Raises ValueError on anything the token grammar cannot
+    express; the caller turns that into a launch refusal.
+    """
+    if arch not in GPU_ARCHS:
+        msg = f"unknown GPU architecture {arch!r}"
+        raise ValueError(msg)
+    if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= MAX_CONFIDENTIAL_GPUS:
+        msg = f"GPU count {count!r} is outside 1..{MAX_CONFIDENTIAL_GPUS}"
+        raise ValueError(msg)
+    tokens = f"gpu_arch={arch} gpu_count={count}"
+    if not models:
+        return tokens
+    canonical = sorted(set(models))
+    if len(canonical) > MAX_CONFIDENTIAL_GPU_MODELS:
+        msg = f"{len(canonical)} GPU models named; at most {MAX_CONFIDENTIAL_GPU_MODELS} are supported"
+        raise ValueError(msg)
+    for model in canonical:
+        if not re.fullmatch(CONFIDENTIAL_GPU_DEVICE_ID_PATTERN, model):
+            msg = f"GPU model {model!r} is not a lowercase PCI vendor:device id"
+            raise ValueError(msg)
+    return f"{tokens} gpu_models={','.join(canonical)}"
 
 
 def vprogram_staging_dir(vm_hash: ItemHash) -> Path:
@@ -214,6 +251,41 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
                 f"swiotlb reservation needs at least {GPU_VPROGRAM_MIN_MEMORY_MIB} MiB"
             )
             raise VmSetupError(msg)
+        # The guest only enforces a requirement its measured cmdline carries,
+        # and the CLI refuses the same way before signing: a runtime whose
+        # template has no slot for the tokens cannot run a GPU workload.
+        template = manifest.boot.cmdline_template
+        if "{gpu_arch}" not in template or "{gpu_count}" not in template:
+            msg = (
+                f"V-PROGRAM {vm_hash} declares a GPU but runtime {content.runtime.ref} has no "
+                "{gpu_arch}/{gpu_count} cmdline slots"
+            )
+            raise VmSetupError(msg)
+        if gpu.models and "{gpu_models}" not in template:
+            msg = (
+                f"V-PROGRAM {vm_hash} narrows its GPU to specific models but runtime "
+                f"{content.runtime.ref} has no {{gpu_models}} cmdline slot"
+            )
+            raise VmSetupError(msg)
+        # A model the runtime lists no board for can never be satisfied: the
+        # guest compares the board triple the card signs against this table
+        # and powers off. Refuse here rather than burn a launch.
+        boards = manifest.gpu.archs[gpu.arch].boards
+        for model in gpu.models or []:
+            if model not in boards:
+                msg = (
+                    f"V-PROGRAM {vm_hash} asks for GPU model {model} but runtime "
+                    f"{content.runtime.ref} lists no {gpu.arch} board under that id"
+                )
+                raise VmSetupError(msg)
+    elif "{gpu_arch}" in manifest.boot.cmdline_template:
+        # Mirror image of the check above: a GPU runtime measures a GPU
+        # requirement, so it has nothing to run a GPU-less workload with.
+        msg = (
+            f"V-PROGRAM {vm_hash} declares no GPU but runtime {content.runtime.ref} is a GPU runtime "
+            "(its cmdline template has a {gpu_arch} slot)"
+        )
+        raise VmSetupError(msg)
 
     # The tarball is fetched here (not via snp_staging.fetch_and_stage_bundle)
     # so it goes through this module's own get_existing_file: run.py and the
@@ -326,6 +398,21 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
         extra_sidecar.write_text(" ".join(extra_tokens) + "\n")
     else:
         extra_sidecar.unlink(missing_ok=True)
+
+    # The measured GPU requirement closes the cmdline, the template's
+    # position. Same sidecar discipline as the volumes above: no GPU means no
+    # file, so neither a stale sidecar from a previous staging nor one shipped
+    # inside a mispackaged bundle can splice tokens the CLI never measured.
+    gpu_sidecar = rootfs_path.parent / f"{rootfs_path.name}.gpu_requirement"
+    if gpu is not None:
+        try:
+            requirement = render_gpu_requirement(gpu.arch, gpu.count, gpu.models)
+        except ValueError as error:
+            msg = f"V-PROGRAM {vm_hash} GPU requirement cannot be measured: {error}"
+            raise VmSetupError(msg) from error
+        gpu_sidecar.write_text(requirement + "\n")
+    else:
+        gpu_sidecar.unlink(missing_ok=True)
 
     session_base = settings.CONFIDENTIAL_SESSION_DIRECTORY or (Path(settings.EXECUTION_ROOT) / "sessions")
 

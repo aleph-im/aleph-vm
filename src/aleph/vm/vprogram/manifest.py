@@ -29,7 +29,9 @@ CONTRACT_PATTERN = r"^[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)+/[0-9]+$"
 # The closed set of placeholders a format-version-1 cmdline template may use.
 # The template is the normative cmdline recipe: restricting its slots is what
 # prevents a malicious manifest from smuggling arbitrary kernel parameters.
-CMDLINE_PLACEHOLDERS_V1 = frozenset({"platform_roothash", "workload_roothash", "verified_volumes"})
+CMDLINE_PLACEHOLDERS_V1 = frozenset(
+    {"platform_roothash", "workload_roothash", "verified_volumes", "gpu_arch", "gpu_count", "gpu_models"}
+)
 # The closed placeholder set for the aleph-instance-runtime luks cmdline
 # template (format version 1): the instance init parses only `owner=` off
 # /proc/cmdline, so that is the only slot a manifest may fill.
@@ -57,11 +59,17 @@ CMDLINE_PLACEHOLDER_KEYS = {
     "platform_roothash": "roothash",
     "workload_roothash": "workload_roothash",
     "verified_volumes": "verified_volumes",
+    "gpu_arch": "gpu_arch",
+    "gpu_count": "gpu_count",
+    "gpu_models": "gpu_models",
     "owner": "owner",
 }
 _CMDLINE_KV_TOKEN = re.compile(r"^([a-z_]+)=\{([a-z_]+)\}$")
 
 DRIVER_VERSION_PATTERN = r"^\d+\.\d+(\.\d+)?$"
+# Lowercase PCI vendor:device id, the spelling a V-PROGRAM's gpu.models and
+# the measured gpu_models= token use.
+GPU_DEVICE_ID_PATTERN = r"^[0-9a-f]{4}:[0-9a-f]{4}$"
 
 
 class StrictModel(BaseModel):
@@ -231,10 +239,37 @@ class SourceInfo(StrictModel):
     build: str = Field(min_length=1)
 
 
+class GpuBoard(StrictModel):
+    """One board a PCI id can be, as the card itself states it: project,
+    project_sku and chip_sku come from the SPDM opaque data of verified
+    attestation evidence, never from PCI config space or the driver."""
+
+    name: str = Field(min_length=1, description="Marketing name of the board, informational")
+    project: str = Field(pattern=r"^[0-9A-Za-z]+$")
+    project_sku: str = Field(pattern=r"^[0-9A-Za-z]+$")
+    chip_sku: str = Field(pattern=r"^[0-9A-Za-z]+$")
+
+
 class GpuArchSpec(StrictModel):
     accepted_models: list[str] = Field(
         min_length=1, description="hwmodel claim strings NVIDIA attestation reports carry"
     )
+    # A PCI id maps to the boards sold under it. Empty means the runtime
+    # cannot serve a requirement narrowed to specific models: the guest
+    # would find no board to match and power off, so the launch is refused.
+    boards: dict[str, list[GpuBoard]] = Field(default_factory=dict)
+
+    @field_validator("boards")
+    @classmethod
+    def check_boards(cls, boards: dict[str, list[GpuBoard]]) -> dict[str, list[GpuBoard]]:
+        for device_id, entries in boards.items():
+            if not re.fullmatch(GPU_DEVICE_ID_PATTERN, device_id):
+                msg = f"boards key {device_id!r} is not a lowercase PCI vendor:device id"
+                raise ValueError(msg)
+            if not entries:
+                msg = f"boards.{device_id} must list at least one board"
+                raise ValueError(msg)
+        return boards
 
 
 class GpuRuntimeSpec(StrictModel):
