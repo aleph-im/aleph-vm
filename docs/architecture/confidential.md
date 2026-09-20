@@ -429,7 +429,23 @@ tokens the GPU runtime's manifest template carries:
 `gpu_arch=hopper|blackwell`, `gpu_count=<1..8>` and, only when the message
 narrows the models, `gpu_models=<vvvv:dddd>[,...]` (lowercase, sorted,
 de-duplicated; the whole token is dropped otherwise, like
-`verified_volumes`). Init hands them to
+`verified_volumes`).
+
+On the host the agent renders those tokens from the message's `gpu` block
+(`render_gpu_requirement`, `src/aleph/vm/agent/vprogram_launch.py`) into a
+`{rootfs}.gpu_requirement` sidecar, the same channel as `cmdline_extra`
+above, and `snp_config_slice` splices it verbatim at the end of the measured
+cmdline, after `verified_volumes`. It admits only the canonical form
+(architecture in the closed set, a single-digit count, sorted unique
+lowercase ids, single spaces) and fails closed as `InvalidBackend` on
+anything else; no GPU on the message means no sidecar and a cmdline
+byte-identical to a GPU-less V-PROGRAM. The launch is refused before staging
+when the runtime's template has no requirement slots, when the message
+narrows to a model the manifest's `boards` table has no row for (the guest
+could only power off), or when a GPU runtime is handed a message with no
+GPU.
+
+Init hands them to
 `aleph-attest-agent gpu-policy --cmdline /proc/cmdline --gpu-json
 /mnt/root/etc/aleph/gpu.json --claims /run/aleph/gpu-boot-claims.json
 --evidence /run/aleph/gpu-evidence.json --nonce <boot nonce>

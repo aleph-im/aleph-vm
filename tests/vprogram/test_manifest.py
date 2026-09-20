@@ -199,14 +199,77 @@ def test_gpu_block_is_optional_and_strict() -> None:
             RuntimeManifest.model_validate(broken)
 
 
-def test_gpu_cmdline_template_keeps_swiotlb_as_fixed_text() -> None:
+def test_gpu_boards_are_optional_and_validated() -> None:
+    with_gpu = deepcopy(REFERENCE_MANIFEST)
+    with_gpu["gpu"] = {
+        "vendor": "nvidia",
+        "driver_version": "595.71.05",
+        "library_path": "/opt/nvidia/lib",
+        "archs": {
+            "hopper": {
+                "accepted_models": ["GH100 A01 GSP BROM"],
+                "boards": {
+                    "10de:233b": [{"name": "H200 NVL", "project": "1010", "project_sku": "0230", "chip_sku": "894"}],
+                    "10de:2330": [
+                        {"name": "H100 SXM5 80GB", "project": "G520", "project_sku": "0200", "chip_sku": "885"}
+                    ],
+                },
+            },
+            # No boards at all: the arch runs any card of the family, but no
+            # model narrowing can be satisfied on it.
+            "blackwell": {"accepted_models": ["NVIDIA RTX PRO 6000 Blackwell Server Edition"]},
+        },
+    }
+    parsed = RuntimeManifest.model_validate(with_gpu).gpu
+    assert parsed.archs["blackwell"].boards == {}
+    board = parsed.archs["hopper"].boards["10de:233b"][0]
+    assert (board.name, board.project, board.project_sku, board.chip_sku) == ("H200 NVL", "1010", "0230", "894")
+    good_board = {"name": "H200 NVL", "project": "1010", "project_sku": "0230", "chip_sku": "894"}
+    for bad_boards in (
+        {"10DE:233B": [good_board]},  # upper case PCI id
+        {"10de:233": [good_board]},  # malformed PCI id
+        {"10de:233b": []},  # no board under the id
+        {"10de:233b": [good_board | {"name": ""}]},  # the client requires a name too
+        {"10de:233b": [good_board | {"project": ""}]},
+        {"10de:233b": [good_board | {"chip_sku": "89 4"}]},
+        {"10de:233b": [good_board | {"vbios": "96.00"}]},  # extra keys are rejected
+        {"10de:233b": [{"name": "H200 NVL", "project": "1010"}]},  # incomplete board
+    ):
+        broken = deepcopy(with_gpu)
+        broken["gpu"]["archs"]["hopper"]["boards"] = bad_boards
+        with pytest.raises(ValidationError):
+            RuntimeManifest.model_validate(broken)
+
+
+def test_gpu_cmdline_template_keeps_swiotlb_as_fixed_text_and_slots_the_requirement() -> None:
     from aleph.vm.vprogram.bundle import CMDLINE_TEMPLATE_GPU_V1
 
     assert "swiotlb=262144" in CMDLINE_TEMPLATE_GPU_V1
     assert "{swiotlb" not in CMDLINE_TEMPLATE_GPU_V1
+    # The measured GPU requirement rides in three slots of its own, each in
+    # its own whitespace-delimited token (the host and the client both drop
+    # or fill whole tokens).
+    assert CMDLINE_TEMPLATE_GPU_V1.endswith(" gpu_arch={gpu_arch} gpu_count={gpu_count} gpu_models={gpu_models}")
     manifest = deepcopy(REFERENCE_MANIFEST)
     manifest["boot"]["cmdline_template"] = CMDLINE_TEMPLATE_GPU_V1
     RuntimeManifest.model_validate(manifest)  # the closed placeholder set still validates
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        # A GPU slot must not be glued to anything, nor pair with another key:
+        # the closed placeholder/key pinning covers the new slots too.
+        "console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash} arch={gpu_arch}",
+        "console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash} gpu_arch={gpu_arch}evil",
+        "console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash} gpu_count={gpu_models}",
+    ],
+)
+def test_gpu_cmdline_slots_stay_pinned_to_their_keys(template: str) -> None:
+    manifest = deepcopy(REFERENCE_MANIFEST)
+    manifest["boot"]["cmdline_template"] = template
+    with pytest.raises(ValidationError):
+        RuntimeManifest.model_validate(manifest)
 
 
 def test_vprogram_manifest_rejects_instance_format() -> None:

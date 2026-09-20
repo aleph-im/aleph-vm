@@ -30,6 +30,7 @@ from aleph.vm.agent.vprogram_launch import (
     build_vprogram_spec,
     fetch_runtime_manifest,
     remove_vprogram_staging,
+    render_gpu_requirement,
     vprogram_staging_dir,
 )
 from aleph.vm.conf import settings
@@ -716,13 +717,28 @@ GPU_BLOCK = {
     "driver_version": "595.71.05",
     "library_path": "/opt/nvidia/lib",
     "archs": {
-        "blackwell": {"accepted_models": ["NVIDIA RTX PRO 6000 Blackwell Server Edition"]},
+        "blackwell": {
+            "accepted_models": ["NVIDIA RTX PRO 6000 Blackwell Server Edition"],
+            "boards": {
+                "10de:2bb5": [
+                    {
+                        "name": "RTX PRO 6000 Blackwell Server Edition",
+                        "project": "G153",
+                        "project_sku": "0210",
+                        "chip_sku": "895",
+                    }
+                ]
+            },
+        },
     },
 }
 VOLUME_SLOT_TEMPLATE = (
     MANIFEST_TEMPLATE["boot"]["cmdline_template"]
     + " workload_roothash={workload_roothash} swiotlb=262144 verified_volumes={verified_volumes}"
 )
+# The published GPU runtime template: the requirement's three slots close it,
+# so the sidecars the daemon splices land in the same order.
+GPU_SLOT_TEMPLATE = VOLUME_SLOT_TEMPLATE + " gpu_arch={gpu_arch} gpu_count={gpu_count} gpu_models={gpu_models}"
 
 
 def _with_gpu(
@@ -731,17 +747,59 @@ def _with_gpu(
     memory: int = 4096,
     arch: Literal["hopper", "blackwell"] = "blackwell",
     count: int = 1,
+    models: list[str] | None = None,
 ) -> VerifiableProgramMessage:
     content = message.content.model_copy(
         update={
             # model_copy(update=...) does not coerce nested dicts (unlike
             # parse_message/model_validate), so a real requirement is built
             # here to match what a validated message actually carries.
-            "gpu": ConfidentialGpuRequirement(vendor="nvidia", arch=arch, count=count, mode="cc"),
+            "gpu": ConfidentialGpuRequirement(vendor="nvidia", arch=arch, count=count, models=models, mode="cc"),
             "resources": message.content.resources.model_copy(update={"memory": memory}),
         }
     )
     return message.model_copy(update={"content": content})
+
+
+def _gpu_sidecar(spec) -> Path:
+    rootfs = spec.rootfs.path
+    return rootfs.with_name(rootfs.name + ".gpu_requirement")
+
+
+@pytest.mark.parametrize(
+    ("arch", "count", "models", "expected"),
+    [
+        ("hopper", 1, None, "gpu_arch=hopper gpu_count=1"),
+        ("blackwell", 4, ["10de:2bb5"], "gpu_arch=blackwell gpu_count=4 gpu_models=10de:2bb5"),
+        (
+            "hopper",
+            2,
+            ["10de:2335", "10de:233b", "10de:2331"],
+            "gpu_arch=hopper gpu_count=2 gpu_models=10de:2331,10de:2335,10de:233b",
+        ),
+    ],
+)
+def test_render_gpu_requirement_is_canonical(arch, count, models, expected) -> None:
+    """The aleph CLI renders these exact strings into the runtime template
+    before computing the launch measurement; anything else mismeasures."""
+    assert render_gpu_requirement(arch, count, models) == expected
+
+
+@pytest.mark.parametrize(
+    ("arch", "count", "models"),
+    [
+        ("ampere", 1, None),
+        ("hopper", 0, None),
+        ("hopper", 9, None),
+        ("hopper", True, None),
+        ("hopper", 1, ["10DE:2331"]),
+        ("hopper", 1, ["10de:233"]),
+        ("hopper", 1, [f"10de:2{index:03d}" for index in range(17)]),
+    ],
+)
+def test_render_gpu_requirement_refuses_what_the_tokens_cannot_say(arch, count, models) -> None:
+    with pytest.raises(ValueError):
+        render_gpu_requirement(arch, count, models)
 
 
 @pytest.mark.asyncio
@@ -764,7 +822,7 @@ async def test_gpu_vprogram_enforces_the_memory_floor(tmp_path, storage_files, s
 async def test_gpu_vprogram_spec_leaves_gpus_for_run_to_resolve(tmp_path, storage_files, snp_vcpu_types):
     # The fixture message carries a volume, so the manifest needs the slot
     # for the build to run to completion.
-    _stage_bundle(tmp_path, storage_files, gpu=GPU_BLOCK, **{"boot.cmdline_template": VOLUME_SLOT_TEMPLATE})
+    _stage_bundle(tmp_path, storage_files, gpu=GPU_BLOCK, **{"boot.cmdline_template": GPU_SLOT_TEMPLATE})
     message = _with_gpu(load_vprogram_message())
     spec, _ = await build_vprogram_spec(message.item_hash, message.content)
     assert spec.gpus == []  # resolved against the host in run.py, after staging
@@ -772,6 +830,9 @@ async def test_gpu_vprogram_spec_leaves_gpus_for_run_to_resolve(tmp_path, storag
     # The fixed swiotlb token reaches the daemon through its own sidecar.
     rootfs = next(disk.path for disk in spec.disks if disk.role is DiskRole.ROOTFS)
     assert (rootfs.parent / f"{rootfs.name}.cmdline_extra").read_text() == "swiotlb=262144\n"
+    # So does the measured requirement, in the canonical form: no models
+    # named, so no gpu_models token at all.
+    assert _gpu_sidecar(spec).read_text() == "gpu_arch=blackwell gpu_count=1\n"
 
 
 @pytest.mark.asyncio
@@ -779,11 +840,86 @@ async def test_gpu_vprogram_accepts_a_multi_card_count(tmp_path, storage_files, 
     # The count is resolved against the inventory later, by the capacity
     # resolver; the launch checks only concern the runtime and the memory,
     # which do not change with the number of cards.
-    _stage_bundle(tmp_path, storage_files, gpu=GPU_BLOCK, **{"boot.cmdline_template": VOLUME_SLOT_TEMPLATE})
+    _stage_bundle(tmp_path, storage_files, gpu=GPU_BLOCK, **{"boot.cmdline_template": GPU_SLOT_TEMPLATE})
     message = _with_gpu(load_vprogram_message(), count=2)
     spec, _ = await build_vprogram_spec(message.item_hash, message.content)
     assert spec.gpus == []  # two cards, resolved against the host in run.py
     assert spec.memory_mib == 4096
+    assert _gpu_sidecar(spec).read_text() == "gpu_arch=blackwell gpu_count=2\n"
+
+
+@pytest.mark.asyncio
+async def test_gpu_models_are_staged_sorted_and_deduplicated(tmp_path, storage_files, snp_vcpu_types):
+    """A narrowed requirement stages the canonical model list, whatever order
+    the message named the ids in: the client sorts the same way before it
+    measures the cmdline."""
+    gpu_block = copy.deepcopy(GPU_BLOCK)
+    gpu_block["archs"]["blackwell"]["boards"]["10de:2b85"] = [
+        {"name": "RTX PRO 6000 Blackwell", "project": "G153", "project_sku": "0200", "chip_sku": "895"}
+    ]
+    _stage_bundle(tmp_path, storage_files, gpu=gpu_block, **{"boot.cmdline_template": GPU_SLOT_TEMPLATE})
+    message = _with_gpu(load_vprogram_message(), models=["10de:2bb5", "10de:2b85"])
+    spec, _ = await build_vprogram_spec(message.item_hash, message.content)
+    assert _gpu_sidecar(spec).read_text() == "gpu_arch=blackwell gpu_count=1 gpu_models=10de:2b85,10de:2bb5\n"
+
+
+@pytest.mark.asyncio
+async def test_gpu_vprogram_without_requirement_slots_is_refused(tmp_path, storage_files, snp_vcpu_types):
+    """A runtime whose template cannot carry the requirement would boot a
+    guest that enforces nothing: refuse before staging anything."""
+    _stage_bundle(tmp_path, storage_files, gpu=GPU_BLOCK, **{"boot.cmdline_template": VOLUME_SLOT_TEMPLATE})
+    message = _with_gpu(load_vprogram_message())
+    with pytest.raises(VmSetupError, match=r"no \{gpu_arch\}/\{gpu_count\} cmdline slots"):
+        await build_vprogram_spec(message.item_hash, message.content)
+
+
+@pytest.mark.asyncio
+async def test_gpu_models_without_a_models_slot_are_refused(tmp_path, storage_files, snp_vcpu_types):
+    template = GPU_SLOT_TEMPLATE.replace(" gpu_models={gpu_models}", "")
+    _stage_bundle(tmp_path, storage_files, gpu=GPU_BLOCK, **{"boot.cmdline_template": template})
+    message = _with_gpu(load_vprogram_message(), models=["10de:2bb5"])
+    with pytest.raises(VmSetupError, match=r"no \{gpu_models\} cmdline slot"):
+        await build_vprogram_spec(message.item_hash, message.content)
+
+
+@pytest.mark.asyncio
+async def test_gpu_model_without_a_board_row_is_refused(tmp_path, storage_files, snp_vcpu_types):
+    """The guest matches the board triple the card signs against the
+    runtime's table; a model with no row there can only power the VM off."""
+    _stage_bundle(tmp_path, storage_files, gpu=GPU_BLOCK, **{"boot.cmdline_template": GPU_SLOT_TEMPLATE})
+    message = _with_gpu(load_vprogram_message(), models=["10de:dead"])
+    with pytest.raises(VmSetupError, match="lists no blackwell board"):
+        await build_vprogram_spec(message.item_hash, message.content)
+
+
+@pytest.mark.asyncio
+async def test_gpu_runtime_refuses_a_gpu_less_vprogram(tmp_path, storage_files, snp_vcpu_types):
+    """Mirror image: a GPU runtime measures a GPU requirement the message
+    does not carry, so its cmdline could never be reproduced."""
+    _stage_bundle(tmp_path, storage_files, gpu=GPU_BLOCK, **{"boot.cmdline_template": GPU_SLOT_TEMPLATE})
+    message = load_vprogram_message()
+    with pytest.raises(VmSetupError, match="is a GPU runtime"):
+        await build_vprogram_spec(message.item_hash, message.content)
+
+
+@pytest.mark.asyncio
+async def test_stale_gpu_requirement_sidecar_is_removed(tmp_path, storage_files, snp_vcpu_types):
+    """A {rootfs}.gpu_requirement file left by a previous staging of the same
+    path, or shipped inside a mispackaged bundle, must not survive into a
+    GPU-less launch: the daemon emits the tokens from the file's presence."""
+    files = dict(BUNDLE_FILES)
+    files["rootfs.ext4.gpu_requirement"] = b"gpu_arch=hopper gpu_count=8\n"
+    tar_path = make_bundle(tmp_path, files)
+    manifest_path = make_manifest(tar_path, tmp_path)
+    storage_files[MANIFEST_REF] = manifest_path
+    storage_files[BUNDLE_REF] = tar_path
+    stage_workload(storage_files, tmp_path)
+
+    message = load_vprogram_message()
+    content = message.content.model_copy(update={"volumes": []})
+    spec, _attest_port = await build_vprogram_spec(message.item_hash, content)
+
+    assert not _gpu_sidecar(spec).is_file()
 
 
 @pytest.mark.asyncio
