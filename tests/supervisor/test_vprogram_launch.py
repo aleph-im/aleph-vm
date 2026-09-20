@@ -712,7 +712,7 @@ def test_remove_vprogram_staging_is_idempotent(tmp_path, monkeypatch):
     assert not staging.exists()
 
 
-GPU_BLOCK = {
+GPU_BLOCK: dict[str, Any] = {
     "vendor": "nvidia",
     "driver_version": "595.71.05",
     "library_path": "/opt/nvidia/lib",
