@@ -274,19 +274,31 @@ if [ "$gpu_total" -gt 0 ]; then
         /bin/busybox cat /run/aleph/gpu-pm.log
         gpu_fatal "enabling persistence mode"
     fi
-    # Collect the SPDM evidence ONCE, to a file both nvattest and the
-    # gpu-policy check below read: the board identity that check enforces
-    # must come from the very bytes nvattest verified, not from a second,
-    # unverified read of the card. Attesting from the file also touches no
-    # GPU, which keeps the one-RM-init-per-reset rule above satisfied.
-    # Nothing here is secret, but everything under /run/aleph is 0600.
+    # Collect the SPDM evidence ONCE: the board identity the policy check
+    # enforces must come from the very bytes nvattest verified, and attesting
+    # from a file touches no GPU, so the one-RM-init-per-reset rule above
+    # still holds. Both files are created 0600 (the umask in the subshells
+    # covers the redirections), like the attest result and claims below.
+    gpu_evidence_doc=/run/aleph/gpu-evidence-doc.json
     gpu_evidence=/run/aleph/gpu-evidence.json
     if ! (umask 077; gpu_nvattest --format json collect-evidence --device gpu --nonce "$boot_nonce" \
-              > "$gpu_evidence" 2> /run/aleph/gpu-evidence.log); then
+              > "$gpu_evidence_doc" 2> /run/aleph/gpu-evidence.log); then
         /bin/busybox cat /run/aleph/gpu-evidence.log
         gpu_fatal "collecting GPU evidence"
     fi
-    [ -s "$gpu_evidence" ] || gpu_fatal "nvattest collected no GPU evidence"
+    # Same anchored top-level match as the attest result below (four spaces at
+    # dump(4)): a per-device result_code nested deeper must never satisfy it.
+    /bin/busybox grep -qE '^    "result_code" *: *0 *,?$' "$gpu_evidence_doc" \
+        || gpu_fatal "evidence collection result_code != 0"
+    # collect-evidence prints a WRAPPER object ("evidences", "result_code",
+    # "result_message"), but attest's file source parses a bare array, so cut
+    # the array out once and hand the same file to both readers. Same shape as
+    # the claims cut below: "evidences" sorts first, so its value runs from the
+    # `    "evidences": [` line to the next line at that same four-space indent
+    # starting with `]`, and nothing nested can sit there.
+    (umask 077; /bin/busybox sed -n '/^    "evidences": \[$/,/^    \]/p' "$gpu_evidence_doc" \
+        | /bin/busybox sed -e '1s/^    "evidences": //' -e '$s/^    \].*/]/' > "$gpu_evidence")
+    [ -s "$gpu_evidence" ] || gpu_fatal "could not extract the evidence array"
     # The full result carries the detached EAT and the log can echo it on
     # failure; neither is served, so both are created 0600 (the umask in the
     # subshell covers the redirections), same as the extracted claims below.
@@ -335,17 +347,18 @@ if [ "$gpu_total" -gt 0 ]; then
     [ "$measres_total" = "$claims_count" ] || gpu_fatal "a claim carries no measurement result"
     [ "$measres_ok" = "$claims_count" ] || gpu_fatal "measurement comparison failed"
     /bin/busybox chmod 0600 "$gpu_claims"
-    # The measured requirement: the kernel cmdline names the architecture,
-    # the card count and (optionally) the exact board models this VM was
-    # launched for, and the agent checks all three against the policy table
-    # in the verity rootfs, the claims nvattest produced and the evidence it
-    # verified. Board identity is read from that evidence's signed SPDM
-    # opaque data, never from the PCI config space or nvidia-smi. Runs
-    # BEFORE the ready state: a card that does not answer the requirement
-    # must never be handed to a workload.
+    # The measured requirement (arch, count, optional models) against the
+    # policy table in the verity rootfs, the claims and the evidence nvattest
+    # verified; board identity comes from that evidence's signed SPDM opaque
+    # data, never from PCI config space or nvidia-smi. Runs BEFORE the ready
+    # state, so an unwanted card is never handed to a workload.
+    # --observed-count is the PCI scan the /dev/nvidiaN nodes were made from:
+    # the agent demands it equal gpu_count, so the bus cannot hold a card
+    # nothing verified while the workload gets a node for it.
     if ! /bin/aleph-attest-agent gpu-policy --cmdline /proc/cmdline \
             --gpu-json /mnt/root/etc/aleph/gpu.json \
-            --claims "$gpu_claims" --evidence "$gpu_evidence" --nonce "$boot_nonce" \
+            --claims "$gpu_claims" --evidence "$gpu_evidence" \
+            --nonce "$boot_nonce" --observed-count "$gpu_total" \
             > /run/aleph/gpu-policy.log 2>&1; then
         /bin/busybox cat /run/aleph/gpu-policy.log
         gpu_fatal "GPU requirement not met"

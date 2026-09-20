@@ -257,20 +257,12 @@
       # ownership, fail-closed init).
       composeRootfs = pkgs.callPackage ./compose-rootfs.nix { inherit kernel; };
 
-      # The GPU flavor's facts and policy: the driver contract (vendor,
-      # version, the in-guest library path the workload gets its driver
-      # userland at), the hwmodel claim strings each architecture accepts,
-      # and the board table mapping a PCI id to the project/SKU triples a
-      # card of that model reports in the signed SPDM opaque data of its
-      # attestation report. A row is only ever added from real evidence (or
-      # an NVIDIA part-number source at the same confidence): a wrong triple
-      # powers off every VM that requests that model.
-      #
-      # ONE definition, two destinations: /etc/aleph/gpu.json in the GPU
-      # rootfs (measured through gpuVerity's root hash, read by init's
-      # gpu-policy call) and the gpuImage sidecar the bundle builder copies
-      # into the published manifest. Both must be the same object, or the
-      # guest would enforce a table the client never saw.
+      # The GPU flavor's driver contract and policy table (a PCI id maps to
+      # the project/SKU triples a card of that model signs into its SPDM
+      # opaque data; add a row only from evidence read off such a card).
+      # ONE definition for two destinations, or the guest would enforce a
+      # table the client never saw: /etc/aleph/gpu.json in the GPU rootfs
+      # and the gpuImage sidecar the bundle copies into the manifest.
       gpuFacts = pkgs.writeText "gpu.json" (builtins.toJSON {
         vendor = "nvidia";
         driver_version = nvidiaDriver.version;
@@ -458,9 +450,10 @@
       #   instead of duplicating it.
       # cmdlineExtra: appended verbatim to the cmdline built above (so it
       #   carries its own leading space). Empty by default, which keeps every
-      #   existing caller's cmdline BYTE-identical; the GPU flavor passes
-      #   " swiotlb=262144", which the guest needs for the driver's bounce
-      #   buffers under SEV-SNP.
+      #   existing caller's cmdline BYTE-identical; the GPU flavor passes the
+      #   swiotlb size the driver's bounce buffers need under SEV-SNP plus
+      #   the GPU requirement tokens the guest enforces (see
+      #   gpuMeasurementFor).
       # name: the derivation name. Defaults to the exact string this function
       #   has always used, so the base flavor's `#measurement` store path is
       #   unchanged; the compose flavor below passes a compose-tagged name so
@@ -514,14 +507,10 @@
 
       # Confidential-GPU measurement builder: same measurementFor machinery,
       # pinned to gpuInitrd, gpuVerity's root hash and gpuKernel, with the
-      # GPU flavor's extra cmdline tokens.
-      #
-      # The GPU requirement is measured: gpu_arch and gpu_count say what the
-      # guest must find attached, and init powers off when the attached
-      # cards do not answer them. The fixed values here are one Hopper card,
-      # the shape the published bundle's measurement.hex is computed for;
-      # a real launch re-measures with the requirement the message carries
-      # (and with a gpu_models= token when it names models).
+      # GPU flavor's extra cmdline tokens. gpu_arch/gpu_count are the measured
+      # requirement init enforces; these fixed values (one Hopper card, no
+      # models token) are what the published measurement.hex is computed for,
+      # and a real launch re-measures with the message's own requirement.
       gpuMeasurementFor = { vcpus ? 2, vcpuType ? "EPYC-v4", workloadRoothash ? null }:
         measurementFor {
           inherit vcpus vcpuType workloadRoothash;
