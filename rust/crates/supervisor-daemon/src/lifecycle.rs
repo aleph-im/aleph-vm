@@ -2267,17 +2267,17 @@ fn snp_config_slice(state: &DaemonState, spec: &pb::VmSpec) -> Result<Option<Snp
         state,
         spec,
         state.gpu_cc_probe,
-        crate::gpu_bar::gpu_mmio64_mb,
+        crate::gpu_bar::gpu_bar_bytes,
     )
 }
 
 /// `snp_config_slice` with the two hardware reads injected: the CC mode
-/// probe and the BAR-driven MMIO window, so tests need no sysfs.
+/// probe and the card's BAR total, so tests need no sysfs.
 fn snp_config_slice_with(
     state: &DaemonState,
     spec: &pb::VmSpec,
     probe: impl Fn(&str, &str) -> Result<Option<crate::gpu_cc::CcMode>, crate::error::DaemonError>,
-    mmio_window: impl Fn(&[&str]) -> Result<u64, crate::error::DaemonError>,
+    gpu_bar_bytes: impl Fn(&[&str]) -> Result<u64, crate::error::DaemonError>,
 ) -> Result<Option<SnpSlice>, RpcError> {
     let Some(tee) = &spec.tee else {
         return Ok(None);
@@ -2330,12 +2330,12 @@ fn snp_config_slice_with(
         None
     } else {
         let hosts: Vec<&str> = spec.gpus.iter().map(|g| g.pci_host.as_str()).collect();
-        let window_mb = mmio_window(&hosts).map_err(|e| {
+        let bar_bytes = gpu_bar_bytes(&hosts).map_err(|e| {
             RpcError::InvalidBackend(format!("cannot size the GPU MMIO window: {e}"))
         })?;
         // A window that does not fit beside the guest's RAM gets no firmware
         // placement at all, leaving a device that enumerates and does nothing.
-        crate::gpu_bar::check_mmio64_budget(window_mb, spec.memory_mib)
+        let window_mb = crate::gpu_bar::mmio64_window_for(bar_bytes, spec.memory_mib)
             .map_err(|e| RpcError::InvalidBackend(e.to_string()))?;
         Some(window_mb)
     };
@@ -5524,8 +5524,10 @@ mod tests {
             pci_host: "06:00.0".into(),
             supports_x_vga: true,
         }];
-        // The probe and the window reader are injected so the test needs no
-        // sysfs; the probe records which card it was asked about.
+        // The probe and the BAR reader are injected so the test needs no
+        // sysfs; the probe records which card it was asked about. 256 GiB of
+        // BARs rounds to a 256 GiB window, doubled to 512 GiB, which fits
+        // next to this spec's 256 MiB of guest RAM.
         let probed: std::sync::Mutex<Vec<(String, String)>> = Default::default();
         let cc_on = |pci_host: &str, device_id: &str| {
             probed
@@ -5534,7 +5536,7 @@ mod tests {
                 .push((pci_host.to_string(), device_id.to_string()));
             Ok(Some(crate::gpu_cc::CcMode::On))
         };
-        let slice = snp_config_slice_with(state, &spec, cc_on, |_| Ok(524288))
+        let slice = snp_config_slice_with(state, &spec, cc_on, |_| Ok(256 * (1u64 << 30)))
             .unwrap()
             .unwrap();
         assert_eq!(slice.pci_mmio64_mb, Some(524288));
@@ -5564,7 +5566,7 @@ mod tests {
             supports_x_vga: true,
         }];
         let cc_on = |_: &str, _: &str| Ok(Some(crate::gpu_cc::CcMode::On));
-        let slice = snp_config_slice_with(state, &spec, cc_on, |_| Ok(524288))
+        let slice = snp_config_slice_with(state, &spec, cc_on, |_| Ok(256 * (1u64 << 30)))
             .expect("the verity arm still takes a confidential GPU")
             .expect("an SEV-SNP spec yields a slice");
         assert_eq!(slice.pci_mmio64_mb, Some(524288));
@@ -5584,8 +5586,10 @@ mod tests {
             pci_host: "06:00.0".into(),
             supports_x_vga: true,
         }];
+        // 1 TiB of BARs: the doubled window (2 TiB) and the un-doubled one
+        // (1 TiB) both overshoot this spec's 256 MiB of guest RAM.
         let cc_on = |_: &str, _: &str| Ok(Some(crate::gpu_cc::CcMode::On));
-        match snp_config_slice_with(state, &spec, cc_on, |_| Ok(1024 * 1024)) {
+        match snp_config_slice_with(state, &spec, cc_on, |_| Ok(1024 * (1u64 << 30))) {
             Err(RpcError::InvalidBackend(msg)) => {
                 assert!(msg.contains("1048576"), "{msg}")
             }
@@ -5595,8 +5599,8 @@ mod tests {
 
     #[test]
     fn snp_config_slice_refuses_more_than_one_gpu() {
-        // Policy, not a limit of the code: the window closure returns a size
-        // that fits, so the card count alone is what refuses the spec.
+        // Policy, not a limit of the code: the BAR-total closure returns a
+        // size that fits, so the card count alone is what refuses the spec.
         let harness = harness_with_gpus(vec![nvidia_card("06:00.0"), nvidia_card("07:00.0")]);
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -5614,7 +5618,7 @@ mod tests {
             },
         ];
         let cc_on = |_: &str, _: &str| Ok(Some(crate::gpu_cc::CcMode::On));
-        match snp_config_slice_with(state, &spec, cc_on, |_| Ok(524288)) {
+        match snp_config_slice_with(state, &spec, cc_on, |_| Ok(256 * (1u64 << 30))) {
             Err(RpcError::InvalidBackend(msg)) => {
                 assert!(msg.contains("at most one GPU"), "{msg}")
             }
