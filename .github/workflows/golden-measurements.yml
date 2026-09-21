@@ -104,9 +104,16 @@ jobs:
   # set's ~15 minutes -- so this job carries its own (larger) disk and time
   # budget, and commits the regenerated file straight back to the dispatched
   # branch. That is the documented procedure (check-golden-measurements.sh
-  # header) made runnable from a PR: the contributor who has no nix dispatches
-  # this against their branch and pushes the resulting commit, keeping the
-  # golden file in the same PR as the change that moved the measurement.
+  # header) made runnable from CI: whoever moves a measurement regenerates the
+  # golden file in the same PR, without a local nix install. Two caveats:
+  #   - dispatching a workflow needs write access to this repo, so a fork-PR
+  #     contributor asks a maintainer (or runs with their token) to dispatch it;
+  #   - the GITHUB_TOKEN can only push to a branch of THIS repo, not to a fork
+  #     PR branch -- dispatched there, the git push below fails. The workflow
+  #     for that case: push the branch here (e.g. same name), dispatch, then
+  #     cherry-pick the regeneration commit back into the fork PR branch.
+  # A protected dispatch branch rejects the push the same way; use a working
+  # branch, not main/dev*.
   golden-measurements-update:
     name: "regenerate the golden file, commit it to the dispatched ref"
     if: ${{ inputs.update-goldens == true }}

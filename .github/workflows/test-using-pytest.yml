@@ -39,7 +39,10 @@ jobs:
       - name: Install required system packages for installing and running tests
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3 python3-pip python3-aiohttp python3-msgpack python3-aiodns python3-alembic python3-sqlalchemy python3-setproctitle redis python3-psutil sudo acl curl systemd-container squashfs-tools debootstrap python3-packaging nftables libsystemd-dev cmake libdbus-1-dev libglib2.0-dev lshw python3-jwcrypto
+          # cryptsetup: tests/test_instance_luks_header_validation.py runs the
+          # real header-validation pipeline from nix/init-instance.sh (rootless,
+          # against plain image files) and would silently skip without it.
+          sudo apt-get install -y python3 python3-pip python3-aiohttp python3-msgpack python3-aiodns python3-alembic python3-sqlalchemy python3-setproctitle redis python3-psutil sudo acl curl systemd-container squashfs-tools debootstrap python3-packaging nftables libsystemd-dev cmake libdbus-1-dev libglib2.0-dev lshw python3-jwcrypto cryptsetup
           pip install --upgrade typing-extensions 'redis>=4.2.0'
 
       - name: Install required Python packages

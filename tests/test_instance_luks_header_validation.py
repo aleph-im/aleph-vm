@@ -145,17 +145,20 @@ def _recompute_csum(area: bytearray) -> bytes:
 
 
 def _flip_cipher(image: Path, where: str) -> None:
-    """Downgrade the cipher to cipher_null-ecb in both metadata areas and fix the
-    checksum, so the forged header passes cryptsetup's own integrity check.
+    """Forge a malicious shape in both metadata areas and fix the checksum, so
+    the header passes cryptsetup's own integrity check.
 
     where="segment": segments.0.encryption (Trail of Bits data-segment variant).
     where="keyslot": keyslots.0.area.encryption (CVE-2025-59054 keyslot variant).
+    where="linear": segments.0.type -> "linear" (plaintext-region shape).
     """
     buf = bytearray(image.read_bytes())
     for base in (0, AREA):
         meta, area = _read_area(buf, base)
         if where == "segment":
             meta["segments"]["0"]["encryption"] = "cipher_null-ecb"
+        elif where == "linear":
+            meta["segments"]["0"]["type"] = "linear"
         else:
             meta["keyslots"]["0"]["area"]["encryption"] = "cipher_null-ecb"
         new_json = json.dumps(meta, separators=(",", ":")).encode()
@@ -198,6 +201,11 @@ def test_data_segment_null_downgrade_is_refused(tmp_path):
     # The attack, not a corrupt disk: the genuine passphrase still unlocks the
     # forged header, because the digest does not bind the data-segment cipher.
     # (Only the segment variant: cryptsetup >= 2.8.1 refuses the keyslot one.)
+    # This asserts the VULNERABILITY, so it doubles as a canary for the fix
+    # landing upstream: if cryptsetup someday rejects data-segment null ciphers
+    # the way >= 2.8.1 rejects the keyslot variant, this assert fails while the
+    # init's behavior is still correct -- in that world the check in the init
+    # can be relaxed, it is not a regression of ours.
     unlock = subprocess.run(  # noqa: S603
         [CRYPTSETUP, "luksOpen", "--test-passphrase", "--key-file", "-", str(image)],
         input=PASSPHRASE,
@@ -213,6 +221,20 @@ def test_keyslot_null_downgrade_is_refused(tmp_path):
     _luks_format(image)
     _flip_cipher(image, "keyslot")
     _assert_cryptsetup_accepts_forgery(image)
+    assert _run_validation(image) is False
+
+
+def test_linear_segment_is_refused(tmp_path):
+    """A linear segment is a plaintext region, so a header carrying one is
+    refused no matter what else it says. Which layer refuses it is
+    cryptsetup's choice: today's cryptsetup happens to reject hand-forged
+    linear segments itself, but the init's seg_linear check must keep
+    refusing the shape even if a future cryptsetup starts accepting it
+    (e.g. as a mid-reencryption form), so the refusal is asserted either
+    way."""
+    image = tmp_path / "linear-segment.img"
+    _luks_format(image)
+    _flip_cipher(image, "linear")
     assert _run_validation(image) is False
 
 

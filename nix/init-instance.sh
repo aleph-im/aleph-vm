@@ -80,7 +80,14 @@ meta=$(/bin/cryptsetup luksDump --dump-json-metadata "$luks_header")
 enc_total=$(printf '%s\n' "$meta" | /bin/busybox grep -o '"encryption":[[:space:]]*"' | /bin/busybox wc -l)
 enc_ok=$(printf '%s\n' "$meta" | /bin/busybox grep -o '"encryption":[[:space:]]*"aes-xts-plain64"' | /bin/busybox wc -l)
 seg_crypt=$(printf '%s\n' "$meta" | /bin/busybox grep -o '"type":[[:space:]]*"crypt"' | /bin/busybox wc -l)
-if [ "$enc_total" -lt 1 ] || [ "$enc_total" != "$enc_ok" ] || [ "$seg_crypt" -lt 1 ]; then
+# Belt and braces: crypt and linear are the only segment types a LUKS2 header
+# may carry, so "at least one crypt segment and zero linear ones" == "every
+# segment is crypt". A linear segment is a plaintext region (the shape a
+# mid-reencryption header takes); current cryptsetup happens to reject
+# hand-forged ones earlier, but do not depend on that -- a smuggled plaintext
+# segment must fail closed here, not at the layer being attacked.
+seg_linear=$(printf '%s\n' "$meta" | /bin/busybox grep -o '"type":[[:space:]]*"linear"' | /bin/busybox wc -l)
+if [ "$enc_total" -lt 1 ] || [ "$enc_total" != "$enc_ok" ] || [ "$seg_crypt" -lt 1 ] || [ "$seg_linear" -ne 0 ]; then
     echo "init: FATAL: untrusted LUKS header rejected -- expected aes-xts-plain64 on every"
     echo "init:        keyslot area and data segment, got ${enc_ok}/${enc_total} matching and"
     echo "init:        ${seg_crypt} crypt segment(s). Possible host cipher_null downgrade"
