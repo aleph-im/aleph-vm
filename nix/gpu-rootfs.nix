@@ -1,4 +1,4 @@
-{ pkgs, nvidiaDriver, nvat, ... }:
+{ pkgs, nvidiaDriver, nvat, gpuFacts, ... }:
 
 # The confidential-GPU platform rootfs: the base busybox rootfs content plus
 # the raw driver userland at /opt/nvidia/lib, GSP firmware, NVIDIA's local
@@ -21,7 +21,7 @@ pkgs.runCommand "gpu-rootfs.ext4" {
   nativeBuildInputs = [ pkgs.e2fsprogs ];
   SOURCE_DATE_EPOCH = "0";
 } ''
-  mkdir -p rootfs/sbin rootfs/bin rootfs/srv rootfs/etc/ssl/certs rootfs/proc rootfs/sys rootfs/dev
+  mkdir -p rootfs/sbin rootfs/bin rootfs/srv rootfs/etc/ssl/certs rootfs/etc/aleph rootfs/proc rootfs/sys rootfs/dev
   mkdir -p rootfs/tmp/secrets rootfs/run rootfs/usr/bin rootfs/lib64 rootfs/opt/nvidia/lib rootfs/lib/firmware/nvidia
   cp ${staticBusybox}/bin/busybox rootfs/bin/
   ln -s /bin/busybox rootfs/usr/bin/env
@@ -31,6 +31,11 @@ pkgs.runCommand "gpu-rootfs.ext4" {
   touch rootfs/etc/resolv.conf
   chmod 1777 rootfs/tmp
   chmod 0700 rootfs/tmp/secrets
+
+  # The GPU policy init checks the measured requirement against. It rides in
+  # the rootfs, so dm-verity covers it and the root hash in the measured
+  # cmdline pins it; the same bytes are published as the manifest's gpu block.
+  install -m 0444 ${gpuFacts} rootfs/etc/aleph/gpu.json
 
   # Raw driver userland and GSP firmware. /opt/nvidia/lib is the runtime
   # contract with the workload (manifest gpu.library_path): init-common.sh
