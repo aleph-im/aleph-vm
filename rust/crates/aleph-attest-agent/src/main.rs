@@ -1,5 +1,6 @@
 mod attestation;
 mod gpu;
+mod gpu_policy;
 mod proxy;
 mod secrets;
 mod tls;
@@ -16,6 +17,7 @@ use clap::Parser;
 use tracing::info;
 
 use gpu::CollectorProcess;
+use gpu_policy::GpuPolicyArgs;
 use proxy::{AppState, GpuState, attestation_endpoint, gpu_attestation_endpoint, proxy_handler};
 use secrets::{OwnerAuth, SecretStore, inject_secret_handler};
 use tls::{build_rustls_config, generate_attested_tls_identity};
@@ -25,6 +27,10 @@ use tls::{build_rustls_config, generate_attested_tls_identity};
 #[derive(Parser, Debug)]
 #[command(name = "aleph-attest-agent")]
 struct Cli {
+    /// One-shot checks the guest init runs before the server would start.
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Port to listen on for HTTPS connections.
     #[arg(long, default_value = "8443")]
     port: u16,
@@ -73,6 +79,15 @@ struct Cli {
     /// argument. Requires --gpu-claims.
     #[arg(long, requires = "gpu_claims")]
     gpu_collector: Option<String>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum Command {
+    /// Decide whether the attached GPUs are what the measured kernel command
+    /// line demands, then exit: 0 when every rule holds, 1 with one reason
+    /// line on stderr when one does not, 2 on a malformed input. Never starts
+    /// the server.
+    GpuPolicy(GpuPolicyArgs),
 }
 
 /// The boot claims are the `claims` array init cut out of NVIDIA's verifier
@@ -146,8 +161,7 @@ fn raise_fd_limit() {
     }
 }
 
-#[actix_web::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     // Initialize tracing.
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -156,10 +170,20 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    // 1. Parse CLI args. A subcommand decides and exits; only the bare
+    // invocation goes on to the server, so no listener, no TEE backend and no
+    // attested identity exist on that path.
+    let mut cli = Cli::parse();
+    match cli.command.take() {
+        Some(Command::GpuPolicy(args)) => std::process::exit(gpu_policy::run(&args)),
+        None => serve(cli),
+    }
+}
+
+#[actix_web::main]
+async fn serve(cli: Cli) -> Result<()> {
     raise_fd_limit();
 
-    // 1. Parse CLI args.
-    let cli = Cli::parse();
     let owner = cli.owner.as_deref().map(validate_owner).transpose()?;
     info!(
         port = cli.port, upstream = %cli.upstream, product = %cli.amd_product,
@@ -339,6 +363,58 @@ mod tests {
                     .into_iter()
                     .chain(both)
             )
+            .is_err()
+        );
+    }
+
+    /// The subcommand takes its own four paths and none of the server flags,
+    /// and a bare invocation still parses with no subcommand at all.
+    #[test]
+    fn gpu_policy_is_a_subcommand_of_its_own() {
+        assert!(Cli::parse_from(["aleph-attest-agent"]).command.is_none());
+        let cli = Cli::parse_from([
+            "aleph-attest-agent",
+            "gpu-policy",
+            "--cmdline",
+            "/proc/cmdline",
+            "--gpu-json",
+            "/etc/aleph/gpu.json",
+            "--claims",
+            "/run/aleph/gpu-boot-claims.json",
+            "--evidence",
+            "/run/aleph/gpu-evidence.json",
+            "--nonce",
+            &"ab".repeat(32),
+            "--observed-count",
+            "1",
+        ]);
+        assert!(matches!(cli.command, Some(Command::GpuPolicy(_))));
+        // Every argument is required, the boot nonce and the observed count
+        // included.
+        assert!(
+            Cli::try_parse_from([
+                "aleph-attest-agent",
+                "gpu-policy",
+                "--cmdline",
+                "/proc/cmdline"
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "aleph-attest-agent",
+                "gpu-policy",
+                "--cmdline",
+                "/proc/cmdline",
+                "--gpu-json",
+                "/etc/aleph/gpu.json",
+                "--claims",
+                "/run/aleph/gpu-boot-claims.json",
+                "--evidence",
+                "/run/aleph/gpu-evidence.json",
+                "--nonce",
+                &"ab".repeat(32),
+            ])
             .is_err()
         );
     }
