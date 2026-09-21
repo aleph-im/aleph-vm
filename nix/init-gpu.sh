@@ -266,6 +266,12 @@ if [ "$gpu_total" -gt 0 ]; then
     # flag below).
     prepare_chroot /mnt/root
     gpu_chroot_prepared=1
+    # CC mode allows one RM init per GPU reset: without persistence mode the
+    # adapter tears down when nvattest exits and never comes back.
+    if ! gpu_smi -pm 1 > /run/aleph/gpu-pm.log 2>&1; then
+        /bin/busybox cat /run/aleph/gpu-pm.log
+        gpu_fatal "enabling persistence mode"
+    fi
     # The full result carries the detached EAT and the log can echo it on
     # failure; neither is served, so both are created 0600 (the umask in the
     # subshell covers the redirections), same as the extracted claims below.
