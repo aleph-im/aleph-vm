@@ -32,6 +32,8 @@ async fn gpu(card: web::Data<Gpu>) -> HttpResponse {
     }
 }
 
+const MAX_BANDWIDTH_MIB: usize = 2048;
+
 #[derive(Deserialize)]
 struct BandwidthQuery {
     mib: usize,
@@ -40,9 +42,12 @@ struct BandwidthQuery {
 #[get("/bandwidth")]
 async fn bandwidth(card: web::Data<Gpu>, query: web::Query<BandwidthQuery>) -> HttpResponse {
     let mib = query.mib;
-    if !(1..=8192).contains(&mib) {
-        return HttpResponse::BadRequest()
-            .json(serde_json::json!({ "error": "mib must be within 1..=8192" }));
+    // Two host buffers of this size sit next to the device one: the cap keeps
+    // a single request from running the guest out of memory.
+    if !(1..=MAX_BANDWIDTH_MIB).contains(&mib) {
+        return HttpResponse::BadRequest().json(
+            serde_json::json!({ "error": format!("mib must be within 1..={MAX_BANDWIDTH_MIB}") }),
+        );
     }
     let card = card.get_ref().clone();
     match web::block(move || card.lock().unwrap().bandwidth(mib)).await {

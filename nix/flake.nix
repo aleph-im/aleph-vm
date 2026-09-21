@@ -139,8 +139,8 @@
       # is NOT built for the musl target: dlopen needs a real glibc dynamic
       # loader, so this uses craneToolchain's default host toolchain instead
       # of the musl cross env fib-service sets up above. Not cleanCargoSource:
-      # it would drop the kernels/ directory (the .cu/.ptx source the probe
-      # loads at runtime).
+      # it would drop the kernels/ directory (the .ptx the probe embeds with
+      # include_str!).
       cuda-probe = craneToolchain.buildPackage {
         src = lib.fileset.toSource {
           root = ./cuda-probe;
