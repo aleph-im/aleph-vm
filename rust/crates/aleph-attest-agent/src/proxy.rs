@@ -103,6 +103,23 @@ fn retry_after_secs(lock_wait: Duration) -> u64 {
     rounded_up.max(1)
 }
 
+/// The client the proxy reaches the upstream with.
+pub fn upstream_client() -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        // A reverse proxy relays 3xx responses to the caller; it must never
+        // follow them itself, or an upstream redirect would make the agent
+        // fetch (and serve, over the attested channel) whatever the redirect
+        // points at, which can be anything reachable from inside the guest.
+        .redirect(reqwest::redirect::Policy::none())
+        // The upstream is on loopback: it accepts at once or is wedged.
+        .connect_timeout(Duration::from_secs(2))
+        // No connection reuse. A streamed request body cannot be replayed,
+        // so a pooled connection the upstream closed meanwhile is a 502,
+        // and a loopback connect costs next to nothing.
+        .pool_max_idle_per_host(0)
+        .build()
+}
+
 /// Wait for a turn at `lock`, or answer 503 with `busy` as the error once
 /// `wait` has passed.
 async fn take_turn(
@@ -485,7 +502,7 @@ mod tests {
             backend,
             served_public_key_raw,
             upstream: upstream.to_string(),
-            http_client: reqwest::Client::new(),
+            http_client: upstream_client().expect("client"),
             gpu,
             report_lock: Arc::new(tokio::sync::Mutex::new(())),
             report_lock_wait: REPORT_LOCK_WAIT,
@@ -782,6 +799,8 @@ mod tests {
         })
         .workers(1)
         .disable_signals()
+        // As in main().
+        .h1_allow_half_closed(false)
         .bind_auto_h2c(("127.0.0.1", 0))
         .expect("bind proxy");
         let addr = server.addrs()[0];
@@ -846,6 +865,93 @@ mod tests {
             "a truncated upstream body must not be terminated as if complete: {wire:?}"
         );
         proxy.stop(true).await;
+    }
+
+    /// An upstream that answers with `head`, then reports when the proxy
+    /// closes the connection.
+    async fn upstream_watching_for_close(head: &'static [u8]) -> (String, oneshot::Receiver<()>) {
+        let (listener, url) = upstream_listener().await;
+        let (report, closed) = oneshot::channel();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.expect("accept");
+            read_request(&mut sock).await.expect("request head");
+            sock.write_all(head).await.expect("write head");
+            let mut rest = Vec::new();
+            let _ = sock.read_to_end(&mut rest).await;
+            let _ = report.send(());
+        });
+        (url, closed)
+    }
+
+    const BODILESS_POST: &[u8] =
+        b"POST /v1/chat/completions HTTP/1.1\r\nhost: agent\r\ncontent-length: 0\r\n\r\n";
+
+    /// A client that hangs up mid-stream frees the upstream request (the
+    /// generation it pays for), even while the upstream has nothing to say.
+    #[actix_web::test]
+    async fn a_client_hanging_up_mid_body_releases_the_upstream() {
+        let (upstream, closed) = upstream_watching_for_close(SSE_HEAD_AND_FIRST_CHUNK).await;
+        let (addr, proxy) = serve_proxy(&upstream).await;
+        let mut sock = raw_request(addr).await;
+        sock.write_all(BODILESS_POST).await.expect("send request");
+        read_until(&mut sock, b"first").await;
+        drop(sock);
+        tokio::time::timeout(Duration::from_secs(5), closed)
+            .await
+            .expect("the upstream request outlived its client")
+            .expect("upstream task gone");
+        proxy.stop(true).await;
+    }
+
+    /// Same before the upstream has answered at all.
+    #[actix_web::test]
+    async fn a_client_hanging_up_before_the_response_releases_the_upstream() {
+        let (upstream, closed) = upstream_watching_for_close(b"").await;
+        let (addr, proxy) = serve_proxy(&upstream).await;
+        let mut sock = raw_request(addr).await;
+        sock.write_all(BODILESS_POST).await.expect("send request");
+        // Let the request reach the upstream before hanging up.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        drop(sock);
+        tokio::time::timeout(Duration::from_secs(5), closed)
+            .await
+            .expect("the upstream request outlived its client")
+            .expect("upstream task gone");
+        proxy.stop(true).await;
+    }
+
+    /// Every request gets its own upstream connection: a reused one may
+    /// have been closed by the upstream, and a streamed body cannot retry.
+    #[actix_web::test]
+    async fn upstream_connections_are_not_reused() {
+        let (listener, upstream) = upstream_listener().await;
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&accepted);
+        tokio::spawn(async move {
+            loop {
+                let (mut sock, _) = listener.accept().await.expect("accept");
+                counter.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    while read_request(&mut sock).await.is_some() {
+                        sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+                            .await
+                            .expect("write response");
+                    }
+                });
+            }
+        });
+        let state = state_with_upstream(&upstream);
+        for _ in 0..2 {
+            use actix_web::FromRequest;
+            let (req, mut inner) = actix_web::test::TestRequest::post().to_http_parts();
+            let payload = web::Payload::from_request(&req, &mut inner)
+                .await
+                .expect("payload extractor");
+            let resp = proxy_handler(state.clone(), req, payload).await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            to_bytes(resp.into_body()).await.expect("body");
+        }
+        assert_eq!(accepted.load(Ordering::SeqCst), 2);
     }
 
     /// A chunked client body reaches the upstream chunked, on a GET too:

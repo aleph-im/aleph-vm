@@ -102,6 +102,36 @@ fn validate_owner(raw: &str) -> Result<String> {
     Ok(normalized)
 }
 
+/// Descriptors the agent may hold. Init hands it the kernel default of 1024,
+/// and a proxied connection takes two (client and upstream).
+const FD_LIMIT: libc::rlim_t = 16384;
+
+/// Client connections served at once, across all workers: bounds the agent's
+/// memory, which the kernel will not reclaim (init exempts it from the OOM
+/// killer), and stays well under [`FD_LIMIT`].
+const MAX_CLIENT_CONNECTIONS: usize = 4096;
+
+/// Raise the descriptor limit to [`FD_LIMIT`]; a failure is logged, not fatal.
+fn raise_fd_limit() {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `limit` is a valid rlimit for both calls to read and write.
+    let raised = unsafe {
+        libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) == 0
+            && (limit.rlim_cur >= FD_LIMIT || {
+                limit.rlim_cur = FD_LIMIT;
+                limit.rlim_max = limit.rlim_max.max(FD_LIMIT);
+                libc::setrlimit(libc::RLIMIT_NOFILE, &limit) == 0
+            })
+    };
+    if !raised {
+        let e = std::io::Error::last_os_error();
+        tracing::warn!("cannot raise the descriptor limit to {FD_LIMIT}: {e}");
+    }
+}
+
 #[actix_web::main]
 async fn main() -> Result<()> {
     // Initialize tracing.
@@ -111,6 +141,8 @@ async fn main() -> Result<()> {
                 .add_directive(tracing::Level::INFO.into()),
         )
         .init();
+
+    raise_fd_limit();
 
     // 1. Parse CLI args.
     let cli = Cli::parse();
@@ -175,14 +207,7 @@ async fn main() -> Result<()> {
         backend,
         served_public_key_raw,
         upstream: cli.upstream.clone(),
-        // A reverse proxy relays 3xx responses to the caller; it must never
-        // follow them itself, or an upstream redirect would make the agent
-        // fetch (and serve, over the attested channel) whatever the redirect
-        // points at, which can be anything reachable from inside the guest.
-        http_client: reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .context("failed to build upstream HTTP client")?,
+        http_client: proxy::upstream_client().context("failed to build upstream HTTP client")?,
         gpu,
         report_lock: Arc::new(tokio::sync::Mutex::new(())),
         report_lock_wait: proxy::REPORT_LOCK_WAIT,
@@ -212,6 +237,7 @@ async fn main() -> Result<()> {
     // address is served too. 0.0.0.0 was IPv4-only, which made a routable
     // guest IPv6 useless for reaching the agent.
     let bind_addr = format!("[::]:{}", cli.port);
+    let workers = std::thread::available_parallelism().map_or(2, |n| n.get());
     let server = HttpServer::new(move || {
         App::new()
             .app_data(app_state.clone())
@@ -231,7 +257,12 @@ async fn main() -> Result<()> {
                     .route(web::post().to(inject_secret_handler)),
             )
             .default_service(web::to(proxy_handler))
-    });
+    })
+    .workers(workers)
+    .max_connections((MAX_CLIENT_CONNECTIONS / workers).max(1))
+    // A client EOF ends the exchange: the default keeps a handler whose
+    // client is gone running, and with it the upstream request.
+    .h1_allow_half_closed(false);
     match rustls_config {
         Some(rustls_config) => {
             info!(addr = %bind_addr, "binding HTTPS server");
@@ -296,6 +327,22 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn the_descriptor_limit_is_raised() {
+        raise_fd_limit();
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: `limit` is a valid rlimit to write into.
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) },
+            0
+        );
+        // An unprivileged test run cannot lift its hard limit.
+        assert!(limit.rlim_cur >= FD_LIMIT.min(limit.rlim_max));
     }
 
     #[test]
