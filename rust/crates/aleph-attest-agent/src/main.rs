@@ -184,6 +184,8 @@ async fn main() -> Result<()> {
             .build()
             .context("failed to build upstream HTTP client")?,
         gpu,
+        report_lock: Arc::new(tokio::sync::Mutex::new(())),
+        report_lock_wait: proxy::REPORT_LOCK_WAIT,
     });
     // Secret store: one-shot without --owner, overwriting with --owner (see
     // secrets::inject_secret_handler). Writes to the production
