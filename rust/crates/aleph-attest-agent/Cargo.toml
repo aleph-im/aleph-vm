@@ -32,6 +32,9 @@ rcgen = "0.14"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "fs", "sync", "process", "time"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "charset", "http2"] }
 hex = "0.4"
+# Already the version actix-http, reqwest and sev pull in, so gpu-policy's
+# evidence decoding adds no crate to the measured binary.
+base64 = "0.22"
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
