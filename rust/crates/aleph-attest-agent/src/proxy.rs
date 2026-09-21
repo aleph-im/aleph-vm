@@ -95,8 +95,8 @@ pub const GPU_LOCK_WAIT: Duration = Duration::from_secs(10);
 /// Default for [`AppState::report_lock_wait`].
 pub const REPORT_LOCK_WAIT: Duration = Duration::from_secs(10);
 
-/// The `Retry-After` a busy GPU route advertises, in whole seconds: one more
-/// `lock_wait`, derived so a tuned wait cannot advertise a stale number.
+/// The `Retry-After` a busy route advertises, in whole seconds: one more
+/// lock wait, derived so a tuned wait cannot advertise a stale number.
 /// Rounded up and never zero, or the client would come straight back.
 fn retry_after_secs(lock_wait: Duration) -> u64 {
     let rounded_up = lock_wait.as_secs() + u64::from(lock_wait.subsec_nanos() > 0);
