@@ -406,12 +406,12 @@ init per GPU reset). Then, once, with a 32-byte boot nonce from
    absent, which nothing stored can answer), and its verifier compares that
    entry nonce against the one inside the signed SPDM report, so the file
    source stays bound to this boot.
- 4. the measured GPU requirement (below).
- 5. the driver's own CC status readback: `nvidia-smi conf-compute
-    --get-cc-feature` must report CC status on, so a card that is not in
-    confidential-compute mode is never marked ready.
- 6. the GPU ready state: `nvidia-smi conf-compute -srs 1`, read back with
-    `-grs`.
+4. the measured GPU requirement (below).
+5. the driver's own CC status readback: `nvidia-smi conf-compute
+   --get-cc-feature` must report CC status on, so a card that is not in
+   confidential-compute mode is never marked ready.
+6. the GPU ready state: `nvidia-smi conf-compute -srs 1`, read back with
+   `-grs`.
 
 Every one of those steps fails to `poweroff -f` on any error: a GPU runtime
 that could not prove its GPU never presents an attested endpoint. At request
@@ -469,6 +469,10 @@ strings are read out of the signed SPDM opaque data of the evidence nvattest
 just verified, never from PCI config space, sysfs, `nvidia-smi` or the
 claims, which is what makes a PCI id in the message a statement about the
 silicon rather than about a value the host could spoof.
+`gpu_models` is a list of acceptable boards, not an assignment of boards to
+cards: every card must be one of them, and nothing requires each listed id
+to be present (two H100 PCIe cards satisfy `gpu_count=2
+gpu_models=10de:2331,10de:233b`).
 
 Adding a board row (`archs.<arch>.boards` in `nix/flake.nix`) is therefore
 a measured, safety-critical edit: the triple must come from real evidence
