@@ -282,7 +282,8 @@ pub async fn proxy_handler(
     // Stream the request body through instead of extracting it: `web::Bytes`
     // would hold uploads in agent memory and cap them at actix's 256 KiB
     // default. With the client's own Content-Length reqwest frames the body
-    // by that length; a chunked client body stays chunked.
+    // by that length; a chunked client body stays chunked, said explicitly
+    // because hyper sends no body at all for an unframed GET/HEAD/CONNECT.
     let chunked = req.headers().contains_key(TRANSFER_ENCODING);
     let content_length = declared_content_length(
         req.headers().get(CONTENT_LENGTH).map(|v| v.as_bytes()),
@@ -290,6 +291,8 @@ pub async fn proxy_handler(
     );
     if let Some(len) = content_length {
         proxy_req = proxy_req.header("content-length", len);
+    } else if chunked {
+        proxy_req = proxy_req.header("transfer-encoding", "chunked");
     }
     if chunked || content_length.is_some_and(|len| len > 0) {
         proxy_req = proxy_req.body(reqwest::Body::wrap_stream(send_bridge(payload)));
@@ -305,13 +308,14 @@ pub async fn proxy_handler(
 
             // Forward end-to-end response headers only; Content-Length is
             // re-applied below from the upstream's framing, so it can never
-            // sit next to a chunked body.
+            // sit next to a chunked body. Appended, not inserted: a repeated
+            // header (Set-Cookie) arrives as one entry per value.
             for (name, value) in upstream_resp.headers() {
                 if !is_hop_by_hop(name.as_str())
                     && !name.as_str().eq_ignore_ascii_case("content-length")
                     && let Ok(v) = value.to_str()
                 {
-                    resp.insert_header((name.as_str(), v));
+                    resp.append_header((name.as_str(), v));
                 }
             }
 
@@ -411,9 +415,10 @@ mod tests {
         b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
         transfer-encoding: chunked\r\n\r\n5\r\nfirst\r\n";
 
-    /// Reads one request off `sock`: the head, then as many body bytes as its
-    /// Content-Length announces. `None` when the peer closes before a head.
-    async fn read_request(sock: &mut TcpStream) -> Option<(String, usize)> {
+    /// Reads one request off `sock`: the head, then the raw body bytes, up to
+    /// its Content-Length or through the last chunk of a chunked body. `None`
+    /// when the peer closes before a head.
+    async fn read_request(sock: &mut TcpStream) -> Option<(String, Vec<u8>)> {
         let mut buf = Vec::new();
         let mut chunk = [0u8; 4096];
         while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -435,15 +440,22 @@ mod tests {
                     .ok()
             })
             .unwrap_or(0usize);
-        let mut body_len = buf.len() - head_end;
-        while body_len < declared {
+        let chunked = head
+            .to_ascii_lowercase()
+            .contains("transfer-encoding: chunked");
+        let mut body = buf.split_off(head_end);
+        while if chunked {
+            !body.ends_with(b"0\r\n\r\n")
+        } else {
+            body.len() < declared
+        } {
             let n = sock.read(&mut chunk).await.ok()?;
             if n == 0 {
                 break;
             }
-            body_len += n;
+            body.extend_from_slice(&chunk[..n]);
         }
-        Some((head, body_len))
+        Some((head, body))
     }
 
     async fn upstream_listener() -> (TcpListener, String) {
@@ -497,8 +509,8 @@ mod tests {
     }
 
     /// A raw upstream that drains one request and reports what it saw: the
-    /// request head and how many body bytes followed it.
-    async fn counting_upstream() -> (String, oneshot::Receiver<(String, usize)>) {
+    /// request head and the raw body bytes that followed it.
+    async fn counting_upstream() -> (String, oneshot::Receiver<(String, Vec<u8>)>) {
         let (listener, url) = upstream_listener().await;
         let (report, seen) = oneshot::channel();
         tokio::spawn(async move {
@@ -618,13 +630,29 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
 
         let (head, received) = seen.await.expect("upstream saw the request");
-        assert_eq!(received, body_len);
+        assert_eq!(received.len(), body_len);
         let head = head.to_ascii_lowercase();
         assert!(
             head.contains(&format!("content-length: {body_len}\r\n")),
             "{head}"
         );
         assert!(!head.contains("transfer-encoding"), "{head}");
+    }
+
+    /// Every value of a repeated upstream header crosses the proxy.
+    #[actix_web::test]
+    async fn repeated_upstream_headers_are_all_relayed() {
+        let (upstream, _release) = raw_upstream(
+            b"HTTP/1.1 200 OK\r\nset-cookie: a=1\r\nset-cookie: b=2\r\ncontent-length: 0\r\n\r\n",
+            None,
+        )
+        .await;
+        let resp = proxy_response(&upstream).await;
+        let cookies: Vec<_> = resp
+            .headers()
+            .get_all(actix_web::http::header::SET_COOKIE)
+            .collect();
+        assert_eq!(cookies, ["a=1", "b=2"]);
     }
 
     /// Runs the proxy behind a real actix server on a loopback port, so a
@@ -701,6 +729,30 @@ mod tests {
             !wire.ends_with(b"0\r\n\r\n"),
             "a truncated upstream body must not be terminated as if complete: {wire:?}"
         );
+        proxy.stop(true).await;
+    }
+
+    /// A chunked client body reaches the upstream chunked, on a GET too:
+    /// hyper drops the body of an unframed GET.
+    #[actix_web::test]
+    async fn chunked_request_bodies_stay_chunked_upstream() {
+        let (upstream, seen) = counting_upstream().await;
+        let (addr, proxy) = serve_proxy(&upstream).await;
+        let mut sock = raw_request(addr).await;
+        sock.write_all(
+            b"GET /search HTTP/1.1\r\nhost: agent\r\ntransfer-encoding: chunked\r\n\r\n\
+              5\r\nhello\r\n0\r\n\r\n",
+        )
+        .await
+        .expect("send request");
+        let wire = read_until(&mut sock, b"\r\n\r\n").await;
+        assert!(wire.starts_with(b"HTTP/1.1 200 OK\r\n"), "{wire:?}");
+
+        let (head, body) = seen.await.expect("upstream saw the request");
+        let head = head.to_ascii_lowercase();
+        assert!(head.contains("transfer-encoding: chunked\r\n"), "{head}");
+        assert!(!head.contains("content-length"), "{head}");
+        assert!(body.windows(5).any(|w| w == b"hello"), "{body:?}");
         proxy.stop(true).await;
     }
 
