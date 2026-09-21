@@ -392,16 +392,41 @@ transfers of 1 GiB and up, with single copies as large as 4 GiB completing
 with no bounce-buffer exhaustion.
 
 **In-guest verification.** `nix/init-gpu.sh` runs between the verity mounts
-and chroot preparation, only when an NVIDIA device is present on the PCI
-bus. It loads the open `nvidia.ko`/`nvidia-uvm.ko` modules, runs NVIDIA's
-`nvattest attest --device gpu --verifier local` against
-`rim.attestation.nvidia.com` and `ocsp.ndis.nvidia.com` with a boot nonce
-from `/dev/urandom`, checks `result_code == 0` and every claim's `measres`
-is `success`, sets the GPU ready state with `nvidia-smi conf-compute -srs 1`
-and reads it back with `-grs` before continuing, and writes the claims to
-`/run/aleph/gpu-boot-claims.json`. Every one of those steps fails to
-`poweroff -f` on any error: a GPU runtime that could not prove its GPU
-never presents an attested endpoint. At request time, the attest-agent
+and chroot preparation. An empty PCI bus is fatal there: this image only
+exists to run GPU workloads, so "no NVIDIA device present" powers the VM
+off instead of booting on. Otherwise it loads the open
+`nvidia.ko`/`nvidia-uvm.ko` modules, creates one `/dev/nvidiaN` node per
+card found on the bus, and enables persistence mode (CC mode allows one RM
+init per GPU reset). Then, once, with a 32-byte boot nonce from
+`/dev/urandom`:
+
+1. `nvattest collect-evidence --device gpu --nonce <boot nonce>` writes its
+   document to `/run/aleph/gpu-evidence-doc.json`; its top-level
+   `result_code` must be 0.
+2. init cuts the `evidences` array out of that document into
+   `/run/aleph/gpu-evidence.json`. The array file exists because the two
+   readers below disagree about shape: `collect-evidence` prints a wrapper
+   object, while `attest`'s file source parses a bare array. Both then read
+   the same bytes, which is the point: the board identity enforced in step 4
+   comes from exactly what step 3 verified.
+3. `nvattest attest --device gpu --verifier local --gpu-evidence-source file
+   --gpu-evidence-file /run/aleph/gpu-evidence.json --nonce <boot nonce>`
+   against `rim.attestation.nvidia.com` and `ocsp.ndis.nvidia.com`. Its
+   `result_code` must be 0 and every claim's `measres` must be `success`;
+   the claims land in `/run/aleph/gpu-boot-claims.json`. Attesting from a
+   file touches no GPU, so the one-RM-init rule still holds. The nonce is
+   not optional there: nvattest requires every entry in the file to answer
+   the `--nonce` it was given (and generates a random one when the flag is
+   absent, which nothing stored can answer), and its verifier compares that
+   entry nonce against the one inside the signed SPDM report, so the file
+   source stays bound to this boot.
+4. the measured GPU requirement (below).
+5. the GPU ready state: `nvidia-smi conf-compute -srs 1`, read back with
+   `-grs`.
+
+Every one of those steps fails to `poweroff -f` on any error: a GPU runtime
+that could not prove its GPU never presents an attested endpoint. At request
+time, the attest-agent
 (`rust/crates/aleph-attest-agent/src/gpu.rs`, `proxy.rs`) serves
 `GET /.well-known/attestation/gpu?nonce=<hex>` by deriving a fresh SPDM
 nonce, `SHA-256(DOMAIN_GPU_NONCE || served_public_key || client_nonce)`
@@ -412,24 +437,82 @@ in-process), refusing any evidence that answers a different nonce. The
 route only exists when init passed `--gpu-claims`/`--gpu-collector`; on a
 runtime with no GPU it answers 404.
 
+**The measured requirement.** PCI attachment is not a measurement input, so
+the requirement itself is written into the measured kernel cmdline as three
+tokens the GPU runtime's manifest template carries:
+`gpu_arch=hopper|blackwell`, `gpu_count=<1..8>` and, only when the message
+narrows the models, `gpu_models=<vvvv:dddd>[,...]` (lowercase, sorted,
+de-duplicated; the whole token is dropped otherwise, like
+`verified_volumes`).
+
+On the host the agent renders those tokens from the message's `gpu` block
+(`render_gpu_requirement`, `src/aleph/vm/agent/vprogram_launch.py`) into a
+`{rootfs}.gpu_requirement` sidecar, the same channel as `cmdline_extra`
+above, and `snp_config_slice` splices it verbatim at the end of the measured
+cmdline, after `verified_volumes`. It admits only the canonical form
+(architecture in the closed set, a single-digit count, sorted unique
+lowercase ids, single spaces) and fails closed as `InvalidBackend` on
+anything else; no GPU on the message means no sidecar and a cmdline
+byte-identical to a GPU-less V-PROGRAM. The launch is refused before staging
+when the runtime's template has no requirement slots, when the message
+narrows to a model the manifest's `boards` table has no row for (the guest
+could only power off), or when a GPU runtime is handed a message with no
+GPU.
+
+Init hands them to
+`aleph-attest-agent gpu-policy --cmdline /proc/cmdline --gpu-json
+/mnt/root/etc/aleph/gpu.json --claims /run/aleph/gpu-boot-claims.json
+--evidence /run/aleph/gpu-evidence.json --nonce <boot nonce>
+--observed-count <cards on the bus>`
+(`rust/crates/aleph-attest-agent/src/gpu_policy.rs`) after the `measres`
+checks and before the ready state, and any non-zero exit powers the VM off.
+The policy file is the same object the manifest publishes as its `gpu`
+block, shipped in the verity rootfs so the cmdline's root hash pins it. The
+check requires: the architecture is a known one and every evidence entry
+and claim agrees with it (`hwmodel` in that architecture's
+`accepted_models`, `x-nvidia-gpu-arch-check` true); as many evidence
+entries and claims as `gpu_count`; every evidence entry answering the boot
+nonce; `--observed-count` equal to `gpu_count`, so the `/dev/nvidiaN` nodes
+init made from the PCI scan can never outnumber the verified cards; and,
+with models named, each card's `(project, project_sku, chip_sku)` matching a
+board the policy lists under one of the requested PCI ids. Those three
+strings are read out of the signed SPDM opaque data of the evidence nvattest
+just verified, never from PCI config space, sysfs, `nvidia-smi` or the
+claims, which is what makes a PCI id in the message a statement about the
+silicon rather than about a value the host could spoof.
+
+Adding a board row (`archs.<arch>.boards` in `nix/flake.nix`) is therefore
+a measured, safety-critical edit: the triple must come from real evidence
+read off that card, or from an NVIDIA part-number source at the same
+confidence (the RIM catalog spells board ids as
+`NV_GPU_VBIOS_<project>_<project_sku>_<chip_sku>_<vbios>`). Strings are
+compared byte for byte, upper case included. A wrong or missing row does
+not weaken anything; it powers off every VM that requests that model.
+
 Two properties follow from this and matter to anyone building a client:
 
 - The guest verifies its own GPU against NVIDIA's RIM/OCSP chain at boot
-  and powers off on any failure; the client then independently re-checks
-  the evidence's certificate chain, signature and nonce binding over the
-  attested channel. The client trusts the guest's RIM verdict specifically
-  because the verifier binary and its pinned roots are inside the SNP
-  launch measurement, and init's fail-closed behavior means a guest that
-  reached a running, attested state necessarily passed that check.
-- A `gpuImage` boot with no GPU device attached has the **same** launch
-  measurement as one with a verified GPU: PCI device attachment is not a
-  measurement input, and `swiotlb=262144` is a fixed part of the GPU
-  runtime's cmdline regardless of whether a card shows up on the bus. A
-  client must therefore never infer GPU presence from the launch
-  measurement alone; it must require GPU evidence whenever the runtime
-  manifest it pinned declares a `gpu` block, and treat a 404 from
-  `/.well-known/attestation/gpu` on such a runtime as a verification
-  failure, not as "no GPU requested".
+  and powers off on any failure. The client trusts that verdict rather than
+  re-checking it, specifically because the verifier binary and its pinned
+  roots are inside the SNP launch measurement, and init's fail-closed
+  behavior means a guest that reached a running, attested state necessarily
+  passed that check.
+- A launch measurement that includes `gpu_arch`/`gpu_count` (and, where
+  present, `gpu_models`) is a statement about which GPUs the guest
+  required, not proof that it got them: the measurement is computed before
+  the guest runs. What makes it load-bearing is that the guest enforces
+  exactly those tokens and powers off otherwise, so a running, attested GPU
+  runtime is one whose cards answered the requirement the client pinned. A
+  caller gets these guarantees by pinning the launch measurement, the same
+  way it pins every other SNP measurement input: `aleph vprogram create`
+  renders the same canonical `gpu_arch`/`gpu_count`/`gpu_models` tokens into
+  the runtime template before computing that measurement, so a mismatched
+  requirement never reaches a real launch. `GET
+  /.well-known/attestation/gpu` serves the raw NVIDIA-signed evidence, bound
+  to the TLS key, for an operator or auditor to inspect after the fact; the
+  reference client does not fetch it. Liveness of the GPU itself past boot
+  rests on the driver's ongoing SPDM session with the card, not on a
+  repeated evidence fetch.
 
 **What a GPU workload must ship.** The guest bind-mounts only the raw
 NVIDIA driver userland into the workload's chroot, at `/opt/nvidia/lib`,
