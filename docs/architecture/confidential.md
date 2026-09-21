@@ -180,8 +180,10 @@ canonical_secrets_json(secrets))`, verified against the configured owner
 address before any secret is written (`owner_auth::verify_owner`,
 `inject_secret_handler`), and a bad or missing signature returns 403; V-PROGRAM
 images carry no owner and skip this gate. Everything else falls through to a reverse proxy
-(`proxy_handler`) that strips hop-by-hop headers and `Content-Length` before
-forwarding to the upstream workload on `127.0.0.1:8080`.
+(`proxy_handler`) that strips hop-by-hop headers and forwards to the upstream
+workload on `127.0.0.1:8080`, streaming both bodies. It never copies a
+`Content-Length`: it re-derives the framing from each message (the declared
+length, or chunked), so a length and a `Transfer-Encoding` cannot cross together.
 
 **The verifying client** is not in this repository: it is the `attest`
 module of the aleph-rs SDK (`crates/aleph-sdk/src/attest/`, driven by the
