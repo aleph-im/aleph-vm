@@ -63,6 +63,11 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     /// GPU evidence source and boot claims; `None` on runtimes without a GPU.
     pub gpu: Option<Arc<GpuState>>,
+    /// One report request at a time, like [`GpuState::lock`]: the sev-guest
+    /// driver serialises them anyway, and the host can throttle them.
+    pub report_lock: Arc<tokio::sync::Mutex<()>>,
+    /// How long a caller queues for a report before being told to retry.
+    pub report_lock_wait: Duration,
 }
 
 /// GPU attestation state, present only when init handed the agent the
@@ -87,12 +92,31 @@ pub struct GpuState {
 /// Default for [`GpuState::lock_wait`].
 pub const GPU_LOCK_WAIT: Duration = Duration::from_secs(10);
 
+/// Default for [`AppState::report_lock_wait`].
+pub const REPORT_LOCK_WAIT: Duration = Duration::from_secs(10);
+
 /// The `Retry-After` a busy GPU route advertises, in whole seconds: one more
 /// `lock_wait`, derived so a tuned wait cannot advertise a stale number.
 /// Rounded up and never zero, or the client would come straight back.
 fn retry_after_secs(lock_wait: Duration) -> u64 {
     let rounded_up = lock_wait.as_secs() + u64::from(lock_wait.subsec_nanos() > 0);
     rounded_up.max(1)
+}
+
+/// Wait for a turn at `lock`, or answer 503 with `busy` as the error once
+/// `wait` has passed.
+async fn take_turn(
+    lock: &Arc<tokio::sync::Mutex<()>>,
+    wait: Duration,
+    busy: &str,
+) -> Result<tokio::sync::OwnedMutexGuard<()>, HttpResponse> {
+    tokio::time::timeout(wait, Arc::clone(lock).lock_owned())
+        .await
+        .map_err(|_| {
+            HttpResponse::ServiceUnavailable()
+                .insert_header(("Retry-After", retry_after_secs(wait).to_string()))
+                .json(serde_json::json!({"error": busy}))
+        })
 }
 
 /// Upper bound on the decoded nonce accepted by the attestation endpoint.
@@ -127,13 +151,41 @@ pub async fn attestation_endpoint(
         Err(resp) => return resp,
     };
 
-    // Request a fresh report bound to the agent's real served key and the nonce.
-    match get_fresh_report(state.backend.as_ref(), &state.served_public_key_raw, &nonce) {
-        Ok(report) => HttpResponse::Ok().json(report),
-        Err(e) => {
+    let serialized = match take_turn(
+        &state.report_lock,
+        state.report_lock_wait,
+        "attestation busy",
+    )
+    .await
+    {
+        Ok(guard) => guard,
+        Err(resp) => return resp,
+    };
+    // The report request is a blocking ioctl, so it runs off the async
+    // workers, which also serve the proxy. The guard travels with it: a
+    // client that disconnects must not let the next request in early.
+    let state_for_task = state.clone();
+    let report = web::block(move || {
+        let _serialized = serialized;
+        // Bound to the agent's real served key and the nonce.
+        get_fresh_report(
+            state_for_task.backend.as_ref(),
+            &state_for_task.served_public_key_raw,
+            &nonce,
+        )
+    })
+    .await;
+    match report {
+        Ok(Ok(report)) => HttpResponse::Ok().json(report),
+        Ok(Err(e)) => {
             // The full error (backend, device path, firmware status) stays in
             // the guest log; the client only learns that the report failed.
             tracing::error!("attestation report failed: {e:#}");
+            HttpResponse::InternalServerError()
+                .json(serde_json::json!({"error": "attestation report failed"}))
+        }
+        Err(e) => {
+            tracing::error!("attestation report task failed: {e:#}");
             HttpResponse::InternalServerError()
                 .json(serde_json::json!({"error": "attestation report failed"}))
         }
@@ -183,12 +235,9 @@ pub async fn gpu_attestation_endpoint(
         Err(resp) => return resp,
     };
     let nonce = gpu_nonce(&state.served_public_key_raw, &client_nonce);
-    let Ok(serialized) =
-        tokio::time::timeout(gpu.lock_wait, Arc::clone(&gpu.lock).lock_owned()).await
-    else {
-        return HttpResponse::ServiceUnavailable()
-            .insert_header(("Retry-After", retry_after_secs(gpu.lock_wait).to_string()))
-            .json(serde_json::json!({"error": "gpu attestation busy"}));
+    let serialized = match take_turn(&gpu.lock, gpu.lock_wait, "gpu attestation busy").await {
+        Ok(guard) => guard,
+        Err(resp) => return resp,
     };
     // The collector is a blocking child process, so it runs off the async
     // workers, and the guard travels with it: a client that disconnects must
@@ -437,6 +486,8 @@ mod tests {
             upstream: upstream.to_string(),
             http_client: reqwest::Client::new(),
             gpu,
+            report_lock: Arc::new(tokio::sync::Mutex::new(())),
+            report_lock_wait: REPORT_LOCK_WAIT,
         })
     }
 
@@ -998,6 +1049,93 @@ mod tests {
         let (status, body) = attest("zz").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(body.contains("invalid hex nonce"), "{body}");
+    }
+
+    /// A caller that cannot get its turn at the report device within the wait
+    /// is told to retry, like on the GPU route.
+    #[actix_web::test]
+    async fn attestation_is_503_while_a_report_stays_in_flight() {
+        let state = web::Data::new(AppState {
+            backend: Arc::new(MockBackend),
+            served_public_key_raw: vec![0x42; 97],
+            upstream: "http://127.0.0.1:1".to_string(),
+            http_client: reqwest::Client::new(),
+            gpu: None,
+            report_lock: Arc::new(tokio::sync::Mutex::new(())),
+            report_lock_wait: Duration::from_millis(50),
+        });
+        let query = || {
+            web::Query(AttestationQuery {
+                nonce: "ab".to_string(),
+            })
+        };
+        let held = state.report_lock.lock().await;
+        let resp = attestation_endpoint(state.clone(), query()).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(resp.headers().get("Retry-After").unwrap(), "1");
+        drop(held);
+        let resp = attestation_endpoint(state.clone(), query()).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// A backend that parks inside `get_report()` until the test opens its
+    /// gate, or for [`GATE_CAP`] at most.
+    struct GatedBackend {
+        gate: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    }
+
+    impl TeeBackend for GatedBackend {
+        fn tee_type(&self) -> TeeType {
+            TeeType::SevSnp
+        }
+
+        fn get_report(&self, report_data: &[u8; 64]) -> Result<AttestationReport> {
+            let (open, condvar) = &*self.gate;
+            let open = open.lock().expect("gate");
+            drop(
+                condvar
+                    .wait_timeout_while(open, GATE_CAP, |open| !*open)
+                    .expect("gate"),
+            );
+            MockBackend.get_report(report_data)
+        }
+
+        fn parse_report(&self, _raw: &[u8]) -> Result<AttestationReport> {
+            unimplemented!("not needed for these tests")
+        }
+    }
+
+    /// The report request blocks in the driver: run on the worker thread it
+    /// would stall the proxy, which shares it.
+    #[actix_web::test]
+    async fn a_slow_report_does_not_block_the_worker_thread() {
+        let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let state = app_state(
+            Arc::new(GatedBackend {
+                gate: Arc::clone(&gate),
+            }),
+            vec![0x42; 97],
+            "http://127.0.0.1:1",
+            None,
+        );
+        let mut pending = Box::pin(attestation_endpoint(
+            state,
+            web::Query(AttestationQuery {
+                nonce: "ab".to_string(),
+            }),
+        ));
+        // Inline, the poll below would park this thread until the gate cap
+        // and come back with the answer instead of timing out.
+        let started = std::time::Instant::now();
+        let polled = tokio::time::timeout(Duration::from_millis(50), &mut pending).await;
+        assert!(polled.is_err(), "the report was requested inline");
+        assert!(started.elapsed() < GATE_CAP);
+        {
+            let (open, condvar) = &*gate;
+            *open.lock().expect("gate") = true;
+            condvar.notify_all();
+        }
+        assert_eq!(pending.await.status(), StatusCode::OK);
     }
 
     struct FakeGpu;
