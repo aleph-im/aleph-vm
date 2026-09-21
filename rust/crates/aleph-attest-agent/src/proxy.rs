@@ -5,6 +5,7 @@ use actix_web::web::{self, Bytes};
 use actix_web::{HttpRequest, HttpResponse};
 use aleph_tee::report_data::gpu_nonce;
 use aleph_tee::traits::TeeBackend;
+use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
 
 use crate::attestation::get_fresh_report;
@@ -256,7 +257,7 @@ pub async fn proxy_handler(
 
             // Forward end-to-end response headers only. Dropping hop-by-hop
             // headers (e.g. Transfer-Encoding) and Content-Length lets actix
-            // frame the response from the buffered body below, avoiding a
+            // frame the streamed body below itself, avoiding a
             // Content-Length / Transfer-Encoding desync to the client.
             for (name, value) in upstream_resp.headers() {
                 if !is_hop_by_hop(name.as_str())
@@ -267,14 +268,15 @@ pub async fn proxy_handler(
                 }
             }
 
-            match upstream_resp.bytes().await {
-                Ok(resp_body) => resp.body(resp_body),
-                Err(e) => {
-                    tracing::error!("failed to read upstream response body: {e:#}");
-                    HttpResponse::BadGateway()
-                        .json(serde_json::json!({"error": "failed to read upstream response"}))
-                }
-            }
+            // Relay chunks as the upstream produces them: buffering the whole
+            // body would hold back server-sent events (e.g. token streaming)
+            // until the upstream closes the response. Status and headers are
+            // already committed, so a mid-body upstream error can only abort
+            // the connection; log it, since actix drops the error silently.
+            resp.streaming(upstream_resp.bytes_stream().map_err(|e| {
+                tracing::error!("upstream response body failed mid-stream: {e:#}");
+                e
+            }))
         }
         Err(e) => {
             // Same split as above: the reqwest error names the upstream
@@ -315,13 +317,114 @@ mod tests {
     }
 
     fn state() -> web::Data<AppState> {
+        state_with_upstream("http://127.0.0.1:1")
+    }
+
+    fn state_with_upstream(upstream: &str) -> web::Data<AppState> {
         web::Data::new(AppState {
             backend: Arc::new(MockBackend),
             served_public_key_raw: vec![0x42; 97],
-            upstream: "http://127.0.0.1:1".to_string(),
+            upstream: upstream.to_string(),
             http_client: reqwest::Client::new(),
             gpu: None,
         })
+    }
+
+    /// A raw HTTP/1.1 upstream that answers one request with a chunked body:
+    /// it sends the head and a `first` chunk, waits for `release`, then sends
+    /// `tail` (if any) and closes the connection.
+    async fn chunked_upstream(
+        tail: Option<&'static [u8]>,
+    ) -> (String, tokio::sync::oneshot::Sender<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let (release, released) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.expect("accept");
+            let mut request = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = sock.read(&mut buf).await.expect("read");
+                assert!(n > 0, "client closed before sending the request");
+                request.extend_from_slice(&buf[..n]);
+            }
+            sock.write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                  transfer-encoding: chunked\r\n\r\n5\r\nfirst\r\n",
+            )
+            .await
+            .expect("write head");
+            let _ = released.await;
+            if let Some(tail) = tail {
+                sock.write_all(tail).await.expect("write tail");
+            }
+        });
+        (format!("http://{addr}"), release)
+    }
+
+    /// Proxies one POST and returns the status, the body, and its first chunk,
+    /// all under one deadline: a buffering proxy blocks inside the handler.
+    async fn proxy_first_chunk(
+        upstream: &str,
+    ) -> (
+        StatusCode,
+        std::pin::Pin<Box<actix_web::body::BoxBody>>,
+        Option<Result<Bytes, Box<dyn std::error::Error>>>,
+    ) {
+        use actix_web::body::MessageBody;
+
+        let req = actix_web::test::TestRequest::post()
+            .uri("/v1/chat/completions")
+            .to_http_request();
+        let state = state_with_upstream(upstream);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let resp = proxy_handler(state, req, Bytes::new()).await;
+            let status = resp.status();
+            let mut body = Box::pin(resp.into_body());
+            let first = std::future::poll_fn(|cx| body.as_mut().poll_next(cx)).await;
+            (status, body, first)
+        })
+        .await
+        .expect("the first chunk must arrive while the upstream is still open")
+    }
+
+    /// Server-sent events (token streaming) must reach the client as the
+    /// upstream writes them, not once the upstream closes the response.
+    #[actix_web::test]
+    async fn proxy_relays_body_chunks_before_the_upstream_finishes() {
+        let (upstream, release) = chunked_upstream(Some(b"4\r\nlast\r\n0\r\n\r\n")).await;
+        let (status, body, first) = proxy_first_chunk(&upstream).await;
+        assert_eq!(status, StatusCode::OK);
+        let first = first.expect("body ended early").expect("body error");
+        assert_eq!(&first[..], b"first");
+
+        release.send(()).expect("upstream task gone");
+        let rest = to_bytes(body).await.expect("rest of body");
+        assert_eq!(&rest[..], b"last");
+    }
+
+    /// Once the status is committed, an upstream that dies mid-body can only
+    /// surface as a body error (the connection is aborted), never as a 502.
+    #[actix_web::test]
+    async fn upstream_failing_mid_body_aborts_the_response() {
+        let (upstream, release) = chunked_upstream(None).await;
+        let (status, body, first) = proxy_first_chunk(&upstream).await;
+        assert_eq!(status, StatusCode::OK);
+        let first = first.expect("body ended early").expect("body error");
+        assert_eq!(&first[..], b"first");
+
+        release.send(()).expect("upstream task gone");
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), to_bytes(body))
+                .await
+                .expect("the aborted body must end, not hang")
+                .is_err(),
+            "a truncated upstream body must surface as an error"
+        );
     }
 
     /// The plain-HTTP unattested mode runs the agent on aleph-tee's NoTeeBackend:
