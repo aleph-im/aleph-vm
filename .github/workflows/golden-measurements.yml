@@ -199,8 +199,9 @@ jobs:
 
       # The GPU image is in this runner's store now, so booting it costs a
       # QEMU install and a couple of minutes. This is the only CI coverage
-      # init-gpu.sh gets: its no-GPU branch and the marker lines the smoke
-      # greps for. The GPU stage itself needs real hardware.
+      # init-gpu.sh gets: it must verify its rootfs and then power off,
+      # since a GPU runtime with no card fails closed. The GPU stage itself
+      # needs real hardware.
       - name: Enable KVM for the runner user
         if: steps.gate.outputs.run == 'true'
         # Same recipe as boot-smoke.yml: GitHub-hosted x86_64 runners expose
@@ -218,6 +219,6 @@ jobs:
           sudo apt-get install -y --no-install-recommends qemu-system-x86
           qemu-system-x86_64 --version | head -1
 
-      - name: Boot the GPU image under plain QEMU without a GPU
+      - name: Boot the GPU image without a GPU and check it refuses
         if: steps.gate.outputs.run == 'true'
         run: ./nix/boot-smoke.sh --gpu

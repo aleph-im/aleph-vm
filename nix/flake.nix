@@ -257,10 +257,44 @@
       # ownership, fail-closed init).
       composeRootfs = pkgs.callPackage ./compose-rootfs.nix { inherit kernel; };
 
+      # The GPU flavor's driver contract and policy table (a PCI id maps to
+      # the project/SKU triples a card of that model signs into its SPDM
+      # opaque data; add a row only from evidence read off such a card).
+      # ONE definition for two destinations, or the guest would enforce a
+      # table the client never saw: /etc/aleph/gpu.json in the GPU rootfs
+      # and the gpuImage sidecar the bundle copies into the manifest.
+      gpuFacts = pkgs.writeText "gpu.json" (builtins.toJSON {
+        vendor = "nvidia";
+        driver_version = nvidiaDriver.version;
+        library_path = "/opt/nvidia/lib";
+        archs = {
+          hopper = {
+            accepted_models = [ "GH100 A01 GSP BROM" ];
+            boards = {
+              "10de:2321" = [ { name = "H100 NVL"; project = "1010"; project_sku = "0210"; chip_sku = "886"; } ];
+              "10de:2330" = [ { name = "H100 SXM5 80GB"; project = "G520"; project_sku = "0200"; chip_sku = "885"; } ];
+              "10de:2331" = [ { name = "H100 PCIe"; project = "1010"; project_sku = "0200"; chip_sku = "882"; } ];
+              "10de:2335" = [ { name = "H200 SXM5 141GB"; project = "G520"; project_sku = "0280"; chip_sku = "895"; } ];
+              "10de:233b" = [ { name = "H200 NVL"; project = "1010"; project_sku = "0230"; chip_sku = "894"; } ];
+            };
+          };
+          blackwell = {
+            accepted_models = [ "NVIDIA RTX PRO 6000 Blackwell Server Edition" ];
+            # Two board SKUs ship under one PCI id; either satisfies it.
+            boards = {
+              "10de:2bb5" = [
+                { name = "RTX PRO 6000 Blackwell Server Edition"; project = "G153"; project_sku = "0210"; chip_sku = "895"; }
+                { name = "RTX PRO 6000 Blackwell Server Edition"; project = "G153"; project_sku = "0212"; chip_sku = "895"; }
+              ];
+            };
+          };
+        };
+      } + "\n");
+
       # Confidential-GPU platform rootfs: the base busybox content plus the
       # raw driver userland, GSP firmware and NVIDIA's local verifier. See
       # gpu-rootfs.nix.
-      gpuRootfs = import ./gpu-rootfs.nix { inherit pkgs nvidiaDriver nvat; };
+      gpuRootfs = import ./gpu-rootfs.nix { inherit pkgs nvidiaDriver nvat gpuFacts; };
 
       # fib-service V-PROGRAM workload volume: a content-only ext4 carrying the
       # fib-service binary as /sbin/init, delivered to the measured guest as an
@@ -416,9 +450,10 @@
       #   instead of duplicating it.
       # cmdlineExtra: appended verbatim to the cmdline built above (so it
       #   carries its own leading space). Empty by default, which keeps every
-      #   existing caller's cmdline BYTE-identical; the GPU flavor passes
-      #   " swiotlb=262144", which the guest needs for the driver's bounce
-      #   buffers under SEV-SNP.
+      #   existing caller's cmdline BYTE-identical; the GPU flavor passes the
+      #   swiotlb size the driver's bounce buffers need under SEV-SNP plus
+      #   the GPU requirement tokens the guest enforces (see
+      #   gpuMeasurementFor).
       # name: the derivation name. Defaults to the exact string this function
       #   has always used, so the base flavor's `#measurement` store path is
       #   unchanged; the compose flavor below passes a compose-tagged name so
@@ -472,14 +507,17 @@
 
       # Confidential-GPU measurement builder: same measurementFor machinery,
       # pinned to gpuInitrd, gpuVerity's root hash and gpuKernel, with the
-      # GPU flavor's extra cmdline token.
+      # GPU flavor's extra cmdline tokens. gpu_arch/gpu_count are the measured
+      # requirement init enforces; these fixed values (one Hopper card, no
+      # models token) are what the published measurement.hex is computed for,
+      # and a real launch re-measures with the message's own requirement.
       gpuMeasurementFor = { vcpus ? 2, vcpuType ? "EPYC-v4", workloadRoothash ? null }:
         measurementFor {
           inherit vcpus vcpuType workloadRoothash;
           initrdDrv = gpuInitrd;
           verityDrv = gpuVerity;
           kernelDrv = gpuKernel;
-          cmdlineExtra = " swiotlb=262144";
+          cmdlineExtra = " swiotlb=262144 gpu_arch=hopper gpu_count=1";
           name = "sev-snp-measurement-gpu-${toString vcpus}vcpus-${vcpuType}";
         };
 
@@ -542,10 +580,8 @@
 
       # Convenience: all measured-image artifacts in one directory, for the
       # confidential-GPU flavor. Mirrors `image` above, plus gpu.json: the
-      # runtime's GPU contract (vendor, driver version, the in-guest library
-      # path the workload gets its driver userland at, and per-architecture
-      # models the node will accept), which the bundle builder copies into
-      # the published manifest.
+      # same file the rootfs carries at /etc/aleph/gpu.json (see gpuFacts),
+      # which the bundle builder copies into the published manifest.
       gpuImage = pkgs.runCommand "aleph-gpu-image" {} ''
         mkdir -p $out
         ln -s ${gpuKernel}/bzImage $out/bzImage
@@ -556,9 +592,7 @@
         cp ${gpuVerity}/hashtree $out/rootfs.ext4.verity
         cp ${gpuVerity}/roothash $out/rootfs.ext4.roothash
         echo "${sourceRev}" > $out/source-rev
-        cat > $out/gpu.json <<EOF
-{"vendor":"nvidia","driver_version":"${nvidiaDriver.version}","library_path":"/opt/nvidia/lib","archs":{"hopper":{"accepted_models":["GH100 A01 GSP BROM"]},"blackwell":{"accepted_models":["NVIDIA RTX PRO 6000 Blackwell Server Edition"]}}}
-EOF
+        cp ${gpuFacts} $out/gpu.json
       '';
 
       # Per-deployment measurement helper for the instance image: the owner

@@ -29,7 +29,9 @@ CONTRACT_PATTERN = r"^[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)+/[0-9]+$"
 # The closed set of placeholders a format-version-1 cmdline template may use.
 # The template is the normative cmdline recipe: restricting its slots is what
 # prevents a malicious manifest from smuggling arbitrary kernel parameters.
-CMDLINE_PLACEHOLDERS_V1 = frozenset({"platform_roothash", "workload_roothash", "verified_volumes"})
+CMDLINE_PLACEHOLDERS_V1 = frozenset(
+    {"platform_roothash", "workload_roothash", "verified_volumes", "gpu_arch", "gpu_count", "gpu_models"}
+)
 # The closed placeholder set for the aleph-instance-runtime luks cmdline
 # template (format version 1): the instance init parses only `owner=` off
 # /proc/cmdline, so that is the only slot a manifest may fill.
@@ -57,11 +59,37 @@ CMDLINE_PLACEHOLDER_KEYS = {
     "platform_roothash": "roothash",
     "workload_roothash": "workload_roothash",
     "verified_volumes": "verified_volumes",
+    "gpu_arch": "gpu_arch",
+    "gpu_count": "gpu_count",
+    "gpu_models": "gpu_models",
     "owner": "owner",
 }
 _CMDLINE_KV_TOKEN = re.compile(r"^([a-z_]+)=\{([a-z_]+)\}$")
 
-DRIVER_VERSION_PATTERN = r"^\d+\.\d+(\.\d+)?$"
+# Canonical relative order of the v-program placeholder slots, matching what
+# the daemon emits (bundle.py's CMDLINE_TEMPLATE_*_V1 constants): a manifest
+# with the slots present in any other order still parses, but every launch
+# would mismeasure since the daemon always emits this order. "owner" is the
+# luks template's own closed set and never shares a template with these, so
+# it carries no relative order here.
+CMDLINE_PLACEHOLDER_ORDER = (
+    "platform_roothash",
+    "workload_roothash",
+    "verified_volumes",
+    "gpu_arch",
+    "gpu_count",
+    "gpu_models",
+)
+CMDLINE_PLACEHOLDER_RANK = {name: rank for rank, name in enumerate(CMDLINE_PLACEHOLDER_ORDER)}
+
+# 2 or 3 dot-separated components, each 1-9 digits: the client parses each
+# component as a u32, and no legal driver version needs more than 9 digits
+# per component (u32::MAX is 10 digits, so a 10-digit component always risks
+# overflow on the client side).
+DRIVER_VERSION_PATTERN = r"^\d{1,9}\.\d{1,9}(\.\d{1,9})?$"
+# Lowercase PCI vendor:device id, the spelling a V-PROGRAM's gpu.models and
+# the measured gpu_models= token use.
+GPU_DEVICE_ID_PATTERN = r"^[0-9a-f]{4}:[0-9a-f]{4}$"
 
 
 class StrictModel(BaseModel):
@@ -111,8 +139,11 @@ def _check_cmdline_tokens(value: str, fixed_tokens: frozenset[str]) -> None:
     onto either side. No token may appear twice: the daemon's sidecar
     allowlist admits a fixed token once, so a repeated one would pass here
     and fail at create, and the manifest is meant to be the single source
-    of truth for what boots."""
+    of truth for what boots. Placeholder slots present must also follow
+    CMDLINE_PLACEHOLDER_ORDER: the daemon always emits them in that order,
+    so any other order still parses but mismeasures every launch."""
     seen: set[str] = set()
+    last_placeholder: str | None = None
     for token in value.split():
         if token in seen:
             msg = f"cmdline token {token!r} appears more than once"
@@ -131,6 +162,15 @@ def _check_cmdline_tokens(value: str, fixed_tokens: frozenset[str]) -> None:
         if CMDLINE_PLACEHOLDER_KEYS.get(placeholder) != key:
             msg = f"cmdline token {token!r} must pair {{{placeholder}}} with its pinned key, not {key!r}"
             raise ValueError(msg)
+        rank = CMDLINE_PLACEHOLDER_RANK.get(placeholder)
+        if rank is not None:
+            if last_placeholder is not None and rank < CMDLINE_PLACEHOLDER_RANK[last_placeholder]:
+                msg = (
+                    f"cmdline slot {{{placeholder}}} must come before {{{last_placeholder}}}, "
+                    f"not after: canonical order is {' < '.join(CMDLINE_PLACEHOLDER_ORDER)}"
+                )
+                raise ValueError(msg)
+            last_placeholder = placeholder
 
 
 def _validate_cmdline_template(value: str, allowed: frozenset[str], required: str, fixed_tokens: frozenset[str]) -> str:
@@ -231,10 +271,56 @@ class SourceInfo(StrictModel):
     build: str = Field(min_length=1)
 
 
+class GpuBoard(StrictModel):
+    """One board a PCI id can be, as the card itself states it: project,
+    project_sku and chip_sku come from the SPDM opaque data of verified
+    attestation evidence, never from PCI config space or the driver."""
+
+    name: str = Field(min_length=1, description="Marketing name of the board, informational")
+    project: str = Field(pattern=r"^[0-9A-Za-z]+$")
+    project_sku: str = Field(pattern=r"^[0-9A-Za-z]+$")
+    chip_sku: str = Field(pattern=r"^[0-9A-Za-z]+$")
+
+
 class GpuArchSpec(StrictModel):
     accepted_models: list[str] = Field(
         min_length=1, description="hwmodel claim strings NVIDIA attestation reports carry"
     )
+    # A PCI id maps to the boards sold under it. Empty means the runtime
+    # cannot serve a requirement narrowed to specific models: the guest
+    # would find no board to match and power off, so the launch is refused.
+    boards: dict[str, list[GpuBoard]] = Field(default_factory=dict)
+
+    @field_validator("accepted_models")
+    @classmethod
+    def check_accepted_models(cls, models: list[str]) -> list[str]:
+        if any(not model for model in models):
+            msg = "accepted_models must not contain empty strings"
+            raise ValueError(msg)
+        return models
+
+    @field_validator("boards")
+    @classmethod
+    def check_boards(cls, boards: dict[str, list[GpuBoard]]) -> dict[str, list[GpuBoard]]:
+        # A board triple pins to one PCI id: if the same triple appeared
+        # under a second id, a model narrowed to the first id's triple would
+        # also be satisfied by a card presenting under the second id.
+        triple_owner: dict[tuple[str, str, str], str] = {}
+        for device_id, entries in boards.items():
+            if not re.fullmatch(GPU_DEVICE_ID_PATTERN, device_id):
+                msg = f"boards key {device_id!r} is not a lowercase PCI vendor:device id"
+                raise ValueError(msg)
+            if not entries:
+                msg = f"boards.{device_id} must list at least one board"
+                raise ValueError(msg)
+            for board in entries:
+                triple = (board.project, board.project_sku, board.chip_sku)
+                owner = triple_owner.get(triple)
+                if owner is not None and owner != device_id:
+                    msg = f"board {triple} appears under both {owner!r} and {device_id!r}"
+                    raise ValueError(msg)
+                triple_owner[triple] = device_id
+        return boards
 
 
 class GpuRuntimeSpec(StrictModel):

@@ -12,11 +12,13 @@
 # SLIRP port forward.
 #
 # `--gpu` instead boots the confidential-GPU image (gpuImage) on a host with
-# no NVIDIA device, which is the flavor's own no-GPU path: init-gpu.sh must
-# find no 0x10de PCI device, say so, and boot on exactly like the base image.
-# It does not exercise the driver, the verifier or the ready state; those
-# need real Blackwell hardware. CI runs it from the GPU golden job
-# (.github/workflows/golden-measurements.yml), which has the image built.
+# no NVIDIA device, which is the flavor's fail-closed path: the boot must get
+# as far as the verified rootfs and then power off, because a GPU runtime
+# with no card must never reach the firewall, the workload or an attested
+# endpoint. It does not exercise the driver, the verifier, the policy check
+# or the ready state; those need real hardware. CI runs it from the GPU
+# golden job (.github/workflows/golden-measurements.yml), which has the
+# image built.
 #
 # Usage: nix/boot-smoke.sh [--gpu] (curl and python3 are needed for phase 3)
 # Runs in CI on a KVM runner (.github/workflows/boot-smoke.yml) and locally
@@ -63,6 +65,11 @@ run_phase() {
   local phase="$1"; shift
   local append="$1"; shift
   local -a extra_drives=("$@")
+  # Set once the guest has exited, so a phase whose guest powers itself off
+  # (the --gpu phase does) gets one more look at the log: the line it waits
+  # for is written immediately before the poweroff, and QEMU can be gone by
+  # the next check.
+  local exited=0
   # Drop the previous phase's log before reassigning the global, or the
   # EXIT trap only ever removes the latest one.
   rm -f "$log"
@@ -105,7 +112,11 @@ run_phase() {
       return 0
     fi
     if ! kill -0 "$qemu_pid" 2>/dev/null; then
-      break
+      if [ "$exited" -eq 1 ]; then
+        break
+      fi
+      exited=1
+      continue
     fi
     sleep 1
   done
@@ -119,20 +130,24 @@ forbidden=()
 netdev_extra=""
 probe=true
 
-# GPU mode: the confidential-GPU image, platform-only cmdline, no NVIDIA
-# device attached. The GPU stage must take its no-GPU branch and the rest of
-# the boot must be indistinguishable from the base image's phase 1.
+# GPU mode: the confidential-GPU image, no NVIDIA device attached. The
+# cmdline carries the flavor's measured GPU requirement (one Hopper card, as
+# the golden gpuMeasurement is computed for), which an empty PCI bus cannot
+# satisfy: the boot must verify and mount the rootfs, then power off before
+# the firewall and the workload.
 if [ "$gpu_mode" -eq 1 ]; then
   mem=2048
   markers=(
-    "init: no NVIDIA GPU present; running without GPU attestation"
     "init: mounting /dev/mapper/verity-root"
+    "init: FATAL: gpu attestation failed: GPU runtime started without a GPU"
+  )
+  forbidden=(
     "init: firewall active"
     "init: starting /sbin/init from "
+    "init: INSECURE UNATTESTED MODE:"
   )
-  forbidden=("init: INSECURE UNATTESTED MODE:")
-  run_phase "gpu" "console=ttyS0 root=/dev/mapper/verity-root ro roothash=$roothash swiotlb=262144"
-  echo "boot smoke --gpu OK: GPU image booted with no GPU, rootfs verified and mounted, firewall up, /sbin/init started" >&2
+  run_phase "gpu" "console=ttyS0 root=/dev/mapper/verity-root ro roothash=$roothash swiotlb=262144 gpu_arch=hopper gpu_count=1"
+  echo "boot smoke --gpu OK: GPU image verified its rootfs and then refused to boot without a GPU" >&2
   exit 0
 fi
 
