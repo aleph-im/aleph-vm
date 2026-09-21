@@ -162,7 +162,9 @@ jobs:
             exit 0
           fi
           git commit -m "chore(nix): regenerate the golden launch measurements"
-          git push
+          # actions/checkout leaves a detached HEAD, so a bare push has no
+          # branch to push to; name the dispatched branch explicitly.
+          git push origin HEAD:"$GITHUB_REF_NAME"
 
   # Confidential-GPU flavor. Its chain shares almost nothing with the base
   # set: a second guest kernel (gpuKernel), the NVIDIA open kernel modules,
