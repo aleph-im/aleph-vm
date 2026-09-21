@@ -228,6 +228,7 @@ dependencies = [
  "actix-web",
  "aleph-tee",
  "anyhow",
+ "base64",
  "clap",
  "futures-util",
  "hex",
