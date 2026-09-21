@@ -372,6 +372,10 @@ CC guests), carried from the runtime manifest's cmdline template through a
 `{rootfs}.cmdline_extra` sidecar the daemon validates against a closed
 allowlist (`swiotlb=<digits>` only) before splicing it in
 (`snp_config_slice`); no GPU on the spec means no sidecar and no token.
+Measured on an H200 NVL with pageable host memory and this reservation:
+about 4 GiB/s host-to-device and about 0.6 GiB/s device-to-host for
+transfers of 1 GiB and up, with single copies as large as 4 GiB completing
+with no bounce-buffer exhaustion.
 
 **In-guest verification.** `nix/init-gpu.sh` runs between the verity mounts
 and chroot preparation, only when an NVIDIA device is present on the PCI
@@ -412,6 +416,32 @@ Two properties follow from this and matter to anyone building a client:
   manifest it pinned declares a `gpu` block, and treat a 404 from
   `/.well-known/attestation/gpu` on such a runtime as a verification
   failure, not as "no GPU requested".
+
+**What a GPU workload must ship.** The guest bind-mounts only the raw
+NVIDIA driver userland into the workload's chroot, at `/opt/nvidia/lib`,
+and exports `LD_LIBRARY_PATH=/opt/nvidia/lib` before starting it
+(`nix/init-common.sh`, `nix/init-gpu.sh`). Everything else in the workload's
+runtime environment is the workload volume's own responsibility:
+
+- the `/opt/nvidia/lib` mount point (an empty directory is enough; init
+  fails closed with `init: FATAL: ... has no /opt/nvidia/lib mount point`
+  if it is missing),
+- its own libc and dynamic loader, since only the driver's libraries are
+  bind-mounted in,
+- a regular-file executable `/sbin/init`: init checks it for executability
+  from outside the chroot, before the volume's own filesystem is mounted at
+  that absolute path, so an absolute symlink does not resolve at check time
+  even though it would once chrooted; a symlinked `/sbin/init` fails as
+  `init: FATAL: no /sbin/init found in <mount>` even though the volume has
+  one,
+- OpenSSL 3, specifically `libcrypto.so.3` resolvable by the dynamic
+  linker: in CC mode `libcuda` loads `libnvidia-pkcs11-openssl3.so`, and
+  without `libcrypto.so.3` present `cuInit` returns `CUDA_ERROR` 801
+  (`CUDA_ERROR_NOT_SUPPORTED`) rather than initializing.
+
+The in-tree example that ships all of this correctly is
+`nix/cuda-workload.nix` (the volume build) paired with `nix/cuda-probe`
+(the workload binary).
 
 ## Key invariants
 
