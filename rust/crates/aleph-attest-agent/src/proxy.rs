@@ -223,8 +223,10 @@ fn declared_content_length(content_length: Option<&[u8]>, chunked: bool) -> Opti
 
 /// actix hands the request body to the handler as a `!Send` stream while
 /// reqwest wants a `Send` body: pump it through a channel from a task on this
-/// worker thread. Dropping the reqwest side stops the pump.
+/// worker thread. Dropping the reqwest side stops the pump. `first` is a chunk
+/// already taken off the payload, relayed ahead of the rest.
 fn send_bridge(
+    first: Option<Result<Bytes, actix_web::error::PayloadError>>,
     mut payload: web::Payload,
 ) -> impl Stream<Item = Result<Bytes, actix_web::error::PayloadError>> + Send {
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
@@ -235,7 +237,8 @@ fn send_bridge(
             }
         }
     });
-    futures_util::stream::poll_fn(move |cx| rx.poll_recv(cx))
+    futures_util::stream::iter(first)
+        .chain(futures_util::stream::poll_fn(move |cx| rx.poll_recv(cx)))
 }
 
 /// Default handler: reverse-proxy all requests to the upstream application.
@@ -246,7 +249,7 @@ fn send_bridge(
 pub async fn proxy_handler(
     state: web::Data<AppState>,
     req: HttpRequest,
-    payload: web::Payload,
+    mut payload: web::Payload,
 ) -> HttpResponse {
     // Build the upstream URL preserving path and query string. Trim any
     // trailing slash on the configured upstream so it does not collide with the
@@ -289,13 +292,21 @@ pub async fn proxy_handler(
         req.headers().get(CONTENT_LENGTH).map(|v| v.as_bytes()),
         chunked,
     );
+    // Headers that frame no body settle it on HTTP/1 only: an HTTP/2 body
+    // may come with neither, so ask the payload, which ends at once when
+    // there is none.
+    let first = if chunked || content_length.is_some() {
+        None
+    } else {
+        payload.next().await
+    };
     if let Some(len) = content_length {
         proxy_req = proxy_req.header("content-length", len);
-    } else if chunked {
+    } else if chunked || first.is_some() {
         proxy_req = proxy_req.header("transfer-encoding", "chunked");
     }
-    if chunked || content_length.is_some_and(|len| len > 0) {
-        proxy_req = proxy_req.body(reqwest::Body::wrap_stream(send_bridge(payload)));
+    if chunked || first.is_some() || content_length.is_some_and(|len| len > 0) {
+        proxy_req = proxy_req.body(reqwest::Body::wrap_stream(send_bridge(first, payload)));
     }
 
     // Send the proxied request.
@@ -666,7 +677,7 @@ mod tests {
         })
         .workers(1)
         .disable_signals()
-        .bind(("127.0.0.1", 0))
+        .bind_auto_h2c(("127.0.0.1", 0))
         .expect("bind proxy");
         let addr = server.addrs()[0];
         let server = server.run();
@@ -753,6 +764,49 @@ mod tests {
         assert!(head.contains("transfer-encoding: chunked\r\n"), "{head}");
         assert!(!head.contains("content-length"), "{head}");
         assert!(body.windows(5).any(|w| w == b"hello"), "{body:?}");
+        proxy.stop(true).await;
+    }
+
+    /// An HTTP/2 body is framed by DATA frames and may come with no
+    /// Content-Length: it must still reach the upstream, and a bodiless
+    /// HTTP/2 request must not grow a framing header on the way.
+    #[actix_web::test]
+    async fn http2_bodies_without_a_content_length_reach_the_upstream() {
+        let client = reqwest::Client::builder()
+            .http2_prior_knowledge()
+            .build()
+            .expect("h2 client");
+
+        let (upstream, seen) = counting_upstream().await;
+        let (addr, proxy) = serve_proxy(&upstream).await;
+        let body =
+            futures_util::stream::iter([Ok::<_, std::io::Error>(Bytes::from_static(b"hello"))]);
+        let resp = client
+            .post(format!("http://{addr}/upload"))
+            .body(reqwest::Body::wrap_stream(body))
+            .send()
+            .await
+            .expect("h2 request");
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let (head, body) = seen.await.expect("upstream saw the request");
+        let head = head.to_ascii_lowercase();
+        assert!(head.contains("transfer-encoding: chunked\r\n"), "{head}");
+        assert!(body.windows(5).any(|w| w == b"hello"), "{body:?}");
+        proxy.stop(true).await;
+
+        let (upstream, seen) = counting_upstream().await;
+        let (addr, proxy) = serve_proxy(&upstream).await;
+        let resp = client
+            .get(format!("http://{addr}/thing"))
+            .send()
+            .await
+            .expect("h2 request");
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let (head, body) = seen.await.expect("upstream saw the request");
+        let head = head.to_ascii_lowercase();
+        assert!(!head.contains("transfer-encoding"), "{head}");
+        assert!(!head.contains("content-length"), "{head}");
+        assert!(body.is_empty(), "{body:?}");
         proxy.stop(true).await;
     }
 
