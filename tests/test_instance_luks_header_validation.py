@@ -195,6 +195,16 @@ def test_data_segment_null_downgrade_is_refused(tmp_path):
     _luks_format(image)
     _flip_cipher(image, "segment")
     _assert_cryptsetup_accepts_forgery(image)
+    # The attack, not a corrupt disk: the genuine passphrase still unlocks the
+    # forged header, because the digest does not bind the data-segment cipher.
+    # (Only the segment variant: cryptsetup >= 2.8.1 refuses the keyslot one.)
+    unlock = subprocess.run(  # noqa: S603
+        [CRYPTSETUP, "luksOpen", "--test-passphrase", "--key-file", "-", str(image)],
+        input=PASSPHRASE,
+        capture_output=True,
+        check=False,
+    )
+    assert unlock.returncode == 0, f"forgery is not unlockable:\n{unlock.stderr!r}"
     assert _run_validation(image) is False
 
 

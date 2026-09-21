@@ -65,18 +65,21 @@ if ! /bin/cryptsetup luksHeaderBackup "$blkdev" --header-backup-file "$luks_head
     echo "init: FATAL: no readable LUKS2 header on ${blkdev} (host-supplied disk rejected)"
     exec /bin/busybox poweroff -f
 fi
-meta=$(/bin/cryptsetup luksDump --dump-json-metadata "$luks_header" 2>/dev/null)
+# stderr is left on the serial console so a parse failure names its cause.
+meta=$(/bin/cryptsetup luksDump --dump-json-metadata "$luks_header")
 # --dump-json-metadata re-serializes the header through OUR cryptsetup, so the
-# output whitespace is ours, not the attacker's: one field per line, no spaces
-# around ':'. grep -c counts matching lines == matching fields.
+# JSON escaping is ours, not the attacker's: a field smuggled inside a string
+# value comes out as \"encryption\" and cannot match. grep -o emits one line
+# per match, so wc -l counts fields regardless of how many share a line, and
+# the optional whitespace after ':' tolerates a pretty-printing change.
 # Only the cipher string is policed, not key_size or sector_size: a tampered
 # key_size or a forged keyslot is rejected at luksOpen anyway, because the
 # digest binds the volume key and, without the owner's passphrase, the host
 # cannot build a self-consistent keyslot+digest pair. The data-segment cipher
 # is the one field the digest does NOT bind, so it is the one we must check.
-enc_total=$(printf '%s\n' "$meta" | /bin/busybox grep -c '"encryption":')
-enc_ok=$(printf '%s\n' "$meta" | /bin/busybox grep -Fc '"encryption":"aes-xts-plain64"')
-seg_crypt=$(printf '%s\n' "$meta" | /bin/busybox grep -Fc '"type":"crypt"')
+enc_total=$(printf '%s\n' "$meta" | /bin/busybox grep -o '"encryption":[[:space:]]*"' | /bin/busybox wc -l)
+enc_ok=$(printf '%s\n' "$meta" | /bin/busybox grep -o '"encryption":[[:space:]]*"aes-xts-plain64"' | /bin/busybox wc -l)
+seg_crypt=$(printf '%s\n' "$meta" | /bin/busybox grep -o '"type":[[:space:]]*"crypt"' | /bin/busybox wc -l)
 if [ "$enc_total" -lt 1 ] || [ "$enc_total" != "$enc_ok" ] || [ "$seg_crypt" -lt 1 ]; then
     echo "init: FATAL: untrusted LUKS header rejected -- expected aes-xts-plain64 on every"
     echo "init:        keyslot area and data segment, got ${enc_ok}/${enc_total} matching and"
