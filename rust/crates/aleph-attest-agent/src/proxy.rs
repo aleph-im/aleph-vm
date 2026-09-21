@@ -315,9 +315,9 @@ pub async fn proxy_handler(
         payload.next().await
     };
     if let Some(len) = content_length {
-        proxy_req = proxy_req.header("content-length", len);
+        proxy_req = proxy_req.header(reqwest::header::CONTENT_LENGTH, len);
     } else if chunked || first.is_some() {
-        proxy_req = proxy_req.header("transfer-encoding", "chunked");
+        proxy_req = proxy_req.header(reqwest::header::TRANSFER_ENCODING, "chunked");
     }
     if chunked || first.is_some() || content_length.is_some_and(|len| len > 0) {
         proxy_req = proxy_req.body(reqwest::Body::wrap_stream(send_bridge(first, payload)));
@@ -338,14 +338,14 @@ pub async fn proxy_handler(
             let hop_named = connection_named(
                 upstream_resp
                     .headers()
-                    .get_all("connection")
+                    .get_all(reqwest::header::CONNECTION)
                     .iter()
                     .map(|v| v.as_bytes()),
             );
             for (name, value) in upstream_resp.headers() {
                 if !is_hop_by_hop(name.as_str())
                     && !hop_named.iter().any(|h| h == name.as_str())
-                    && !name.as_str().eq_ignore_ascii_case("content-length")
+                    && name != reqwest::header::CONTENT_LENGTH
                     && let Ok(v) = value.to_str()
                 {
                     resp.append_header((name.as_str(), v));
@@ -361,9 +361,11 @@ pub async fn proxy_handler(
             let content_length = declared_content_length(
                 upstream_resp
                     .headers()
-                    .get("content-length")
+                    .get(reqwest::header::CONTENT_LENGTH)
                     .map(|v| v.as_bytes()),
-                upstream_resp.headers().contains_key("transfer-encoding"),
+                upstream_resp
+                    .headers()
+                    .contains_key(reqwest::header::TRANSFER_ENCODING),
             );
             let body = upstream_resp.bytes_stream();
             if status == StatusCode::NO_CONTENT || status == StatusCode::NOT_MODIFIED {
@@ -375,6 +377,8 @@ pub async fn proxy_handler(
                 // Keep the upstream's exact framing rather than re-chunking a
                 // sized body: the client keeps its length, and HTTP/1.0
                 // clients keep working.
+                // The length counts the bytes as sent, so
+                // reqwest's decompression features must stay off.
                 resp.no_chunking(len);
                 resp.body(SizedStream::new(len, body))
             } else {
