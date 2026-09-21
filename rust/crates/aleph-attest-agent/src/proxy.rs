@@ -435,9 +435,10 @@ pub async fn proxy_handler(
             }
         }
         Err(e) => {
-            // Same split as above: the reqwest error names the upstream
-            // address and the failure detail, which belong in the log only.
-            tracing::error!("proxy request to {upstream_url} failed: {e:#}");
+            // The guest log is the serial console, which the host reads:
+            // no URL in it, a query string can carry the caller's secrets.
+            let e = e.without_url();
+            tracing::error!("proxy request to the upstream failed: {e:#}");
             HttpResponse::BadGateway().json(serde_json::json!({"error": "upstream unreachable"}))
         }
     }
