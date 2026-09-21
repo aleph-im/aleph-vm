@@ -39,7 +39,7 @@ fi
 # hardened directory check.
 /bin/busybox mkdir -m 0700 -p /tmp/secrets
 echo "init: starting attestation agent (owner-auth mode, owner=${owner})"
-/bin/aleph-attest-agent --port 8443 --upstream http://127.0.0.1:8080 --owner "$owner" &
+run_attest_agent --owner "$owner"
 
 zeroize_passphrase() {
     size=$(/bin/busybox stat -c%s /tmp/secrets/luks_passphrase 2>/dev/null)
