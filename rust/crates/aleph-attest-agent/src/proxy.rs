@@ -756,6 +756,25 @@ mod tests {
         proxy.stop(true).await;
     }
 
+    /// A declared empty body keeps its `Content-Length: 0` upstream: a strict
+    /// server answers 411 to a POST without one.
+    #[actix_web::test]
+    async fn an_empty_request_body_keeps_its_content_length() {
+        let (upstream, seen) = counting_upstream().await;
+        let (addr, proxy) = serve_proxy(&upstream).await;
+        let mut sock = raw_request(addr).await;
+        sock.write_all(b"POST /thing HTTP/1.1\r\nhost: agent\r\ncontent-length: 0\r\n\r\n")
+            .await
+            .expect("send request");
+        read_until(&mut sock, b"\r\n\r\n").await;
+
+        let (head, body) = seen.await.expect("upstream saw the request");
+        let head = head.to_ascii_lowercase();
+        assert!(head.contains("content-length: 0\r\n"), "{head}");
+        assert!(body.is_empty(), "{body:?}");
+        proxy.stop(true).await;
+    }
+
     /// A bodiless upstream status must not leave a stray chunked terminator
     /// on the connection, or the next keep-alive response starts with it. The
     /// second response also pins the sized framing on the wire.
@@ -777,6 +796,9 @@ mod tests {
             first.starts_with(b"HTTP/1.1 204 No Content\r\n"),
             "{first:?}"
         );
+        // actix flushes the head and a stray terminator in one write, so it
+        // would sit at the end of this read, not at the start of the next.
+        assert!(!first.ends_with(b"0\r\n\r\n"), "{first:?}");
 
         sock.write_all(b"GET /thing HTTP/1.1\r\nhost: agent\r\n\r\n")
             .await
