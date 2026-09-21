@@ -34,6 +34,53 @@ if [ -z "$blkdev" ]; then
     exec /bin/busybox poweroff -f
 fi
 
+# --- Untrusted host-supplied LUKS header defense -----------------------------
+# The block device and its LUKS2 header come from the untrusted host (the CRN
+# operator). The SEV-SNP launch measurement covers the kernel, initrd, cmdline
+# and owner key -- it does NOT cover the disk. So a malicious host can keep the
+# genuine keyslot and digest (the owner's real passphrase still validates) while
+# downgrading the DATA SEGMENT cipher to the null cipher
+# (segments.0.encryption: aes-xts-plain64 -> cipher_null-ecb). The genuine
+# passphrase then "unlocks" a PLAINTEXT volume the host pre-filled with its own
+# rootfs, under a genuine attestation -- a full guest takeover. The related
+# keyslot-null variant (CVE-2025-59054, fixed in cryptsetup 2.8.1) forges a
+# keyslot the same way; the data-segment variant is NOT fixed at the cryptsetup
+# layer and must be caught here, by the consumer (Trail of Bits, 2025-10-30:
+# https://blog.trailofbits.com/2025/10/30/vulnerabilities-in-luks2-disk-encryption-for-confidential-vms/).
+#
+# Defense: copy the header off the untrusted device into initrd RAM ONCE,
+# validate the RAM copy, then luksOpen --header the RAM copy so the on-disk
+# header can never be swapped between the check and the open (TOCTOU). The
+# rootfs is formatted by examples/instance_confidential_snp/build_luks_rootfs.sh
+# with the cryptsetup LUKS2 default -- aes-xts-plain64 for every keyslot area
+# AND the data segment -- so the invariant is exact: every "encryption" field
+# in the header must read aes-xts-plain64, and there must be at least one crypt
+# data segment. Any other cipher (a null-cipher downgrade above all) fails
+# closed: a tampered header is never fixed by re-injecting the passphrase, so we
+# power off rather than wait. The FATAL line is captured on the guest serial
+# (owner-readable), and a STOPPED VM is an unambiguous "the host tampered with
+# the disk" signal.
+luks_header=/run/cryptsetup/luks_header.img
+if ! /bin/cryptsetup luksHeaderBackup "$blkdev" --header-backup-file "$luks_header" 2>&1; then
+    echo "init: FATAL: no readable LUKS2 header on ${blkdev} (host-supplied disk rejected)"
+    exec /bin/busybox poweroff -f
+fi
+meta=$(/bin/cryptsetup luksDump --dump-json-metadata "$luks_header" 2>/dev/null)
+# --dump-json-metadata re-serializes the header through OUR cryptsetup, so the
+# output whitespace is ours, not the attacker's: one field per line, no spaces
+# around ':'. grep -c counts matching lines == matching fields.
+enc_total=$(printf '%s\n' "$meta" | /bin/busybox grep -c '"encryption":')
+enc_ok=$(printf '%s\n' "$meta" | /bin/busybox grep -Fc '"encryption":"aes-xts-plain64"')
+seg_crypt=$(printf '%s\n' "$meta" | /bin/busybox grep -Fc '"type":"crypt"')
+if [ "$enc_total" -lt 1 ] || [ "$enc_total" != "$enc_ok" ] || [ "$seg_crypt" -lt 1 ]; then
+    echo "init: FATAL: untrusted LUKS header rejected -- expected aes-xts-plain64 on every"
+    echo "init:        keyslot area and data segment, got ${enc_ok}/${enc_total} matching and"
+    echo "init:        ${seg_crypt} crypt segment(s). Possible host cipher_null downgrade"
+    echo "init:        (Trail of Bits 2025-10-30). Refusing to unlock the rootfs."
+    exec /bin/busybox poweroff -f
+fi
+echo "init: LUKS header validated (${enc_ok}/${enc_total} aes-xts-plain64, ${seg_crypt} crypt segment)"
+
 # Start the attestation agent EARLY, in owner-auth mode, so the owner can
 # verify and inject the passphrase. 0700 pre-creation matches the agent's
 # hardened directory check.
@@ -60,7 +107,9 @@ while true; do
     # empty file and feed cryptsetup zero bytes.
     if [ -s /tmp/secrets/luks_passphrase ]; then
         echo "init: unlocking LUKS volume on ${blkdev}"
-        if /bin/cryptsetup luksOpen "$blkdev" cryptroot < /tmp/secrets/luks_passphrase 2>&1; then
+        # --header pins the open to the RAM copy we validated above; the on-disk
+        # header is never re-read, closing the check-vs-use TOCTOU.
+        if /bin/cryptsetup luksOpen --header "$luks_header" "$blkdev" cryptroot < /tmp/secrets/luks_passphrase 2>&1; then
             zeroize_passphrase
             break
         fi
