@@ -140,20 +140,13 @@ fn round_window_mb(bar_bytes: u64, double: bool) -> u64 {
     window
 }
 
-/// Window size in MiB: the BAR total rounded up to a power of two, doubled
-/// so OVMF has alignment slack, never below 1 GiB and never above 4 TiB.
-pub fn mmio64_window_mb(bar_bytes: u64) -> u64 {
-    round_window_mb(bar_bytes, true)
-}
-
 /// The window to hand OVMF for a BAR total next to this VM's RAM.
 ///
-/// The doubled window (`mmio64_window_mb`) is tried first, unchanged from
-/// before. If the guest's address space cannot hold it, the un-doubled
-/// power-of-two rounding is tried next: a window that starts exactly at the
-/// top of RAM still leaves every BAR placeable, it just gives OVMF no
-/// alignment slack. If neither fits, the error names the smaller, un-doubled
-/// window, since that is the one that could have worked.
+/// The doubled window is tried first. If the guest's address space cannot
+/// hold it, the un-doubled power-of-two rounding is tried next: a window that
+/// starts exactly at the top of RAM still leaves every BAR placeable, it just
+/// gives OVMF no alignment slack. If neither fits, the error names the
+/// smaller, un-doubled window, since that is the one that could have worked.
 pub fn mmio64_window_for(bar_bytes: u64, guest_ram_mb: u64) -> Result<u64, DaemonError> {
     let doubled = round_window_mb(bar_bytes, true);
     if check_mmio64_budget(doubled, guest_ram_mb).is_ok() {
@@ -262,22 +255,33 @@ mod tests {
     #[test]
     fn window_is_next_power_of_two_doubled_with_a_floor() {
         assert_eq!(
-            mmio64_window_mb(128 * (1 << 30) + 32 * (1 << 20)),
+            round_window_mb(128 * (1 << 30) + 32 * (1 << 20), true),
             512 * 1024
         );
-        assert_eq!(mmio64_window_mb(0), 1024);
-        assert_eq!(mmio64_window_mb(256 * (1 << 20)), 1024);
-        assert_eq!(mmio64_window_mb(3 * (1 << 30)), 8 * 1024);
+        assert_eq!(round_window_mb(0, true), 1024);
+        assert_eq!(round_window_mb(256 * (1 << 20), true), 1024);
+        assert_eq!(round_window_mb(3 * (1 << 30), true), 8 * 1024);
+    }
+
+    #[test]
+    fn the_undoubled_window_keeps_the_rounding_and_the_floor() {
+        assert_eq!(
+            round_window_mb(128 * (1 << 30) + 32 * (1 << 20), false),
+            256 * 1024
+        );
+        assert_eq!(round_window_mb(0, false), 1024);
+        assert_eq!(round_window_mb(3 * (1 << 30), false), 4 * 1024);
+        assert_eq!(round_window_mb(u64::MAX, false), MAX_WINDOW_MB);
     }
 
     #[test]
     fn the_window_is_clamped_to_the_ceiling() {
         // Just under the ceiling still passes through untouched.
-        assert_eq!(mmio64_window_mb(1024 * (1 << 30)), 2 * 1024 * 1024);
+        assert_eq!(round_window_mb(1024 * (1 << 30), true), 2 * 1024 * 1024);
         // 4 TiB of BARs would ask for 8 TiB; the ceiling holds.
-        assert_eq!(mmio64_window_mb(4 * (1u64 << 40)), MAX_WINDOW_MB);
+        assert_eq!(round_window_mb(4 * (1u64 << 40), true), MAX_WINDOW_MB);
         // And the rounding cannot overflow into a tiny window.
-        assert_eq!(mmio64_window_mb(u64::MAX), MAX_WINDOW_MB);
+        assert_eq!(round_window_mb(u64::MAX, true), MAX_WINDOW_MB);
     }
 
     #[test]
@@ -400,7 +404,7 @@ mod tests {
     fn a_window_that_hits_the_clamp_is_refused_by_the_budget() {
         // The clamp only keeps the fw_cfg number finite; the budget is what
         // refuses the create, so reaching the clamp must not mean a launch.
-        let clamped = mmio64_window_mb(u64::MAX);
+        let clamped = round_window_mb(u64::MAX, true);
         assert_eq!(clamped, MAX_WINDOW_MB);
         assert!(check_mmio64_budget(clamped, 2048).is_err());
     }
