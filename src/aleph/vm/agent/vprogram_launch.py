@@ -202,10 +202,10 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
         if gpu.vendor != manifest.gpu.vendor:
             msg = f"V-PROGRAM {vm_hash} declares a {gpu.vendor} GPU but the runtime drives {manifest.gpu.vendor}"
             raise VmSetupError(msg)
-        if gpu.arch != manifest.gpu.arch:
+        if gpu.arch not in manifest.gpu.archs:
             msg = (
                 f"V-PROGRAM {vm_hash} asks for a {gpu.arch} GPU but runtime "
-                f"{content.runtime.ref} drives {manifest.gpu.arch}"
+                f"{content.runtime.ref} does not drive {gpu.arch}"
             )
             raise VmSetupError(msg)
         if content.resources.memory < GPU_VPROGRAM_MIN_MEMORY_MIB:
