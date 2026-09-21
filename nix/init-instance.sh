@@ -69,6 +69,11 @@ meta=$(/bin/cryptsetup luksDump --dump-json-metadata "$luks_header" 2>/dev/null)
 # --dump-json-metadata re-serializes the header through OUR cryptsetup, so the
 # output whitespace is ours, not the attacker's: one field per line, no spaces
 # around ':'. grep -c counts matching lines == matching fields.
+# Only the cipher string is policed, not key_size or sector_size: a tampered
+# key_size or a forged keyslot is rejected at luksOpen anyway, because the
+# digest binds the volume key and, without the owner's passphrase, the host
+# cannot build a self-consistent keyslot+digest pair. The data-segment cipher
+# is the one field the digest does NOT bind, so it is the one we must check.
 enc_total=$(printf '%s\n' "$meta" | /bin/busybox grep -c '"encryption":')
 enc_ok=$(printf '%s\n' "$meta" | /bin/busybox grep -Fc '"encryption":"aes-xts-plain64"')
 seg_crypt=$(printf '%s\n' "$meta" | /bin/busybox grep -Fc '"type":"crypt"')

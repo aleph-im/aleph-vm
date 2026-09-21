@@ -1,0 +1,180 @@
+"""The confidential-instance init (nix/init-instance.sh) validates the untrusted
+host-supplied LUKS2 header before unlocking the rootfs: every "encryption" field
+must be aes-xts-plain64 and there must be at least one crypt data segment,
+otherwise it powers off (Trail of Bits 2025-10-30, the data-segment null-cipher
+downgrade). This pins that grep pipeline so a future edit that weakens it fails
+here.
+
+The test does not re-implement the check: it lifts the real shell fragment out
+of nix/init-instance.sh, so if the fragment drifts the assertions move with it.
+The only rewrites are the initrd-absolute paths (/bin/busybox, /bin/cryptsetup)
+and the poweroff (turned into a non-zero exit so the verdict is observable), all
+substring-substitutions that leave the decision logic byte-for-byte.
+
+The tamper + checksum-recompute mirrors the loopback PoC the fix was reproduced
+with: patch segments.0.encryption (data-segment variant) or
+keyslots.0.area.encryption (CVE-2025-59054 keyslot variant) to cipher_null-ecb,
+then recompute the LUKS2 binary-header SHA256 checksum so cryptsetup accepts the
+forged header as genuine -- exactly what a malicious host does.
+
+Runs rootless (cryptsetup operates on a plain image file, no loop device) and is
+skipped where cryptsetup is not installed.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+INIT_SCRIPT = REPO_ROOT / "nix" / "init-instance.sh"
+
+CRYPTSETUP = shutil.which("cryptsetup")
+SH = shutil.which("sh") or "/bin/sh"
+
+# LUKS2 binary-header layout (see cryptsetup docs / the PoC): each metadata area
+# is 16384 bytes = a 4096-byte binary header followed by 12288 bytes of JSON. The
+# on-disk checksum is a SHA256 over the whole area with its own 64-byte csum field
+# zeroed, stored at offset 448. There are two areas: primary at 0, secondary at
+# one AREA in.
+HDR_BIN = 4096
+CSUM_OFF = 448
+CSUM_LEN = 64
+AREA = 16384
+
+pytestmark = pytest.mark.skipif(
+    shutil.which("cryptsetup") is None,
+    reason="needs the cryptsetup binary (rootless, operates on an image file)",
+)
+
+
+def _extract_validation_fragment() -> str:
+    """Lift the LUKS-header validation from nix/init-instance.sh and make it
+    runnable off the initrd: verdict is the exit code (0 accept, 1 refuse)."""
+    lines = INIT_SCRIPT.read_text().splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("meta=$("))
+    end = next(i for i, line in enumerate(lines) if 'echo "init: LUKS header validated' in line)
+    fragment = "\n".join(lines[start : end + 1])
+    # The initrd hard-codes absolute paths and powers off on refusal; rewrite
+    # both without touching the grep patterns or the accept condition.
+    fragment = fragment.replace("exec /bin/busybox poweroff -f", "exit 1")
+    fragment = fragment.replace("/bin/busybox ", "")
+    fragment = fragment.replace("/bin/cryptsetup", "cryptsetup")
+    assert "grep" in fragment and 'aes-xts-plain64"' in fragment, "extraction missed the check"
+    return 'luks_header="$1"\n' + fragment + "\n"
+
+
+def _run_validation(image: Path) -> bool:
+    """Run the real fragment against `image`. True == ACCEPT (genuine header)."""
+    result = subprocess.run(  # noqa: S603
+        [SH, "-c", _extract_validation_fragment(), "sh", str(image)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode in (0, 1), f"fragment errored: {result.returncode}\n{result.stderr}\n{result.stdout}"
+    return result.returncode == 0
+
+
+def _luks_format(image: Path) -> None:
+    image.write_bytes(b"\x00" * (32 * 1024 * 1024))
+    argv = [
+        "luksFormat",
+        "--type",
+        "luks2",
+        "--cipher",
+        "aes-xts-plain64",
+        "--pbkdf",
+        "pbkdf2",
+        "--pbkdf-force-iterations",
+        "1000",
+        "--batch-mode",
+        str(image),
+        "-",
+    ]
+    subprocess.run(  # noqa: S603
+        [CRYPTSETUP, *argv],
+        input=b"correct horse battery staple",
+        check=True,
+        capture_output=True,
+    )
+
+
+def _read_area(buf: bytearray, base: int) -> tuple[dict, bytearray]:
+    area = bytearray(buf[base : base + AREA])
+    json_area = bytes(area[HDR_BIN:])
+    end = json_area.find(b"\x00")
+    return json.loads(json_area[: end if end >= 0 else len(json_area)]), area
+
+
+def _recompute_csum(area: bytearray) -> bytes:
+    tmp = bytearray(area)
+    tmp[CSUM_OFF : CSUM_OFF + CSUM_LEN] = b"\x00" * CSUM_LEN
+    return hashlib.sha256(bytes(tmp)).digest()
+
+
+def _flip_cipher(image: Path, where: str) -> None:
+    """Downgrade the cipher to cipher_null-ecb in both metadata areas and fix the
+    checksum, so the forged header passes cryptsetup's own integrity check.
+
+    where="segment": segments.0.encryption (Trail of Bits data-segment variant).
+    where="keyslot": keyslots.0.area.encryption (CVE-2025-59054 keyslot variant).
+    """
+    buf = bytearray(image.read_bytes())
+    for base in (0, AREA):
+        meta, area = _read_area(buf, base)
+        if where == "segment":
+            meta["segments"]["0"]["encryption"] = "cipher_null-ecb"
+        else:
+            meta["keyslots"]["0"]["area"]["encryption"] = "cipher_null-ecb"
+        new_json = json.dumps(meta, separators=(",", ":")).encode()
+        json_space = AREA - HDR_BIN
+        assert len(new_json) + 1 <= json_space, "forged json overflows the area"
+        newarea = bytearray(area[:HDR_BIN]) + bytearray(json_space)
+        newarea[HDR_BIN : HDR_BIN + len(new_json)] = new_json
+        csum = _recompute_csum(newarea)
+        newarea[CSUM_OFF : CSUM_OFF + CSUM_LEN] = csum + b"\x00" * (CSUM_LEN - len(csum))
+        buf[base : base + AREA] = newarea
+    image.write_bytes(buf)
+
+
+def _csum_is_self_consistent(image: Path) -> bool:
+    """Our recomputed csum must match what we stored -- proves the tamper left a
+    header cryptsetup treats as genuine, not a corrupt one it would reject."""
+    buf = bytearray(image.read_bytes())
+    for base in (0, AREA):
+        _, area = _read_area(buf, base)
+        if bytes(area[CSUM_OFF : CSUM_OFF + 32]) != _recompute_csum(area)[:32]:
+            return False
+    return True
+
+
+def test_genuine_header_is_accepted(tmp_path):
+    image = tmp_path / "genuine.img"
+    _luks_format(image)
+    assert _run_validation(image) is True
+
+
+def test_data_segment_null_downgrade_is_refused(tmp_path):
+    image = tmp_path / "data-null.img"
+    _luks_format(image)
+    _flip_cipher(image, "segment")
+    assert _csum_is_self_consistent(image), "forged header would be rejected by cryptsetup, not by our check"
+    assert _run_validation(image) is False
+
+
+def test_keyslot_null_downgrade_is_refused(tmp_path):
+    image = tmp_path / "keyslot-null.img"
+    _luks_format(image)
+    _flip_cipher(image, "keyslot")
+    assert _csum_is_self_consistent(image), "forged header would be rejected by cryptsetup, not by our check"
+    assert _run_validation(image) is False
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-v"]))

@@ -25,7 +25,12 @@ if [ -z "$PASS" ]; then read -r -s -p "LUKS passphrase: " PASS; echo; fi
 truncate -s "${SIZE_MIB}M" "$OUT"
 LOOP=$(losetup --find --show "$OUT")
 trap 'losetup -d "$LOOP"' EXIT
-printf '%s' "$PASS" | cryptsetup luksFormat --type luks2 --batch-mode "$LOOP" -
+# --cipher is spelled out even though aes-xts-plain64 is the current cryptsetup
+# default: the measured init only unlocks a header whose every "encryption"
+# field is aes-xts-plain64, so if a future cryptsetup changes its default this
+# must fail here at format time, not silently produce a volume the guest rejects
+# at boot.
+printf '%s' "$PASS" | cryptsetup luksFormat --type luks2 --cipher aes-xts-plain64 --batch-mode "$LOOP" -
 printf '%s' "$PASS" | cryptsetup luksOpen "$LOOP" snp-rootfs-build -
 trap 'cryptsetup luksClose snp-rootfs-build; losetup -d "$LOOP"' EXIT
 dd if="$PLAIN" of=/dev/mapper/snp-rootfs-build bs=4M status=progress conv=fsync
