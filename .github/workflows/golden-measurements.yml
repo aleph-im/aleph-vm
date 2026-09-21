@@ -15,6 +15,16 @@ name: "Golden SEV-SNP measurements"
 
 on:
   workflow_dispatch:
+    inputs:
+      update-goldens:
+        description: >-
+          Regenerate nix/golden-measurements.json on the dispatched ref and
+          commit it there (instead of just checking). Nix is required to build
+          the measured boot chain, so this is how a PR that moves a
+          measurement gets the file regenerated without a local nix install.
+        required: false
+        type: boolean
+        default: false
   schedule:
     # Mondays, 06:17 UTC.
     - cron: "17 6 * * 1"
@@ -87,6 +97,65 @@ jobs:
       # becomes a problem.
       - name: Check launch measurements against the golden file
         run: ./nix/check-golden-measurements.sh --base-only
+
+  # Manual golden regeneration (workflow_dispatch with update-goldens=true).
+  # check-golden-measurements.sh --update rebuilds EVERY flavor -- including the
+  # confidential-GPU one, whose chain adds about half an hour on top of the base
+  # set's ~15 minutes -- so this job carries its own (larger) disk and time
+  # budget, and commits the regenerated file straight back to the dispatched
+  # branch. That is the documented procedure (check-golden-measurements.sh
+  # header) made runnable from a PR: the contributor who has no nix dispatches
+  # this against their branch and pushes the resulting commit, keeping the
+  # golden file in the same PR as the change that moved the measurement.
+  golden-measurements-update:
+    name: "regenerate the golden file, commit it to the dispatched ref"
+    if: ${{ inputs.update-goldens == true }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: check-golden-measurements.sh names the commit that
+          # last touched the golden file on divergence.
+          fetch-depth: 0
+
+      - name: Free runner disk space
+        # The nix store for BOTH chains (base + GPU: edk2, two guest kernels,
+        # the NVIDIA open modules, the driver userland, nvat, the rust
+        # toolchain, static openssl) does not fit next to the runner image's
+        # preinstalled toolchains, so prune deeper than the check jobs do.
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          sudo rm -rf /usr/share/swift /usr/lib/jvm /usr/share/miniconda /usr/local/lib/node_modules
+          sudo docker image prune -af >/dev/null || true
+          sudo apt-get clean
+          df -h /
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      # No nix store caching on purpose: the store for this build is several GB
+      # and the repo's 10 GB Actions cache budget is already spent on the
+      # integration-test caches (PR 978). Revisit with a real binary cache if
+      # this job's runtime becomes a problem.
+      - name: Regenerate nix/golden-measurements.json
+        run: ./nix/check-golden-measurements.sh --update
+
+      - name: Commit the regenerated golden file
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add nix/golden-measurements.json
+          if git diff --cached --quiet; then
+            echo "Golden file already up to date; nothing to commit."
+            exit 0
+          fi
+          git commit -m "chore(nix): regenerate the golden launch measurements"
+          git push
 
   # Confidential-GPU flavor. Its chain shares almost nothing with the base
   # set: a second guest kernel (gpuKernel), the NVIDIA open kernel modules,
