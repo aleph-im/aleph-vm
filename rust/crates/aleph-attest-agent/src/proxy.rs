@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use actix_web::body::{BodyStream, SizedStream};
 use actix_web::http::StatusCode;
-use actix_web::http::header::{CONTENT_LENGTH, HOST, TRANSFER_ENCODING};
+use actix_web::http::header::{CONNECTION, CONTENT_LENGTH, HOST, TRANSFER_ENCODING};
 use actix_web::web::{self, Bytes};
 use actix_web::{HttpRequest, HttpResponse};
 use aleph_tee::report_data::gpu_nonce;
@@ -35,6 +35,18 @@ fn is_hop_by_hop(name: &str) -> bool {
     HOP_BY_HOP_HEADERS
         .iter()
         .any(|h| name.eq_ignore_ascii_case(h))
+}
+
+/// Header names a message's own `Connection` header declares hop-by-hop
+/// (RFC 7230 6.1), lowercased. They must not cross the proxy either, on top
+/// of the fixed list above.
+fn connection_named<'a>(connection_values: impl Iterator<Item = &'a [u8]>) -> Vec<String> {
+    connection_values
+        .filter_map(|v| std::str::from_utf8(v).ok())
+        .flat_map(|v| v.split(','))
+        .map(|token| token.trim().to_ascii_lowercase())
+        .filter(|token| !token.is_empty())
+        .collect()
 }
 
 /// Shared application state for the attestation agent.
@@ -272,10 +284,12 @@ pub async fn proxy_handler(
     // hop-by-hop set. Content-Length is not copied but re-derived from the
     // client's framing below, so a client Transfer-Encoding can never travel
     // next to a length (request-smuggling / desync vector).
+    let hop_named = connection_named(req.headers().get_all(CONNECTION).map(|v| v.as_bytes()));
     for (name, value) in req.headers() {
         if name != HOST
             && name != CONTENT_LENGTH
             && !is_hop_by_hop(name.as_str())
+            && !hop_named.iter().any(|h| h == name.as_str())
             && let Ok(v) = value.to_str()
         {
             proxy_req = proxy_req.header(name.as_str(), v);
@@ -321,8 +335,16 @@ pub async fn proxy_handler(
             // re-applied below from the upstream's framing, so it can never
             // sit next to a chunked body. Appended, not inserted: a repeated
             // header (Set-Cookie) arrives as one entry per value.
+            let hop_named = connection_named(
+                upstream_resp
+                    .headers()
+                    .get_all("connection")
+                    .iter()
+                    .map(|v| v.as_bytes()),
+            );
             for (name, value) in upstream_resp.headers() {
                 if !is_hop_by_hop(name.as_str())
+                    && !hop_named.iter().any(|h| h == name.as_str())
                     && !name.as_str().eq_ignore_ascii_case("content-length")
                     && let Ok(v) = value.to_str()
                 {
@@ -650,6 +672,33 @@ mod tests {
         assert!(!head.contains("transfer-encoding"), "{head}");
     }
 
+    #[test]
+    fn connection_named_collects_every_listed_token() {
+        let values: [&[u8]; 2] = [b"keep-alive, X-Internal", b" x-other ,"];
+        assert_eq!(
+            connection_named(values.into_iter()),
+            ["keep-alive", "x-internal", "x-other"]
+        );
+    }
+
+    /// A header the upstream lists in `Connection` is hop-by-hop for that
+    /// response and stays behind; its neighbours cross.
+    #[actix_web::test]
+    async fn response_headers_named_in_connection_are_not_relayed() {
+        let (upstream, _release) = raw_upstream(
+            b"HTTP/1.1 200 OK\r\nconnection: x-hop\r\nx-hop: 1\r\nx-end: 2\r\ncontent-length: 0\r\n\r\n",
+            None,
+        )
+        .await;
+        let resp = proxy_response(&upstream).await;
+        assert!(
+            resp.headers().get("x-hop").is_none(),
+            "{:?}",
+            resp.headers()
+        );
+        assert_eq!(resp.headers().get("x-end").expect("x-end"), "2");
+    }
+
     /// Every value of a repeated upstream header crosses the proxy.
     #[actix_web::test]
     async fn repeated_upstream_headers_are_all_relayed() {
@@ -807,6 +856,28 @@ mod tests {
         assert!(!head.contains("transfer-encoding"), "{head}");
         assert!(!head.contains("content-length"), "{head}");
         assert!(body.is_empty(), "{body:?}");
+        proxy.stop(true).await;
+    }
+
+    /// A header the client lists in `Connection` is hop-by-hop for that
+    /// request and must not reach the upstream.
+    #[actix_web::test]
+    async fn request_headers_named_in_connection_are_not_forwarded() {
+        let (upstream, seen) = counting_upstream().await;
+        let (addr, proxy) = serve_proxy(&upstream).await;
+        let mut sock = raw_request(addr).await;
+        sock.write_all(
+            b"GET /thing HTTP/1.1\r\nhost: agent\r\nconnection: keep-alive, X-Hop\r\n\
+              x-hop: 1\r\nx-end: 2\r\n\r\n",
+        )
+        .await
+        .expect("send request");
+        read_until(&mut sock, b"\r\n\r\n").await;
+
+        let (head, _) = seen.await.expect("upstream saw the request");
+        let head = head.to_ascii_lowercase();
+        assert!(!head.contains("x-hop"), "{head}");
+        assert!(head.contains("x-end: 2\r\n"), "{head}");
         proxy.stop(true).await;
     }
 
