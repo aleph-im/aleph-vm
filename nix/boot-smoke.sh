@@ -4,7 +4,8 @@
 # boots: busybox runs, the dm-verity modules load, the platform rootfs
 # verifies and mounts, the nft firewall installs and /sbin/init is handed
 # off. It is not a measurement check (see check-golden-measurements.sh) and
-# the attest-agent is expected to fail without /dev/sev-guest. Phase 2
+# the attest-agent is expected to fail without /dev/sev-guest, which powers
+# the VM off right after the last marker. Phase 2
 # additionally boots the fib workload with one verified data volume and
 # proves the positional device binding (vde/vdf) and the /volumes mount.
 # Phase 3 boots the workload with aleph_insecure_unattested=1 and proves the plain-HTTP

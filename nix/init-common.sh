@@ -8,8 +8,9 @@
 # time, right through the DHCPv6 block, and plain (non-`local`) assignments
 # (e.g. $iface, $gateway) stay set in the caller after the source returns.
 # The functions defined at the end (wait_for_rootfs_blkdev, wait_for_dev,
-# prepare_chroot, mount_verified_volumes, start_attest_agent) are only
-# defined here; the caller decides when to call them.
+# prepare_chroot, mount_verified_volumes, run_attest_agent,
+# start_attest_agent) are only defined here; the caller decides when to call
+# them.
 
 # Mount essential filesystems.
 /bin/busybox mount -t proc proc /proc
@@ -294,6 +295,18 @@ mount_verified_volumes() {
 # "aleph_insecure_unattested", and the trailing \b pins the value to exactly "1".
 unattested_mode=$(/bin/busybox sed -n 's/.*\baleph_insecure_unattested=1\b.*/1/p' /proc/cmdline)
 
+# Run the agent in the background with the given extra flags. It is the VM's
+# only reachable listener, so its exit powers the VM off, like the
+# workload's. OOM-exempt so the kernel kills the workload first.
+run_attest_agent() {
+    (
+        echo -1000 > /proc/self/oom_score_adj 2>/dev/null || true
+        /bin/aleph-attest-agent --port 8443 --upstream http://127.0.0.1:8080 "$@"
+        echo "init: FATAL: attest agent exited (status $?); powering off"
+        exec /bin/busybox poweroff -f
+    ) &
+}
+
 # Start the in-guest attestation agent (the only externally reachable
 # listener, see setup_firewall in the callers). In unattested mode it serves
 # plain HTTP on the same port with the same proxy path to the loopback
@@ -305,8 +318,8 @@ unattested_mode=$(/bin/busybox sed -n 's/.*\baleph_insecure_unattested=1\b.*/1/p
 start_attest_agent() {
     if [ -n "$unattested_mode" ]; then
         echo "init: INSECURE UNATTESTED MODE: attest agent serving plain HTTP without a TEE on tcp/8443"
-        /bin/aleph-attest-agent --port 8443 --upstream http://127.0.0.1:8080 --insecure-plain-http &
+        run_attest_agent --insecure-plain-http
     else
-        /bin/aleph-attest-agent --port 8443 --upstream http://127.0.0.1:8080 &
+        run_attest_agent
     fi
 }

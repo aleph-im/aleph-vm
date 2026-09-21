@@ -393,9 +393,9 @@ fi
 # key to bind to. That mode goes through start_attest_agent like every other
 # flavor (init-common.sh), GPU or not.
 if [ -n "$gpu_claims" ] && [ -z "$unattested_mode" ]; then
-    /bin/aleph-attest-agent --port 8443 --upstream http://127.0.0.1:8080 \
+    run_attest_agent \
         --gpu-claims "$gpu_claims" \
-        --gpu-collector "/bin/busybox chroot /mnt/root /usr/bin/env PATH=/usr/bin:/bin LD_LIBRARY_PATH=/opt/nvidia/lib:/opt/nvidia/glibc nvattest --format json collect-evidence --device gpu --nonce" &
+        --gpu-collector "/bin/busybox chroot /mnt/root /usr/bin/env PATH=/usr/bin:/bin LD_LIBRARY_PATH=/opt/nvidia/lib:/opt/nvidia/glibc nvattest --format json collect-evidence --device gpu --nonce"
 else
     start_attest_agent
 fi
