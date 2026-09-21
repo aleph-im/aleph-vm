@@ -372,11 +372,10 @@ if [ "$gpu_total" -gt 0 ]; then
     # not report as being in confidential-compute mode is never marked
     # ready. nvattest already bound the card to NVIDIA's reference
     # manifests; --get-cc-feature is the driver's own CC status report, the
-    # second, independent lock on the same door. The readback greps are
-    # anchored to the "CC status" label (unlike the ready-state greps below,
-    # a value the pattern does not recognize is rejected by the positive
-    # grep alone), and the negative grep first catches a mixed multi-card
-    # answer line-by-line. Every ambiguous reading is fatal.
+    # second, independent lock on the same door. The status is system-wide
+    # (one "CC status" line however many cards), so the rule is on lines, not
+    # cards: at least one, and every one of them "on". A wording the pattern
+    # does not know fails closed.
     if ! gpu_smi conf-compute --get-cc-feature > /run/aleph/gpu-cc.log 2> /run/aleph/gpu-cc.err; then
         /bin/busybox cat /run/aleph/gpu-cc.log /run/aleph/gpu-cc.err
         gpu_fatal "reading back the CC status"
@@ -385,7 +384,10 @@ if [ "$gpu_total" -gt 0 ]; then
         /bin/busybox cat /run/aleph/gpu-cc.log /run/aleph/gpu-cc.err
         gpu_fatal "GPU is not in confidential-compute mode"
     fi
-    if ! /bin/busybox grep -qiE 'CC status *: *on($|[^a-z0-9])' /run/aleph/gpu-cc.log; then
+    # grep -c exits 1 on a zero count; the count is still printed.
+    cc_lines=$(/bin/busybox grep -ciE 'CC status *:' /run/aleph/gpu-cc.log) || true
+    cc_on=$(/bin/busybox grep -ciE 'CC status *: *on($|[^a-z0-9])' /run/aleph/gpu-cc.log) || true
+    if [ "${cc_lines:-0}" -lt 1 ] || [ "${cc_on:-0}" -ne "$cc_lines" ]; then
         /bin/busybox cat /run/aleph/gpu-cc.log /run/aleph/gpu-cc.err
         gpu_fatal "CC status unreadable"
     fi
