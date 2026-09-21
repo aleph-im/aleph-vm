@@ -12,6 +12,12 @@
 //! always available, since both sides share them. TDX, its quote parser
 //! included, is verify-only: no guest parses quotes.
 
+// The README example compiles as a doctest without joining the rendered
+// docs; it needs the verify half.
+#[cfg(all(doctest, feature = "verify"))]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
+
 #[cfg(feature = "verify")]
 mod fetch;
 pub mod none;

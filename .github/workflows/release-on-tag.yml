@@ -6,6 +6,8 @@ on:
   push:
     tags:
       - "*"
+      # Crate releases have their own workflow (publish-aleph-tee.yml).
+      - "!aleph-tee-v*"
 
 
 jobs:

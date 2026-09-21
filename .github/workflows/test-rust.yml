@@ -85,6 +85,15 @@ jobs:
           cargo test --locked -p aleph-tee --no-default-features --features verify
           cargo test --locked -p aleph-tee --no-default-features --features guest
 
+      - name: aleph-tee publish dry run
+        # The crate ships to crates.io; a manifest that no longer packages
+        # (a path dependency, a file the library embeds missing from
+        # `include`) must fail here, not at release time. The dry run builds
+        # the library only, so test fixtures dropped from `include` would
+        # slip past it.
+        working-directory: rust
+        run: cargo publish --locked --dry-run -p aleph-tee
+
       # aleph-attest-agent is its own workspace (own Cargo.lock: it is the
       # measured guest binary, see rust/Cargo.toml). Same three gates.
       - name: cargo fmt (aleph-attest-agent workspace)
