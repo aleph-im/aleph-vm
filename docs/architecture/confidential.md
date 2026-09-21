@@ -406,9 +406,12 @@ init per GPU reset). Then, once, with a 32-byte boot nonce from
    absent, which nothing stored can answer), and its verifier compares that
    entry nonce against the one inside the signed SPDM report, so the file
    source stays bound to this boot.
-4. the measured GPU requirement (below).
-5. the GPU ready state: `nvidia-smi conf-compute -srs 1`, read back with
-   `-grs`.
+ 4. the measured GPU requirement (below).
+ 5. the driver's own CC status readback: `nvidia-smi conf-compute
+    --get-cc-feature` must report CC status on, so a card that is not in
+    confidential-compute mode is never marked ready.
+ 6. the GPU ready state: `nvidia-smi conf-compute -srs 1`, read back with
+    `-grs`.
 
 Every one of those steps fails to `poweroff -f` on any error: a GPU runtime
 that could not prove its GPU never presents an attested endpoint. At request
