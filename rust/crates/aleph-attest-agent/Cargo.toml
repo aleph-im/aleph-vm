@@ -46,3 +46,9 @@ libc = "0.2"
 # Constructs valid/invalid owner-signed envelopes in the inject-secret tests.
 k256 = { version = "0.13", features = ["ecdsa"] }
 tempfile = "3"
+
+[profile.release]
+# nix keeps the symbol table (it strips debug info only), and ThinLTO names
+# promoted locals after a module hash that moves with any source edit, so
+# an unstripped agent re-measures the guest even when its code is unchanged.
+strip = true
