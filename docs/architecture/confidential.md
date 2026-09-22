@@ -188,11 +188,12 @@ Each request opens its own upstream connection (a streamed body cannot be
 replayed on a stale pooled one), a client EOF aborts the exchange and with it
 the upstream request, and the agent serves at most 4096 client connections at
 once (`main.rs`). The workload receives `X-Forwarded-For`, `X-Forwarded-Proto`
-and `X-Forwarded-Host` set by the agent, replacing any the client sent. A
-response the agent produces itself (a refused upstream answers `503` with
-`Retry-After` while the workload starts, anything else `502`) carries an
-`X-Aleph-Agent-Error` header naming the reason, so a client can tell it from
-the workload's own answers.
+and `X-Forwarded-Host` set by the agent; no caller-identity header the client
+sent survives (`Forwarded`, `X-Real-IP` and the like are dropped). A response
+the agent produces itself (a refused upstream answers `503` with `Retry-After`
+while the workload starts, any other upstream failure `502`, an unsupportable
+method `501`) carries an `X-Aleph-Agent-Error` header naming the reason, which
+is stripped from workload responses, so a client can tell the two apart.
 
 **The verifying client** is not in this repository: it is the `attest`
 module of the aleph-rs SDK (`crates/aleph-sdk/src/attest/`, driven by the

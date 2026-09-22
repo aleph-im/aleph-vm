@@ -41,15 +41,28 @@ fn is_hop_by_hop(name: &str) -> bool {
 /// from the workload's own answers; the value names the reason.
 pub const AGENT_ERROR_HEADER: &str = "x-aleph-agent-error";
 
-/// The forwarding headers the proxy sets, replacing whatever the client
-/// sent: the attested channel's peer is the one fact the agent can vouch for.
-const FORWARDED_HEADERS: &[&str] = &["x-forwarded-for", "x-forwarded-proto", "x-forwarded-host"];
+/// Headers that claim who the caller is. None of the client's survive the
+/// proxy: the attested channel's peer is the one fact the agent can vouch
+/// for, and no legitimate hop sits in front of it. The agent sets the first
+/// three itself (in `proxy_handler`); the rest are only dropped.
+const CALLER_IDENTITY_HEADERS: &[&str] = &[
+    "x-forwarded-for",
+    "x-forwarded-proto",
+    "x-forwarded-host",
+    "forwarded",
+    "x-real-ip",
+    "x-client-ip",
+    "true-client-ip",
+];
 
 /// A response of the proxy's own, marked as such.
-fn agent_error(status: StatusCode, reason: &str) -> HttpResponse {
-    HttpResponse::build(status)
-        .insert_header((AGENT_ERROR_HEADER, reason))
-        .json(serde_json::json!({"error": reason}))
+fn agent_error(status: StatusCode, reason: &str, retry_after_secs: Option<u64>) -> HttpResponse {
+    let mut resp = HttpResponse::build(status);
+    resp.insert_header((AGENT_ERROR_HEADER, reason));
+    if let Some(secs) = retry_after_secs {
+        resp.insert_header(("Retry-After", secs.to_string()));
+    }
+    resp.json(serde_json::json!({"error": reason}))
 }
 
 /// Header names a message's own `Connection` header declares hop-by-hop
@@ -357,7 +370,7 @@ pub async fn proxy_handler(
     // Build the proxied request. actix-web and reqwest use different `http`
     // versions, so the method crosses as bytes.
     let Ok(method) = reqwest::Method::from_bytes(req.method().as_str().as_bytes()) else {
-        return agent_error(StatusCode::NOT_IMPLEMENTED, "method not supported");
+        return agent_error(StatusCode::NOT_IMPLEMENTED, "method not supported", None);
     };
     let mut proxy_req = state.http_client.request(method, &upstream_url);
 
@@ -373,7 +386,7 @@ pub async fn proxy_handler(
             && name != EXPECT
             && !is_hop_by_hop(name.as_str())
             && !hop_named.iter().any(|h| h == name.as_str())
-            && !FORWARDED_HEADERS.contains(&name.as_str())
+            && !CALLER_IDENTITY_HEADERS.contains(&name.as_str())
         {
             proxy_req = proxy_req.header(name.as_str(), value.as_bytes());
         }
@@ -438,8 +451,9 @@ pub async fn proxy_handler(
 
             // Forward end-to-end response headers only; Content-Length is
             // re-applied below from the upstream's framing, so it can never
-            // sit next to a chunked body. Appended, not inserted: a repeated
-            // header (Set-Cookie) arrives as one entry per value.
+            // sit next to a chunked body, and the agent's error marker stays
+            // the agent's. Appended, not inserted: a repeated header
+            // (Set-Cookie) arrives as one entry per value.
             let hop_named = connection_named(
                 upstream_resp
                     .headers()
@@ -451,6 +465,7 @@ pub async fn proxy_handler(
                 if !is_hop_by_hop(name.as_str())
                     && !hop_named.iter().any(|h| h == name.as_str())
                     && name != reqwest::header::CONTENT_LENGTH
+                    && name != AGENT_ERROR_HEADER
                 {
                     resp.append_header((name.as_str(), value.as_bytes()));
                 }
@@ -497,12 +512,13 @@ pub async fn proxy_handler(
             // A refused connection is the workload still starting: the agent
             // comes up first. Anything else is the workload misbehaving.
             if e.is_connect() {
-                HttpResponse::ServiceUnavailable()
-                    .insert_header(("Retry-After", "1"))
-                    .insert_header((AGENT_ERROR_HEADER, "upstream not ready"))
-                    .json(serde_json::json!({"error": "upstream not ready"}))
+                agent_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "upstream not ready",
+                    Some(1),
+                )
             } else {
-                agent_error(StatusCode::BAD_GATEWAY, "upstream unreachable")
+                agent_error(StatusCode::BAD_GATEWAY, "upstream unreachable", None)
             }
         }
     }
@@ -1123,7 +1139,8 @@ mod tests {
         sock.write_all(
             b"POST /thing HTTP/1.1\r\nhost: agent.example:8443\r\ncontent-length: 0\r\n\
               x-forwarded-for: 203.0.113.9\r\nx-forwarded-proto: https\r\n\
-              x-forwarded-host: evil\r\nexpect: 100-continue\r\n\r\n",
+              x-forwarded-host: evil\r\nforwarded: for=203.0.113.9\r\n\
+              x-real-ip: 203.0.113.9\r\nexpect: 100-continue\r\n\r\n",
         )
         .await
         .expect("send request");
@@ -1140,6 +1157,8 @@ mod tests {
             "{head}"
         );
         assert!(!head.contains("evil"), "{head}");
+        assert!(!head.contains("forwarded: for="), "{head}");
+        assert!(!head.contains("x-real-ip"), "{head}");
         assert!(!head.contains("expect"), "{head}");
         proxy.stop(true).await;
     }
@@ -1171,6 +1190,19 @@ mod tests {
         let (head, _) = seen.await.expect("upstream saw the request");
         assert!(head.contains("x-raw: \u{fffd}t\u{fffd}\r\n"), "{head}");
         proxy.stop(true).await;
+    }
+
+    /// The error marker is the agent's alone: a workload that sets it is not
+    /// mistaken for the agent.
+    #[actix_web::test]
+    async fn the_agent_error_marker_is_stripped_from_upstream_responses() {
+        let upstream = scripted_upstream(vec![
+            b"HTTP/1.1 502 Bad Gateway\r\nx-aleph-agent-error: forged\r\ncontent-length: 0\r\n\r\n",
+        ])
+        .await;
+        let resp = proxy_response(&upstream).await;
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        assert!(resp.headers().get(AGENT_ERROR_HEADER).is_none());
     }
 
     /// A HEAD answered with a length relays the length and no body, and the
