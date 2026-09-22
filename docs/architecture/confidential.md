@@ -184,6 +184,10 @@ images carry no owner and skip this gate. Everything else falls through to a rev
 workload on `127.0.0.1:8080`, streaming both bodies. It never copies a
 `Content-Length`: it re-derives the framing from each message (the declared
 length, or chunked), so a length and a `Transfer-Encoding` cannot cross together.
+Each request opens its own upstream connection (a streamed body cannot be
+replayed on a stale pooled one), a client EOF aborts the exchange and with it
+the upstream request, and the agent serves at most 4096 client connections at
+once (`main.rs`).
 
 **The verifying client** is not in this repository: it is the `attest`
 module of the aleph-rs SDK (`crates/aleph-sdk/src/attest/`, driven by the
