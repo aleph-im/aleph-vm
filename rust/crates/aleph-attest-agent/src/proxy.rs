@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use actix_web::body::{BodyStream, SizedStream};
 use actix_web::http::StatusCode;
-use actix_web::http::header::{CONNECTION, CONTENT_LENGTH, HOST, TRANSFER_ENCODING};
+use actix_web::http::header::{CONNECTION, CONTENT_LENGTH, EXPECT, HOST, TRANSFER_ENCODING};
 use actix_web::web::{self, Bytes};
 use actix_web::{HttpRequest, HttpResponse};
 use aleph_tee::report_data::gpu_nonce;
@@ -35,6 +35,21 @@ fn is_hop_by_hop(name: &str) -> bool {
     HOP_BY_HOP_HEADERS
         .iter()
         .any(|h| name.eq_ignore_ascii_case(h))
+}
+
+/// Marks a response the proxy produced itself, so a client can tell it
+/// from the workload's own answers; the value names the reason.
+pub const AGENT_ERROR_HEADER: &str = "x-aleph-agent-error";
+
+/// The forwarding headers the proxy sets, replacing whatever the client
+/// sent: the attested channel's peer is the one fact the agent can vouch for.
+const FORWARDED_HEADERS: &[&str] = &["x-forwarded-for", "x-forwarded-proto", "x-forwarded-host"];
+
+/// A response of the proxy's own, marked as such.
+fn agent_error(status: StatusCode, reason: &str) -> HttpResponse {
+    HttpResponse::build(status)
+        .insert_header((AGENT_ERROR_HEADER, reason))
+        .json(serde_json::json!({"error": reason}))
 }
 
 /// Header names a message's own `Connection` header declares hop-by-hop
@@ -339,27 +354,51 @@ pub async fn proxy_handler(
         format!("{base}{path}", path = req.uri().path())
     };
 
-    // Build the proxied request.
-    // actix-web uses http 0.2 Method, reqwest uses http 1.x Method;
-    // convert via the string representation.
-    let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes())
-        .unwrap_or(reqwest::Method::GET);
+    // Build the proxied request. actix-web and reqwest use different `http`
+    // versions, so the method crosses as bytes.
+    let Ok(method) = reqwest::Method::from_bytes(req.method().as_str().as_bytes()) else {
+        return agent_error(StatusCode::NOT_IMPLEMENTED, "method not supported");
+    };
     let mut proxy_req = state.http_client.request(method, &upstream_url);
 
-    // Forward end-to-end headers only. Skip Host (reqwest sets it) and the
-    // hop-by-hop set. Content-Length is not copied but re-derived from the
-    // client's framing below, so a client Transfer-Encoding can never travel
-    // next to a length (request-smuggling / desync vector).
+    // Forward end-to-end headers only. Skip Host (reqwest sets it), the
+    // hop-by-hop set and Expect (actix has already answered it). Content-Length
+    // is not copied but re-derived from the client's framing below, so a
+    // client Transfer-Encoding can never travel next to a length
+    // (request-smuggling / desync vector).
     let hop_named = connection_named(req.headers().get_all(CONNECTION).map(|v| v.as_bytes()));
     for (name, value) in req.headers() {
         if name != HOST
             && name != CONTENT_LENGTH
+            && name != EXPECT
             && !is_hop_by_hop(name.as_str())
             && !hop_named.iter().any(|h| h == name.as_str())
-            && let Ok(v) = value.to_str()
+            && !FORWARDED_HEADERS.contains(&name.as_str())
         {
-            proxy_req = proxy_req.header(name.as_str(), v);
+            proxy_req = proxy_req.header(name.as_str(), value.as_bytes());
         }
+    }
+    if let Some(peer) = req.peer_addr() {
+        proxy_req = proxy_req.header("x-forwarded-for", peer.ip().to_string());
+    }
+    let proto = if req.app_config().secure() {
+        "https"
+    } else {
+        "http"
+    };
+    proxy_req = proxy_req.header("x-forwarded-proto", proto);
+    // HTTP/2 carries the host in :authority, which actix exposes on the URI.
+    let host = req
+        .headers()
+        .get(HOST)
+        .map(|v| v.as_bytes().to_vec())
+        .or_else(|| {
+            req.uri()
+                .authority()
+                .map(|a| a.as_str().as_bytes().to_vec())
+        });
+    if let Some(host) = host {
+        proxy_req = proxy_req.header("x-forwarded-host", host);
     }
 
     // Stream the request body through instead of extracting it: `web::Bytes`
@@ -412,9 +451,8 @@ pub async fn proxy_handler(
                 if !is_hop_by_hop(name.as_str())
                     && !hop_named.iter().any(|h| h == name.as_str())
                     && name != reqwest::header::CONTENT_LENGTH
-                    && let Ok(v) = value.to_str()
                 {
-                    resp.append_header((name.as_str(), v));
+                    resp.append_header((name.as_str(), value.as_bytes()));
                 }
             }
 
@@ -456,7 +494,16 @@ pub async fn proxy_handler(
             // no URL in it, a query string can carry the caller's secrets.
             let e = e.without_url();
             tracing::error!("proxy request to the upstream failed: {e:#}");
-            HttpResponse::BadGateway().json(serde_json::json!({"error": "upstream unreachable"}))
+            // A refused connection is the workload still starting: the agent
+            // comes up first. Anything else is the workload misbehaving.
+            if e.is_connect() {
+                HttpResponse::ServiceUnavailable()
+                    .insert_header(("Retry-After", "1"))
+                    .insert_header((AGENT_ERROR_HEADER, "upstream not ready"))
+                    .json(serde_json::json!({"error": "upstream not ready"}))
+            } else {
+                agent_error(StatusCode::BAD_GATEWAY, "upstream unreachable")
+            }
         }
     }
 }
@@ -1063,6 +1110,120 @@ mod tests {
         assert!(!head.contains("x-hop"), "{head}");
         assert!(head.contains("x-end: 2\r\n"), "{head}");
         proxy.stop(true).await;
+    }
+
+    /// The workload sees where the request came from, and only that: the
+    /// forwarding headers the client sent are replaced, not appended to, and
+    /// `Expect` stays with the agent, which has already answered it.
+    #[actix_web::test]
+    async fn forwarding_headers_come_from_the_agent_alone() {
+        let (upstream, seen) = counting_upstream().await;
+        let (addr, proxy) = serve_proxy(&upstream).await;
+        let mut sock = raw_request(addr).await;
+        sock.write_all(
+            b"POST /thing HTTP/1.1\r\nhost: agent.example:8443\r\ncontent-length: 0\r\n\
+              x-forwarded-for: 203.0.113.9\r\nx-forwarded-proto: https\r\n\
+              x-forwarded-host: evil\r\nexpect: 100-continue\r\n\r\n",
+        )
+        .await
+        .expect("send request");
+        read_until(&mut sock, b"\r\n\r\n").await;
+
+        let (head, _) = seen.await.expect("upstream saw the request");
+        let head = head.to_ascii_lowercase();
+        assert!(head.contains("x-forwarded-for: 127.0.0.1\r\n"), "{head}");
+        assert!(!head.contains("203.0.113.9"), "{head}");
+        // The test server is plain HTTP; production binds TLS and says https.
+        assert!(head.contains("x-forwarded-proto: http\r\n"), "{head}");
+        assert!(
+            head.contains("x-forwarded-host: agent.example:8443\r\n"),
+            "{head}"
+        );
+        assert!(!head.contains("evil"), "{head}");
+        assert!(!head.contains("expect"), "{head}");
+        proxy.stop(true).await;
+    }
+
+    /// A header value that is not UTF-8 is still a valid header: it crosses
+    /// the proxy byte for byte instead of vanishing.
+    #[actix_web::test]
+    async fn non_utf8_header_values_cross_both_ways() {
+        let (listener, upstream) = upstream_listener().await;
+        let (report, seen) = oneshot::channel();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.expect("accept");
+            let request = read_request(&mut sock).await.expect("request");
+            sock.write_all(b"HTTP/1.1 200 OK\r\nx-raw: \xe9t\xe9\r\ncontent-length: 0\r\n\r\n")
+                .await
+                .expect("write response");
+            let _ = report.send(request);
+        });
+        let (addr, proxy) = serve_proxy(&upstream).await;
+        let mut sock = raw_request(addr).await;
+        sock.write_all(b"GET / HTTP/1.1\r\nhost: agent\r\nx-raw: \xe9t\xe9\r\n\r\n")
+            .await
+            .expect("send request");
+        let wire = read_until(&mut sock, b"\r\n\r\n").await;
+        assert!(
+            wire.windows(12).any(|w| w == b"x-raw: \xe9t\xe9\r\n"),
+            "{wire:?}"
+        );
+        let (head, _) = seen.await.expect("upstream saw the request");
+        assert!(head.contains("x-raw: \u{fffd}t\u{fffd}\r\n"), "{head}");
+        proxy.stop(true).await;
+    }
+
+    /// A HEAD answered with a length relays the length and no body, and the
+    /// connection stays in sync for the next request.
+    #[actix_web::test]
+    async fn head_responses_keep_their_length_and_send_no_body() {
+        let upstream = scripted_upstream(vec![
+            b"HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok",
+        ])
+        .await;
+        let (addr, proxy) = serve_proxy(&upstream).await;
+        let mut sock = raw_request(addr).await;
+        // Not pipelined: actix's codec keeps one HEAD flag, which a pipelined
+        // GET clears before the HEAD response is encoded.
+        sock.write_all(b"HEAD /thing HTTP/1.1\r\nhost: agent\r\n\r\n")
+            .await
+            .expect("send HEAD");
+        let head = read_until(&mut sock, b"\r\n\r\n").await;
+        let head = String::from_utf8_lossy(&head).to_ascii_lowercase();
+        assert!(head.contains("content-length: 5\r\n"), "{head}");
+        sock.write_all(b"GET /thing HTTP/1.1\r\nhost: agent\r\n\r\n")
+            .await
+            .expect("send GET");
+        let second = read_until(&mut sock, b"ok").await;
+        assert!(second.starts_with(b"HTTP/1.1 200 OK\r\n"), "{second:?}");
+        proxy.stop(true).await;
+    }
+
+    /// While the workload is still starting the agent says so, with a retry
+    /// hint, and marks the answer as its own.
+    #[actix_web::test]
+    async fn a_refused_upstream_is_503_not_ready() {
+        let resp = proxy_response("http://127.0.0.1:1").await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(resp.headers().get("Retry-After").unwrap(), "1");
+        assert_eq!(
+            resp.headers().get(AGENT_ERROR_HEADER).unwrap(),
+            "upstream not ready"
+        );
+    }
+
+    /// An upstream that accepts and then breaks the exchange is a 502, also
+    /// marked as the agent's own.
+    #[actix_web::test]
+    async fn a_broken_upstream_response_is_502() {
+        let upstream = scripted_upstream(vec![b"garbage\r\n\r\n"]).await;
+        let resp = proxy_response(&upstream).await;
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            resp.headers().get(AGENT_ERROR_HEADER).unwrap(),
+            "upstream unreachable"
+        );
     }
 
     /// A declared empty body keeps its `Content-Length: 0` upstream: a strict
