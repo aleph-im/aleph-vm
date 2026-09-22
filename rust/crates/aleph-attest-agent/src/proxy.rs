@@ -498,6 +498,22 @@ mod tests {
         upstream: &str,
         gpu: Option<Arc<GpuState>>,
     ) -> web::Data<AppState> {
+        app_state_with_report_wait(
+            backend,
+            served_public_key_raw,
+            upstream,
+            gpu,
+            REPORT_LOCK_WAIT,
+        )
+    }
+
+    fn app_state_with_report_wait(
+        backend: Arc<dyn TeeBackend>,
+        served_public_key_raw: Vec<u8>,
+        upstream: &str,
+        gpu: Option<Arc<GpuState>>,
+        report_lock_wait: Duration,
+    ) -> web::Data<AppState> {
         web::Data::new(AppState {
             backend,
             served_public_key_raw,
@@ -505,7 +521,7 @@ mod tests {
             http_client: upstream_client().expect("client"),
             gpu,
             report_lock: Arc::new(tokio::sync::Mutex::new(())),
-            report_lock_wait: REPORT_LOCK_WAIT,
+            report_lock_wait,
         })
     }
 
@@ -867,20 +883,24 @@ mod tests {
         proxy.stop(true).await;
     }
 
-    /// An upstream that answers with `head`, then reports when the proxy
-    /// closes the connection.
-    async fn upstream_watching_for_close(head: &'static [u8]) -> (String, oneshot::Receiver<()>) {
+    /// An upstream that reports the request's arrival, answers with `head`,
+    /// then reports when the proxy closes the connection.
+    async fn upstream_watching_for_close(
+        head: &'static [u8],
+    ) -> (String, oneshot::Receiver<()>, oneshot::Receiver<()>) {
         let (listener, url) = upstream_listener().await;
-        let (report, closed) = oneshot::channel();
+        let (report_seen, seen) = oneshot::channel();
+        let (report_closed, closed) = oneshot::channel();
         tokio::spawn(async move {
             let (mut sock, _) = listener.accept().await.expect("accept");
             read_request(&mut sock).await.expect("request head");
+            let _ = report_seen.send(());
             sock.write_all(head).await.expect("write head");
             let mut rest = Vec::new();
             let _ = sock.read_to_end(&mut rest).await;
-            let _ = report.send(());
+            let _ = report_closed.send(());
         });
-        (url, closed)
+        (url, seen, closed)
     }
 
     const BODILESS_POST: &[u8] =
@@ -890,7 +910,7 @@ mod tests {
     /// generation it pays for), even while the upstream has nothing to say.
     #[actix_web::test]
     async fn a_client_hanging_up_mid_body_releases_the_upstream() {
-        let (upstream, closed) = upstream_watching_for_close(SSE_HEAD_AND_FIRST_CHUNK).await;
+        let (upstream, _seen, closed) = upstream_watching_for_close(SSE_HEAD_AND_FIRST_CHUNK).await;
         let (addr, proxy) = serve_proxy(&upstream).await;
         let mut sock = raw_request(addr).await;
         sock.write_all(BODILESS_POST).await.expect("send request");
@@ -906,12 +926,14 @@ mod tests {
     /// Same before the upstream has answered at all.
     #[actix_web::test]
     async fn a_client_hanging_up_before_the_response_releases_the_upstream() {
-        let (upstream, closed) = upstream_watching_for_close(b"").await;
+        let (upstream, seen, closed) = upstream_watching_for_close(b"").await;
         let (addr, proxy) = serve_proxy(&upstream).await;
         let mut sock = raw_request(addr).await;
         sock.write_all(BODILESS_POST).await.expect("send request");
-        // Let the request reach the upstream before hanging up.
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::timeout(Duration::from_secs(5), seen)
+            .await
+            .expect("the request never reached the upstream")
+            .expect("upstream task gone");
         drop(sock);
         tokio::time::timeout(Duration::from_secs(5), closed)
             .await
@@ -1162,15 +1184,13 @@ mod tests {
     /// is told to retry, like on the GPU route.
     #[actix_web::test]
     async fn attestation_is_503_while_a_report_stays_in_flight() {
-        let state = web::Data::new(AppState {
-            backend: Arc::new(MockBackend),
-            served_public_key_raw: vec![0x42; 97],
-            upstream: "http://127.0.0.1:1".to_string(),
-            http_client: reqwest::Client::new(),
-            gpu: None,
-            report_lock: Arc::new(tokio::sync::Mutex::new(())),
-            report_lock_wait: Duration::from_millis(50),
-        });
+        let state = app_state_with_report_wait(
+            Arc::new(MockBackend),
+            vec![0x42; 97],
+            "http://127.0.0.1:1",
+            None,
+            Duration::from_millis(50),
+        );
         let query = || {
             web::Query(AttestationQuery {
                 nonce: "ab".to_string(),

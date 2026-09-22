@@ -108,7 +108,9 @@ const FD_LIMIT: libc::rlim_t = 16384;
 
 /// Client connections served at once, across all workers: bounds the agent's
 /// memory, which the kernel will not reclaim (init exempts it from the OOM
-/// killer), and stays well under [`FD_LIMIT`].
+/// killer), and stays well under [`FD_LIMIT`]. Past the cap actix stops
+/// accepting, so clients queue in the backlog. Connections, not HTTP/2
+/// streams: actix sets no stream limit and h2 defaults to none.
 const MAX_CLIENT_CONNECTIONS: usize = 4096;
 
 /// Raise the descriptor limit to [`FD_LIMIT`]; a failure is logged, not fatal.
