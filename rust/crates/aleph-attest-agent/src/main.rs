@@ -113,24 +113,36 @@ const FD_LIMIT: libc::rlim_t = 16384;
 /// streams: actix sets no stream limit and h2 defaults to none.
 const MAX_CLIENT_CONNECTIONS: usize = 4096;
 
-/// Raise the descriptor limit to [`FD_LIMIT`]; a failure is logged, not fatal.
+/// Raise the descriptor limit to [`FD_LIMIT`], lifting the hard cap along
+/// with it when allowed and settling for the hard cap when not. A failure
+/// is logged, not fatal.
 fn raise_fd_limit() {
     let mut limit = libc::rlimit {
         rlim_cur: 0,
         rlim_max: 0,
     };
-    // SAFETY: `limit` is a valid rlimit for both calls to read and write.
+    // SAFETY: `limit` is a valid rlimit for every call to read and write.
     let raised = unsafe {
         libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) == 0
             && (limit.rlim_cur >= FD_LIMIT || {
+                let hard = limit.rlim_max;
                 limit.rlim_cur = FD_LIMIT;
-                limit.rlim_max = limit.rlim_max.max(FD_LIMIT);
-                libc::setrlimit(libc::RLIMIT_NOFILE, &limit) == 0
+                limit.rlim_max = hard.max(FD_LIMIT);
+                libc::setrlimit(libc::RLIMIT_NOFILE, &limit) == 0 || {
+                    limit.rlim_cur = FD_LIMIT.min(hard);
+                    limit.rlim_max = hard;
+                    libc::setrlimit(libc::RLIMIT_NOFILE, &limit) == 0
+                }
             })
     };
     if !raised {
         let e = std::io::Error::last_os_error();
-        tracing::warn!("cannot raise the descriptor limit to {FD_LIMIT}: {e}");
+        tracing::warn!("cannot raise the descriptor limit: {e}");
+    } else if limit.rlim_cur < FD_LIMIT {
+        tracing::warn!(
+            "descriptor limit raised to the hard cap of {}, not to {FD_LIMIT}",
+            limit.rlim_cur
+        );
     }
 }
 
@@ -343,7 +355,8 @@ mod tests {
             unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) },
             0
         );
-        // An unprivileged test run cannot lift its hard limit.
+        // An unprivileged test run cannot lift its hard limit, so the soft
+        // limit reaches whichever of the two is lower.
         assert!(limit.rlim_cur >= FD_LIMIT.min(limit.rlim_max));
     }
 
