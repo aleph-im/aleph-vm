@@ -213,6 +213,17 @@ If `nvidia_cc` is absent from `/about/capability` while
   the cards actually attached; attaching MORE cards than the message asked
   for fails here too, by design. A card whose model the runtime's board
   table does not list yet is a runtime update, not an operator fix.
+- **A V-PROGRAM powers off with `init: FATAL: gpu attestation failed: GPU
+  is not in confidential-compute mode` (or `CC status unreadable`), with the
+  driver's `CC status` report above it.** After passing attestation and the
+  measured requirement, the guest read back the driver's own
+  confidential-compute status (`nvidia-smi conf-compute
+  --get-cc-feature`, `nix/init-gpu.sh`) before marking the card ready, and
+  the driver did not report CC as on. Reboot the card and re-check its mode
+  with the host-side `--query-cc-mode` of section 3; since the host probe
+  already gates the launch, this failure means the card changed mode after
+  the launch started or the driver's status wording changed across driver
+  versions (the guest's greps are deliberately broad and fail closed).
 - **A V-PROGRAM powers off within a minute of boot, with
   `init: FATAL: gpu attestation failed: ...` in its console log.** One of the
   guest's `nvattest` steps (`nix/init-gpu.sh` collects the evidence, then

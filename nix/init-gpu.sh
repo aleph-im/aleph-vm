@@ -5,7 +5,8 @@
 # the verity mounts and the chroot preparation it loads the NVIDIA open kernel
 # modules, verifies the GPU against NVIDIA's reference manifests with the
 # in-rootfs nvattest, enforces the GPU requirement measured into the kernel
-# cmdline, flips the GPU ready state and records the resulting claims for the
+# cmdline, reads back the driver's CC mode report, flips the GPU ready state
+# and records the resulting claims for the
 # attest-agent. Everything else (networking, dm-verity, the
 # workload volume, the guest firewall, fail-closed supervision) is identical
 # to init.sh, so the two files diff cleanly.
@@ -367,6 +368,29 @@ if [ "$gpu_total" -gt 0 ]; then
         gpu_fatal "GPU requirement not met"
     fi
     /bin/busybox cat /run/aleph/gpu-policy.log
+    # CC mode readback, before the ready state: so a card the driver does
+    # not report as being in confidential-compute mode is never marked
+    # ready. nvattest already bound the card to NVIDIA's reference
+    # manifests; --get-cc-feature is the driver's own CC status report, the
+    # second, independent lock on the same door. The status is system-wide
+    # (one "CC status" line however many cards), so the rule is on lines, not
+    # cards: at least one, and every one of them "on". A wording the pattern
+    # does not know fails closed.
+    if ! gpu_smi conf-compute --get-cc-feature > /run/aleph/gpu-cc.log 2> /run/aleph/gpu-cc.err; then
+        /bin/busybox cat /run/aleph/gpu-cc.log /run/aleph/gpu-cc.err
+        gpu_fatal "reading back the CC status"
+    fi
+    if /bin/busybox grep -qiE 'CC status *: *(off|disabled|n/?a)' /run/aleph/gpu-cc.log; then
+        /bin/busybox cat /run/aleph/gpu-cc.log /run/aleph/gpu-cc.err
+        gpu_fatal "GPU is not in confidential-compute mode"
+    fi
+    # grep -c exits 1 on a zero count; the count is still printed.
+    cc_lines=$(/bin/busybox grep -ciE 'CC status *:' /run/aleph/gpu-cc.log) || true
+    cc_on=$(/bin/busybox grep -ciE 'CC status *: *on($|[^a-z0-9])' /run/aleph/gpu-cc.log) || true
+    if [ "${cc_lines:-0}" -lt 1 ] || [ "${cc_on:-0}" -ne "$cc_lines" ]; then
+        /bin/busybox cat /run/aleph/gpu-cc.log /run/aleph/gpu-cc.err
+        gpu_fatal "CC status unreadable"
+    fi
     # Ready state: the driver refuses CUDA work until it is set, and only a
     # verified GPU may be marked ready. nvidia-smi is the raw driver userland
     # in the rootfs; the agent is static and cannot drive NVML itself. Both
