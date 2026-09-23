@@ -1,1 +1,1 @@
-"""Cold migration runtime: jobs, runners, helpers, and startup reaper."""
+"""Cold migration runtime: jobs, runners and helpers."""
