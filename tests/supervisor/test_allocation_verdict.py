@@ -181,20 +181,22 @@ def test_a_running_vm_the_push_refused_is_retained_not_removing():
     assert capacity.simulate.call_args.kwargs["releasing"] == frozenset()
 
 
-def test_a_stream_paid_vm_absent_from_the_plan_is_retained_with_its_reason():
+def test_a_stream_paid_vm_absent_from_the_plan_is_removed():
+    """PAYG is scheduler-owned: the scheduler validated the stream when it
+    placed the VM, and dropping it from the plan is how it stops an unpaid
+    one, so the verdict has to count it as leaving."""
     verdict = compute_verdict(
         _plan(), infos=[_info(HASH_B)], registry=_registry({HASH_B: _record(stream=True)}), capacity=_capacity([])
     )
 
-    assert verdict.removing == []
-    assert verdict.retained[HASH_B] == "payment_stream"
+    assert verdict.removing == [HASH_B]
+    assert HASH_B not in verdict.retained
 
 
 @pytest.mark.parametrize(
     ("record", "info", "reason"),
     [
         (_record(persistent=False), _info(HASH_B), "non_persistent"),
-        (_record(stream=True), _info(HASH_B), "payment_stream"),
         (_record(credit=True), _info(HASH_B), "payment_credit"),
         (_record(), _info(HASH_B, gpus=["0000:01:00.0"]), "gpu"),
         (_record(), _info(HASH_B, confidential=ConfidentialMode.SEV_SNP), "confidential"),

@@ -159,7 +159,9 @@ async def test_a_vm_a_newer_plan_re_added_is_not_torn_down(reconciler, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_a_stream_paid_vm_is_never_torn_down(reconciler, monkeypatch):
+async def test_a_stream_paid_vm_the_plan_dropped_is_torn_down(reconciler, monkeypatch):
+    """PAYG is scheduler-owned: leaving a VM out of the plan is how the
+    scheduler stops one whose stream no longer pays for it."""
     _record_starts(reconciler, monkeypatch)
     reconciler.registry = SimpleNamespace(get=lambda h: _record(stream=True), forget=MagicMock())
     reconciler.supervisor.list_vms.return_value = [_info(HASH_B)]
@@ -167,7 +169,8 @@ async def test_a_stream_paid_vm_is_never_torn_down(reconciler, monkeypatch):
 
     await reconciler._converge_once()
 
-    reconciler_module.teardown_vm.assert_not_awaited()
+    reconciler_module.teardown_vm.assert_awaited_once()
+    assert reconciler_module.teardown_vm.await_args.args[0] == HASH_B
 
 
 @pytest.mark.asyncio
