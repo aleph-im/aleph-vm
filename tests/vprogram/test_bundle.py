@@ -12,6 +12,7 @@ from aleph.vm.vprogram.bundle import (
     BUNDLE_NAME,
     CMDLINE_TEMPLATE_EXEC_V1,
     CMDLINE_TEMPLATE_GPU_V1,
+    CMDLINE_TEMPLATE_INSTANCE_GPU_V1,
     CMDLINE_TEMPLATE_LUKS_V1,
     BundleInfo,
     InstanceBundleInfo,
@@ -244,6 +245,21 @@ def instance_image_dir(tmp_path: Path) -> Path:
     return d
 
 
+@pytest.fixture()
+def instance_gpu_image_dir(instance_image_dir: Path) -> Path:
+    """The nix instanceGpuImage output: same layout as instance_image_dir,
+    plus the gpu.json facts sidecar, minus library_path (the instance owner
+    supplies the driver userland, unlike the V-PROGRAM gpu flavor)."""
+    (instance_image_dir / "gpu.json").write_text(
+        '{"vendor":"nvidia","driver_version":"595.71.05",'
+        '"archs":{"hopper":{"accepted_models":'
+        '["GH100 A01 GSP BROM"],'
+        '"boards":{"10de:2330":['
+        '{"name":"H100 SXM5 80GB","project":"G520","project_sku":"0200","chip_sku":"885"}]}}}}'
+    )
+    return instance_image_dir
+
+
 def test_build_bundle_instance_flavor(instance_image_dir: Path, tmp_path: Path) -> None:
     out = _out(tmp_path, "out")
     info = build_bundle(image_dir=instance_image_dir, out_dir=out, source_epoch=EPOCH, source=SOURCE, flavor="instance")
@@ -351,3 +367,89 @@ def test_make_manifest_refuses_gpu_runtime_without_gpu_facts(image_dir: Path, tm
     info = build_bundle(image_dir, tmp_path, source_epoch=0, source=SOURCE)
     with pytest.raises(ValueError, match="gpu"):
         make_manifest(info=info, bundle_ref=BUNDLE_REF, name="x", runtime_version="1", gpu_runtime=True)
+
+
+def test_build_bundle_instance_gpu_flavor_records_the_gpu_block(instance_gpu_image_dir: Path, tmp_path: Path) -> None:
+    out = _out(tmp_path, "out")
+    info = build_bundle(
+        image_dir=instance_gpu_image_dir, out_dir=out, source_epoch=EPOCH, source=SOURCE, flavor="instance-gpu"
+    )
+    assert isinstance(info, InstanceBundleInfo)
+    assert info.instance_gpu is not None
+    assert info.instance_gpu.vendor == "nvidia"
+    assert info.instance_gpu.driver_version == "595.71.05"
+    assert "library_path" not in info.instance_gpu.model_dump()
+    boards = info.instance_gpu.archs["hopper"].boards["10de:2330"]
+    assert [board.chip_sku for board in boards] == ["885"]
+    # The gpu.json sidecar never lands in the tarball, same as the gpu flavor.
+    with tarfile.open(out / BUNDLE_NAME, "r:gz") as tar:
+        assert "image/gpu.json" not in tar.getnames()
+    on_disk = InstanceBundleInfo.model_validate_json((out / BUNDLE_INFO_NAME).read_text())
+    assert on_disk == info
+
+
+def test_build_bundle_instance_gpu_flavor_requires_gpu_json(instance_image_dir: Path, tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        build_bundle(
+            image_dir=instance_image_dir,
+            out_dir=_out(tmp_path, "out"),
+            source_epoch=EPOCH,
+            source=SOURCE,
+            flavor="instance-gpu",
+        )
+
+
+def test_build_bundle_instance_gpu_flavor_rejects_library_path(instance_image_dir: Path, tmp_path: Path) -> None:
+    """The gpu.json sidecar for this flavor never carries library_path (the
+    instance owner supplies the driver userland); a file that does must be
+    rejected, not silently accepted."""
+    (instance_image_dir / "gpu.json").write_text(
+        '{"vendor":"nvidia","driver_version":"595.71.05",'
+        '"library_path":"/opt/nvidia/lib",'
+        '"archs":{"hopper":{"accepted_models":["GH100 A01 GSP BROM"]}}}'
+    )
+    with pytest.raises(ValidationError):
+        build_bundle(
+            image_dir=instance_image_dir,
+            out_dir=_out(tmp_path, "out"),
+            source_epoch=EPOCH,
+            source=SOURCE,
+            flavor="instance-gpu",
+        )
+
+
+def test_instance_plain_flavor_leaves_instance_gpu_unset(instance_image_dir: Path, tmp_path: Path) -> None:
+    info = build_bundle(
+        image_dir=instance_image_dir,
+        out_dir=_out(tmp_path, "out"),
+        source_epoch=EPOCH,
+        source=SOURCE,
+        flavor="instance",
+    )
+    assert isinstance(info, InstanceBundleInfo)
+    assert info.instance_gpu is None
+
+
+def test_make_instance_manifest_gpu_runtime_requires_gpu_facts(instance_image_dir: Path, tmp_path: Path) -> None:
+    out = _out(tmp_path, "out")
+    info = build_bundle(image_dir=instance_image_dir, out_dir=out, source_epoch=EPOCH, source=SOURCE, flavor="instance")
+    with pytest.raises(ValueError, match="gpu"):
+        make_instance_manifest(info, bundle_ref=INSTANCE_BUNDLE_REF, name="x", version="1", gpu_runtime=True)
+
+
+def test_make_instance_manifest_gpu_runtime_from_bundle_info(instance_gpu_image_dir: Path, tmp_path: Path) -> None:
+    out = _out(tmp_path, "out")
+    info = build_bundle(
+        image_dir=instance_gpu_image_dir, out_dir=out, source_epoch=EPOCH, source=SOURCE, flavor="instance-gpu"
+    )
+    manifest = make_instance_manifest(
+        info, bundle_ref=INSTANCE_BUNDLE_REF, name="aleph-snp-luks-gpu", version="2026.09.24", gpu_runtime=True
+    )
+    reparsed = InstanceRuntimeManifest.model_validate_json(manifest.to_canonical_json())
+    assert reparsed == manifest
+    assert manifest.boot.cmdline_template == CMDLINE_TEMPLATE_INSTANCE_GPU_V1
+    assert "{owner}" in manifest.boot.cmdline_template
+    assert manifest.gpu is not None
+    assert info.instance_gpu is not None
+    assert manifest.gpu.archs == info.instance_gpu.archs
+    assert "library_path" not in manifest.gpu.model_dump()

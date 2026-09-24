@@ -43,8 +43,9 @@ from aleph.vm.vprogram.manifest import SourceInfo  # noqa: E402
 def _build_command(flavor: str) -> str:
     """The `source.build` provenance recorded in the manifest: the exact nix
     target for this flavor, so an auditor rebuilds the same bundle (the
-    instance flavor builds `nix#instanceImage` and the compose flavor
-    `nix#composeImage`, not `nix#image`)."""
+    instance flavor builds `nix#instanceImage`, the instance-gpu flavor
+    `nix#instanceGpuImage`, and the compose flavor `nix#composeImage`, not
+    `nix#image`)."""
     return f'nix build "git+file://$REPO?dir=nix#{_nix_target(flavor)}"'
 
 
@@ -68,6 +69,8 @@ def _source_epoch(repo: Path) -> int:
 def _nix_target(flavor: str) -> str:
     if flavor == "instance":
         return "instanceImage"
+    if flavor == "instance-gpu":
+        return "instanceGpuImage"
     if flavor == "compose":
         return "composeImage"
     if flavor == "gpu":
@@ -115,7 +118,7 @@ def cmd_build(args: argparse.Namespace) -> int:
 
 
 def cmd_manifest(args: argparse.Namespace) -> int:
-    if args.flavor == "instance":
+    if args.flavor in ("instance", "instance-gpu"):
         info: BundleInfo | InstanceBundleInfo = InstanceBundleInfo.model_validate_json(args.bundle_info.read_text())
     else:
         info = BundleInfo.model_validate_json(args.bundle_info.read_text())
@@ -124,12 +127,13 @@ def cmd_manifest(args: argparse.Namespace) -> int:
         verify_bundle_info(info, tar_path)
     else:
         print(f"note: {tar_path} not found, skipping bundle cross-check")  # noqa: T201
-    if args.flavor == "instance":
+    if args.flavor in ("instance", "instance-gpu"):
         manifest = make_instance_manifest(
             info,
             bundle_ref=args.bundle_ref,
             name=args.name,
             version=args.runtime_version,
+            gpu_runtime=args.flavor == "instance-gpu",
         )
     else:
         manifest = make_manifest(
@@ -165,11 +169,13 @@ def main(argv: list[str] | None = None) -> int:
     p_build.add_argument("--out", type=Path, required=True, help="output directory")
     p_build.add_argument(
         "--flavor",
-        choices=("vprogram", "instance", "compose", "gpu"),
+        choices=("vprogram", "instance", "instance-gpu", "compose", "gpu"),
         default="vprogram",
         help="bundle flavor: vprogram (default, nix#image), instance (nix#instanceImage, "
-        "no verity sidecars), compose (nix#composeImage, same byte layout as vprogram), or "
-        "gpu (nix#gpuImage, same byte layout as vprogram plus a gpu.json facts sidecar)",
+        "no verity sidecars), instance-gpu (nix#instanceGpuImage, same layout as instance "
+        "plus a gpu.json facts sidecar), compose (nix#composeImage, same byte layout as "
+        "vprogram), or gpu (nix#gpuImage, same byte layout as vprogram plus a gpu.json "
+        "facts sidecar)",
     )
     p_build.set_defaults(func=cmd_build)
 
@@ -181,10 +187,12 @@ def main(argv: list[str] | None = None) -> int:
     p_manifest.add_argument("--out", type=Path, default=None, help="manifest path (default: next to bundle-info)")
     p_manifest.add_argument(
         "--flavor",
-        choices=("vprogram", "instance", "compose", "gpu"),
+        choices=("vprogram", "instance", "instance-gpu", "compose", "gpu"),
         default="vprogram",
         help="manifest flavor: vprogram (default, aleph-vprogram-runtime), "
         "instance (aleph-instance-runtime, luks cmdline template), "
+        "instance-gpu (aleph-instance-runtime, luks cmdline template plus the gpu "
+        "requirement slots and the gpu block carried from the bundle-info), "
         "compose (aleph-vprogram-runtime with the aleph.compose/1 workload contract "
         "and the workload_roothash cmdline template), or "
         "gpu (aleph-vprogram-runtime with the aleph.exec/1 workload contract, the gpu "
@@ -196,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="build the aleph.exec/1 workload-runtime manifest (workload_roothash in the "
         "cmdline template) instead of the builtin no-workload form; "
-        "incompatible with --flavor instance/compose/gpu",
+        "incompatible with --flavor instance/instance-gpu/compose/gpu",
     )
     p_manifest.set_defaults(func=cmd_manifest)
 
