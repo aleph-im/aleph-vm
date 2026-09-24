@@ -729,7 +729,8 @@ class CapacityManager(PlanAdmission):
         """What a plan could still be admitted against, for the scheduler.
 
         The caps less what the registry commits, the live free disk, and the
-        cards not under a live hold: the same figures ``check_capacity``
+        pass-through cards not under a live hold (a CC-mode card is not
+        headroom for a plain request): the same figures ``check_capacity``
         judges a request by, so advertising them cannot promise what a
         create would then refuse. Floored at zero, since a registry holding
         more than the caps (a phantom record, a shrunk host) means nothing is
@@ -1075,6 +1076,10 @@ class CapacityManager(PlanAdmission):
         every request is matched, so a partial request leaves no stray holds.
         A card held by ANOTHER user is skipped; the user's own hold is
         refreshed. Returns the hold expiry.
+
+        Plain cards only: a device_id names a pass-through card, and the
+        confidential path resolves its cards by family at create, never
+        through a reservation. A CC-mode card is refused here.
         """
         expiration_date = datetime.now(tz=timezone.utc) + timedelta(seconds=RESERVATION_TTL_SECONDS)
         if not requested_device_ids:
@@ -1217,6 +1222,6 @@ class CapacityManager(PlanAdmission):
                 raise InsufficientResourcesError(
                     detail,
                     required={"gpu_device_id": device_id},
-                    available={"gpus": [gpu.device_id for gpu in available_gpus]},
+                    available={"gpus": [gpu.device_id for gpu in available_gpus if gpu.passthrough]},
                 )
         return resolved
