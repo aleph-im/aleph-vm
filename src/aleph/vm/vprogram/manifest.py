@@ -71,9 +71,10 @@ _CMDLINE_KV_TOKEN = re.compile(r"^([a-z_]+)=\{([a-z_]+)\}$")
 # Canonical relative order of the v-program placeholder slots, matching what
 # the daemon emits (bundle.py's CMDLINE_TEMPLATE_*_V1 constants): a manifest
 # with the slots present in any other order still parses, but every launch
-# would mismeasure since the daemon always emits this order. "owner" is the
-# luks template's own closed set and never shares a template with these, so
-# it carries no relative order here.
+# would mismeasure since the daemon always emits this order. "owner" does
+# share the instance-gpu template with the gpu slots, but an instance cmdline
+# is rendered whole from the template instead of spliced token by token, so
+# "owner" carries no relative order here.
 CMDLINE_PLACEHOLDER_ORDER = (
     "platform_roothash",
     "workload_roothash",

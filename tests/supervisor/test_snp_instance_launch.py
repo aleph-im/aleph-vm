@@ -603,6 +603,14 @@ def test_render_instance_cmdline_refuses_a_gpu_on_a_slotless_template() -> None:
         render_instance_cmdline(CMDLINE_TEMPLATE_LUKS_V1, owner=OWNER_LOWER, gpu=_gpu())
 
 
+def test_render_instance_cmdline_refuses_a_narrowing_the_template_cannot_measure() -> None:
+    """A template with no {gpu_models} slot cannot express a model narrowing:
+    rendering it anyway would measure the wider requirement."""
+    template = CMDLINE_TEMPLATE_INSTANCE_GPU_V1.replace(" gpu_models={gpu_models}", "")
+    with pytest.raises(ValueError, match="gpu_models"):
+        render_instance_cmdline(template, owner=OWNER_LOWER, gpu=_gpu(models=["10de:2331"]))
+
+
 def test_render_instance_cmdline_refuses_a_gpu_template_without_a_gpu() -> None:
     with pytest.raises(ValueError, match="declares no GPU"):
         render_instance_cmdline(CMDLINE_TEMPLATE_INSTANCE_GPU_V1, owner=OWNER_LOWER, gpu=None)
