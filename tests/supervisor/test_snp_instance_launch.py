@@ -15,6 +15,7 @@ import io
 import json
 import tarfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import IO, Any, cast
 
 import pytest
@@ -34,6 +35,7 @@ from aleph_message.models.execution.instance import InstanceContent, RootfsVolum
 from aleph_message.models.execution.volume import ParentVolume, VolumePersistence
 from aleph_message.utils import Mebibytes
 
+from aleph.vm.agent.gpu_requirement import render_instance_cmdline
 from aleph.vm.agent.snp_instance_launch import (
     build_snp_instance_spec,
     fetch_instance_runtime_manifest,
@@ -46,6 +48,10 @@ from aleph.vm.agent.vm.downloader import QemuDownloader
 from aleph.vm.conf import settings
 from aleph.vm.supervisor_interface.errors import InvalidBackendError, VmSetupError
 from aleph.vm.supervisor_interface.types import DiskFormat, TeeBackend
+from aleph.vm.vprogram.bundle import (
+    CMDLINE_TEMPLATE_INSTANCE_GPU_V1,
+    CMDLINE_TEMPLATE_LUKS_V1,
+)
 from aleph.vm.vprogram.manifest import InstanceRuntimeManifest
 
 VM_HASH = ItemHash("deadbeef" * 8)
@@ -206,6 +212,37 @@ def snp_instance_content(
             size_mib=10000,
         ),
     )
+
+
+class _ConfidentialGpu(SimpleNamespace):
+    """Stand-in for the ConfidentialGpuRequirement aleph-message only grows in
+    1.6: the launch path reads the block's attributes, nothing else.
+
+    SimpleNamespace defines __eq__ and is therefore unhashable, while the
+    trusted_execution block it is planted on hashes its own field values
+    (HashableModel), so identity hashing is restored here.
+    """
+
+    __hash__ = object.__hash__  # type: ignore[assignment]
+
+
+def _with_confidential_gpu(
+    content: InstanceContent,
+    *,
+    arch: str = "hopper",
+    count: int = 1,
+    models: list[str] | None = None,
+) -> InstanceContent:
+    """Attach a confidential-GPU requirement to an SNP instance's
+    trusted_execution block.
+
+    The installed aleph-message (1.5) has no such field and forbids extra
+    ones, so the value is planted past pydantic's __setattr__; the launch path
+    reads it with getattr for the same reason.
+    """
+    gpu = _ConfidentialGpu(vendor="nvidia", arch=arch, count=count, models=models, mode="cc")
+    object.__setattr__(content.environment.trusted_execution, "gpu", gpu)
+    return content
 
 
 @pytest.fixture
@@ -513,3 +550,157 @@ def test_remove_snp_instance_staging_is_idempotent(tmp_path, monkeypatch):
     # Already gone (second teardown, or a non-SNP-instance VM with no staging dir).
     remove_snp_instance_staging(VM_HASH)
     assert not staging.exists()
+
+
+# The instance-gpu runtime's gpu facts: no library_path (the instance owner
+# ships the driver userland inside the encrypted rootfs).
+INSTANCE_GPU_BLOCK: dict[str, Any] = {
+    "vendor": "nvidia",
+    "driver_version": "595.71.05",
+    "archs": {
+        "hopper": {
+            "accepted_models": ["NVIDIA H100 NVL"],
+            "boards": {
+                "10de:2321": [{"name": "H100 NVL", "project": "G521", "project_sku": "0200", "chip_sku": "700"}],
+                "10de:2331": [{"name": "H100 PCIe", "project": "G520", "project_sku": "0200", "chip_sku": "700"}],
+            },
+        },
+    },
+}
+
+# What a GPU-less and a GPU instance measure, the aleph client's rendering
+# byte for byte. The unnarrowed line carries no gpu_models token at all.
+CMDLINE_NO_GPU = f"console=ttyS0 luks=1 owner={OWNER_LOWER}"
+CMDLINE_GPU = f"console=ttyS0 luks=1 swiotlb=262144 owner={OWNER_LOWER} gpu_arch=hopper gpu_count=1"
+
+
+def _gpu(**overrides: Any) -> _ConfidentialGpu:
+    fields: dict[str, Any] = {"vendor": "nvidia", "arch": "hopper", "count": 1, "models": None, "mode": "cc"}
+    fields.update(overrides)
+    return _ConfidentialGpu(**fields)
+
+
+def test_render_instance_cmdline_without_a_gpu_fills_only_the_owner() -> None:
+    assert render_instance_cmdline(CMDLINE_TEMPLATE_LUKS_V1, owner=OWNER_LOWER, gpu=None) == CMDLINE_NO_GPU
+
+
+def test_render_instance_cmdline_drops_the_models_token_when_unnarrowed() -> None:
+    """A message that names no model measures no gpu_models token: the whole
+    token goes, not an empty value, exactly as the client drops it."""
+    assert render_instance_cmdline(CMDLINE_TEMPLATE_INSTANCE_GPU_V1, owner=OWNER_LOWER, gpu=_gpu()) == CMDLINE_GPU
+
+
+def test_render_instance_cmdline_sorts_and_deduplicates_the_models() -> None:
+    gpu = _gpu(count=2, models=["10de:2331", "10de:2321", "10de:2331"])
+    assert render_instance_cmdline(CMDLINE_TEMPLATE_INSTANCE_GPU_V1, owner=OWNER_LOWER, gpu=gpu) == (
+        f"console=ttyS0 luks=1 swiotlb=262144 owner={OWNER_LOWER} "
+        "gpu_arch=hopper gpu_count=2 gpu_models=10de:2321,10de:2331"
+    )
+
+
+def test_render_instance_cmdline_refuses_a_gpu_on_a_slotless_template() -> None:
+    with pytest.raises(ValueError, match="gpu_arch"):
+        render_instance_cmdline(CMDLINE_TEMPLATE_LUKS_V1, owner=OWNER_LOWER, gpu=_gpu())
+
+
+def test_render_instance_cmdline_refuses_a_gpu_template_without_a_gpu() -> None:
+    with pytest.raises(ValueError, match="declares no GPU"):
+        render_instance_cmdline(CMDLINE_TEMPLATE_INSTANCE_GPU_V1, owner=OWNER_LOWER, gpu=None)
+
+
+@pytest.mark.parametrize("gpu", [_gpu(arch="ampere"), _gpu(count=0), _gpu(models=["10DE:2321"])])
+def test_render_instance_cmdline_refuses_what_the_tokens_cannot_say(gpu) -> None:
+    """The requirement grammar is the canonical renderer's: an unknown arch, a
+    count outside 1..8 and a non-canonical model id are all refused here too."""
+    with pytest.raises(ValueError):
+        render_instance_cmdline(CMDLINE_TEMPLATE_INSTANCE_GPU_V1, owner=OWNER_LOWER, gpu=gpu)
+
+
+@pytest.mark.asyncio
+async def test_gpu_instance_measures_the_requirement_in_the_cmdline(tmp_path, staged_instance_bundle):
+    """The daemon gets the rendered line verbatim, so these bytes are the
+    measured cmdline: the client renders the same template the same way."""
+    make_manifest(
+        staged_instance_bundle["tar"],
+        tmp_path,
+        gpu=INSTANCE_GPU_BLOCK,
+        **{"boot.cmdline_template": CMDLINE_TEMPLATE_INSTANCE_GPU_V1},
+    )
+    content = _with_confidential_gpu(snp_instance_content())
+
+    spec, _ = await build_snp_instance_spec(VM_HASH, content, OWNER_LOWER)
+
+    assert spec.tee is not None
+    assert spec.tee.kernel_cmdline == CMDLINE_GPU
+    # The concrete cards are resolved against the host in run.py, after the
+    # spec is built.
+    assert spec.gpus == []
+
+
+@pytest.mark.asyncio
+async def test_gpu_instance_measures_the_narrowed_models(tmp_path, staged_instance_bundle):
+    make_manifest(
+        staged_instance_bundle["tar"],
+        tmp_path,
+        gpu=INSTANCE_GPU_BLOCK,
+        **{"boot.cmdline_template": CMDLINE_TEMPLATE_INSTANCE_GPU_V1},
+    )
+    content = _with_confidential_gpu(snp_instance_content(), models=["10de:2331", "10de:2321"])
+
+    spec, _ = await build_snp_instance_spec(VM_HASH, content, OWNER_LOWER)
+
+    assert spec.tee is not None
+    assert spec.tee.kernel_cmdline == f"{CMDLINE_GPU} gpu_models=10de:2321,10de:2331"
+
+
+@pytest.mark.asyncio
+async def test_gpu_instance_needs_a_gpu_runtime(staged_instance_bundle):
+    """MANIFEST_TEMPLATE has no gpu block: a GPU instance cannot run on it."""
+    content = _with_confidential_gpu(snp_instance_content())
+    with pytest.raises(VmSetupError, match="has no gpu block"):
+        await build_snp_instance_spec(VM_HASH, content, OWNER_LOWER)
+
+
+@pytest.mark.asyncio
+async def test_gpu_instance_enforces_the_memory_floor(tmp_path, staged_instance_bundle):
+    make_manifest(
+        staged_instance_bundle["tar"],
+        tmp_path,
+        gpu=INSTANCE_GPU_BLOCK,
+        **{"boot.cmdline_template": CMDLINE_TEMPLATE_INSTANCE_GPU_V1},
+    )
+    content = snp_instance_content()
+    content = content.model_copy(update={"resources": content.resources.model_copy(update={"memory": 1024})})
+    content = _with_confidential_gpu(content)
+
+    with pytest.raises(VmSetupError, match="2048"):
+        await build_snp_instance_spec(VM_HASH, content, OWNER_LOWER)
+
+
+@pytest.mark.asyncio
+async def test_gpu_instance_refuses_a_model_the_runtime_has_no_board_for(tmp_path, staged_instance_bundle):
+    make_manifest(
+        staged_instance_bundle["tar"],
+        tmp_path,
+        gpu=INSTANCE_GPU_BLOCK,
+        **{"boot.cmdline_template": CMDLINE_TEMPLATE_INSTANCE_GPU_V1},
+    )
+    content = _with_confidential_gpu(snp_instance_content(), models=["10de:2b85"])
+
+    with pytest.raises(VmSetupError, match="lists no hopper board"):
+        await build_snp_instance_spec(VM_HASH, content, OWNER_LOWER)
+
+
+@pytest.mark.asyncio
+async def test_gpu_less_instance_is_refused_on_a_gpu_runtime(tmp_path, staged_instance_bundle):
+    """Mirror image: a GPU runtime measures a GPU requirement, so it has
+    nothing to boot a GPU-less instance with."""
+    make_manifest(
+        staged_instance_bundle["tar"],
+        tmp_path,
+        gpu=INSTANCE_GPU_BLOCK,
+        **{"boot.cmdline_template": CMDLINE_TEMPLATE_INSTANCE_GPU_V1},
+    )
+
+    with pytest.raises(VmSetupError, match="is a GPU runtime"):
+        await build_snp_instance_spec(VM_HASH, snp_instance_content(), OWNER_LOWER)

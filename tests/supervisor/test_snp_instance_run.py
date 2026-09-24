@@ -19,7 +19,11 @@ from aleph_message.models.execution.environment import (
     HostRequirements,
     TrustedExecutionEnvironment,
 )
-from test_snp_instance_launch import VM_HASH, snp_instance_content
+from test_snp_instance_launch import (
+    VM_HASH,
+    _with_confidential_gpu,
+    snp_instance_content,
+)
 from test_supervisor_translate import _make_qemu_instance_message
 from test_vprogram_launch import _with_gpu, load_vprogram_message
 
@@ -193,8 +197,10 @@ async def test_snp_instance_never_awaits_confidential_init(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_snp_instance_with_gpus_rejected(monkeypatch):
-    """A GPU-requesting SNP instance is rejected with a clean VmSetupError
-    BEFORE build_snp_instance_spec or create_vm ever run."""
+    """An SNP instance asking for plain (unmeasured) GPU passthrough through
+    requirements.gpu is rejected with a clean VmSetupError BEFORE
+    build_snp_instance_spec or create_vm ever run; confidential GPUs go
+    through trusted_execution.gpu instead."""
     content = snp_instance_content().model_copy(
         update={
             "requirements": HostRequirements(
@@ -228,6 +234,42 @@ async def test_snp_instance_with_gpus_rejected(monkeypatch):
     build_snp.assert_not_awaited()
     supervisor.create_vm.assert_not_awaited()
     assert registry.get(VM_HASH) is None
+
+
+@pytest.mark.asyncio
+async def test_snp_instance_resolves_confidential_gpus(monkeypatch):
+    """A confidential instance that declares trusted_execution.gpu resolves it
+    against the host's CC-mode cards through capacity.resolve_confidential_gpus,
+    after build_snp_instance_spec (the requirement is already measured in its
+    cmdline) and before create_vm: the resolved GpuSpec must reach the spec
+    supervisor.create_vm actually gets."""
+    content = _with_confidential_gpu(snp_instance_content())
+    message = MagicMock(content=content, sender=_SENDER)
+    monkeypatch.setattr(
+        run_module, "load_updated_message", AsyncMock(return_value=(message, MagicMock(content=content)))
+    )
+    fake_spec = _snp_spec()
+    assert fake_spec.gpus == []
+    monkeypatch.setattr(run_module, "build_snp_instance_spec", AsyncMock(return_value=(fake_spec, _ATTEST_PORT)))
+    monkeypatch.setattr(run_module, "resolve_instance_attestation_port", AsyncMock(return_value=_ATTEST_PORT))
+    monkeypatch.setattr(run_module, "get_user_settings", AsyncMock(return_value={}))
+    monkeypatch.setattr(run_module.asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(run_module, "_wait_until_attest_endpoint_listens", AsyncMock())
+    monkeypatch.setattr(run_module, "persist_record", AsyncMock())
+
+    resolved_gpu = GpuSpec(pci_host=PciAddress("08:00.0"), supports_x_vga=False)
+    capacity = _fake_capacity()
+    capacity.resolve_confidential_gpus = AsyncMock(return_value=[resolved_gpu])
+    supervisor = _fake_supervisor()
+    registry = AgentVmRegistry()
+
+    await run_module.create_vm_execution(VM_HASH, supervisor=supervisor, registry=registry, capacity=capacity)
+
+    capacity.resolve_confidential_gpus.assert_awaited_once_with(
+        arch="hopper", count=1, models=None, owner=content.address
+    )
+    sent_spec = supervisor.create_vm.await_args.args[0]
+    assert sent_spec.gpus == [resolved_gpu]
 
 
 @pytest.mark.asyncio

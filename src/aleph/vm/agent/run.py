@@ -35,6 +35,7 @@ from aleph.vm.agent.expiry import ExpiryManager
 from aleph.vm.agent.guest_ipv6 import create_vm_with_ipv6, lacks_known_ipv6
 from aleph.vm.agent.snp_instance_launch import (
     build_snp_instance_spec,
+    confidential_gpu,
     is_snp_instance,
     resolve_instance_attestation_port,
 )
@@ -615,13 +616,27 @@ async def create_vm_execution(
                     # SEV-SNP confidential instances build through the dedicated
                     # LUKS-rootfs SNP launch path, not build_create_vm_spec (which
                     # would build a SEV spec with no firmware, since these
-                    # messages carry no trusted_execution.firmware). GPU
-                    # passthrough is not supported yet on this path: reject
-                    # before any staging I/O runs.
+                    # messages carry no trusted_execution.firmware). A
+                    # confidential instance declares its GPUs in
+                    # trusted_execution.gpu (they ride the measured cmdline);
+                    # requirements.gpu is the unmeasured pass-through route and
+                    # is rejected before any staging I/O runs.
                     if requested_gpu_ids(content):
-                        msg = "GPU passthrough is not supported on SEV-SNP instances yet"
+                        msg = (
+                            "plain GPU passthrough is not supported on SEV-SNP instances; "
+                            "declare confidential GPUs in trusted_execution.gpu"
+                        )
                         raise VmSetupError(msg)
                     spec, attest_port = await build_snp_instance_spec(vm_hash, content, str(message.sender))
+                    # The measured requirement is already in the spec's cmdline;
+                    # the concrete CC-mode cards are picked here, after staging,
+                    # mirroring the V-PROGRAM branch below.
+                    snp_gpu = confidential_gpu(content)
+                    if snp_gpu is not None:
+                        resolved_confidential = await capacity.resolve_confidential_gpus(
+                            arch=snp_gpu.arch, count=snp_gpu.count, models=snp_gpu.models, owner=content.address
+                        )
+                        spec = replace(spec, gpus=resolved_confidential)
                 else:
                     spec = await build_create_vm_spec(vm_hash, content)
                 # GPU holds are still taken after the download, so a failed
@@ -630,8 +645,9 @@ async def create_vm_execution(
                 # consuming this owner's own holds). Disk, memory and vCPUs were
                 # judged before the download, by check_message above.
                 if not snp_instance:
-                    # GPU resolution only applies to the legacy spec path: SNP
-                    # instances are rejected above before reaching here.
+                    # Pass-through GPU resolution only applies to the legacy
+                    # spec path: an SNP instance's confidential cards are
+                    # resolved above, and requirements.gpu is refused there.
                     requested_gpus = requested_gpu_ids(content)
                     if requested_gpus:
                         resolved_gpus = await capacity.resolve_gpus(requested_gpus, owner=content.address)
@@ -641,11 +657,12 @@ async def create_vm_execution(
                 _log_lost_create_race(vm_hash, "Instance")
                 return None
             except Exception:
-                # build or create failed: retire the early record so a failed
-                # create never leaves a dangling owner-identity entry behind (a
-                # record with no VM the supervisor knows about), and drop any
-                # runtime bundle build_snp_instance_spec may have already
-                # extracted before the failure.
+                # build, GPU resolution or create failed: retire the early
+                # record so a failed create never leaves a dangling
+                # owner-identity entry behind (a record with no VM the
+                # supervisor knows about), and drop any runtime bundle
+                # build_snp_instance_spec may have already extracted before
+                # the failure.
                 await _retire_after_create_failure(
                     vm_hash, supervisor=supervisor, registry=registry, had_volumes=had_volumes, what="instance"
                 )
