@@ -179,6 +179,10 @@ class AnnotatedGpuDevice(GpuDevice):
 class GpuProperties(BaseModel):
     devices: list[AnnotatedGpuDevice] | None = None
     available_devices: list[AnnotatedGpuDevice] | None = None
+    # Cards in NVIDIA CC mode, the complement of the plain pair: the full
+    # inventory for operators, while tee.nvidia_cc stays the scheduler's view.
+    confidential_devices: list[AnnotatedGpuDevice] | None = None
+    available_confidential_devices: list[AnnotatedGpuDevice] | None = None
 
 
 class MachineUsage(BaseModel):
@@ -254,15 +258,20 @@ async def _gpus_from_host_info(host_info: "HostInfo", network_models: dict[str, 
             compatible=gpu.device_id in network_models,
         )
 
-    def plain(raw: list[dict]) -> list[AnnotatedGpuDevice]:
+    def split(raw: list[dict]) -> tuple[list[AnnotatedGpuDevice], list[AnnotatedGpuDevice]]:
         # The plain lists are what the scheduler places pass-through GPU
-        # instances by; a card in CC mode belongs to `tee.nvidia_cc` only.
-        cards = (GpuDevice.model_validate(gpu) for gpu in raw)
-        return [annotate(gpu) for gpu in cards if gpu.passthrough]
+        # instances by; a card in CC mode is served through `tee.nvidia_cc`
+        # and only listed here so the inventory stays complete.
+        cards = [annotate(GpuDevice.model_validate(gpu)) for gpu in raw]
+        return [gpu for gpu in cards if gpu.passthrough], [gpu for gpu in cards if not gpu.passthrough]
 
+    devices, confidential_devices = split(host_info.gpu_inventory)
+    available_devices, available_confidential_devices = split(host_info.available_gpus)
     return GpuProperties(
-        devices=plain(host_info.gpu_inventory),
-        available_devices=plain(host_info.available_gpus),
+        devices=devices,
+        available_devices=available_devices,
+        confidential_devices=confidential_devices,
+        available_confidential_devices=available_confidential_devices,
     )
 
 
