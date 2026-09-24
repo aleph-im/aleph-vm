@@ -7,8 +7,10 @@
 //! on Hopper, bits [1:0]). Reading it needs no driver: the card is bound to
 //! vfio-pci, and the register is reachable through the sysfs resource file.
 //! The read only ever runs on a card no VM owns, so it never races a guest.
-//! A runtime-suspended function answers MMIO with all ones, so the probe pins
-//! an idle card awake first and treats all ones as no answer at all.
+//! A runtime-suspended function answers MMIO with all ones, and so does one
+//! whose memory decoding is off (the state of a vfio-bound card on a fresh
+//! boot, until a VM first attaches it), so the probe pins an idle card awake,
+//! enables decoding, and treats all ones as no answer at all.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -356,6 +358,59 @@ fn hold_runtime_power_on(device_dir: &Path, timeout: Duration) -> Option<Runtime
     Some(hold)
 }
 
+/// Offset of the 16-bit PCI `COMMAND` register in configuration space.
+const PCI_COMMAND_OFFSET: u64 = 4;
+/// `COMMAND` bit 1: the function decodes memory accesses to its BARs.
+const PCI_COMMAND_MEMORY: u16 = 0x2;
+
+/// Turn the card's memory decoding on if it is off, so BAR0 answers.
+/// A vfio-bound card boots with it off and only gets it at VM attach, which
+/// no confidential VM can reach before the mode is read. The bit is left set:
+/// vfio sets it at every open and never clears it, so nothing depends on it
+/// being off. Runs after the runtime-PM hold, since a resume restores the
+/// config state saved at suspend. Never fails the probe: with decoding still
+/// off the register reads all ones and the probe fails closed.
+fn enable_memory_decoding(device_dir: &Path) {
+    use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
+
+    let config_path = device_dir.join("config");
+    let mut file = match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&config_path)
+    {
+        Ok(file) => file,
+        Err(error) => {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(path = %config_path.display(), %error, "cannot open the GPU config space");
+            }
+            return;
+        }
+    };
+    let mut bytes = [0u8; 2];
+    let read = file
+        .seek(SeekFrom::Start(PCI_COMMAND_OFFSET))
+        .and_then(|_| file.read_exact(&mut bytes));
+    if let Err(error) = read {
+        tracing::warn!(path = %config_path.display(), %error, "cannot read the GPU COMMAND register");
+        return;
+    }
+    let command = u16::from_le_bytes(bytes);
+    if command & PCI_COMMAND_MEMORY != 0 {
+        return;
+    }
+    let written = file
+        .seek(SeekFrom::Start(PCI_COMMAND_OFFSET))
+        .and_then(|_| file.write_all(&(command | PCI_COMMAND_MEMORY).to_le_bytes()));
+    if let Err(error) = written {
+        tracing::warn!(
+            path = %config_path.display(),
+            %error,
+            "cannot enable the GPU memory decoding; reading its register anyway"
+        );
+    }
+}
+
 /// The CC mode of one vfio-bound NVIDIA card, `None` for cards without a
 /// CC mode (other vendors, pre-Hopper) or a reserved register encoding.
 pub fn probe_cc_mode(pci_host: &str, device_id: &str) -> Result<Option<CcMode>, DaemonError> {
@@ -379,6 +434,7 @@ pub(crate) fn probe_cc_mode_in(
         return Ok(None);
     };
     let _resumed = hold_runtime_power_on(device_dir, resume_timeout);
+    enable_memory_decoding(device_dir);
     let value = read_bar0_u32(&device_dir.join("resource0"), bar0_register_offset(arch)).map_err(
         |source| DaemonError::GpuRegisterRead {
             pci_host: pci_host.to_string(),
@@ -498,7 +554,65 @@ mod tests {
         let mut bytes = vec![0u8; 0x1000];
         bytes[0x590..0x594].copy_from_slice(&register.to_le_bytes());
         std::fs::write(device_dir.join("resource0"), &bytes).unwrap();
+        // Config space as a fresh boot leaves a vfio-bound card: COMMAND
+        // with memory decoding off.
+        std::fs::write(device_dir.join("config"), fake_config(0x0140)).unwrap();
         device_dir
+    }
+
+    /// 256 bytes of config space with `command` in the COMMAND register.
+    fn fake_config(command: u16) -> Vec<u8> {
+        let mut config = vec![0u8; 256];
+        config[4..6].copy_from_slice(&command.to_le_bytes());
+        config
+    }
+
+    fn command_register(device_dir: &Path) -> u16 {
+        let config = std::fs::read(device_dir.join("config")).unwrap();
+        u16::from_le_bytes([config[4], config[5]])
+    }
+
+    #[test]
+    fn memory_decoding_is_enabled_before_the_register_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let device_dir = fake_card(dir.path(), Some("suspended"), 0x0000_0001);
+        assert_eq!(command_register(&device_dir), 0x0140);
+        assert_eq!(
+            probe_cc_mode_in(&device_dir, "06:00.0", "10de:2b85", Duration::ZERO).unwrap(),
+            Some(CcMode::On)
+        );
+        assert_eq!(
+            command_register(&device_dir),
+            0x0142,
+            "only the memory bit changes, and it stays set"
+        );
+        // The rest of the config space is untouched.
+        let config = std::fs::read(device_dir.join("config")).unwrap();
+        assert_eq!(config.len(), 256);
+        assert!(config[6..].iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn a_card_already_decoding_memory_keeps_its_command_register() {
+        let dir = tempfile::tempdir().unwrap();
+        let device_dir = fake_card(dir.path(), None, 0x0000_0001);
+        std::fs::write(device_dir.join("config"), fake_config(0x0146)).unwrap();
+        assert_eq!(
+            probe_cc_mode_in(&device_dir, "06:00.0", "10de:2b85", Duration::ZERO).unwrap(),
+            Some(CcMode::On)
+        );
+        assert_eq!(command_register(&device_dir), 0x0146);
+    }
+
+    #[test]
+    fn a_device_without_a_config_file_probes_as_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let device_dir = fake_card(dir.path(), None, 0x0000_0001);
+        std::fs::remove_file(device_dir.join("config")).unwrap();
+        assert_eq!(
+            probe_cc_mode_in(&device_dir, "06:00.0", "10de:2b85", Duration::ZERO).unwrap(),
+            Some(CcMode::On)
+        );
     }
 
     #[test]
