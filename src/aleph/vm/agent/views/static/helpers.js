@@ -61,8 +61,10 @@ async function fetchHostSystemUsage () {
     }
     if(q.ok){
         const answer = await q.json();
-        const gpu_devices = answer.gpu.devices;
-        if (gpu_devices.length <= 0) {
+        const gpu_devices = answer.gpu.devices ?? [];
+        // Cards in NVIDIA CC mode leave gpu.devices and are advertised under tee.nvidia_cc.
+        const cc_devices = answer.properties?.tee?.nvidia_cc?.devices ?? [];
+        if (gpu_devices.length + cc_devices.length <= 0) {
             res.status = "<b>No GPUs detected</b>";
         }else{
             res.status = "<ul>";
@@ -72,6 +74,10 @@ async function fetchHostSystemUsage () {
                     compatible_str = " isn't compatible &#10060;";
                 }
                 res.status += "<li><b>" + gpu_device.vendor + " | " + gpu_device.device_name + "</b>" + compatible_str + "</li>";
+            }
+            for (const cc_device of cc_devices){
+                const name = cc_device.model ?? cc_device.device_id;
+                res.status += "<li><b>NVIDIA | " + name + "</b> (" + cc_device.arch + ", " + cc_device.device_id + ") is confidential &#128274;</li>";
             }
             res.status += "</ul>";
         }
