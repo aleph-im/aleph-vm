@@ -720,9 +720,9 @@ async def create_vm_execution(
                 _admit_create(content, vm_hash, capacity=capacity, rebuild=rebuild)
                 spec, attest_port = await build_vprogram_spec(vm_hash, content)
                 # A confidential GPU is resolved against the host's CC-mode
-                # cards here, after staging, mirroring the instance path's
-                # resolve_gpus call. The message names a family and a count;
-                # the CRN picks the cards.
+                # cards here, after staging, through the same
+                # resolve_confidential_gpus call the instance path makes. The
+                # message names a family and a count; the CRN picks the cards.
                 gpu = content.gpu
                 if gpu is not None:
                     resolved = await capacity.resolve_confidential_gpus(

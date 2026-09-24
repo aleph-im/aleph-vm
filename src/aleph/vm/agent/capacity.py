@@ -1121,8 +1121,9 @@ class CapacityManager(PlanAdmission):
     ) -> list[GpuSpec]:
         """Resolve a confidential-GPU family requirement to concrete cards.
 
-        A V-PROGRAM names a kind of card (architecture, optionally narrowed to
-        specific vendor:device ids) and how many, never a concrete device, so
+        A V-PROGRAM and a confidential instance both name a kind of card
+        (architecture, optionally narrowed to specific vendor:device ids) and
+        how many, never a concrete device, so
         this picks any ``count`` distinct available cards probed in NVIDIA CC
         mode whose architecture matches. Card architectures come from the
         supervisor, which owns the device-id table the BAR0 probe already

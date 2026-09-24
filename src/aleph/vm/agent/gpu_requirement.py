@@ -177,6 +177,11 @@ def render_instance_cmdline(template: str, *, owner: str, gpu: Any | None) -> st
         if "{gpu_arch}" not in template or "{gpu_count}" not in template:
             msg = "the runtime template has no {gpu_arch}/{gpu_count} slot"
             raise ValueError(msg)
+        # A narrowing the template cannot render would be measured away, so the
+        # guest would admit any card of the arch instead.
+        if gpu.models and "{gpu_models}" not in template:
+            msg = "the message narrows its GPU to specific models but the runtime template has no {gpu_models} slot"
+            raise ValueError(msg)
         arch, count = gpu.arch, str(gpu.count)
         models = ",".join(sorted(set(gpu.models))) if gpu.models else ""
     if not models:

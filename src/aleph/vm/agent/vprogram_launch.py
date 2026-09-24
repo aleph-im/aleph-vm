@@ -36,7 +36,6 @@ from pydantic import ValidationError
 
 from aleph.vm.agent import snp_staging
 from aleph.vm.agent.gpu_requirement import (
-    GPU_MIN_MEMORY_MIB,
     check_gpu_against_manifest,
     render_gpu_requirement,
 )
@@ -67,9 +66,6 @@ if TYPE_CHECKING:
     from aleph_message.models.execution.vprogram import VerifiableProgramContent
 
 logger = logging.getLogger(__name__)
-
-# The shared GPU memory floor under its historical name here.
-GPU_VPROGRAM_MIN_MEMORY_MIB = GPU_MIN_MEMORY_MIB
 
 # The one fixed (non-placeholder) cmdline token a format-version-1 template
 # may carry today: the GPU runtime's swiotlb size. manifest.py's validator
