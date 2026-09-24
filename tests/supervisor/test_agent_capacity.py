@@ -56,6 +56,10 @@ def _gpu_device(
     )
 
 
+def _hold(user: str) -> GpuHold:
+    return GpuHold(user=user, expiration=datetime.now(tz=timezone.utc) + timedelta(seconds=RESERVATION_TTL_SECONDS))
+
+
 def _manager(available: list[GpuDevice] | None = None, registry: AgentVmRegistry | None = None) -> CapacityManager:
     gpus = available or []
     host_info = HostInfo(
@@ -558,8 +562,9 @@ async def test_resolve_confidential_gpus_skips_another_users_hold():
     held = _cc_gpu("06:00.0", "on")
     free = _cc_gpu("07:00.0", "on")
     manager = _manager([held, free])
-    await manager.reserve_gpus([_BLACKWELL_ID], "0xOTHER")
-    held_pci = next(iter(manager.holds))
+    # Holds are seeded directly: /reserve names plain cards, never CC ones.
+    held_pci = "06:00.0"
+    manager.holds[held_pci] = _hold("0xOTHER")
 
     resolved = await manager.resolve_confidential_gpus(arch="blackwell", count=1, models=None, owner="0xOWNER")
 
@@ -570,7 +575,7 @@ async def test_resolve_confidential_gpus_skips_another_users_hold():
 @pytest.mark.asyncio
 async def test_resolve_confidential_gpus_consumes_the_owners_own_hold():
     manager = _manager([_cc_gpu("06:00.0", "on")])
-    await manager.reserve_gpus([_BLACKWELL_ID], "0xOWNER")
+    manager.holds["06:00.0"] = _hold("0xOWNER")
 
     resolved = await manager.resolve_confidential_gpus(arch="blackwell", count=1, models=None, owner="0xOWNER")
 
@@ -581,7 +586,7 @@ async def test_resolve_confidential_gpus_consumes_the_owners_own_hold():
 @pytest.mark.asyncio
 async def test_resolve_confidential_gpus_shortage_leaves_the_ledger_untouched():
     manager = _manager([_cc_gpu("06:00.0", "on")])
-    await manager.reserve_gpus([_BLACKWELL_ID], "0xOWNER")
+    manager.holds["06:00.0"] = _hold("0xOWNER")
 
     with pytest.raises(InsufficientResourcesError):
         await manager.resolve_confidential_gpus(arch="blackwell", count=2, models=None, owner="0xOWNER")

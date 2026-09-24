@@ -243,29 +243,27 @@ async def _gpus_from_host_info(host_info: "HostInfo", network_models: dict[str, 
     if network_models is None:
         network_models = await _network_gpu_models()
 
-    def annotate(gpu: dict) -> AnnotatedGpuDevice:
+    def annotate(gpu: GpuDevice) -> AnnotatedGpuDevice:
         # The scheduler's model field is required: a card the network has no
         # name for still needs one, so it falls back to the hardware name.
         # `compatible` stays false and already says the network does not
         # support it.
-        return AnnotatedGpuDevice.model_validate(
-            gpu
-            | {
-                "model": network_models.get(gpu["device_id"], gpu["device_name"]),
-                "compatible": gpu["device_id"] in network_models,
-            }
+        return AnnotatedGpuDevice(
+            **gpu.model_dump(),
+            model=network_models.get(gpu.device_id, gpu.device_name),
+            compatible=gpu.device_id in network_models,
         )
 
-    # The plain lists are what the scheduler places pass-through GPU
-    # instances by; a card in CC mode belongs to `tee.nvidia_cc` only.
+    def plain(raw: list[dict]) -> list[AnnotatedGpuDevice]:
+        # The plain lists are what the scheduler places pass-through GPU
+        # instances by; a card in CC mode belongs to `tee.nvidia_cc` only.
+        cards = (GpuDevice.model_validate(gpu) for gpu in raw)
+        return [annotate(gpu) for gpu in cards if gpu.passthrough]
+
     return GpuProperties(
-        devices=[annotate(gpu) for gpu in host_info.gpu_inventory if _passthrough(gpu)],
-        available_devices=[annotate(gpu) for gpu in host_info.available_gpus if _passthrough(gpu)],
+        devices=plain(host_info.gpu_inventory),
+        available_devices=plain(host_info.available_gpus),
     )
-
-
-def _passthrough(gpu: dict) -> bool:
-    return GpuDevice.model_validate(gpu).passthrough
 
 
 async def _tee_properties(
@@ -395,7 +393,9 @@ async def _get_static_machine_capability() -> MachineCapability:
 def nvidia_cc_properties(available_gpus: list[dict], network_models: dict[str, str]) -> NvidiaCcProperties | None:
     """The confidential-GPU block: only cards whose probe said `on`.
     `devtools` lifts the profiling blocks and is not confidential; an
-    unprobed card is unknown and advertises nothing.
+    unprobed card is unknown and advertises nothing. Neither reaches the
+    plain lists either (GpuDevice.passthrough), so a `devtools` card is
+    advertised nowhere until its mode is switched.
 
     A card also needs the architecture the supervisor derived: that is what a
     V-PROGRAM message names and what the scheduler matches on. A card in CC
