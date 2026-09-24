@@ -283,9 +283,11 @@ guest console directly rather than in an API response:
 
 - **No NVIDIA driver on the host.** The card is bound to `vfio-pci` for its
   entire life on this host; the NVIDIA kernel modules and userland live
-  only inside the measured guest image (`nix/nvidia.nix`, `nix/init-gpu.sh`).
+  only inside the measured guest image (`nix/nvidia.nix`, `nix/init-gpu.sh`,
+  `nix/init-instance-gpu.sh`).
 - **No RIM or OCSP traffic from the host.** RIM and OCSP verification is
-  the guest's job at boot (`nvattest attest` inside `init-gpu.sh`), reached
+  the guest's job at boot (`nvattest attest` inside `init-gpu.sh` or
+  `init-instance-gpu.sh`), reached
   over the guest's own network path. The CRN process never talks to
   `rim.attestation.nvidia.com` or `ocsp.ndis.nvidia.com` itself.
 - **No reading of the CC register while a VM owns the card.** The daemon's

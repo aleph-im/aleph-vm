@@ -178,7 +178,7 @@ jobs:
   # Gated so it only runs when it can actually move: always on schedule and
   # manual dispatch, and on push/pull_request only when a GPU input changed.
   golden-measurements-gpu:
-    name: "build the confidential-GPU chain, compare its launch measurement"
+    name: "build the confidential-GPU chains, compare their launch measurements"
     runs-on: ubuntu-24.04
     timeout-minutes: 120
 
