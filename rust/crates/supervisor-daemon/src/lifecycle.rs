@@ -2336,12 +2336,24 @@ fn require_gpu_cc_mode(
 /// measured requirement the guest will enforce, and that requirement must
 /// describe the cards the spec attaches. Parsed the way the guest parses it
 /// (whitespace tokens, one occurrence per key), so the two readings of the
-/// same string cannot disagree.
+/// same string cannot disagree. Symmetric: a measured requirement without
+/// cards is refused just like cards without a measured requirement.
 fn check_opaque_cmdline_gpu_tokens(
     state: &DaemonState,
     cmdline: &str,
     gpus: &[pb::GpuConfig],
 ) -> Result<(), RpcError> {
+    // Neither side mentions a GPU, so there is no invariant to assert and a
+    // GPU-less instance keeps its cmdline unexamined.
+    let mentions_a_gpu = cmdline.split_ascii_whitespace().any(|token| {
+        matches!(
+            token.split_once('='),
+            Some(("gpu_arch" | "gpu_count" | "gpu_models", _))
+        )
+    });
+    if !mentions_a_gpu && gpus.is_empty() {
+        return Ok(());
+    }
     // A quote is what the guest check refuses outright, so it never reaches a
     // measured launch with a card attached.
     if cmdline.contains('"') {
@@ -2373,6 +2385,12 @@ fn check_opaque_cmdline_gpu_tokens(
             )));
         }
         *slot = Some(value);
+    }
+    if gpus.is_empty() {
+        return Err(RpcError::InvalidBackend(
+            "the measured SEV-SNP kernel cmdline demands GPUs but the spec attaches none"
+                .to_string(),
+        ));
     }
     let (Some(arch), Some(count)) = (arch, count) else {
         return Err(RpcError::InvalidBackend(
@@ -2430,6 +2448,18 @@ fn check_opaque_cmdline_gpu_tokens(
                  measured SEV-SNP kernel cmdline requires"
             )));
         }
+        // A models list narrows the requirement to named cards, and the guest
+        // enforces it on the same string, so the attached card must be listed.
+        if let Some(models) = models
+            && !models
+                .split(',')
+                .any(|model| model.eq_ignore_ascii_case(device_id))
+        {
+            return Err(RpcError::InvalidBackend(format!(
+                "GPU at pci_host '{pci_host}' (device id {device_id}) is not one of the \
+                 gpu_models={models} the measured SEV-SNP kernel cmdline requires"
+            )));
+        }
     }
     Ok(())
 }
@@ -2471,8 +2501,8 @@ fn snp_config_slice_with(
     }
     // The opaque arm passes the agent's cmdline through untouched, so the
     // daemon asserts the GPU invariant on the exact string it hands QEMU: the
-    // measured tokens must be there and must match the attached cards.
-    if !spec.gpus.is_empty() && !tee.kernel_cmdline.is_empty() {
+    // measured tokens and the attached cards must agree, in both directions.
+    if !tee.kernel_cmdline.is_empty() {
         check_opaque_cmdline_gpu_tokens(state, &tee.kernel_cmdline, &spec.gpus)?;
     }
     // One card per confidential VM: the mechanics would carry several, but
@@ -2515,8 +2545,8 @@ fn snp_config_slice_with(
     // Empty means "unset" on a proto3 scalar; the launcher defaults it.
     let cpu_model = (!tee.cpu_model.is_empty()).then(|| tee.cpu_model.clone());
     // The opaque arm: the agent rendered the measured cmdline itself. The
-    // supervisor is a dumb launcher here, it passes the string through verbatim
-    // and stays agnostic of what it selects in the guest. The image then has NO
+    // supervisor passes the string through verbatim and only asserts the GPU
+    // invariant on it, deriving nothing else from it. The image then has NO
     // dm-verity sidecars, so a staged roothash means the two cmdline sources
     // are BOTH present: the daemon cannot tell which one the image was measured
     // with, and picking either could boot a mismeasured VM. Fail closed.
@@ -4550,7 +4580,8 @@ mod tests {
     }
 
     /// A cmdline only the agent can render (LUKS mode + an owner parameter):
-    /// the daemon must pass it through verbatim, never parse it.
+    /// the daemon passes it through verbatim and reads it only to assert the
+    /// GPU invariant.
     const OPAQUE_CMDLINE: &str = "console=ttyS0 luks=1 owner=0xabc";
 
     #[test]
@@ -5691,6 +5722,56 @@ mod tests {
             }
             other => panic!("a mismatched arch must be InvalidBackend, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn snp_config_slice_rejects_measured_gpu_tokens_without_any_card() {
+        // The other direction of the invariant: the guest would look for a
+        // card, find none and power off, so the create fails closed here.
+        let harness = harness_with_gpus(vec![hopper_card("06:00.0")]);
+        let state = &harness.state;
+        let mut spec = opaque_gpu_spec(&harness, OPAQUE_GPU_CMDLINE);
+        spec.gpus.clear();
+        let cc_on = |_: &str, _: &str| Ok(Some(crate::gpu_cc::CcMode::On));
+        match snp_config_slice_with(state, &spec, cc_on, |_| Ok(256 * (1u64 << 30))) {
+            Err(RpcError::InvalidBackend(msg)) => {
+                assert!(msg.contains("attaches none"), "{msg}")
+            }
+            other => panic!("a cardless measured cmdline must be InvalidBackend, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn snp_config_slice_rejects_a_card_outside_the_measured_models() {
+        // The measured list names another Hopper part, so the attached card is
+        // not what the guest will admit.
+        let harness = harness_with_gpus(vec![hopper_card("06:00.0")]);
+        let state = &harness.state;
+        let cmdline = format!("{OPAQUE_GPU_CMDLINE} gpu_models=10de:2335");
+        let spec = opaque_gpu_spec(&harness, &cmdline);
+        let cc_on = |_: &str, _: &str| Ok(Some(crate::gpu_cc::CcMode::On));
+        match snp_config_slice_with(state, &spec, cc_on, |_| Ok(256 * (1u64 << 30))) {
+            Err(RpcError::InvalidBackend(msg)) => {
+                assert!(msg.contains("06:00.0"), "{msg}");
+                assert!(msg.contains("10de:2331"), "{msg}");
+                assert!(msg.contains("gpu_models=10de:2335"), "{msg}");
+            }
+            other => panic!("an unlisted model must be InvalidBackend, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn snp_config_slice_takes_a_card_named_by_the_measured_models() {
+        // The same list with the card's own device id admits it.
+        let harness = harness_with_gpus(vec![hopper_card("06:00.0")]);
+        let state = &harness.state;
+        let cmdline = format!("{OPAQUE_GPU_CMDLINE} gpu_models=10de:2331,10de:2335");
+        let spec = opaque_gpu_spec(&harness, &cmdline);
+        let cc_on = |_: &str, _: &str| Ok(Some(crate::gpu_cc::CcMode::On));
+        let slice = snp_config_slice_with(state, &spec, cc_on, |_| Ok(256 * (1u64 << 30)))
+            .expect("a listed model admits the card")
+            .expect("an SEV-SNP spec yields a slice");
+        assert_eq!(slice.kernel_cmdline, cmdline);
     }
 
     #[test]
