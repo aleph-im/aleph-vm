@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -39,13 +40,19 @@ _HASH_C = ItemHash("c" * 64)
 _HASH_D = ItemHash("d" * 64)
 
 
-def _gpu_device(pci_host: str = "0000:01:00.0", *, device_id: str = _DEVICE_ID) -> GpuDevice:
+def _gpu_device(
+    pci_host: str = "0000:01:00.0",
+    *,
+    device_id: str = _DEVICE_ID,
+    cc_mode: Literal["on", "devtools", "off"] | None = None,
+) -> GpuDevice:
     return GpuDevice(
         vendor="NVIDIA",
         device_name="GH100",
         device_class=GpuDeviceClass.VGA_COMPATIBLE_CONTROLLER,
         pci_host=pci_host,
         device_id=device_id,
+        cc_mode=cc_mode,
     )
 
 
@@ -328,6 +335,19 @@ async def test_reserve_gpus_raises_when_none_match():
 
     assert excinfo.value.required == {"gpu_device_id": _DEVICE_ID}
     assert excinfo.value.available == {"gpus": ["10de:OTHER"]}
+    assert manager.holds == {}
+
+
+@pytest.mark.asyncio
+async def test_reserve_gpus_never_hands_out_a_cc_mode_card():
+    """A CC-mode card only initialises inside a confidential guest: the plain
+    path treats it as absent, down to the headroom it reports."""
+    manager = _manager([_gpu_device(cc_mode="on"), _gpu_device("0000:02:00.0", cc_mode="devtools")])
+
+    with pytest.raises(InsufficientResourcesError) as excinfo:
+        await manager.reserve_gpus([_DEVICE_ID], "0xUSER")
+
+    assert excinfo.value.available == {"gpus": []}
     assert manager.holds == {}
 
 
@@ -822,6 +842,17 @@ def test_simulate_admits_a_gpu_candidate_the_host_can_serve(mocker):
     verdicts = _manager().simulate([(_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID]))], available_gpus=[gpu])
 
     assert verdicts[0].accepted is True
+
+
+def test_simulate_refuses_a_plain_gpu_candidate_when_the_only_card_is_in_cc_mode(mocker):
+    _patch_host(mocker, memory_bytes=64 * 1024 * 1024 * 1024, cores=16)
+
+    verdicts = _manager().simulate(
+        [(_HASH_A, _gpu_requirements(device_ids=[_DEVICE_ID]))], available_gpus=[_gpu_device(cc_mode="on")]
+    )
+
+    assert verdicts[0].accepted is False
+    assert verdicts[0].refusal.code is AllocationFailureCode.GPU_UNAVAILABLE
 
 
 def test_simulate_refuses_a_confidential_candidate_on_a_node_with_tee_off(mocker):

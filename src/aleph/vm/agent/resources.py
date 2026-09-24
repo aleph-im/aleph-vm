@@ -256,10 +256,16 @@ async def _gpus_from_host_info(host_info: "HostInfo", network_models: dict[str, 
             }
         )
 
+    # The plain lists are what the scheduler places pass-through GPU
+    # instances by; a card in CC mode belongs to `tee.nvidia_cc` only.
     return GpuProperties(
-        devices=[annotate(gpu) for gpu in host_info.gpu_inventory],
-        available_devices=[annotate(gpu) for gpu in host_info.available_gpus],
+        devices=[annotate(gpu) for gpu in host_info.gpu_inventory if _passthrough(gpu)],
+        available_devices=[annotate(gpu) for gpu in host_info.available_gpus if _passthrough(gpu)],
     )
+
+
+def _passthrough(gpu: dict) -> bool:
+    return GpuDevice.model_validate(gpu).passthrough
 
 
 async def _tee_properties(
