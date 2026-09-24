@@ -74,6 +74,13 @@ class GpuDevice(HashableModel):
         """
         return self.device_class == GpuDeviceClass.VGA_COMPATIBLE_CONTROLLER
 
+    @property
+    def passthrough(self) -> bool:
+        """Usable as a plain pass-through card. A card in NVIDIA CC mode
+        (`on`, or `devtools`) only initialises inside a confidential guest,
+        so it is a confidential resource, never a plain one."""
+        return self.cc_mode not in ("on", "devtools")
+
     model_config = ConfigDict(extra="forbid")
 
 

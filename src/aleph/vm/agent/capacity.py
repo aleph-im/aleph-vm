@@ -750,7 +750,9 @@ class CapacityManager(PlanAdmission):
             "program_memory_mib": max(caps.program_memory_mib - committed_program, 0),
             "vcpus": max(caps.vcpus - committed_vcpus, 0),
             "disk_mib": self._available_disk_bytes() // (1024 * 1024),
-            "gpus": None if available_gpus is None else [gpu.device_id for gpu in self._unheld_gpus(available_gpus)],
+            "gpus": None
+            if available_gpus is None
+            else [gpu.device_id for gpu in self._unheld_gpus(available_gpus) if gpu.passthrough],
         }
 
     def simulate(
@@ -836,7 +838,7 @@ class CapacityManager(PlanAdmission):
         committed_program = max(committed_program, 0)
         committed_vcpus = max(committed_vcpus, 0)
 
-        gpu_pool = None if available_gpus is None else list(available_gpus)
+        gpu_pool = None if available_gpus is None else [gpu for gpu in available_gpus if gpu.passthrough]
 
         verdicts: list[AdmissionVerdict] = []
         committed_disk = 0
@@ -1197,7 +1199,9 @@ class CapacityManager(PlanAdmission):
         resolved: list[GpuDevice] = []
         for device_id in requested_device_ids:
             for gpu in available_gpus:
-                if gpu.device_id != device_id:
+                # A CC-mode card is the confidential path's; it never answers
+                # a plain device_id request.
+                if gpu.device_id != device_id or not gpu.passthrough:
                     continue
                 if not self._is_available_to(gpu.pci_host, user):
                     continue

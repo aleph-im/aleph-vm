@@ -153,3 +153,23 @@ async def test_unwhitelisted_gpu_model_survives_the_endpoint_serialisation(mocke
 
     assert '"model":"Device 10de:233b"' in payload
     assert '"compatible":false' in payload
+
+
+@pytest.mark.asyncio
+async def test_cc_mode_cards_stay_out_of_the_plain_lists(mocker):
+    """The plain lists are what pass-through GPU instances are placed by; a
+    card in CC mode belongs to tee.nvidia_cc only."""
+    mocker.patch("aleph.vm.agent.resources.update_aggregate_settings")
+    mocker.patch(
+        "aleph.vm.agent.resources.get_compatible_gpus",
+        return_value=[CompatibleGPU(device_id="10de:233b", model="H200", vendor="NVIDIA", name="GH100")],
+    )
+    plain = _raw_gpu("10de:27b0", "01:00.0")
+    cc = _raw_gpu("10de:233b", "02:00.0") | {"cc_mode": "on", "arch": "hopper"}
+    devtools = _raw_gpu("10de:233b", "03:00.0") | {"cc_mode": "devtools", "arch": "hopper"}
+    host_info = SimpleNamespace(gpu_inventory=[plain, cc, devtools], available_gpus=[plain, cc, devtools])
+
+    gpu = await _gpus_from_host_info(host_info)
+
+    assert [d.pci_host for d in gpu.devices] == ["01:00.0"]
+    assert [d.pci_host for d in gpu.available_devices] == ["01:00.0"]
