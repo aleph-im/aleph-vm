@@ -5,22 +5,23 @@
 # committed golden file (nix/golden-measurements.json). A mismatch means the
 # measured boot chain changed: OVMF, kernel, initrd contents (the regular
 # files listed in initrd.nix, including the attest-agent binary; never a nix
-# store path, see initrd.nix), or the kernel cmdline (dm-verity root hashes). That
+# store path except in the instance-GPU flavor, whose verifier closure rides
+# in the archive, see initrd.nix), or the kernel cmdline (dm-verity root hashes). That
 # is either an intended change (regenerate the golden file in the same PR,
 # and remember that anything pinning the old measurement must migrate) or an
 # unintended reproducibility regression (investigate before merging).
 #
 # Usage:
 #   nix/check-golden-measurements.sh              # verify every output
-#   nix/check-golden-measurements.sh --base-only  # verify all but the GPU flavor
-#   nix/check-golden-measurements.sh --gpu-only   # verify only the GPU flavor
+#   nix/check-golden-measurements.sh --base-only  # verify all but the GPU flavors
+#   nix/check-golden-measurements.sh --gpu-only   # verify only the GPU flavors
 #   nix/check-golden-measurements.sh --update     # regenerate the golden file
 #
-# The GPU flavor is split out because its chain shares almost nothing with the
-# others: a second guest kernel, the NVIDIA open kernel modules, the raw driver
-# userland and NVIDIA's verifier (nvat, a CMake + Rust build). Building it on
-# every nix/** change would multiply this job's cost for changes that cannot
-# move it. --update always rewrites the WHOLE file and therefore always builds
+# The GPU flavors are split out because their chain shares almost nothing with
+# the others: a second guest kernel, the NVIDIA open kernel modules, the raw
+# driver userland and NVIDIA's verifier (nvat, a CMake + Rust build). Building
+# them on every nix/** change would multiply this job's cost for changes that
+# cannot move them. --update always rewrites the WHOLE file and therefore always builds
 # everything: writing a subset would drop the other entries.
 
 set -euo pipefail

@@ -2,6 +2,9 @@
 , withVerity ? true, withNft ? true, withLuks ? false, withNvidia ? null
 , withGpuVerifier ? null, ... }:
 
+# The verifier tree is useless without the modules it probes the card through.
+assert withGpuVerifier != null -> withNvidia != null;
+
 let
   # veritysetup/cryptsetup need to be statically linked for the initrd
   # environment. One derivation covers both: the cryptsetup package builds
@@ -150,6 +153,9 @@ pkgs.runCommand "initrd" {
     # The instance-GPU flavor's verifier tree (see gpu-verifier-tree.nix):
     # copied wholesale with cp -a, which keeps its symlinks as symlinks.
     cp -a ${withGpuVerifier}/. root/
+    # Store directories arrive read-only, and the cpio recipe below touches
+    # every entry.
+    chmod -R u+w root
   ''}
 
   # Every executable must be static: there is no loader or libc in here.
@@ -168,9 +174,8 @@ pkgs.runCommand "initrd" {
     | gzip -9n > ../initrd.gz)
 
   # Contract check: no store path may ever end up in the archive again. The
-  # instance-GPU flavor is the one exception: its verifier closure lives at
-  # store paths by design, so its measurement tracks that closure the way the
-  # GPU flavor's dm-verity root hash already does.
+  # instance-GPU flavor is the one exception, its verifier closure is store
+  # paths by design.
   ${pkgs.lib.optionalString (withGpuVerifier == null) ''
     if gzip -dc initrd.gz | cpio -t --quiet | grep -q '^nix/'; then
       echo "error: initrd embeds nix store paths; the launch measurement would track derivation hashes" >&2
