@@ -39,9 +39,12 @@ base_outputs=(
   workloadMeasurement
   instanceMeasurementSmoke
 )
-# The confidential-GPU flavor, built from gpuKernel + gpuInitrd + gpuVerity.
+# The confidential-GPU flavors, built from gpuKernel + the NVIDIA driver
+# pieces: the V-PROGRAM one (gpuInitrd + gpuVerity) and the instance one
+# (instanceGpuInitrd, which carries the verifier tree).
 gpu_outputs=(
   gpuMeasurement
+  instanceGpuMeasurementSmoke
 )
 
 mode="all"
