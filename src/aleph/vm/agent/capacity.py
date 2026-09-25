@@ -220,7 +220,7 @@ def requirements_from_message(
         is_instance=is_instance_bucket(content),
         gpu_device_ids=requested_gpu_ids(content),
         confidential=needs_confidential_computing(content),
-        wants_gpu=bool(requested_gpu_ids(content)) or bool(getattr(content, "gpu", None)),
+        wants_gpu=bool(requested_gpu_ids(content)) or wants_confidential_gpu(content),
         owner=str(address) if (address := getattr(content, "address", None)) else None,
         volumes=tuple(declared),
     )
@@ -355,6 +355,16 @@ def needs_confidential_computing(content: ExecutableContent) -> bool:
         return True
     environment = getattr(content, "environment", None)
     return getattr(environment, "trusted_execution", None) is not None
+
+
+def wants_confidential_gpu(content: ExecutableContent) -> bool:
+    """A V-PROGRAM names its cards in ``gpu``, a confidential instance in
+    ``trusted_execution.gpu``."""
+    if isinstance(content, VerifiableProgramContent):
+        return content.gpu is not None
+    environment = getattr(content, "environment", None)
+    trusted_execution = getattr(environment, "trusted_execution", None)
+    return getattr(trusted_execution, "gpu", None) is not None
 
 
 class UnsupportedFeature(str, Enum):
