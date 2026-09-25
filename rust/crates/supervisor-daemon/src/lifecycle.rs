@@ -2446,6 +2446,8 @@ fn ensure_gpu_modes(
             .gpu_cc_refresh
             .lock()
             .expect("gpu_cc_refresh poisoned");
+        // Host info serves the cache during the switch; the pre-switch reading must not show.
+        forget_cc_mode(state, &device.pci_host);
         let started = std::time::Instant::now();
         let switched = (state.gpu_cc_switch)(
             &settings.gpu_cc_admin_tool,
@@ -2453,8 +2455,6 @@ fn ensure_gpu_modes(
             wanted,
             std::time::Duration::from_secs(settings.gpu_cc_switch_timeout_secs),
         );
-        // Whatever the tool did, the pre-switch reading no longer stands.
-        forget_cc_mode(state, &device.pci_host);
         if let Err(error) = switched {
             tracing::error!(
                 vm_id,
