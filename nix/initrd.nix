@@ -1,5 +1,9 @@
 { pkgs, attest-agent, kernel, init-script, init-common-script, udhcpc-script, udhcpc6-script
-, withVerity ? true, withNft ? true, withLuks ? false, withNvidia ? null, ... }:
+, withVerity ? true, withNft ? true, withLuks ? false, withNvidia ? null
+, withGpuVerifier ? null, ... }:
+
+# The verifier tree is useless without the modules it probes the card through.
+assert withGpuVerifier != null -> withNvidia != null;
 
 let
   # veritysetup/cryptsetup need to be statically linked for the initrd
@@ -94,6 +98,9 @@ let
   # hash covers the whole cargo workspace, so any Rust change anywhere moved
   # the measurement). It also dragged glibc, headers and man pages into the
   # guest. Here the measurement is a function of file CONTENT only.
+  #
+  # `withGpuVerifier` is the one, flavor-scoped exception: an instance has no
+  # rootfs to run the GPU verifier from, so that closure rides in the archive.
   entries =
     [
       { source = "${checkedBusybox}/bin/busybox"; path = "bin/busybox"; mode = "755"; }
@@ -142,6 +149,14 @@ pkgs.runCommand "initrd" {
 } ''
   mkdir -p root/dev root/proc root/sys
   ${installEntries}
+  ${pkgs.lib.optionalString (withGpuVerifier != null) ''
+    # The instance-GPU flavor's verifier tree (see gpu-verifier-tree.nix):
+    # copied wholesale with cp -a, which keeps its symlinks as symlinks.
+    cp -a ${withGpuVerifier}/. root/
+    # Store directories arrive read-only, and the cpio recipe below touches
+    # every entry.
+    chmod -R u+w root
+  ''}
 
   # Every executable must be static: there is no loader or libc in here.
   for f in root/bin/* root/init; do
@@ -158,11 +173,15 @@ pkgs.runCommand "initrd" {
     | cpio --quiet -o -H newc -R +0:+0 --reproducible --null \
     | gzip -9n > ../initrd.gz)
 
-  # Contract check: no store path may ever end up in the archive again.
-  if gzip -dc initrd.gz | cpio -t --quiet | grep -q '^nix/'; then
-    echo "error: initrd embeds nix store paths; the launch measurement would track derivation hashes" >&2
-    exit 1
-  fi
+  # Contract check: no store path may ever end up in the archive again. The
+  # instance-GPU flavor is the one exception, its verifier closure is store
+  # paths by design.
+  ${pkgs.lib.optionalString (withGpuVerifier == null) ''
+    if gzip -dc initrd.gz | cpio -t --quiet | grep -q '^nix/'; then
+      echo "error: initrd embeds nix store paths; the launch measurement would track derivation hashes" >&2
+      exit 1
+    fi
+  ''}
 
   mkdir -p $out
   mv initrd.gz $out/initrd

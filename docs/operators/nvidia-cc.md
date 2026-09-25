@@ -1,14 +1,16 @@
 # Operating confidential GPUs (NVIDIA CC)
 
 This runbook covers everything a CRN operator does on the host to make one
-NVIDIA confidential-computing GPU available to V-PROGRAM workloads: BIOS and
-kernel prerequisites, binding the card away from the host driver, flipping
-the card into CC mode once, confirming the CRN advertises it, and reading
-the failure signatures when something is wrong. It does not cover guest-side
-or client-side verification; see
+NVIDIA confidential-computing GPU available to V-PROGRAM workloads and
+confidential SEV-SNP instances: BIOS and kernel prerequisites, binding the
+card away from the host driver, flipping the card into CC mode once,
+confirming the CRN advertises it, and reading the failure signatures when
+something is wrong. The host-side steps are identical for both: the daemon
+probes and gates the card the same way whichever product requested it. It
+does not cover guest-side or client-side verification; see
 [`../architecture/confidential.md`](../architecture/confidential.md),
-"Confidential GPUs (NVIDIA CC)", for the trust model and the code that
-implements it.
+"Confidential GPUs (NVIDIA CC)" and "Confidential GPUs on SNP instances",
+for the trust model and the code that implements it.
 
 ## 1. Requirements
 
@@ -25,9 +27,10 @@ implements it.
   cmdline token format, but neither has been exercised on real cards yet;
   the other rows in the board table below come from NVIDIA's published part
   numbers, not from evidence read off silicon.
-- **Model in the runtime's board table**: a V-PROGRAM may narrow its
-  request to exact PCI ids, and the guest then matches each card's signed
-  board identity (the `project`/`project_sku`/`chip_sku` triple in its
+- **Model in the runtime's board table**: a V-PROGRAM or a confidential
+  instance may narrow its request to exact PCI ids, and the guest then
+  matches each card's signed board identity (the
+  `project`/`project_sku`/`chip_sku` triple in its
   attestation report, the first three fields of the RIM board id below)
   against the table the runtime publishes in its `gpu` block. A card whose
   model that table does not list yet cannot be requested by id; it needs a
@@ -193,43 +196,46 @@ If `nvidia_cc` is absent from `/about/capability` while
 
 ## 5. Failure signatures
 
-- **A V-PROGRAM powers off immediately with `init: FATAL: gpu attestation
-  failed: GPU runtime started without a GPU`.** No NVIDIA display-class
-  device was on the guest's PCI bus. The GPU runtime refuses to boot
-  without one (`nix/init-gpu.sh`): its measured cmdline states how many
-  cards it must find, and a client cannot tell an empty bus from a verified
-  card by the launch measurement alone. Check that the card is bound to
-  `vfio-pci` (section 2) and that the QEMU argv carries its `vfio-pci`
-  device.
-- **A V-PROGRAM powers off with `init: FATAL: gpu attestation failed: GPU
-  requirement not met`, preceded by a `gpu-policy: ...` line.** The cards
-  the CRN attached are not the ones the message asked for: the
-  `gpu-policy` line names the rule that failed: wrong architecture, a card
-  count (on the bus, in the evidence or in the claims) that is not
-  `gpu_count`, an evidence entry that does not answer the boot nonce, or a
-  board whose signed project/SKU triple is not listed under any requested
-  PCI id in the runtime's `gpu.json`. Compare the requested
-  `gpu_arch`/`gpu_count`/`gpu_models` tokens in the guest's cmdline against
-  the cards actually attached; attaching MORE cards than the message asked
-  for fails here too, by design. A card whose model the runtime's board
-  table does not list yet is a runtime update, not an operator fix.
-- **A V-PROGRAM powers off with `init: FATAL: gpu attestation failed: GPU
-  is not in confidential-compute mode` (or `CC status unreadable`), with the
-  driver's `CC status` report above it.** After passing attestation and the
-  measured requirement, the guest read back the driver's own
-  confidential-compute status (`nvidia-smi conf-compute
-  --get-cc-feature`, `nix/init-gpu.sh`) before marking the card ready, and
-  the driver did not report CC as on. Reboot the card and re-check its mode
+- **A GPU V-PROGRAM or confidential instance powers off immediately with
+  `init: FATAL: gpu attestation failed: GPU runtime started without a
+  GPU`.** No NVIDIA display-class device was on the guest's PCI bus. The
+  GPU runtime refuses to boot without one (`nix/init-gpu.sh` for a
+  V-PROGRAM, `nix/init-instance-gpu.sh` for an instance): its measured
+  cmdline states how many cards it must find, and a client cannot tell an
+  empty bus from a verified card by the launch measurement alone. Check
+  that the card is bound to `vfio-pci` (section 2) and that the QEMU argv
+  carries its `vfio-pci` device.
+- **A GPU V-PROGRAM or confidential instance powers off with `init: FATAL:
+  gpu attestation failed: GPU requirement not met`, preceded by a
+  `gpu-policy: ...` line.** The cards the CRN attached are not the ones the
+  message asked for: the `gpu-policy` line names the rule that failed:
+  wrong architecture, a card count (on the bus, in the evidence or in the
+  claims) that is not `gpu_count`, an evidence entry that does not answer
+  the boot nonce, or a board whose signed project/SKU triple is not listed
+  under any requested PCI id in the runtime's `gpu.json`. Compare the
+  requested `gpu_arch`/`gpu_count`/`gpu_models` tokens in the guest's
+  cmdline against the cards actually attached; attaching MORE cards than
+  the message asked for fails here too, by design. A card whose model the
+  runtime's board table does not list yet is a runtime update, not an
+  operator fix.
+- **A GPU V-PROGRAM or confidential instance powers off with `init: FATAL:
+  gpu attestation failed: GPU is not in confidential-compute mode` (or `CC
+  status unreadable`), with the driver's `CC status` report above it.**
+  After passing attestation and the measured requirement, the guest read
+  back the driver's own confidential-compute status (`nvidia-smi
+  conf-compute --get-cc-feature`, `nix/init-gpu.sh` /
+  `nix/init-instance-gpu.sh`) before marking the card ready, and the
+  driver did not report CC as on. Reboot the card and re-check its mode
   with the host-side `--query-cc-mode` of section 3; since the host probe
   already gates the launch, this failure means the card changed mode after
   the launch started or the driver's status wording changed across driver
   versions (the guest's greps are deliberately broad and fail closed).
-- **A V-PROGRAM powers off within a minute of boot, with
-  `init: FATAL: gpu attestation failed: ...` in its console log.** One of the
-  guest's `nvattest` steps (`nix/init-gpu.sh` collects the evidence, then
+- **A GPU V-PROGRAM or confidential instance powers off within a minute of
+  boot, with `init: FATAL: gpu attestation failed: ...` in its console
+  log.** One of the guest's `nvattest` steps (collects the evidence, then
   verifies that same file) failed; the reason string names which, and the
-  console carries nvattest's own log above it. Two common causes: the guest
-  could not reach
+  console carries nvattest's own log above it. Two common causes: the
+  guest could not reach
   `rim.attestation.nvidia.com` or `ocsp.ndis.nvidia.com` over the host's
   network (check egress from the VM's network namespace/bridge), or the
   driver RIM for the shipped driver version is not yet published on
@@ -246,20 +252,22 @@ If `nvidia_cc` is absent from `/about/capability` while
 - **`InsufficientResourcesError` with `confidential_gpu` in its
   `required` field.** Fewer CC-mode cards of the requested architecture
   (and of the requested `models`, when the message narrows them) are free
-  than the message's `count`: the rest are held (by another V-PROGRAM's
-  placement hold) or attached to a running VM. This is distinct from a
-  plain `gpu_device_id` shortage (`resolve_confidential_gpus`,
-  `src/aleph/vm/agent/capacity.py`), so the log and the scheduler can tell
-  a confidential-GPU shortage from an ordinary one.
-- **A multi-card V-PROGRAM boots but the driver refuses one or more
-  cards.** The CRN attaches as many CC-mode cards as the message's `count`
-  names (up to the schema's eight), and every stage is per card. What is
-  not per card is NVIDIA's validation: multi-GPU confidential computing is
-  validated on HGX B200/B300 with driver R590 or newer over encrypted
-  NVLink, Hopper is one card per VM, and the RTX PRO 6000 Blackwell Server
-  Edition lists it as not yet validated. The guest's `swiotlb` reservation
-  is also sized per VM, not per card. Until a multi-card host has run the
-  hardware pass, expect a two-card V-PROGRAM to be an experiment.
+  than the message's `count`: the rest are held (by another request's
+  placement hold, V-PROGRAM or instance) or attached to a running VM. This
+  is distinct from a plain `gpu_device_id` shortage
+  (`resolve_confidential_gpus`, `src/aleph/vm/agent/capacity.py`, shared by
+  both products), so the log and the scheduler can tell a confidential-GPU
+  shortage from an ordinary one.
+- **A multi-card GPU V-PROGRAM or instance boots but the driver refuses
+  one or more cards.** The CRN attaches as many CC-mode cards as the
+  message's `count` names (up to the schema's eight), and every stage is
+  per card. What is not per card is NVIDIA's validation: multi-GPU
+  confidential computing is validated on HGX B200/B300 with driver R590 or
+  newer over encrypted NVLink, Hopper is one card per VM, and the RTX PRO
+  6000 Blackwell Server Edition lists it as not yet validated. The guest's
+  `swiotlb` reservation is also sized per VM, not per card. Until a
+  multi-card host has run the hardware pass, expect a two-card GPU
+  workload to be an experiment.
 
 Quick reference for lower-level signatures, seen in the QEMU log or the
 guest console directly rather than in an API response:
@@ -275,9 +283,11 @@ guest console directly rather than in an API response:
 
 - **No NVIDIA driver on the host.** The card is bound to `vfio-pci` for its
   entire life on this host; the NVIDIA kernel modules and userland live
-  only inside the measured guest image (`nix/nvidia.nix`, `nix/init-gpu.sh`).
+  only inside the measured guest image (`nix/nvidia.nix`, `nix/init-gpu.sh`,
+  `nix/init-instance-gpu.sh`).
 - **No RIM or OCSP traffic from the host.** RIM and OCSP verification is
-  the guest's job at boot (`nvattest attest` inside `init-gpu.sh`), reached
+  the guest's job at boot (`nvattest attest` inside `init-gpu.sh` or
+  `init-instance-gpu.sh`), reached
   over the guest's own network path. The CRN process never talks to
   `rim.attestation.nvidia.com` or `ocsp.ndis.nvidia.com` itself.
 - **No reading of the CC register while a VM owns the card.** The daemon's

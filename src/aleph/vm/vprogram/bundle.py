@@ -29,6 +29,7 @@ from aleph.vm.vprogram.manifest import (
     GpuRuntimeSpec,
     InstanceBootSpec,
     InstanceBundleMembers,
+    InstanceGpuRuntimeSpec,
     InstanceRuntimeBundle,
     InstanceRuntimeManifest,
     RuntimeBundle,
@@ -59,13 +60,15 @@ MEASUREMENT_FILE = "measurement.hex"
 # facts sidecar read below), so it packages from MEMBER_FILES too.
 #
 # The gpu flavor's build-time facts about the confidential GPU this runtime
-# drives, written by the nix build alongside the usual image members.
+# drives, written by the nix build alongside the usual image members. The
+# instance-gpu flavor's `instanceGpuImage` output carries the same sidecar,
+# minus library_path (the instance owner supplies the driver userland).
 GPU_JSON_FILE = "gpu.json"
 
-# Role -> file name inside the nix `instanceImage` output directory: OVMF,
-# kernel, initrd only. No rootfs, no hash tree, no verity sidecars: the
-# instance init has no verity branch (the guest supplies its own LUKS rootfs
-# at runtime).
+# Role -> file name inside the nix `instanceImage` (and `instanceGpuImage`)
+# output directory: OVMF, kernel, initrd only. No rootfs, no hash tree, no
+# verity sidecars: the instance init has no verity branch (the guest
+# supplies its own LUKS rootfs at runtime).
 INSTANCE_MEMBER_FILES = {
     "ovmf": "OVMF.fd",
     "kernel": "bzImage",
@@ -95,6 +98,8 @@ class InstanceBundleInfo(StrictModel):
     sha256: str = Field(pattern=SHA256_HEX_PATTERN)
     size: int = Field(gt=0)
     members: InstanceBundleMembers
+    # Recorded only by a `flavor="instance-gpu"` build, from the image's gpu.json.
+    instance_gpu: InstanceGpuRuntimeSpec | None = None
     source: SourceInfo
 
 
@@ -104,6 +109,21 @@ def _read_sidecar(image_dir: Path, name: str, pattern: str | None) -> str:
         msg = f"{name} does not look like a dm-verity roothash: {value!r}"
         raise ValueError(msg)
     return value
+
+
+def _check_image_files(image_dir: Path, file_names: list[str]) -> None:
+    for name in file_names:
+        if not (image_dir / name).is_file():
+            msg = f"expected image file missing: {image_dir / name}"
+            raise FileNotFoundError(msg)
+
+
+def _read_gpu_facts_json(image_dir: Path) -> str:
+    gpu_path = image_dir / GPU_JSON_FILE
+    if not gpu_path.is_file():
+        msg = f"expected gpu facts file missing: {gpu_path}"
+        raise FileNotFoundError(msg)
+    return gpu_path.read_text()
 
 
 def _write_tar(image_dir: Path, tar_path: Path, source_epoch: int, file_names: list[str]) -> None:
@@ -146,18 +166,23 @@ def build_bundle(
     layout again, plus an extra `gpu.json` facts sidecar (read into
     `BundleInfo.gpu`, never added to the tarball). `flavor="instance"`
     expects only OVMF/kernel/initrd (the nix `instanceImage` output) and
-    never reads a verity sidecar.
+    never reads a verity sidecar. `flavor="instance-gpu"` packages the nix
+    `instanceGpuImage` output, same byte layout as `instance`, plus the
+    `gpu.json` facts sidecar (read into `InstanceBundleInfo.instance_gpu`).
     """
-    if flavor not in ("vprogram", "instance", "compose", "gpu"):
+    if flavor not in ("vprogram", "instance", "compose", "gpu", "instance-gpu"):
         msg = f"unknown bundle flavor: {flavor!r}"
         raise ValueError(msg)
 
-    if flavor == "instance":
+    if flavor in ("instance", "instance-gpu"):
         file_names = sorted(INSTANCE_MEMBER_FILES.values())
-        for name in file_names:
-            if not (image_dir / name).is_file():
-                msg = f"expected image file missing: {image_dir / name}"
-                raise FileNotFoundError(msg)
+        _check_image_files(image_dir, file_names)
+
+        instance_gpu_spec = (
+            InstanceGpuRuntimeSpec.model_validate_json(_read_gpu_facts_json(image_dir))
+            if flavor == "instance-gpu"
+            else None
+        )
 
         tar_path = out_dir / BUNDLE_NAME
         _write_tar(image_dir, tar_path, source_epoch, file_names)
@@ -169,6 +194,7 @@ def build_bundle(
             members=InstanceBundleMembers(
                 **{role: f"{TAR_PREFIX}/{name}" for role, name in INSTANCE_MEMBER_FILES.items()}
             ),
+            instance_gpu=instance_gpu_spec,
             source=source,
         )
         info_path = out_dir / BUNDLE_INFO_NAME
@@ -176,18 +202,9 @@ def build_bundle(
         return instance_info
 
     file_names = sorted({*MEMBER_FILES.values(), ROOTHASH_FILE, MEASUREMENT_FILE})
-    for name in file_names:
-        if not (image_dir / name).is_file():
-            msg = f"expected image file missing: {image_dir / name}"
-            raise FileNotFoundError(msg)
+    _check_image_files(image_dir, file_names)
 
-    gpu_spec: GpuRuntimeSpec | None = None
-    if flavor == "gpu":
-        gpu_path = image_dir / GPU_JSON_FILE
-        if not gpu_path.is_file():
-            msg = f"expected gpu facts file missing: {gpu_path}"
-            raise FileNotFoundError(msg)
-        gpu_spec = GpuRuntimeSpec.model_validate_json(gpu_path.read_text())
+    gpu_spec = GpuRuntimeSpec.model_validate_json(_read_gpu_facts_json(image_dir)) if flavor == "gpu" else None
 
     platform_roothash = _read_sidecar(image_dir, ROOTHASH_FILE, SHA256_HEX_PATTERN)
     measurement = _read_sidecar(image_dir, MEASUREMENT_FILE, None)
@@ -270,6 +287,14 @@ COMPOSE_WORKLOAD = WorkloadSpec(contract="aleph.compose/1", upstream_port=8080)
 # instance init parses `luks=` and `owner=` off /proc/cmdline (design section
 # 4.1). No platform_roothash slot: the instance image has no verity rootfs.
 CMDLINE_TEMPLATE_LUKS_V1 = "console=ttyS0 luks=1 owner={owner}"
+# Instance-gpu flavor: the luks template plus the fixed swiotlb=262144 token
+# and the three gpu requirement slots, same spelling and order as
+# CMDLINE_TEMPLATE_GPU_V1's. Byte-identity with what the daemon emits
+# matters the same way that constant's does.
+CMDLINE_TEMPLATE_INSTANCE_GPU_V1 = (
+    "console=ttyS0 luks=1 swiotlb=262144 owner={owner}"
+    " gpu_arch={gpu_arch} gpu_count={gpu_count} gpu_models={gpu_models}"
+)
 
 
 def make_manifest(  # noqa: PLR0913 -- one flag per mutually exclusive workload flavor, kept explicit over a mode enum
@@ -338,7 +363,7 @@ def make_manifest(  # noqa: PLR0913 -- one flag per mutually exclusive workload 
 
 
 def make_instance_manifest(
-    info: InstanceBundleInfo, bundle_ref: str, name: str, version: str
+    info: InstanceBundleInfo, bundle_ref: str, name: str, version: str, *, gpu_runtime: bool = False
 ) -> InstanceRuntimeManifest:
     """Build the aleph-instance-runtime manifest for an uploaded instance
     bundle. Validation is the constructor: any inconsistency raises pydantic
@@ -346,8 +371,16 @@ def make_instance_manifest(
 
     Fixed to the luks-mode boot recipe (`{owner}`-only cmdline template); no
     workload contract, no platform_roothash (the instance image has no
-    verity rootfs to measure).
+    verity rootfs to measure). Pass `gpu_runtime=True` to select the
+    instance-gpu cmdline template (adds the fixed swiotlb=262144 token and
+    the three gpu requirement slots) and to carry `info.instance_gpu` onto
+    the manifest; it requires `info.instance_gpu` to be set, i.e. `info`
+    must come from a `flavor="instance-gpu"` build.
     """
+    if gpu_runtime and info.instance_gpu is None:
+        msg = "gpu_runtime needs the gpu facts recorded by the instance-gpu flavor build"
+        raise ValueError(msg)
+    cmdline_template = CMDLINE_TEMPLATE_INSTANCE_GPU_V1 if gpu_runtime else CMDLINE_TEMPLATE_LUKS_V1
     return InstanceRuntimeManifest(
         format="aleph-instance-runtime",
         format_version=1,
@@ -359,9 +392,10 @@ def make_instance_manifest(
             method="qemu-direct-kernel",
             kernel_hashes=True,
             cpu_models=list(DEFAULT_CPU_MODELS),
-            cmdline_template=CMDLINE_TEMPLATE_LUKS_V1,
+            cmdline_template=cmdline_template,
         ),
         attestation=[protocol.model_copy(deep=True) for protocol in DEFAULT_ATTESTATION],
+        gpu=info.instance_gpu.model_copy(deep=True) if gpu_runtime and info.instance_gpu is not None else None,
         source=info.source,
     )
 

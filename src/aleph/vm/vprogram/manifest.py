@@ -33,9 +33,10 @@ CMDLINE_PLACEHOLDERS_V1 = frozenset(
     {"platform_roothash", "workload_roothash", "verified_volumes", "gpu_arch", "gpu_count", "gpu_models"}
 )
 # The closed placeholder set for the aleph-instance-runtime luks cmdline
-# template (format version 1): the instance init parses only `owner=` off
-# /proc/cmdline, so that is the only slot a manifest may fill.
-CMDLINE_PLACEHOLDERS_LUKS_V1 = frozenset({"owner"})
+# template (format version 1): the instance init always parses `owner=` off
+# /proc/cmdline, plus the three gpu slots for an instance-gpu flavored
+# runtime (same spelling and order as the v-program gpu slots).
+CMDLINE_PLACEHOLDERS_LUKS_V1 = frozenset({"owner", "gpu_arch", "gpu_count", "gpu_models"})
 
 # The closed set of purely-literal (non-placeholder) tokens a format-version-1
 # v-program cmdline template may carry, beyond `key={placeholder}` pairs
@@ -45,8 +46,9 @@ CMDLINE_PLACEHOLDERS_LUKS_V1 = frozenset({"owner"})
 # allowlist above.
 CMDLINE_FIXED_TOKENS_V1 = frozenset({"console=ttyS0", "root=/dev/mapper/verity-root", "ro", "swiotlb=262144"})
 # The closed set of purely-literal tokens for the aleph-instance-runtime luks
-# cmdline template.
-CMDLINE_FIXED_TOKENS_LUKS_V1 = frozenset({"console=ttyS0", "luks=1"})
+# cmdline template. swiotlb=262144 only rides along on an instance-gpu
+# flavored template, same rationale as CMDLINE_FIXED_TOKENS_V1's.
+CMDLINE_FIXED_TOKENS_LUKS_V1 = frozenset({"console=ttyS0", "luks=1", "swiotlb=262144"})
 
 # The one legal spelling of each closed-set placeholder inside a cmdline
 # token: `<key>={<placeholder>}`, nothing glued before or after it, and no
@@ -69,9 +71,10 @@ _CMDLINE_KV_TOKEN = re.compile(r"^([a-z_]+)=\{([a-z_]+)\}$")
 # Canonical relative order of the v-program placeholder slots, matching what
 # the daemon emits (bundle.py's CMDLINE_TEMPLATE_*_V1 constants): a manifest
 # with the slots present in any other order still parses, but every launch
-# would mismeasure since the daemon always emits this order. "owner" is the
-# luks template's own closed set and never shares a template with these, so
-# it carries no relative order here.
+# would mismeasure since the daemon always emits this order. "owner" does
+# share the instance-gpu template with the gpu slots, but an instance cmdline
+# is rendered whole from the template instead of spliced token by token, so
+# "owner" carries no relative order here.
 CMDLINE_PLACEHOLDER_ORDER = (
     "platform_roothash",
     "workload_roothash",
@@ -382,6 +385,17 @@ class InstanceBootSpec(StrictModel):
         return _validate_cmdline_template(value, CMDLINE_PLACEHOLDERS_LUKS_V1, "owner", CMDLINE_FIXED_TOKENS_LUKS_V1)
 
 
+class InstanceGpuRuntimeSpec(StrictModel):
+    """What an instance owner pins about the confidential GPU their instance
+    requires. No `library_path`: unlike the V-PROGRAM runtime, the instance
+    owner installs the driver userland in their own LUKS rootfs, not the
+    platform image."""
+
+    vendor: Literal["nvidia"]
+    driver_version: str = Field(pattern=DRIVER_VERSION_PATTERN)
+    archs: dict[Literal["blackwell", "hopper"], GpuArchSpec] = Field(min_length=1)
+
+
 class InstanceRuntimeManifest(StrictModel):
     """Typed model of the aleph-instance-runtime manifest format (version 1).
 
@@ -402,9 +416,13 @@ class InstanceRuntimeManifest(StrictModel):
     bundle: InstanceRuntimeBundle
     boot: InstanceBootSpec
     attestation: list[AttestationProtocol] = Field(min_length=1)
+    gpu: InstanceGpuRuntimeSpec | None = None
     source: SourceInfo
 
     def to_canonical_json(self) -> str:
         """The exact bytes to publish: compact separators, sorted keys, so
-        independently regenerated manifests hash identically."""
-        return json.dumps(self.model_dump(mode="json"), separators=(",", ":"), sort_keys=True)
+        independently regenerated manifests hash identically. `gpu` is
+        omitted entirely (not published as null) when the instance runtime
+        has no gpu facts, so a gpu-less manifest hashes exactly as it did
+        before the field existed."""
+        return json.dumps(self.model_dump(mode="json", exclude_none=True), separators=(",", ":"), sort_keys=True)
