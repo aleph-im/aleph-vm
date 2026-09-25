@@ -2303,24 +2303,9 @@ fn require_gpu_cc_mode(
             "GPU at pci_host '{pci_host}' is not in the host inventory"
         )));
     };
-    let mode = probe(&device.pci_host, &device.device_id).map_err(|error| {
-        RpcError::InvalidBackend(format!(
-            "cannot read the confidential-computing mode of GPU at pci_host '{pci_host}': {error}"
-        ))
-    })?;
-    {
-        state
-            .gpu_cc_modes
-            .lock()
-            .expect("gpu_cc_modes poisoned")
-            .insert(pci_host.to_string(), crate::gpu_cc::ProbedCcMode::now(mode));
-    }
+    let mode = probe_and_cache(state, device, probe)?;
     if mode != Some(crate::gpu_cc::CcMode::On) {
-        return Err(RpcError::InvalidBackend(format!(
-            "GPU at pci_host '{pci_host}' is not in NVIDIA confidential-computing mode (probed: {})",
-            mode.map(|m| m.to_string())
-                .unwrap_or_else(|| "unknown".into())
-        )));
+        return Err(cc_mode_mismatch(pci_host, crate::gpu_cc::CcMode::On, mode));
     }
     Ok(())
 }
@@ -2339,12 +2324,13 @@ fn wanted_cc_mode(spec: &pb::VmSpec) -> crate::gpu_cc::CcMode {
     }
 }
 
-/// Read one card through the state's probe and remember the answer.
+/// Read one card through `probe` and remember the answer.
 fn probe_and_cache(
     state: &DaemonState,
     device: &crate::lspci::GpuDevice,
+    probe: impl Fn(&str, &str) -> Result<Option<crate::gpu_cc::CcMode>, crate::error::DaemonError>,
 ) -> Result<Option<crate::gpu_cc::CcMode>, RpcError> {
-    let mode = (state.gpu_cc_probe)(&device.pci_host, &device.device_id).map_err(|error| {
+    let mode = probe(&device.pci_host, &device.device_id).map_err(|error| {
         RpcError::InvalidBackend(format!(
             "cannot read the confidential-computing mode of GPU at pci_host '{}': {error}",
             device.pci_host
@@ -2381,16 +2367,19 @@ fn cc_mode_mismatch(
 }
 
 /// Bring every NVIDIA card of a create into `wanted` before the world is
-/// touched, or refuse. Runs under creation_lock only: the cards passed
-/// validate_spec_gpus unattached and creates are serialised, so nothing can
-/// take them meanwhile, and the tool never runs under the world write lock.
-/// An unknown mode passes the plain arm (a card outside the CC table) and
-/// fails the confidential one, as the SNP gate already rules.
+/// touched, or refuse. An unknown mode passes the plain arm only.
 fn ensure_gpu_modes(
     state: &DaemonState,
     gpus: &[AttachedGpu],
     wanted: crate::gpu_cc::CcMode,
 ) -> Result<(), RpcError> {
+    // The SNP gate's one-card cap, applied before any card is reset.
+    if wanted == crate::gpu_cc::CcMode::On && gpus.len() > 1 {
+        return Err(RpcError::InvalidBackend(format!(
+            "an SEV-SNP VM takes at most one GPU, the spec carries {}",
+            gpus.len()
+        )));
+    }
     let settings = &state.host.settings;
     for gpu in gpus {
         let Some(device) = inventory_gpu(state, &gpu.pci_host) else {
@@ -2399,7 +2388,7 @@ fn ensure_gpu_modes(
         if device.vendor != "NVIDIA" {
             continue;
         }
-        let probed = probe_and_cache(state, device)?;
+        let probed = probe_and_cache(state, device, state.gpu_cc_probe)?;
         let needs_switch = match (probed, wanted) {
             (Some(mode), _) if mode == wanted => false,
             (None, crate::gpu_cc::CcMode::Off) => false,
@@ -2417,6 +2406,11 @@ fn ensure_gpu_modes(
             to = %wanted,
             "switching the GPU's confidential-computing mode for a create"
         );
+        // The host-info sweep must not read a card mid-reset.
+        let _refresh = state
+            .gpu_cc_refresh
+            .lock()
+            .expect("gpu_cc_refresh poisoned");
         let started = std::time::Instant::now();
         (state.gpu_cc_switch)(
             &settings.gpu_cc_admin_tool,
@@ -2431,9 +2425,14 @@ fn ensure_gpu_modes(
             .expect("gpu_cc_switches poisoned")
             .entry(device.pci_host.clone())
             .or_insert(0) += 1;
-        tracing::warn!(pci_host = %device.pci_host, to = %wanted, elapsed_ms = started.elapsed().as_millis() as u64, "GPU mode switched");
+        tracing::warn!(
+            pci_host = %device.pci_host,
+            to = %wanted,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "GPU mode switched"
+        );
         forget_cc_mode(state, &device.pci_host);
-        let again = probe_and_cache(state, device)?;
+        let again = probe_and_cache(state, device, state.gpu_cc_probe)?;
         if again != Some(wanted) {
             return Err(cc_mode_mismatch(&device.pci_host, wanted, again));
         }
@@ -3135,7 +3134,6 @@ fn create_vm_inner(
     // Mechanism backstops, atomic with the registration below.
     check_memory_backstop(state, request.memory_mib)?;
     let validated_gpus = validate_spec_gpus(state, &request.gpus)?;
-    ensure_gpu_modes(state, &validated_gpus, wanted_cc_mode(&request))?;
     // Rootfs-disk validation, after the backstops like the Python order
     // (prepare() raises it from require_rootfs) and before any side effect.
     require_rootfs(&request)?;
@@ -3147,6 +3145,8 @@ fn create_vm_inner(
     } else {
         None
     };
+    // Last before the world write lock: a spec refused above never resets a card.
+    ensure_gpu_modes(state, &validated_gpus, wanted_cc_mode(&request))?;
 
     // Register the entry (Python registers the execution before prepare so
     // duplicate creates and Health see it), allocating the vm_index and the
@@ -5444,9 +5444,8 @@ mod tests {
 
     #[test]
     fn starting_a_plain_vm_holding_a_card_reads_nothing() {
-        // The CC gate is an SNP rule on both paths: a plain passthrough VM went
-        // through no create gate, so its start must read no card and must not
-        // begin refusing VMs that have always run on an off-mode card.
+        // The start reads no card for a plain VM, so it must not begin
+        // refusing VMs that have always run on an off-mode card.
         let harness = harness_with_gpu_probe(vec![nvidia_card("06:00.0")], switchable_probe);
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -10137,9 +10136,9 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_switch_on_the_second_card_attaches_nothing() {
-        // The tool reports success but the card does not move: the read-back
-        // refuses the create as a whole and no card is attached to anything.
+    fn a_card_the_switch_does_not_move_refuses_the_create() {
+        // The tool exits 0 but the read-back still says On: the create is
+        // refused and no card is attached to anything.
         let harness = harness_with_gpu_switch(
             vec![nvidia_card("06:00.0"), nvidia_card("07:00.0")],
             switchable_probe,
@@ -10163,6 +10162,37 @@ mod tests {
                 .values()
                 .all(|entry| entry.config.gpus.is_empty())
         );
+    }
+
+    #[test]
+    fn ensure_gpu_modes_applies_the_snp_card_cap_before_switching() {
+        let harness = harness_with_gpu_switch(
+            vec![nvidia_card("06:00.0"), nvidia_card("07:00.0")],
+            switchable_probe,
+            flipping_switch,
+        );
+        let state = &harness.state;
+        SWITCHES.with(|count| count.set(0));
+        PROBED_CC_MODE.with(|mode| mode.set(Some(crate::gpu_cc::CcMode::Off)));
+        let cards = validate_spec_gpus(
+            state,
+            &[
+                pb::GpuConfig {
+                    pci_host: "06:00.0".into(),
+                    supports_x_vga: true,
+                },
+                pb::GpuConfig {
+                    pci_host: "07:00.0".into(),
+                    supports_x_vga: true,
+                },
+            ],
+        )
+        .unwrap();
+        match ensure_gpu_modes(state, &cards, crate::gpu_cc::CcMode::On) {
+            Err(RpcError::InvalidBackend(msg)) => assert!(msg.contains("at most one GPU"), "{msg}"),
+            other => panic!("got {other:?}"),
+        }
+        assert_eq!(SWITCHES.with(|count| count.get()), 0);
     }
 
     #[test]
