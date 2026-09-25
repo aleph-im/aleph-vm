@@ -514,7 +514,7 @@ fn refresh_cc_modes_with(
     windows: crate::gpu_cc::CcCacheWindows,
 ) {
     // A held lock is a mode switch (or another pass) in progress: serve the
-    // cache, where a switching card has no entry and so advertises nothing.
+    // cache, from which a switch drops its card before running the tool.
     let _pass = match state.gpu_cc_refresh.try_lock() {
         Ok(pass) => pass,
         Err(std::sync::TryLockError::WouldBlock) => return,
