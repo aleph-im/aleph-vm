@@ -1804,10 +1804,15 @@ fn validate_spec_gpus(
                 "No GPU at pci_host '{pci_host}' in the host inventory"
             )));
         };
+        // A hidden VM's live controller may still hold its cards.
         let attached = world
             .entries
             .values()
-            .any(|entry| entry.config.gpus.iter().any(|gpu| gpu.pci_host == pci_host));
+            .any(|entry| entry.config.gpus.iter().any(|gpu| gpu.pci_host == pci_host))
+            || world
+                .failed_reattach
+                .values()
+                .any(|queued| queued.gpus.iter().any(|gpu| gpu == pci_host));
         if attached {
             return Err(RpcError::InsufficientResources(format!(
                 "GPU at pci_host '{pci_host}' is already attached to a VM"
@@ -2367,9 +2372,10 @@ fn cc_mode_mismatch(
 }
 
 /// Bring every NVIDIA card of a create into `wanted` before the world is
-/// touched, or refuse. An unknown mode passes the plain arm only.
+/// touched, or refuse. An unknown or unreadable mode passes the plain arm only.
 fn ensure_gpu_modes(
     state: &DaemonState,
+    vm_id: &str,
     gpus: &[AttachedGpu],
     wanted: crate::gpu_cc::CcMode,
 ) -> Result<(), RpcError> {
@@ -2388,10 +2394,38 @@ fn ensure_gpu_modes(
         if device.vendor != "NVIDIA" {
             continue;
         }
-        let probed = probe_and_cache(state, device, state.gpu_cc_probe)?;
+        let probed = if wanted == crate::gpu_cc::CcMode::Off {
+            // Fail open: a wrongly moded card in a plain guest only fails to boot.
+            match (state.gpu_cc_probe)(&device.pci_host, &device.device_id) {
+                Ok(mode) => {
+                    state
+                        .gpu_cc_modes
+                        .lock()
+                        .expect("gpu_cc_modes poisoned")
+                        .insert(
+                            device.pci_host.clone(),
+                            crate::gpu_cc::ProbedCcMode::now(mode),
+                        );
+                    mode
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        vm_id,
+                        pci_host = %device.pci_host,
+                        %error,
+                        "cannot read the GPU's confidential-computing mode; passing it to a plain VM"
+                    );
+                    continue;
+                }
+            }
+        } else {
+            probe_and_cache(state, device, state.gpu_cc_probe)?
+        };
         let needs_switch = match (probed, wanted) {
             (Some(mode), _) if mode == wanted => false,
             (None, crate::gpu_cc::CcMode::Off) => false,
+            // No read-back could tell a switch that took from one that did not.
+            (None, _) => return Err(cc_mode_mismatch(&device.pci_host, wanted, probed)),
             _ => true,
         };
         if !needs_switch {
@@ -2401,6 +2435,7 @@ fn ensure_gpu_modes(
             return Err(cc_mode_mismatch(&device.pci_host, wanted, probed));
         }
         tracing::warn!(
+            vm_id,
             pci_host = %device.pci_host,
             from = ?probed,
             to = %wanted,
@@ -2412,13 +2447,24 @@ fn ensure_gpu_modes(
             .lock()
             .expect("gpu_cc_refresh poisoned");
         let started = std::time::Instant::now();
-        (state.gpu_cc_switch)(
+        let switched = (state.gpu_cc_switch)(
             &settings.gpu_cc_admin_tool,
             &device.pci_host,
             wanted,
             std::time::Duration::from_secs(settings.gpu_cc_switch_timeout_secs),
-        )
-        .map_err(|error| RpcError::InvalidBackend(error.to_string()))?;
+        );
+        // Whatever the tool did, the pre-switch reading no longer stands.
+        forget_cc_mode(state, &device.pci_host);
+        if let Err(error) = switched {
+            tracing::error!(
+                vm_id,
+                pci_host = %device.pci_host,
+                target = %wanted,
+                %error,
+                "GPU mode switch failed"
+            );
+            return Err(RpcError::InvalidBackend(error.to_string()));
+        }
         *state
             .gpu_cc_switches
             .lock()
@@ -2426,12 +2472,12 @@ fn ensure_gpu_modes(
             .entry(device.pci_host.clone())
             .or_insert(0) += 1;
         tracing::warn!(
+            vm_id,
             pci_host = %device.pci_host,
             to = %wanted,
             elapsed_ms = started.elapsed().as_millis() as u64,
             "GPU mode switched"
         );
-        forget_cc_mode(state, &device.pci_host);
         let again = probe_and_cache(state, device, state.gpu_cc_probe)?;
         if again != Some(wanted) {
             return Err(cc_mode_mismatch(&device.pci_host, wanted, again));
@@ -3145,8 +3191,9 @@ fn create_vm_inner(
     } else {
         None
     };
-    // Last before the world write lock: a spec refused above never resets a card.
-    ensure_gpu_modes(state, &validated_gpus, wanted_cc_mode(&request))?;
+    // The cheap spec refusals above and the SNP one-card cap run before any
+    // card is reset; later refusals can still follow a switch.
+    ensure_gpu_modes(state, &vm_id, &validated_gpus, wanted_cc_mode(&request))?;
 
     // Register the entry (Python registers the execution before prepare so
     // duplicate creates and Health see it), allocating the vm_index and the
@@ -3992,7 +4039,9 @@ pub fn reconcile_boot(state: &DaemonState) {
                 });
                 world.failed_reattach.insert(
                     vm_id,
-                    world::FailedReattach::new(entry.vm_index).holding(held),
+                    world::FailedReattach::new(entry.vm_index)
+                        .holding(held)
+                        .with_gpus(&entry.config.gpus),
                 );
             }
         }
@@ -10080,7 +10129,7 @@ mod tests {
             }],
         )
         .unwrap();
-        ensure_gpu_modes(state, &cards, crate::gpu_cc::CcMode::On).unwrap();
+        ensure_gpu_modes(state, "vm", &cards, crate::gpu_cc::CcMode::On).unwrap();
         assert_eq!(SWITCHES.with(|count| count.get()), 1);
         assert_eq!(
             crate::service::cc_mode_of(state, "06:00.0"),
@@ -10101,7 +10150,7 @@ mod tests {
             }],
         )
         .unwrap();
-        match ensure_gpu_modes(state, &cards, crate::gpu_cc::CcMode::On) {
+        match ensure_gpu_modes(state, "vm", &cards, crate::gpu_cc::CcMode::On) {
             Err(RpcError::InvalidBackend(msg)) => assert!(msg.contains("06:00.0"), "{msg}"),
             other => panic!("got {other:?}"),
         }
@@ -10128,7 +10177,7 @@ mod tests {
                 }],
             )
             .unwrap();
-            match ensure_gpu_modes(state, &cards, crate::gpu_cc::CcMode::On) {
+            match ensure_gpu_modes(state, "vm", &cards, crate::gpu_cc::CcMode::On) {
                 Err(RpcError::InvalidBackend(msg)) => assert!(msg.contains(expected), "{msg}"),
                 other => panic!("got {other:?}"),
             }
@@ -10188,7 +10237,7 @@ mod tests {
             ],
         )
         .unwrap();
-        match ensure_gpu_modes(state, &cards, crate::gpu_cc::CcMode::On) {
+        match ensure_gpu_modes(state, "vm", &cards, crate::gpu_cc::CcMode::On) {
             Err(RpcError::InvalidBackend(msg)) => assert!(msg.contains("at most one GPU"), "{msg}"),
             other => panic!("got {other:?}"),
         }
@@ -10203,6 +10252,221 @@ mod tests {
         let root = state.host.settings.execution_root.clone();
         PROBED_CC_MODE.with(|mode| mode.set(Some(crate::gpu_cc::CcMode::On)));
         create_vm(state, plain_gpu_request(&hash('c'), &root, &["06:00.0"])).unwrap();
+        assert_eq!(crate::service::cc_mode_of(state, "06:00.0"), None);
+    }
+
+    /// A probe for a card whose register cannot be read.
+    fn unreadable_probe(
+        pci_host: &str,
+        _device_id: &str,
+    ) -> Result<Option<crate::gpu_cc::CcMode>, crate::error::DaemonError> {
+        Err(crate::error::DaemonError::GpuUnreadable {
+            pci_host: pci_host.to_string(),
+        })
+    }
+
+    /// A probe for paths that must never read a card.
+    fn panicking_probe(
+        pci_host: &str,
+        _device_id: &str,
+    ) -> Result<Option<crate::gpu_cc::CcMode>, crate::error::DaemonError> {
+        panic!("this card must never be probed: {pci_host}")
+    }
+
+    thread_local! {
+        /// Per-card answers for [`per_card_probe`], keyed by pci_host.
+        static CARD_MODES: std::cell::RefCell<
+            std::collections::HashMap<String, Option<crate::gpu_cc::CcMode>>,
+        > = std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+
+    fn per_card_probe(
+        pci_host: &str,
+        _device_id: &str,
+    ) -> Result<Option<crate::gpu_cc::CcMode>, crate::error::DaemonError> {
+        Ok(CARD_MODES.with(|modes| modes.borrow().get(pci_host).copied().flatten()))
+    }
+
+    /// A switch that moves `06:00.0` and fails on `07:00.0`.
+    fn first_card_only_switch(
+        _tool: &std::path::Path,
+        pci_host: &str,
+        target: crate::gpu_cc::CcMode,
+        _timeout: std::time::Duration,
+    ) -> Result<(), crate::error::DaemonError> {
+        if pci_host != "06:00.0" {
+            return Err(crate::error::DaemonError::GpuModeSwitch {
+                pci_host: pci_host.to_string(),
+                target: target.to_string(),
+                detail: "FSP RPC refused".to_string(),
+            });
+        }
+        CARD_MODES.with(|modes| {
+            modes
+                .borrow_mut()
+                .insert(pci_host.to_string(), Some(target))
+        });
+        Ok(())
+    }
+
+    fn one_card(state: &DaemonState, pci_host: &str) -> Vec<AttachedGpu> {
+        validate_spec_gpus(
+            state,
+            &[pb::GpuConfig {
+                pci_host: pci_host.into(),
+                supports_x_vga: true,
+            }],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_plain_vm_takes_a_card_whose_mode_cannot_be_read() {
+        // Lockdown can break the BAR0 read on every card; the plain arm
+        // passes it with a warning and caches nothing.
+        let harness = harness_with_gpu_probe(vec![nvidia_card("06:00.0")], unreadable_probe);
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        create_vm(state, plain_gpu_request(&hash('c'), &root, &["06:00.0"])).unwrap();
+        assert_eq!(crate::service::cc_mode_of(state, "06:00.0"), None);
+        assert!(
+            !state.gpu_cc_modes.lock().unwrap().contains_key("06:00.0"),
+            "an unreadable card leaves no cache entry"
+        );
+    }
+
+    #[test]
+    fn a_confidential_vm_is_refused_a_card_whose_mode_cannot_be_read() {
+        let harness = harness_with_gpu_probe(vec![nvidia_card("06:00.0")], unreadable_probe);
+        let state = &harness.state;
+        let cards = one_card(state, "06:00.0");
+        match ensure_gpu_modes(state, "vm", &cards, crate::gpu_cc::CcMode::On) {
+            Err(RpcError::InvalidBackend(msg)) => assert!(msg.contains("06:00.0"), "{msg}"),
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_confidential_vm_is_refused_a_card_of_unknown_mode_without_switching() {
+        let harness = harness_with_gpu_switch(
+            vec![nvidia_card("06:00.0")],
+            switchable_probe,
+            flipping_switch,
+        );
+        let state = &harness.state;
+        SWITCHES.with(|count| count.set(0));
+        PROBED_CC_MODE.with(|mode| mode.set(None));
+        let cards = one_card(state, "06:00.0");
+        match ensure_gpu_modes(state, "vm", &cards, crate::gpu_cc::CcMode::On) {
+            Err(RpcError::InvalidBackend(msg)) => {
+                assert!(
+                    msg.contains("not in NVIDIA confidential-computing mode (probed: unknown)"),
+                    "{msg}"
+                );
+            }
+            other => panic!("got {other:?}"),
+        }
+        assert_eq!(SWITCHES.with(|count| count.get()), 0);
+    }
+
+    #[test]
+    fn a_failed_switch_drops_the_cards_cached_mode() {
+        let harness = harness_with_gpu_switch(
+            vec![nvidia_card("06:00.0")],
+            switchable_probe,
+            failing_switch,
+        );
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        PROBED_CC_MODE.with(|mode| mode.set(Some(crate::gpu_cc::CcMode::On)));
+        match create_vm(state, plain_gpu_request(&hash('c'), &root, &["06:00.0"])) {
+            Err(RpcError::InvalidBackend(msg)) => assert!(msg.contains("FSP RPC refused"), "{msg}"),
+            other => panic!("got {other:?}"),
+        }
+        assert_eq!(
+            crate::service::cc_mode_of(state, "06:00.0"),
+            None,
+            "the pre-switch reading must not survive a failed switch"
+        );
+    }
+
+    #[test]
+    fn a_failed_switch_on_the_second_card_attaches_nothing() {
+        let harness = harness_with_gpu_switch(
+            vec![nvidia_card("06:00.0"), nvidia_card("07:00.0")],
+            per_card_probe,
+            first_card_only_switch,
+        );
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        CARD_MODES.with(|modes| {
+            let mut modes = modes.borrow_mut();
+            modes.clear();
+            modes.insert("06:00.0".to_string(), Some(crate::gpu_cc::CcMode::On));
+            modes.insert("07:00.0".to_string(), Some(crate::gpu_cc::CcMode::On));
+        });
+        match create_vm(
+            state,
+            plain_gpu_request(&hash('c'), &root, &["06:00.0", "07:00.0"]),
+        ) {
+            Err(RpcError::InvalidBackend(_)) => {}
+            other => panic!("got {other:?}"),
+        }
+        assert!(entry_snapshot(state, &hash('c')).is_none());
+        assert!(state.world.blocking_read().entries.is_empty());
+        let switches = state.gpu_cc_switches.lock().unwrap();
+        assert_eq!(switches.get("06:00.0"), Some(&1));
+        assert_eq!(switches.get("07:00.0"), None);
+    }
+
+    #[test]
+    fn a_hidden_vms_card_is_refused_to_a_create_and_never_probed() {
+        // A VM hidden by a failed boot reconcile keeps its controller, which
+        // may still hold the card its config names.
+        let harness = harness_with_gpu_probe(vec![nvidia_card("06:00.0")], panicking_probe);
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = test_fixtures::GPU_HASH.to_string();
+        let fixture = std::fs::read_to_string(
+            test_fixtures::fixtures_dir().join(format!("{vm_id}-controller.json")),
+        )
+        .unwrap();
+        let mut config: Value = serde_json::from_str(&fixture).unwrap();
+        config["vm_configuration"]["gpus"] =
+            serde_json::json!([{"pci_host": "06:00.0", "supports_x_vga": true}]);
+        std::fs::write(
+            root.join(format!("{vm_id}-controller.json")),
+            config.to_string(),
+        )
+        .unwrap();
+        harness
+            .systemd
+            .set_state(&controller_unit_name(&vm_id), "active");
+        let adopted = world::build_world_view(
+            &state.host.settings,
+            harness.systemd.as_ref(),
+            &state.host.gpus,
+            harness.taps.as_ref(),
+        );
+        *state.world.blocking_write() = adopted;
+        harness.taps.fail_create(|| TapError::Command {
+            argv: "tuntap add name vmtap4 mode tap".to_string(),
+            stderr: "Operation not permitted".to_string(),
+        });
+        reconcile_boot(state);
+        {
+            let world = state.world.blocking_read();
+            assert!(world.entries.is_empty(), "the VM is hidden");
+            assert_eq!(world.failed_reattach[&vm_id].gpus, vec!["06:00.0"]);
+        }
+
+        match create_vm(state, plain_gpu_request(&hash('c'), &root, &["06:00.0"])) {
+            Err(RpcError::InsufficientResources(msg)) => {
+                assert!(msg.contains("already attached to a VM"), "{msg}");
+            }
+            other => panic!("got {other:?}"),
+        }
+        crate::service::refresh_cc_modes(state);
         assert_eq!(crate::service::cc_mode_of(state, "06:00.0"), None);
     }
 }

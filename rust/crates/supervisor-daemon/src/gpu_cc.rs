@@ -339,11 +339,7 @@ pub fn switch_cc_mode(
                 return Err(switch_error(
                     pci_host,
                     target,
-                    format!(
-                        "{} did not finish within {} s",
-                        tool.display(),
-                        timeout.as_secs()
-                    ),
+                    format!("{} did not finish within {timeout:?}", tool.display()),
                 ));
             }
             Err(error) => {
@@ -362,14 +358,22 @@ pub fn switch_cc_mode(
             pci_host,
             target,
             format!(
-                "{} failed ({status}): {}{}",
+                "{} failed ({status}):{}",
                 tool.display(),
-                stdout.trim(),
-                stderr.trim()
+                streams_detail(&stdout, &stderr)
             ),
         ));
     }
     Ok(())
+}
+
+/// The tool's non-empty output streams, each labelled, for a failure detail.
+fn streams_detail(stdout: &str, stderr: &str) -> String {
+    [("stdout", stdout.trim()), ("stderr", stderr.trim())]
+        .into_iter()
+        .filter(|(_, text)| !text.is_empty())
+        .map(|(label, text)| format!(" {label}: {text}"))
+        .collect()
 }
 
 /// What the last probe of one card read, and when. `None` (the probe failed,
@@ -871,10 +875,23 @@ mod tests {
                 assert_eq!(pci_host, "0000:e3:00.0");
                 assert_eq!(target, "on");
                 assert!(detail.contains("exit status: 3"), "{detail}");
-                assert!(detail.contains("FSP RPC refused"), "{detail}");
+                assert!(detail.contains("stderr: FSP RPC refused"), "{detail}");
+                assert!(
+                    !detail.contains("stdout:"),
+                    "an empty stream is omitted: {detail}"
+                );
             }
             other => panic!("expected GpuModeSwitch, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_failure_detail_labels_both_streams() {
+        assert_eq!(
+            streams_detail("  set knobs\n", "reset failed\n"),
+            " stdout: set knobs stderr: reset failed"
+        );
+        assert_eq!(streams_detail("", " \n"), "");
     }
 
     #[test]
@@ -893,7 +910,10 @@ mod tests {
             started.elapsed() < Duration::from_secs(5),
             "the child must be killed, not waited for"
         );
-        assert!(error.to_string().contains("did not finish"), "{error}");
+        assert!(
+            error.to_string().contains("did not finish within 300ms"),
+            "{error}"
+        );
     }
 
     #[test]
