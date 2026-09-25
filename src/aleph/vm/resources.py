@@ -74,14 +74,21 @@ class GpuDevice(HashableModel):
         """
         return self.device_class == GpuDeviceClass.VGA_COMPATIBLE_CONTROLLER
 
-    @property
-    def passthrough(self) -> bool:
-        """Usable as a plain pass-through card. A card in NVIDIA CC mode
-        (`on`, or `devtools`) only initialises inside a confidential guest,
-        so it is a confidential resource, never a plain one. `devtools` is
-        served by neither path: not plain, and not confidential either since
-        it lifts the protections; only `on` reaches tee.nvidia_cc."""
-        return self.cc_mode not in ("on", "devtools")
+    def plain_eligible(self, *, autoswitch: bool) -> bool:
+        """Usable by a plain pass-through guest. A card in NVIDIA CC mode
+        (`on` or `devtools`) only initialises inside a confidential guest,
+        unless the supervisor can move it at create and knows its family."""
+        if self.cc_mode not in ("on", "devtools"):
+            return True
+        return autoswitch and self.arch is not None
+
+    def confidential_eligible(self, *, autoswitch: bool) -> bool:
+        """Usable by a confidential guest: probed `on`, or any decoded mode
+        the supervisor can move from. Always needs the family the message
+        names; an unprobed card is unknown either way."""
+        if self.arch is None or self.cc_mode is None:
+            return False
+        return self.cc_mode == "on" or autoswitch
 
     model_config = ConfigDict(extra="forbid")
 

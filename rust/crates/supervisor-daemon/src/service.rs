@@ -183,6 +183,12 @@ pub struct DaemonState {
     /// Serializes CC mode refresh passes: two at once can both read
     /// `power/control` before either writes it, pinning the card awake.
     pub gpu_cc_refresh: std::sync::Mutex<()>,
+    /// How a card's CC mode is written: NVIDIA's admin tool in production,
+    /// `gpu_cc::no_switch` on hermetic state so tests never touch a card.
+    pub gpu_cc_switch: crate::gpu_cc::CcSwitch,
+    /// Successful mode switches per card since the daemon started; the mode
+    /// lives in the card's non-volatile store, so the rate is worth watching.
+    pub gpu_cc_switches: std::sync::Mutex<HashMap<String, u64>>,
 }
 
 /// See [`DaemonState::log_follows`].
@@ -224,6 +230,8 @@ impl DaemonState {
             gpu_cc_modes: std::sync::Mutex::new(HashMap::new()),
             gpu_cc_probe: crate::gpu_cc::no_probe,
             gpu_cc_refresh: std::sync::Mutex::new(()),
+            gpu_cc_switch: crate::gpu_cc::no_switch,
+            gpu_cc_switches: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -322,6 +330,7 @@ impl SupervisorService {
         // NUMA topology (increment C1): one proto NumaNode per detected node.
         // Empty when detection was unavailable, as it was before C1.
         let numa_nodes = numa_nodes_proto(&self.state.numa);
+        let gpu_cc_switches_json = gpu_cc_switches_json(&self.state)?;
         Ok(pb::HostInfo {
             // Only the fields LocalSupervisor.get_host_info fills, plus
             // sev_snp_supported (increment B1, the SNP host capability check)
@@ -340,6 +349,8 @@ impl SupervisorService {
             available_gpus_json: available_json,
             sev_snp_supported: crate::checks::check_amd_sev_snp_supported(),
             numa_nodes,
+            gpu_cc_autoswitch: self.state.host.settings.gpu_cc_autoswitch,
+            gpu_cc_switches_json,
             ..Default::default()
         })
     }
@@ -424,14 +435,15 @@ fn gpu_json(gpus: &[GpuDevice]) -> Result<String, DaemonError> {
     })
 }
 
-/// Every GPU the world view's controller configs attach, each paired with
-/// whether a live confidential guest vouches for its CC mode.
+/// Every GPU the world view's controller configs attach, hidden VMs' cards
+/// included, each paired with whether a live confidential guest vouches for
+/// its CC mode.
 ///
 /// Vouched means confidential AND live, a start with no stop after it: a
 /// stopped or never-started VM holds no card, so the create gate's reading no
 /// longer holds even though the card stays attached.
 fn attached_gpus(world: &WorldView) -> impl Iterator<Item = (&str, bool)> {
-    world.entries.values().flat_map(|entry| {
+    let tracked = world.entries.values().flat_map(|entry| {
         // A VM adopted from a failed unit carries a start stamp and no stop,
         // but its guest is gone, so it vouches for no card.
         let live = entry.times.started_at_ns != 0
@@ -443,7 +455,13 @@ fn attached_gpus(world: &WorldView) -> impl Iterator<Item = (&str, bool)> {
             .gpus
             .iter()
             .map(move |gpu| (gpu.pci_host.as_str(), vouched_cc_on))
-    })
+    });
+    // A hidden VM went through no gate this daemon saw, so it vouches for nothing.
+    let hidden = world
+        .failed_reattach
+        .values()
+        .flat_map(|queued| queued.gpus.iter().map(|gpu| (gpu.as_str(), false)));
+    tracked.chain(hidden)
 }
 
 /// The cached CC mode of one card, if it has been probed successfully.
@@ -454,6 +472,19 @@ pub fn cc_mode_of(state: &DaemonState, pci_host: &str) -> Option<crate::gpu_cc::
         .expect("gpu_cc_modes poisoned")
         .get(pci_host)
         .and_then(|probed| probed.mode)
+}
+
+/// The per-card switch counters as the JSON HostInfo carries, sorted so two
+/// reads of the same state serialise the same bytes.
+pub fn gpu_cc_switches_json(state: &DaemonState) -> Result<String, DaemonError> {
+    let counts = state
+        .gpu_cc_switches
+        .lock()
+        .expect("gpu_cc_switches poisoned");
+    let sorted: std::collections::BTreeMap<&String, &u64> = counts.iter().collect();
+    serde_json::to_string(&sorted).map_err(|error| {
+        DaemonError::Internal(format!("GPU switch counters serialization failed: {error}"))
+    })
 }
 
 /// Probe every NVIDIA card no VM owns whose last answer has gone stale, and
@@ -482,10 +513,13 @@ fn refresh_cc_modes_with(
     probe: impl Fn(&str, &str) -> Result<Option<crate::gpu_cc::CcMode>, DaemonError>,
     windows: crate::gpu_cc::CcCacheWindows,
 ) {
-    let _pass = state
-        .gpu_cc_refresh
-        .lock()
-        .expect("gpu_cc_refresh poisoned");
+    // A held lock is a mode switch (or another pass) in progress: serve the
+    // cache, from which a switch drops its card before running the tool.
+    let _pass = match state.gpu_cc_refresh.try_lock() {
+        Ok(pass) => pass,
+        Err(std::sync::TryLockError::WouldBlock) => return,
+        Err(std::sync::TryLockError::Poisoned(_)) => panic!("gpu_cc_refresh poisoned"),
+    };
     let world = state.world.blocking_read();
     let mut attached: HashSet<String> = HashSet::new();
     // The subset a live confidential guest owns: the create gate read CC-on
@@ -1845,7 +1879,7 @@ mod tests {
         assert_eq!(
             reads.load(std::sync::atomic::Ordering::SeqCst),
             1,
-            "the second pass must wait for the first and then find the answer fresh"
+            "the second pass either skips while the first holds the lock or finds the answer fresh"
         );
         assert_eq!(
             std::fs::read_to_string(device_dir.join("power/control"))
@@ -1972,6 +2006,65 @@ mod tests {
             cc_mode_of(&state, "06:00.0"),
             None,
             "a stopped confidential VM's card advertises nothing"
+        );
+    }
+
+    #[test]
+    fn a_refresh_during_a_mode_switch_serves_the_cache_without_probing() {
+        // A switch holds the pass lock for up to the tool's timeout; host info
+        // must not wait behind it, nor read a card mid-reset.
+        let state = cards_state(vec![nvidia_card("06:00.0")]);
+        let _switching = state.gpu_cc_refresh.lock().unwrap();
+        refresh_cc_modes_with(
+            &state,
+            |pci_host: &str, _device_id: &str| {
+                panic!("no card may be probed while a switch holds the lock: {pci_host}")
+            },
+            expired_windows(),
+        );
+        assert_eq!(cc_mode_of(&state, "06:00.0"), None);
+    }
+
+    #[test]
+    fn a_hidden_vms_card_is_attached_and_never_probed() {
+        // A VM queued for reattach may still run on its card: it stays out
+        // of the available list and the sweep never reads it.
+        let mut world = WorldView::default();
+        world.failed_reattach.insert(
+            test_fixtures::GPU_HASH.to_string(),
+            crate::world::FailedReattach::new(4).with_gpus(&[crate::controller_config::QemuGpu {
+                pci_host: "06:00.0".to_string(),
+                supports_x_vga: true,
+            }]),
+        );
+        let state = cards_state_in(vec![nvidia_card("06:00.0")], world);
+        let attached: Vec<(String, bool)> = attached_gpus(&state.world.blocking_read())
+            .map(|(pci_host, vouched)| (pci_host.to_string(), vouched))
+            .collect();
+        assert_eq!(attached, vec![("06:00.0".to_string(), false)]);
+
+        refresh_cc_modes_with(
+            &state,
+            |pci_host: &str, _device_id: &str| {
+                panic!("a hidden VM's card must never be probed: {pci_host}")
+            },
+            expired_windows(),
+        );
+        assert_eq!(cc_mode_of(&state, "06:00.0"), None);
+    }
+
+    #[test]
+    fn the_switch_counters_serialise_sorted_by_card() {
+        let state = cards_state_in(vec![nvidia_card("06:00.0")], WorldView::default());
+        assert_eq!(gpu_cc_switches_json(&state).unwrap(), "{}");
+        {
+            let mut counts = state.gpu_cc_switches.lock().unwrap();
+            counts.insert("07:00.0".to_string(), 1);
+            counts.insert("06:00.0".to_string(), 2);
+        }
+        assert_eq!(
+            gpu_cc_switches_json(&state).unwrap(),
+            r#"{"06:00.0":2,"07:00.0":1}"#
         );
     }
 

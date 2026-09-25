@@ -175,6 +175,21 @@ def test_host_info_round_trip():
     assert conv.host_info_from_pb(conv.host_info_to_pb(info)) == info
 
 
+def test_host_info_carries_the_gpu_cc_autoswitch_flag_and_counters():
+    info = HostInfo(cpu_count=1, memory_mib=1, gpu_cc_autoswitch=True, gpu_cc_switches={"0000:e3:00.0": 3})
+    msg = conv.host_info_to_pb(info)
+    assert msg.gpu_cc_autoswitch is True
+    assert msg.gpu_cc_switches_json == '{"0000:e3:00.0": 3}'
+    assert conv.host_info_from_pb(msg) == info
+
+
+def test_host_info_from_an_older_daemon_has_the_autoswitch_off():
+    # Fields 21/22 absent on the wire: proto defaults, today's behaviour.
+    info = conv.host_info_from_pb(conv.host_info_to_pb(HostInfo(cpu_count=1, memory_mib=1)))
+    assert info.gpu_cc_autoswitch is False
+    assert info.gpu_cc_switches == {}
+
+
 def test_host_info_carries_reservation_and_hardware_fields():
     info = HostInfo(
         cpu_count=8,

@@ -12,7 +12,7 @@ debian-package: debian-package-resources debian-package-code debian-package-rust
 # supervisor_interface client it dials the daemon with.
 # Depends on debian-package-code because that target wipes and rebuilds
 # ./aleph-vm/opt/aleph-vm, where the binaries land.
-debian-package-rust: debian-package-code
+debian-package-rust: debian-package-code gpu-admin-tools
 	cd ../rust && cargo build --release --locked
 	mkdir -p ./aleph-vm/opt/aleph-vm/bin
 	install -m 0755 ../rust/target/release/aleph-vm-supervisor ./aleph-vm/opt/aleph-vm/bin/aleph-vm-supervisor
@@ -20,6 +20,9 @@ debian-package-rust: debian-package-code
 	# Debug CLI (2026-07-07-alephctl): ships next to the supervisor so
 	# operators can poke the gRPC socket on-node without a full agent stack.
 	install -m 0755 ../rust/target/release/alephctl ./aleph-vm/opt/aleph-vm/bin/alephctl
+	rm -rf ./aleph-vm/opt/aleph-vm/gpu-admin-tools
+	mkdir -p ./aleph-vm/opt/aleph-vm/gpu-admin-tools
+	cp -pr ./build/gpu-admin-tools/nvidia_gpu_tools.py ./build/gpu-admin-tools/cli ./build/gpu-admin-tools/gpu ./build/gpu-admin-tools/pci ./build/gpu-admin-tools/utils ./build/gpu-admin-tools/LICENSE ./aleph-vm/opt/aleph-vm/gpu-admin-tools/
 
 debian-package-code:
 	rm -fr ./aleph-vm/opt/aleph-vm
@@ -62,6 +65,15 @@ firecracker-bins: target-dir build-dir
 
 vmlinux:
 	curl -fsSL -o ./target/vmlinux.bin https://ipfs.aleph.cloud/ipfs/QmQvQnZg9rB2fhmuminFSYgtGGzEhfbiTMobppUXVfGBmD
+
+# NVIDIA's MIT-licensed admin tool is the only thing that writes a card's
+# confidential-computing mode; the daemon shells out to it when
+# ALEPH_VM_GPU_CC_AUTOSWITCH is on. Pinned by commit.
+GPU_ADMIN_TOOLS_REV = 41667a6a7f912689600d7e017503c832e2de57e2
+gpu-admin-tools: build-dir
+	rm -rf ./build/gpu-admin-tools
+	git clone -q https://github.com/NVIDIA/gpu-admin-tools ./build/gpu-admin-tools
+	git -C ./build/gpu-admin-tools checkout -q $(GPU_ADMIN_TOOLS_REV)
 
 target/bin/sevctl:
 	cargo install --locked --git https://github.com/virtee/sevctl.git --rev v0.6.0 --target x86_64-unknown-linux-gnu --root ./target

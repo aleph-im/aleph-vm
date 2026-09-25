@@ -327,6 +327,9 @@ pub struct FailedReattach {
     /// overlap backstop ([`WorldView::ipv6_holder`]) checks it so no create
     /// can take the subnet while the VM runs untracked.
     pub ipv6: Option<IpPair>,
+    /// The pci_host of every card the hidden VM's config attaches: its live
+    /// controller may still hold them, so no create may take or reset them.
+    pub gpus: Vec<String>,
 }
 
 impl FailedReattach {
@@ -336,12 +339,19 @@ impl FailedReattach {
             attempts: 1,
             exhausted: false,
             ipv6: None,
+            gpus: Vec::new(),
         }
     }
 
     /// Record the network the hidden VM holds.
     pub fn holding(mut self, ipv6: Option<IpPair>) -> Self {
         self.ipv6 = ipv6;
+        self
+    }
+
+    /// Record the cards the hidden VM's config attaches.
+    pub fn with_gpus(mut self, gpus: &[controller_config::QemuGpu]) -> Self {
+        self.gpus = gpus.iter().map(|gpu| gpu.pci_host.clone()).collect();
         self
     }
 }
@@ -703,7 +713,9 @@ pub fn build_world_view(
                             );
                             world.failed_reattach.insert(
                                 vm_hash,
-                                FailedReattach::new(config.vm_index).holding(held),
+                                FailedReattach::new(config.vm_index)
+                                    .holding(held)
+                                    .with_gpus(&qemu.gpus),
                             );
                             continue;
                         }
@@ -744,9 +756,10 @@ pub fn build_world_view(
                                 "cannot determine the IPv6 assignment; hiding the VM \
                                  like a failed Python reattach"
                             );
-                            world
-                                .failed_reattach
-                                .insert(vm_hash, FailedReattach::new(config.vm_index));
+                            world.failed_reattach.insert(
+                                vm_hash,
+                                FailedReattach::new(config.vm_index).with_gpus(&qemu.gpus),
+                            );
                             continue;
                         }
                     }
