@@ -330,6 +330,7 @@ impl SupervisorService {
         // NUMA topology (increment C1): one proto NumaNode per detected node.
         // Empty when detection was unavailable, as it was before C1.
         let numa_nodes = numa_nodes_proto(&self.state.numa);
+        let gpu_cc_switches_json = gpu_cc_switches_json(&self.state)?;
         Ok(pb::HostInfo {
             // Only the fields LocalSupervisor.get_host_info fills, plus
             // sev_snp_supported (increment B1, the SNP host capability check)
@@ -348,6 +349,8 @@ impl SupervisorService {
             available_gpus_json: available_json,
             sev_snp_supported: crate::checks::check_amd_sev_snp_supported(),
             numa_nodes,
+            gpu_cc_autoswitch: self.state.host.settings.gpu_cc_autoswitch,
+            gpu_cc_switches_json,
             ..Default::default()
         })
     }
@@ -462,6 +465,19 @@ pub fn cc_mode_of(state: &DaemonState, pci_host: &str) -> Option<crate::gpu_cc::
         .expect("gpu_cc_modes poisoned")
         .get(pci_host)
         .and_then(|probed| probed.mode)
+}
+
+/// The per-card switch counters as the JSON HostInfo carries, sorted so two
+/// reads of the same state serialise the same bytes.
+pub fn gpu_cc_switches_json(state: &DaemonState) -> Result<String, DaemonError> {
+    let counts = state
+        .gpu_cc_switches
+        .lock()
+        .expect("gpu_cc_switches poisoned");
+    let sorted: std::collections::BTreeMap<&String, &u64> = counts.iter().collect();
+    serde_json::to_string(&sorted).map_err(|error| {
+        DaemonError::Internal(format!("GPU switch counters serialization failed: {error}"))
+    })
 }
 
 /// Probe every NVIDIA card no VM owns whose last answer has gone stale, and
@@ -1980,6 +1996,21 @@ mod tests {
             cc_mode_of(&state, "06:00.0"),
             None,
             "a stopped confidential VM's card advertises nothing"
+        );
+    }
+
+    #[test]
+    fn the_switch_counters_serialise_sorted_by_card() {
+        let state = cards_state_in(vec![nvidia_card("06:00.0")], WorldView::default());
+        assert_eq!(gpu_cc_switches_json(&state).unwrap(), "{}");
+        {
+            let mut counts = state.gpu_cc_switches.lock().unwrap();
+            counts.insert("07:00.0".to_string(), 1);
+            counts.insert("06:00.0".to_string(), 2);
+        }
+        assert_eq!(
+            gpu_cc_switches_json(&state).unwrap(),
+            r#"{"06:00.0":2,"07:00.0":1}"#
         );
     }
 
