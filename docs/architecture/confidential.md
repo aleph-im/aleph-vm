@@ -373,6 +373,18 @@ plain GPU shortage. Each card's architecture comes from the daemon, which
 derives it from the device id with the same table the probe uses to pick
 the register offset; the agent keeps no table of its own.
 
+Before the gate, `ensure_gpu_modes` (`rust/crates/supervisor-daemon/src/lifecycle.rs`)
+runs under the creation lock only, after `validate_spec_gpus` has found the
+cards unattached: it probes each NVIDIA card and, when the mode differs
+from what the VM needs (`On` for SEV-SNP, `Off` for anything else),
+refuses, or with `ALEPH_VM_GPU_CC_AUTOSWITCH` moves the card with NVIDIA's
+admin tool (`switch_cc_mode`, `gpu_cc.rs`: mode write plus the reset that
+applies it, killed at `ALEPH_VM_GPU_CC_SWITCH_TIMEOUT`), forgets the cached
+mode and reads the card back, refusing on any mismatch. The plain arm gets
+the same check: a card probed `on` or `devtools` never goes into a
+non-confidential guest, whose driver could not initialise it. Successful
+switches are counted per card in `HostInfo` and the agent's usage report.
+
 **Argv.** `snp_gpu_args` (`rust/crates/supervisor-controller/src/qemu.rs`)
 emits, per card, a `pcie-root-port` and a `vfio-pci` device with no
 `x-vga` (a compute GPU in an SNP guest has no display), plus one
@@ -660,7 +672,9 @@ The in-tree example that ships all of this correctly is
   (`check_amd_sev_supported` and friends), `src/aleph/vm/agent/vcpu_probe.py`,
   `src/aleph/vm/agent/resources.py`,
   `rust/crates/supervisor-daemon/src/gpu_cc.rs` (`probe_cc_mode`, the
-  BAR0 GPU confidential-computing-mode probe).
+  BAR0 GPU confidential-computing-mode probe, and `switch_cc_mode`, the
+  CC-mode write); the create pre-gate that calls it is `ensure_gpu_modes`
+  (`rust/crates/supervisor-daemon/src/lifecycle.rs`).
 - Scheduler threading: `src/aleph/vm/agent/views/__init__.py`
   (`update_allocations`). The V-PROGRAM stop-guard itself:
   `src/aleph/vm/agent/allocation/teardown.py`
