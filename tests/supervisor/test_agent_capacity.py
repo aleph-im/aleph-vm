@@ -285,6 +285,19 @@ def test_requirements_from_message_says_what_the_node_must_have_switched_on():
     assert vprogram.confidential is True
 
 
+def test_requirements_from_message_counts_a_confidential_gpu_as_wanting_gpus():
+    """The GPU switch is judged on trusted_execution.gpu too, so a GPU-less
+    node refuses a confidential-GPU instance up front rather than at card
+    resolution."""
+    from test_snp_instance_launch import _with_confidential_gpu, snp_instance_content
+
+    plain = requirements_from_message(snp_instance_content())
+    assert (plain.confidential, plain.wants_gpu, plain.gpu_device_ids) == (True, False, [])
+
+    with_gpu = requirements_from_message(_with_confidential_gpu(snp_instance_content()))
+    assert (with_gpu.confidential, with_gpu.wants_gpu, with_gpu.gpu_device_ids) == (True, True, [])
+
+
 def test_check_message_refuses_what_the_node_has_switched_off(mocker):
     """Judged before any sizing, and as its own refusal: a scheduler told
     "no room" would look for room, and this node has none to offer however

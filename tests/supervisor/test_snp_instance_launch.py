@@ -16,13 +16,14 @@ import json
 import tarfile
 from pathlib import Path
 from types import SimpleNamespace
-from typing import IO, Any, cast
+from typing import IO, Any, Literal, cast
 
 import pytest
 from aleph_message.models import ItemHash
 from aleph_message.models.execution.base import Payment, PaymentType
 from aleph_message.models.execution.environment import (
     DEFAULT_SNP_POLICY,
+    ConfidentialGpuRequirement,
     HypervisorType,
     InstanceEnvironment,
     LaunchMeasurement,
@@ -214,34 +215,19 @@ def snp_instance_content(
     )
 
 
-class _ConfidentialGpu(SimpleNamespace):
-    """Stand-in for the ConfidentialGpuRequirement aleph-message only grows in
-    1.6: the launch path reads the block's attributes, nothing else.
-
-    SimpleNamespace defines __eq__ and is therefore unhashable, while the
-    trusted_execution block it is planted on hashes its own field values
-    (HashableModel), so identity hashing is restored here.
-    """
-
-    __hash__ = object.__hash__  # type: ignore[assignment]
-
-
 def _with_confidential_gpu(
     content: InstanceContent,
     *,
-    arch: str = "hopper",
+    arch: Literal["hopper", "blackwell"] = "hopper",
     count: int = 1,
     models: list[str] | None = None,
 ) -> InstanceContent:
     """Attach a confidential-GPU requirement to an SNP instance's
-    trusted_execution block.
-
-    The installed aleph-message (1.5) has no such field and forbids extra
-    ones, so the value is planted past pydantic's __setattr__; the launch path
-    reads it with getattr for the same reason.
-    """
-    gpu = _ConfidentialGpu(vendor="nvidia", arch=arch, count=count, models=models, mode="cc")
-    object.__setattr__(content.environment.trusted_execution, "gpu", gpu)
+    trusted_execution block."""
+    assert content.environment.trusted_execution is not None
+    content.environment.trusted_execution.gpu = ConfidentialGpuRequirement(
+        vendor="nvidia", arch=arch, count=count, models=models, mode="cc"
+    )
     return content
 
 
@@ -574,10 +560,12 @@ CMDLINE_NO_GPU = f"console=ttyS0 luks=1 owner={OWNER_LOWER}"
 CMDLINE_GPU = f"console=ttyS0 luks=1 swiotlb=262144 owner={OWNER_LOWER} gpu_arch=hopper gpu_count=1"
 
 
-def _gpu(**overrides: Any) -> _ConfidentialGpu:
+def _gpu(**overrides: Any) -> SimpleNamespace:
+    # Duck-typed so the renderer's own grammar checks can be fed values the
+    # message schema would already refuse.
     fields: dict[str, Any] = {"vendor": "nvidia", "arch": "hopper", "count": 1, "models": None, "mode": "cc"}
     fields.update(overrides)
-    return _ConfidentialGpu(**fields)
+    return SimpleNamespace(**fields)
 
 
 def test_render_instance_cmdline_without_a_gpu_fills_only_the_owner() -> None:

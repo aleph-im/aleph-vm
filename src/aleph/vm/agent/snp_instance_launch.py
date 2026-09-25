@@ -19,8 +19,9 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
+from aleph_message.models.execution.environment import ConfidentialGpuRequirement
 from aleph_message.models.execution.instance import InstanceContent
 from pydantic import ValidationError
 
@@ -90,13 +91,10 @@ def is_snp_instance(content) -> bool:
     )
 
 
-def confidential_gpu(content) -> Any:
-    """The instance's confidential-GPU requirement, or None.
-
-    aleph-message only grew trusted_execution.gpu in 1.6, so the field is read
-    leniently: this path keeps working (GPU-less) under 1.5.
-    """
-    return getattr(content.environment.trusted_execution, "gpu", None)
+def confidential_gpu(content: InstanceContent) -> ConfidentialGpuRequirement | None:
+    """The instance's confidential-GPU requirement, or None."""
+    trusted_execution = content.environment.trusted_execution
+    return trusted_execution.gpu if trusted_execution is not None else None
 
 
 async def fetch_instance_runtime_manifest(runtime_ref: str) -> InstanceRuntimeManifest:

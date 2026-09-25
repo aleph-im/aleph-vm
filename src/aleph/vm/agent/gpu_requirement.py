@@ -18,12 +18,13 @@ together are the same for both (check_gpu_against_manifest).
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, TypeAlias
 
-from aleph_message.models.execution.vprogram import (
+from aleph_message.models.execution.environment import (
     CONFIDENTIAL_GPU_DEVICE_ID_PATTERN,
     MAX_CONFIDENTIAL_GPU_MODELS,
     MAX_CONFIDENTIAL_GPUS,
+    ConfidentialGpuRequirement,
 )
 
 from aleph.vm.supervisor_interface.errors import VmSetupError
@@ -85,7 +86,7 @@ def check_gpu_against_manifest(  # noqa: C901, PLR0913 -- a linear gate, one par
     what: str,
     vm_hash: ItemHash,
     runtime_ref: str,
-    gpu: Any | None,
+    gpu: ConfidentialGpuRequirement | None,
     manifest_gpu: ManifestGpu | None,
     template: str,
     memory_mib: int,
@@ -153,7 +154,7 @@ def check_gpu_against_manifest(  # noqa: C901, PLR0913 -- a linear gate, one par
             raise VmSetupError(msg)
 
 
-def render_instance_cmdline(template: str, *, owner: str, gpu: Any | None) -> str:
+def render_instance_cmdline(template: str, *, owner: str, gpu: ConfidentialGpuRequirement | None) -> str:
     """The whole measured cmdline of a confidential instance.
 
     Unlike a V-PROGRAM (whose cmdline the daemon assembles from sidecars), an
