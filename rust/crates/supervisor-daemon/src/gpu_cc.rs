@@ -11,6 +11,7 @@
 //! an idle card awake first and treats all ones as no answer at all.
 
 use std::fmt;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -239,6 +240,136 @@ pub type CcProbe = fn(&str, &str) -> Result<Option<CcMode>, DaemonError>;
 /// the host's PCI devices.
 pub fn no_probe(_pci_host: &str, _device_id: &str) -> Result<Option<CcMode>, DaemonError> {
     Ok(None)
+}
+
+/// The shape of a CC mode switch: (admin tool, pci_host, target, timeout).
+/// `switch_cc_mode` is the real one; hermetic daemon state carries
+/// `no_switch` so no test ever runs the tool.
+pub type CcSwitch = fn(&Path, &str, CcMode, Duration) -> Result<(), DaemonError>;
+
+/// A switch that never happens: the seam for state that must not write to
+/// the host's PCI devices.
+pub fn no_switch(
+    _tool: &Path,
+    pci_host: &str,
+    target: CcMode,
+    _timeout: Duration,
+) -> Result<(), DaemonError> {
+    Err(switch_error(
+        pci_host,
+        target,
+        "this daemon state has no switch backend",
+    ))
+}
+
+/// How much of the tool's output an error carries.
+const SWITCH_OUTPUT_CAP: usize = 64 * 1024;
+
+fn switch_error(pci_host: &str, target: CcMode, detail: impl Into<String>) -> DaemonError {
+    DaemonError::GpuModeSwitch {
+        pci_host: pci_host.to_string(),
+        target: target.to_string(),
+        detail: detail.into(),
+    }
+}
+
+/// Read one pipe to its end on a thread, capped, so a chatty child can never
+/// block on a full pipe while the parent waits for it.
+fn drain(pipe: Option<impl std::io::Read + Send + 'static>) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let mut limited = (&mut pipe).take(SWITCH_OUTPUT_CAP as u64);
+            let _ = limited.read_to_end(&mut bytes);
+            // Keep draining past the cap so the child never blocks on us.
+            let _ = std::io::copy(&mut pipe, &mut std::io::sink());
+        }
+        String::from_utf8_lossy(&bytes).into_owned()
+    })
+}
+
+/// Move one idle card to `target` with NVIDIA's admin tool (mode write plus
+/// the reset that applies it), killing the tool at `timeout`. The caller
+/// reads the mode back through the probe; success here only means the tool
+/// exited 0.
+pub fn switch_cc_mode(
+    tool: &Path,
+    pci_host: &str,
+    target: CcMode,
+    timeout: Duration,
+) -> Result<(), DaemonError> {
+    let mode = match target {
+        CcMode::On => "on",
+        CcMode::Off => "off",
+        CcMode::Devtools => {
+            return Err(switch_error(pci_host, target, "devtools is never a target"));
+        }
+    };
+    let mut child = std::process::Command::new("python3")
+        .arg(tool)
+        .args([
+            "--devices",
+            pci_host,
+            &format!("--set-cc-mode={mode}"),
+            "--reset-after-cc-mode-switch",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            switch_error(
+                pci_host,
+                target,
+                format!("cannot run {}: {error}", tool.display()),
+            )
+        })?;
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < timeout => {
+                std::thread::sleep(Duration::from_millis(50))
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(switch_error(
+                    pci_host,
+                    target,
+                    format!(
+                        "{} did not finish within {} s",
+                        tool.display(),
+                        timeout.as_secs()
+                    ),
+                ));
+            }
+            Err(error) => {
+                return Err(switch_error(
+                    pci_host,
+                    target,
+                    format!("wait failed: {error}"),
+                ));
+            }
+        }
+    };
+    let stdout = stdout.join().unwrap_or_default();
+    let stderr = stderr.join().unwrap_or_default();
+    if !status.success() {
+        return Err(switch_error(
+            pci_host,
+            target,
+            format!(
+                "{} failed ({status}): {}{}",
+                tool.display(),
+                stdout.trim(),
+                stderr.trim()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// What the last probe of one card read, and when. `None` (the probe failed,
@@ -695,6 +826,114 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<GpuArch>("\"hopper\"").unwrap(),
             GpuArch::Hopper
+        );
+    }
+
+    fn fake_tool(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_switch_runs_the_admin_tool_with_the_documented_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        // The fake tool records its arguments next to itself.
+        let tool = fake_tool(
+            dir.path(),
+            "ok.py",
+            "import sys\nopen(__file__ + '.args', 'w').write(' '.join(sys.argv[1:]))\n",
+        );
+        switch_cc_mode(&tool, "0000:e3:00.0", CcMode::Off, Duration::from_secs(5)).unwrap();
+        let args = std::fs::read_to_string(dir.path().join("ok.py.args")).unwrap();
+        assert_eq!(
+            args,
+            "--devices 0000:e3:00.0 --set-cc-mode=off --reset-after-cc-mode-switch"
+        );
+    }
+
+    #[test]
+    fn a_failing_tool_is_a_typed_error_carrying_its_stderr() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = fake_tool(
+            dir.path(),
+            "fail.py",
+            "import sys\nsys.stderr.write('FSP RPC refused\\n')\nsys.exit(3)\n",
+        );
+        let error =
+            switch_cc_mode(&tool, "0000:e3:00.0", CcMode::On, Duration::from_secs(5)).unwrap_err();
+        match error {
+            DaemonError::GpuModeSwitch {
+                pci_host,
+                target,
+                detail,
+            } => {
+                assert_eq!(pci_host, "0000:e3:00.0");
+                assert_eq!(target, "on");
+                assert!(detail.contains("exit status: 3"), "{detail}");
+                assert!(detail.contains("FSP RPC refused"), "{detail}");
+            }
+            other => panic!("expected GpuModeSwitch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_hung_tool_is_killed_at_the_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = fake_tool(dir.path(), "hang.py", "import time\ntime.sleep(30)\n");
+        let started = Instant::now();
+        let error = switch_cc_mode(
+            &tool,
+            "0000:e3:00.0",
+            CcMode::On,
+            Duration::from_millis(300),
+        )
+        .unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the child must be killed, not waited for"
+        );
+        assert!(error.to_string().contains("did not finish"), "{error}");
+    }
+
+    #[test]
+    fn a_missing_tool_is_a_typed_error() {
+        let error = switch_cc_mode(
+            std::path::Path::new("/nonexistent/nvidia_gpu_tools.py"),
+            "0000:e3:00.0",
+            CcMode::On,
+            Duration::from_secs(5),
+        )
+        .unwrap_err();
+        // python3 itself starts and reports the missing script.
+        assert!(
+            matches!(error, DaemonError::GpuModeSwitch { .. }),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn devtools_is_never_a_switch_target() {
+        let error = switch_cc_mode(
+            std::path::Path::new("/nonexistent"),
+            "0000:e3:00.0",
+            CcMode::Devtools,
+            Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("devtools"), "{error}");
+    }
+
+    #[test]
+    fn the_hermetic_switch_refuses() {
+        assert!(
+            no_switch(
+                std::path::Path::new("/x"),
+                "0000:e3:00.0",
+                CcMode::On,
+                Duration::from_secs(1)
+            )
+            .is_err()
         );
     }
 }

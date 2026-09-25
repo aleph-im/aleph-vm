@@ -205,6 +205,8 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
         gpu_cc_modes: std::sync::Mutex::new(std::collections::HashMap::new()),
         gpu_cc_probe: supervisor_daemon::gpu_cc::probe_cc_mode,
         gpu_cc_refresh: std::sync::Mutex::new(()),
+        gpu_cc_switch: supervisor_daemon::gpu_cc::switch_cc_mode,
+        gpu_cc_switches: std::sync::Mutex::new(std::collections::HashMap::new()),
     });
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
