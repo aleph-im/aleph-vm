@@ -382,6 +382,8 @@ def host_info_to_pb(info: HostInfo) -> pb.HostInfo:
         available_disk_bytes=info.available_disk_bytes,
         gpu_inventory_json=json.dumps(info.gpu_inventory),
         available_gpus_json=json.dumps(info.available_gpus),
+        gpu_cc_autoswitch=info.gpu_cc_autoswitch,
+        gpu_cc_switches_json=json.dumps(info.gpu_cc_switches),
     )
 
 
@@ -410,6 +412,8 @@ def host_info_from_pb(msg: pb.HostInfo) -> HostInfo:
         available_disk_bytes=msg.available_disk_bytes,
         gpu_inventory=json.loads(msg.gpu_inventory_json) if msg.gpu_inventory_json else [],
         available_gpus=json.loads(msg.available_gpus_json) if msg.available_gpus_json else [],
+        gpu_cc_autoswitch=msg.gpu_cc_autoswitch,
+        gpu_cc_switches=json.loads(msg.gpu_cc_switches_json) if msg.gpu_cc_switches_json else {},
     )
 
 
