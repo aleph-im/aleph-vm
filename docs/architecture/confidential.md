@@ -382,7 +382,10 @@ admin tool (`switch_cc_mode`, `gpu_cc.rs`: mode write plus the reset that
 applies it, killed at `ALEPH_VM_GPU_CC_SWITCH_TIMEOUT`), forgets the cached
 mode and reads the card back, refusing on any mismatch. The plain arm gets
 the same check: a card probed `on` or `devtools` never goes into a
-non-confidential guest, whose driver could not initialise it. Successful
+non-confidential guest, whose driver could not initialise it. A card whose
+mode cannot be read passes the plain arm with a warning (fail open, since a
+wrongly moded card in a plain guest only fails to boot), and a failed switch
+drops the card's cached mode. Successful
 switches are counted per card in `HostInfo` and the agent's usage report.
 
 **Argv.** `snp_gpu_args` (`rust/crates/supervisor-controller/src/qemu.rs`)
