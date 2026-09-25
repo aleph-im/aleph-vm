@@ -54,6 +54,26 @@ def test_no_on_mode_card_means_no_block():
     assert nvidia_cc_properties([], {}) is None
 
 
+def test_with_the_autoswitch_any_decoded_mode_with_an_arch_is_offered():
+    # The daemon moves the card at create; off and devtools cards with a
+    # known family are confidential capacity too. An unprobed card is not.
+    props = nvidia_cc_properties(
+        [
+            _gpu("10de:2b85", "06:00.0", "off"),
+            _gpu("10de:2b85", "07:00.0", "devtools"),
+            _gpu("10de:2b85", "08:00.0", None),
+            _gpu("10de:2b85", "09:00.0", "off", arch=None),
+        ],
+        {},
+        autoswitch=True,
+    )
+    assert [d.device_id for d in props.devices] == ["10de:2b85", "10de:2b85"]
+
+
+def test_without_the_autoswitch_off_cards_stay_out():
+    assert nvidia_cc_properties([_gpu("10de:2b85", "06:00.0", "off")], {}, autoswitch=False) is None
+
+
 @pytest.mark.asyncio
 async def test_capability_gates_nvidia_cc_on_snp(mocker):
     from types import SimpleNamespace

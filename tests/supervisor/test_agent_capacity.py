@@ -45,6 +45,7 @@ def _gpu_device(
     *,
     device_id: str = _DEVICE_ID,
     cc_mode: Literal["on", "devtools", "off"] | None = None,
+    arch: Literal["hopper", "blackwell"] | None = None,
 ) -> GpuDevice:
     return GpuDevice(
         vendor="NVIDIA",
@@ -53,6 +54,7 @@ def _gpu_device(
         pci_host=pci_host,
         device_id=device_id,
         cc_mode=cc_mode,
+        arch=arch,
     )
 
 
@@ -60,11 +62,14 @@ def _hold(user: str) -> GpuHold:
     return GpuHold(user=user, expiration=datetime.now(tz=timezone.utc) + timedelta(seconds=RESERVATION_TTL_SECONDS))
 
 
-def _manager(available: list[GpuDevice] | None = None, registry: AgentVmRegistry | None = None) -> CapacityManager:
+def _manager(
+    available: list[GpuDevice] | None = None, registry: AgentVmRegistry | None = None, *, autoswitch: bool = False
+) -> CapacityManager:
     gpus = available or []
     host_info = HostInfo(
         gpu_inventory=[gpu.model_dump() for gpu in gpus],
         available_gpus=[gpu.model_dump() for gpu in gpus],
+        gpu_cc_autoswitch=autoswitch,
     )
     supervisor = SimpleNamespace(get_host_info=AsyncMock(return_value=host_info))
     return CapacityManager(supervisor, registry or AgentVmRegistry())
@@ -353,6 +358,32 @@ async def test_reserve_gpus_never_hands_out_a_cc_mode_card():
 
     assert excinfo.value.available == {"gpus": []}
     assert manager.holds == {}
+
+
+@pytest.mark.asyncio
+async def test_with_the_autoswitch_a_cc_mode_card_answers_a_plain_request():
+    manager = _manager([_gpu_device(cc_mode="on", arch="hopper")], autoswitch=True)
+
+    resolved = await manager.resolve_gpus([_DEVICE_ID], "0xUSER")
+
+    assert [gpu.pci_host for gpu in resolved] == ["0000:01:00.0"]
+
+
+@pytest.mark.asyncio
+async def test_with_the_autoswitch_an_off_card_answers_a_confidential_request():
+    manager = _manager([_gpu_device(cc_mode="off", arch="hopper")], autoswitch=True)
+
+    resolved = await manager.resolve_confidential_gpus(arch="hopper", count=1, models=None, owner="0xUSER")
+
+    assert [gpu.pci_host for gpu in resolved] == ["0000:01:00.0"]
+
+
+@pytest.mark.asyncio
+async def test_without_the_autoswitch_an_off_card_is_no_confidential_capacity():
+    manager = _manager([_gpu_device(cc_mode="off", arch="hopper")])
+
+    with pytest.raises(InsufficientResourcesError):
+        await manager.resolve_confidential_gpus(arch="hopper", count=1, models=None, owner="0xUSER")
 
 
 @pytest.mark.asyncio

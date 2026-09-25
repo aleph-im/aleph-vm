@@ -483,6 +483,8 @@ class CapacityManager(PlanAdmission):
         self.registry = registry
         self.holds: dict[str, GpuHold] = {}
         self._lock = asyncio.Lock()
+        # Whether the supervisor moves a card's CC mode at create; refreshed on every host-info read.
+        self._cc_autoswitch: bool = False
 
     def check_message(self, content: ExecutableContent, *, exclude_vm_hash: ItemHash | None = None) -> None:
         """Admission from the message alone, before a byte is allocated.
@@ -753,7 +755,9 @@ class CapacityManager(PlanAdmission):
             "disk_mib": self._available_disk_bytes() // (1024 * 1024),
             "gpus": None
             if available_gpus is None
-            else [gpu.device_id for gpu in self._unheld_gpus(available_gpus) if gpu.passthrough],
+            else [
+                gpu.device_id for gpu in self._unheld_gpus(available_gpus) if gpu.plain_eligible(self._cc_autoswitch)
+            ],
         }
 
     def simulate(
@@ -839,7 +843,11 @@ class CapacityManager(PlanAdmission):
         committed_program = max(committed_program, 0)
         committed_vcpus = max(committed_vcpus, 0)
 
-        gpu_pool = None if available_gpus is None else [gpu for gpu in available_gpus if gpu.passthrough]
+        gpu_pool = (
+            None
+            if available_gpus is None
+            else [gpu for gpu in available_gpus if gpu.plain_eligible(self._cc_autoswitch)]
+        )
 
         verdicts: list[AdmissionVerdict] = []
         committed_disk = 0
@@ -1060,6 +1068,7 @@ class CapacityManager(PlanAdmission):
         that calls them reads it first.
         """
         host_info = await self.supervisor.get_host_info()
+        self._cc_autoswitch = host_info.gpu_cc_autoswitch
         return [GpuDevice.model_validate(gpu) for gpu in host_info.available_gpus]
 
     def _get_valid_hold(self, pci_host: str) -> GpuHold | None:
@@ -1079,7 +1088,8 @@ class CapacityManager(PlanAdmission):
 
         Plain cards only: a device_id names a pass-through card, and the
         confidential path resolves its cards by family at create, never
-        through a reservation. A CC-mode card is refused here.
+        through a reservation. A CC-mode card is refused here, unless the
+        supervisor moves modes at create.
         """
         expiration_date = datetime.now(tz=timezone.utc) + timedelta(seconds=RESERVATION_TTL_SECONDS)
         if not requested_device_ids:
@@ -1124,7 +1134,8 @@ class CapacityManager(PlanAdmission):
         A V-PROGRAM names a kind of card (architecture, optionally narrowed to
         specific vendor:device ids) and how many, never a concrete device, so
         this picks any ``count`` distinct available cards probed in NVIDIA CC
-        mode whose architecture matches. Card architectures come from the
+        mode (or in any decoded mode, when the supervisor moves modes at
+        create) whose architecture matches. Card architectures come from the
         supervisor, which owns the device-id table the BAR0 probe already
         needs.
 
@@ -1140,13 +1151,13 @@ class CapacityManager(PlanAdmission):
         if count <= 0:
             return []
         async with self._lock:
-            # Three gates: the card is in CC mode, it is of the requested
-            # family, and, when the message narrows the family, of one of
-            # the listed models.
+            # Three gates: the card can serve a confidential guest (probed on,
+            # or movable), it is of the requested family, and, when the
+            # message narrows the family, of one of the listed models.
             candidates = [
                 gpu
                 for gpu in await self.available_gpus()
-                if gpu.cc_mode == "on"
+                if gpu.confidential_eligible(self._cc_autoswitch)
                 if gpu.arch == arch
                 if models is None or gpu.device_id in models
             ]
@@ -1204,9 +1215,9 @@ class CapacityManager(PlanAdmission):
         resolved: list[GpuDevice] = []
         for device_id in requested_device_ids:
             for gpu in available_gpus:
-                # A CC-mode card is the confidential path's; it never answers
-                # a plain device_id request.
-                if gpu.device_id != device_id or not gpu.passthrough:
+                # A CC-mode card answers a plain device_id request only when
+                # the supervisor can move it at create.
+                if gpu.device_id != device_id or not gpu.plain_eligible(self._cc_autoswitch):
                     continue
                 if not self._is_available_to(gpu.pci_host, user):
                     continue
@@ -1222,6 +1233,8 @@ class CapacityManager(PlanAdmission):
                 raise InsufficientResourcesError(
                     detail,
                     required={"gpu_device_id": device_id},
-                    available={"gpus": [gpu.device_id for gpu in available_gpus if gpu.passthrough]},
+                    available={
+                        "gpus": [gpu.device_id for gpu in available_gpus if gpu.plain_eligible(self._cc_autoswitch)]
+                    },
                 )
         return resolved

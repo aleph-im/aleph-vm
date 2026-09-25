@@ -179,6 +179,8 @@ class AnnotatedGpuDevice(GpuDevice):
 class GpuProperties(BaseModel):
     devices: list[AnnotatedGpuDevice] | None = None
     available_devices: list[AnnotatedGpuDevice] | None = None
+    # Successful CC-mode switches per card since the supervisor started.
+    cc_switches: dict[str, int] | None = None
 
 
 class MachineUsage(BaseModel):
@@ -254,15 +256,19 @@ async def _gpus_from_host_info(host_info: "HostInfo", network_models: dict[str, 
             compatible=gpu.device_id in network_models,
         )
 
-    def plain(raw: list[dict]) -> list[AnnotatedGpuDevice]:
-        # The plain lists are what the scheduler places pass-through GPU
-        # instances by; a card in CC mode belongs to `tee.nvidia_cc` only.
-        cards = (GpuDevice.model_validate(gpu) for gpu in raw)
-        return [annotate(gpu) for gpu in cards if gpu.passthrough]
+    autoswitch = bool(getattr(host_info, "gpu_cc_autoswitch", False))
 
+    def plain(raw: list[dict]) -> list[AnnotatedGpuDevice]:
+        # What the scheduler places pass-through instances by; a CC card is
+        # plain capacity only when the supervisor can move it at create.
+        cards = (GpuDevice.model_validate(gpu) for gpu in raw)
+        return [annotate(gpu) for gpu in cards if gpu.plain_eligible(autoswitch)]
+
+    switches = dict(getattr(host_info, "gpu_cc_switches", {}) or {})
     return GpuProperties(
         devices=plain(host_info.gpu_inventory),
         available_devices=plain(host_info.available_gpus),
+        cc_switches=switches or None,
     )
 
 
@@ -290,7 +296,11 @@ async def _tee_properties(
     if host_info is not None:
         if network_models is None:
             network_models = await _network_gpu_models()
-        nvidia_cc = nvidia_cc_properties(list(host_info.available_gpus), network_models)
+        nvidia_cc = nvidia_cc_properties(
+            list(host_info.available_gpus),
+            network_models,
+            autoswitch=bool(getattr(host_info, "gpu_cc_autoswitch", False)),
+        )
     return TeeProperties(
         sev_snp=SevSnpProperties(supported_vcpu_types=supported_vcpu_types),
         nvidia_cc=nvidia_cc,
@@ -390,24 +400,17 @@ async def _get_static_machine_capability() -> MachineCapability:
     )
 
 
-def nvidia_cc_properties(available_gpus: list[dict], network_models: dict[str, str]) -> NvidiaCcProperties | None:
-    """The confidential-GPU block: only cards whose probe said `on`.
-    `devtools` lifts the profiling blocks and is not confidential; an
-    unprobed card is unknown and advertises nothing. Neither reaches the
-    plain lists either (GpuDevice.passthrough), so a `devtools` card is
-    advertised nowhere until its mode is switched.
-
-    A card also needs the architecture the supervisor derived: that is what a
-    V-PROGRAM message names and what the scheduler matches on. A card in CC
-    mode always carries one (the probe reads a per-architecture register
-    offset, so it cannot have succeeded without knowing the family), so an
-    arch-less card here means an inventory the agent cannot reason about, and
-    it is left unadvertised rather than guessed at.
-    """
+def nvidia_cc_properties(
+    available_gpus: list[dict], network_models: dict[str, str], *, autoswitch: bool = False
+) -> NvidiaCcProperties | None:
+    """The confidential-GPU block. Without the autoswitch only cards probed
+    `on` count; with it any card of a known family whose mode decoded, since
+    the supervisor moves it at create. An unprobed card advertises nothing."""
+    cards = (GpuDevice.model_validate(gpu) for gpu in available_gpus)
     devices = [
-        NvidiaCcDevice(device_id=gpu["device_id"], arch=gpu["arch"], model=network_models.get(gpu["device_id"]))
-        for gpu in available_gpus
-        if gpu.get("cc_mode") == "on" and gpu.get("arch")
+        NvidiaCcDevice(device_id=gpu.device_id, arch=gpu.arch, model=network_models.get(gpu.device_id))
+        for gpu in cards
+        if gpu.confidential_eligible(autoswitch)
     ]
     return NvidiaCcProperties(devices=devices) if devices else None
 

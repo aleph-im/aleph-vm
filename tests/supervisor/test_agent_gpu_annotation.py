@@ -173,3 +173,26 @@ async def test_cc_mode_cards_stay_out_of_the_plain_lists(mocker):
 
     assert [d.pci_host for d in gpu.devices] == ["01:00.0"]
     assert [d.pci_host for d in gpu.available_devices] == ["01:00.0"]
+
+
+@pytest.mark.asyncio
+async def test_with_the_autoswitch_cc_mode_cards_join_the_plain_lists(mocker):
+    mocker.patch("aleph.vm.agent.resources.update_aggregate_settings")
+    mocker.patch("aleph.vm.agent.resources.get_compatible_gpus", return_value=[])
+    plain = _raw_gpu("10de:27b0", "01:00.0")
+    cc = _raw_gpu("10de:233b", "02:00.0") | {"cc_mode": "on", "arch": "hopper"}
+    devtools = _raw_gpu("10de:233b", "03:00.0") | {"cc_mode": "devtools", "arch": "hopper"}
+    archless_cc = _raw_gpu("10de:ffff", "04:00.0") | {"cc_mode": "on"}
+    host_info = SimpleNamespace(
+        gpu_inventory=[plain, cc, devtools, archless_cc],
+        available_gpus=[plain, cc, devtools, archless_cc],
+        gpu_cc_autoswitch=True,
+        gpu_cc_switches={"02:00.0": 1},
+    )
+
+    gpu = await _gpus_from_host_info(host_info)
+
+    # A CC card the daemon can move is plain capacity; one it cannot place
+    # (no family) is not.
+    assert [d.pci_host for d in gpu.available_devices] == ["01:00.0", "02:00.0", "03:00.0"]
+    assert gpu.cc_switches == {"02:00.0": 1}
