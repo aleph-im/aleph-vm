@@ -1,6 +1,8 @@
-"""tee.nvidia_cc is advertised only for cards probed in CC mode 'on', and
-only when the host can launch SEV-SNP: a confidential GPU on a host that
-cannot run a confidential guest is not a capability."""
+"""Without the CC-mode autoswitch, tee.nvidia_cc is advertised only for cards
+probed in CC mode 'on'; with it, any decoded mode of a known family is
+offered, since the supervisor moves the card at create. Either way only when
+the host can launch SEV-SNP: a confidential GPU on a host that cannot run a
+confidential guest is not a capability."""
 
 import pytest
 
