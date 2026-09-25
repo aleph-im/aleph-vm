@@ -756,7 +756,9 @@ class CapacityManager(PlanAdmission):
             "gpus": None
             if available_gpus is None
             else [
-                gpu.device_id for gpu in self._unheld_gpus(available_gpus) if gpu.plain_eligible(self._cc_autoswitch)
+                gpu.device_id
+                for gpu in self._unheld_gpus(available_gpus)
+                if gpu.plain_eligible(autoswitch=self._cc_autoswitch)
             ],
         }
 
@@ -846,7 +848,7 @@ class CapacityManager(PlanAdmission):
         gpu_pool = (
             None
             if available_gpus is None
-            else [gpu for gpu in available_gpus if gpu.plain_eligible(self._cc_autoswitch)]
+            else [gpu for gpu in available_gpus if gpu.plain_eligible(autoswitch=self._cc_autoswitch)]
         )
 
         verdicts: list[AdmissionVerdict] = []
@@ -1157,13 +1159,13 @@ class CapacityManager(PlanAdmission):
             candidates = [
                 gpu
                 for gpu in await self.available_gpus()
-                if gpu.confidential_eligible(self._cc_autoswitch)
+                if gpu.confidential_eligible(autoswitch=self._cc_autoswitch)
                 if gpu.arch == arch
                 if models is None or gpu.device_id in models
             ]
             resolved = self._match_family(candidates, count, owner)
             if len(resolved) < count:
-                detail = f"No {count} available GPU(s) in confidential-computing mode for arch {arch!r}"
+                detail = f"No {count} available GPU(s) eligible for confidential computing for arch {arch!r}"
                 if models:
                     detail += f" among models {models!r}"
                 logger.warning(detail)
@@ -1217,7 +1219,7 @@ class CapacityManager(PlanAdmission):
             for gpu in available_gpus:
                 # A CC-mode card answers a plain device_id request only when
                 # the supervisor can move it at create.
-                if gpu.device_id != device_id or not gpu.plain_eligible(self._cc_autoswitch):
+                if gpu.device_id != device_id or not gpu.plain_eligible(autoswitch=self._cc_autoswitch):
                     continue
                 if not self._is_available_to(gpu.pci_host, user):
                     continue
@@ -1234,7 +1236,11 @@ class CapacityManager(PlanAdmission):
                     detail,
                     required={"gpu_device_id": device_id},
                     available={
-                        "gpus": [gpu.device_id for gpu in available_gpus if gpu.plain_eligible(self._cc_autoswitch)]
+                        "gpus": [
+                            gpu.device_id
+                            for gpu in available_gpus
+                            if gpu.plain_eligible(autoswitch=self._cc_autoswitch)
+                        ]
                     },
                 )
         return resolved

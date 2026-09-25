@@ -262,7 +262,7 @@ async def _gpus_from_host_info(host_info: "HostInfo", network_models: dict[str, 
         # What the scheduler places pass-through instances by; a CC card is
         # plain capacity only when the supervisor can move it at create.
         cards = (GpuDevice.model_validate(gpu) for gpu in raw)
-        return [annotate(gpu) for gpu in cards if gpu.plain_eligible(autoswitch)]
+        return [annotate(gpu) for gpu in cards if gpu.plain_eligible(autoswitch=autoswitch)]
 
     switches = dict(getattr(host_info, "gpu_cc_switches", {}) or {})
     return GpuProperties(
@@ -410,7 +410,7 @@ def nvidia_cc_properties(
     devices = [
         NvidiaCcDevice(device_id=gpu.device_id, arch=gpu.arch, model=network_models.get(gpu.device_id))
         for gpu in cards
-        if gpu.confidential_eligible(autoswitch)
+        if gpu.confidential_eligible(autoswitch=autoswitch)
     ]
     return NvidiaCcProperties(devices=devices) if devices else None
 
