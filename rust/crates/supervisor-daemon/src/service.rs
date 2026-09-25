@@ -183,6 +183,12 @@ pub struct DaemonState {
     /// Serializes CC mode refresh passes: two at once can both read
     /// `power/control` before either writes it, pinning the card awake.
     pub gpu_cc_refresh: std::sync::Mutex<()>,
+    /// How a card's CC mode is written: NVIDIA's admin tool in production,
+    /// `gpu_cc::no_switch` on hermetic state so tests never touch a card.
+    pub gpu_cc_switch: crate::gpu_cc::CcSwitch,
+    /// Successful mode switches per card since the daemon started; the mode
+    /// lives in the card's non-volatile store, so the rate is worth watching.
+    pub gpu_cc_switches: std::sync::Mutex<HashMap<String, u64>>,
 }
 
 /// See [`DaemonState::log_follows`].
@@ -224,6 +230,8 @@ impl DaemonState {
             gpu_cc_modes: std::sync::Mutex::new(HashMap::new()),
             gpu_cc_probe: crate::gpu_cc::no_probe,
             gpu_cc_refresh: std::sync::Mutex::new(()),
+            gpu_cc_switch: crate::gpu_cc::no_switch,
+            gpu_cc_switches: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
