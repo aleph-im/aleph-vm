@@ -131,6 +131,10 @@ first confidential create switches the card. With the flag off (the
 default) the card stays in whatever mode you set here, and a create that
 needs the other mode is refused.
 
+Switching a card off after a confidential guest relies on the GPU scrubbing
+its protected memory on reset, which NVIDIA documents but which has not yet
+been verified on our hardware. That is why the flag defaults to off.
+
 ```bash
 git clone https://github.com/NVIDIA/gpu-admin-tools
 sudo python3 nvidia_gpu_tools.py --devices gpus --query-cc-mode
@@ -151,7 +155,7 @@ only ever admits a card whose probed mode is exactly `On`.
 A card advertised while the autoswitch is on appears both in
 `properties.gpu.available_devices` and in `properties.tee.nvidia_cc.devices`
 of `/about/usage/system`; the scheduler counts it once. Each successful
-switch is logged at WARN by the daemon (card, direction, wall time) and
+switch is logged at WARN by the daemon (card, direction, VM id, wall time) and
 counted per card in `properties.gpu.cc_switches`. The mode lives in the
 card's non-volatile store and NVIDIA publishes no endurance figure, so a
 count that climbs by more than a handful a day is worth a look at what the
