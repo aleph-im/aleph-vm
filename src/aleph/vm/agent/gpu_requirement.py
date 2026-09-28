@@ -98,7 +98,8 @@ def check_gpu_against_manifest(  # noqa: C901, PLR0913 -- a linear gate, one par
     The count is the capacity resolver's business: every stage below (the
     daemon's per-card gate, the summed MMIO window, the guest's per-card
     device nodes and evidence) takes as many cards as the message names, up
-    to the schema's ceiling of eight.
+    to the schema's ceiling of eight. The daemon still caps an SEV-SNP VM at
+    one card at create time, after the cards are resolved.
     """
     if gpu is None:
         # Mirror image of the checks below: a GPU runtime measures a GPU
@@ -132,8 +133,13 @@ def check_gpu_against_manifest(  # noqa: C901, PLR0913 -- a linear gate, one par
     # template has no slot for the tokens cannot run a GPU workload.
     if "{gpu_arch}" not in template or "{gpu_count}" not in template:
         msg = (
-            f"{what} {vm_hash} declares a GPU but runtime {runtime_ref} has no " "{gpu_arch}/{gpu_count} cmdline slots"
+            f"{what} {vm_hash} declares a GPU but runtime {runtime_ref} has no {{gpu_arch}}/{{gpu_count}} cmdline slots"
         )
+        raise VmSetupError(msg)
+    # The daemon refuses a GPU cmdline without a measured bounce-buffer size;
+    # a template that omits it would only fail after staging and resolution.
+    if "swiotlb=" not in template:
+        msg = f"{what} {vm_hash} declares a GPU but runtime {runtime_ref} measures no swiotlb= bounce-buffer size"
         raise VmSetupError(msg)
     if gpu.models and "{gpu_models}" not in template:
         msg = (
@@ -172,9 +178,11 @@ def render_instance_cmdline(template: str, *, owner: str, gpu: ConfidentialGpuRe
             raise ValueError(msg)
         arch, count, models = "", "", ""
     else:
-        # Reuse the canonical renderer's grammar checks on arch, count and
-        # the model ids; only the layout differs here.
-        render_gpu_requirement(gpu.arch, gpu.count, gpu.models)
+        # The canonical renderer owns the grammar and the model spelling;
+        # only the layout differs here, so its tokens are split back out.
+        canonical = dict(
+            token.split("=", 1) for token in render_gpu_requirement(gpu.arch, gpu.count, gpu.models).split()
+        )
         if "{gpu_arch}" not in template or "{gpu_count}" not in template:
             msg = "the runtime template has no {gpu_arch}/{gpu_count} slot"
             raise ValueError(msg)
@@ -183,8 +191,8 @@ def render_instance_cmdline(template: str, *, owner: str, gpu: ConfidentialGpuRe
         if gpu.models and "{gpu_models}" not in template:
             msg = "the message narrows its GPU to specific models but the runtime template has no {gpu_models} slot"
             raise ValueError(msg)
-        arch, count = gpu.arch, str(gpu.count)
-        models = ",".join(sorted(set(gpu.models))) if gpu.models else ""
+        arch, count = canonical["gpu_arch"], canonical["gpu_count"]
+        models = canonical.get("gpu_models", "")
     if not models:
         tokens = [token for token in tokens if "{gpu_models}" not in token]
     return " ".join(token.format(owner=owner, gpu_arch=arch, gpu_count=count, gpu_models=models) for token in tokens)

@@ -890,6 +890,17 @@ async def test_gpu_vprogram_without_requirement_slots_is_refused(tmp_path, stora
 
 
 @pytest.mark.asyncio
+async def test_gpu_vprogram_without_a_swiotlb_token_is_refused(tmp_path, storage_files, snp_vcpu_types):
+    """The daemon refuses a GPU cmdline that measures no bounce-buffer size;
+    the agent refuses the same runtime before staging or resolving cards."""
+    template = GPU_SLOT_TEMPLATE.replace(" swiotlb=262144", "")
+    _stage_bundle(tmp_path, storage_files, gpu=GPU_BLOCK, **{"boot.cmdline_template": template})
+    message = _with_gpu(load_vprogram_message())
+    with pytest.raises(VmSetupError, match="measures no swiotlb="):
+        await build_vprogram_spec(message.item_hash, message.content)
+
+
+@pytest.mark.asyncio
 async def test_gpu_models_without_a_models_slot_are_refused(tmp_path, storage_files, snp_vcpu_types):
     template = GPU_SLOT_TEMPLATE.replace(" gpu_models={gpu_models}", "")
     _stage_bundle(tmp_path, storage_files, gpu=GPU_BLOCK, **{"boot.cmdline_template": template})

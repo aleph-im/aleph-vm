@@ -688,6 +688,21 @@ async def test_gpu_instance_refuses_a_model_the_runtime_has_no_board_for(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_gpu_instance_without_a_swiotlb_token_is_refused(tmp_path, staged_instance_bundle):
+    """The daemon refuses a GPU cmdline that measures no bounce-buffer size;
+    the agent refuses the runtime before staging or resolving cards."""
+    make_manifest(
+        staged_instance_bundle["tar"],
+        tmp_path,
+        gpu=INSTANCE_GPU_BLOCK,
+        **{"boot.cmdline_template": CMDLINE_TEMPLATE_INSTANCE_GPU_V1.replace(" swiotlb=262144", "")},
+    )
+    content = _with_confidential_gpu(snp_instance_content())
+    with pytest.raises(VmSetupError, match="measures no swiotlb="):
+        await build_snp_instance_spec(VM_HASH, content, OWNER_LOWER)
+
+
+@pytest.mark.asyncio
 async def test_gpu_less_instance_is_refused_on_a_gpu_runtime(tmp_path, staged_instance_bundle):
     """Mirror image: a GPU runtime measures a GPU requirement, so it has
     nothing to boot a GPU-less instance with."""

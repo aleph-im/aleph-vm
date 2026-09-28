@@ -159,6 +159,8 @@ pkgs.runCommand "initrd" {
   ''}
 
   # Every executable must be static: there is no loader or libc in here.
+  # The instance-GPU verifier tree is the exception, and it brings its own
+  # loader and glibc under /opt/nvidia and /lib64; this loop does not see it.
   for f in root/bin/* root/init; do
     if file -b "$f" | grep -q 'dynamically linked'; then
       echo "error: $f is dynamically linked; the content-only initrd cannot run it" >&2
@@ -175,7 +177,8 @@ pkgs.runCommand "initrd" {
 
   # Contract check: no store path may ever end up in the archive again. The
   # instance-GPU flavor is the one exception, its verifier closure is store
-  # paths by design.
+  # paths by design; withGpuVerifier exists for that flavor alone, so a new
+  # flavor must not pass it just to skip this check.
   ${pkgs.lib.optionalString (withGpuVerifier == null) ''
     if gzip -dc initrd.gz | cpio -t --quiet | grep -q '^nix/'; then
       echo "error: initrd embeds nix store paths; the launch measurement would track derivation hashes" >&2
