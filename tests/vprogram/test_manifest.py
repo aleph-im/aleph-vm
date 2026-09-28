@@ -448,3 +448,67 @@ def test_instance_template_rejects_owner_with_wrong_key(minimal_instance_manifes
     bad["boot"]["cmdline_template"] = "console=ttyS0 luks=1 user={owner}"
     with pytest.raises(ValidationError):
         InstanceRuntimeManifest.model_validate(bad)
+
+
+def test_instance_manifest_gpu_block_validates(minimal_instance_manifest_dict: dict[str, Any]) -> None:
+    from aleph.vm.vprogram.bundle import CMDLINE_TEMPLATE_INSTANCE_GPU_V1
+
+    with_gpu = deepcopy(minimal_instance_manifest_dict)
+    with_gpu["boot"]["cmdline_template"] = CMDLINE_TEMPLATE_INSTANCE_GPU_V1
+    with_gpu["gpu"] = {
+        "vendor": "nvidia",
+        "driver_version": "595.71.05",
+        "archs": {
+            "hopper": {
+                "accepted_models": ["GH100 A01 GSP BROM"],
+                "boards": {
+                    "10de:2330": [
+                        {"name": "H100 SXM5 80GB", "project": "G520", "project_sku": "0200", "chip_sku": "885"}
+                    ]
+                },
+            }
+        },
+    }
+    manifest = InstanceRuntimeManifest.model_validate(with_gpu)
+    assert manifest.gpu is not None
+    assert manifest.gpu.vendor == "nvidia"
+    assert manifest.gpu.driver_version == "595.71.05"
+    board = manifest.gpu.archs["hopper"].boards["10de:2330"][0]
+    assert (board.name, board.project, board.project_sku, board.chip_sku) == ("H100 SXM5 80GB", "G520", "0200", "885")
+    assert InstanceRuntimeManifest.model_validate_json(manifest.to_canonical_json()) == manifest
+
+
+def test_instance_manifest_gpu_block_rejects_library_path(minimal_instance_manifest_dict: dict[str, Any]) -> None:
+    """No library_path on the instance-gpu flavor: the instance owner
+    installs the driver userland in their own rootfs, unlike the V-PROGRAM
+    manifest's gpu block."""
+    from aleph.vm.vprogram.bundle import CMDLINE_TEMPLATE_INSTANCE_GPU_V1
+
+    with_gpu = deepcopy(minimal_instance_manifest_dict)
+    with_gpu["boot"]["cmdline_template"] = CMDLINE_TEMPLATE_INSTANCE_GPU_V1
+    with_gpu["gpu"] = {
+        "vendor": "nvidia",
+        "driver_version": "595.71.05",
+        "library_path": "/opt/nvidia/lib",
+        "archs": {"hopper": {"accepted_models": ["GH100 A01 GSP BROM"]}},
+    }
+    with pytest.raises(ValidationError):
+        InstanceRuntimeManifest.model_validate(with_gpu)
+
+
+def test_instance_gpu_cmdline_template_rejects_reordered_slots(minimal_instance_manifest_dict: dict[str, Any]) -> None:
+    bad = deepcopy(minimal_instance_manifest_dict)
+    bad["boot"]["cmdline_template"] = (
+        "console=ttyS0 luks=1 swiotlb=262144 owner={owner}"
+        " gpu_count={gpu_count} gpu_arch={gpu_arch} gpu_models={gpu_models}"
+    )
+    with pytest.raises(ValidationError):
+        InstanceRuntimeManifest.model_validate(bad)
+
+
+def test_instance_manifest_canonical_json_omits_gpu_when_absent(minimal_instance_manifest_dict: dict[str, Any]) -> None:
+    manifest = InstanceRuntimeManifest.model_validate(minimal_instance_manifest_dict)
+    assert manifest.gpu is None
+    canonical = manifest.to_canonical_json()
+    assert '"gpu"' not in canonical
+    assert json.loads(canonical) == minimal_instance_manifest_dict

@@ -249,6 +249,25 @@
         withNvidia = nvidiaDriver.modules;
       };
 
+      # Confidential-GPU instance initrd: the instance contents (LUKS, no
+      # dm-verity, no firewall) built against gpuKernel, plus the NVIDIA open
+      # kernel modules and the verifier tree, since an instance has no Aleph
+      # rootfs to run the verifier from. Same kernel rule as gpuInitrd: the
+      # dm-*/nvidia modules must all come from gpuKernel.
+      instanceGpuInitrd = pkgs.callPackage ./initrd.nix {
+        inherit attest-agent;
+        kernel = gpuKernel;
+        init-script = ./init-instance-gpu.sh;
+        init-common-script = ./init-common.sh;
+        udhcpc-script = ./udhcpc.script;
+        udhcpc6-script = ./udhcpc6.script;
+        withVerity = false;
+        withNft = false;
+        withLuks = true;
+        withNvidia = nvidiaDriver.modules;
+        withGpuVerifier = gpuVerifierTree;
+      };
+
       rootfs = pkgs.callPackage ./rootfs.nix {};
 
       # Compose-runner platform rootfs (aleph.compose/1): podman + podman-compose
@@ -257,44 +276,67 @@
       # ownership, fail-closed init).
       composeRootfs = pkgs.callPackage ./compose-rootfs.nix { inherit kernel; };
 
-      # The GPU flavor's driver contract and policy table (a PCI id maps to
-      # the project/SKU triples a card of that model signs into its SPDM
-      # opaque data; add a row only from evidence read off such a card).
-      # ONE definition for two destinations, or the guest would enforce a
-      # table the client never saw: /etc/aleph/gpu.json in the GPU rootfs
-      # and the gpuImage sidecar the bundle copies into the manifest.
+      # The policy table both GPU flavors enforce (a PCI id maps to the
+      # project/SKU triples a card of that model signs into its SPDM opaque
+      # data; add a row only from evidence read off such a card). ONE
+      # definition, or the V-PROGRAM and instance policies would drift.
+      gpuArchTable = {
+        hopper = {
+          accepted_models = [ "GH100 A01 GSP BROM" ];
+          boards = {
+            "10de:2321" = [ { name = "H100 NVL"; project = "1010"; project_sku = "0210"; chip_sku = "886"; } ];
+            "10de:2330" = [ { name = "H100 SXM5 80GB"; project = "G520"; project_sku = "0200"; chip_sku = "885"; } ];
+            "10de:2331" = [ { name = "H100 PCIe"; project = "1010"; project_sku = "0200"; chip_sku = "882"; } ];
+            "10de:2335" = [ { name = "H200 SXM5 141GB"; project = "G520"; project_sku = "0280"; chip_sku = "895"; } ];
+            "10de:233b" = [ { name = "H200 NVL"; project = "1010"; project_sku = "0230"; chip_sku = "894"; } ];
+          };
+        };
+        blackwell = {
+          accepted_models = [ "NVIDIA RTX PRO 6000 Blackwell Server Edition" ];
+          # Two board SKUs ship under one PCI id; either satisfies it.
+          boards = {
+            "10de:2bb5" = [
+              { name = "RTX PRO 6000 Blackwell Server Edition"; project = "G153"; project_sku = "0210"; chip_sku = "895"; }
+              { name = "RTX PRO 6000 Blackwell Server Edition"; project = "G153"; project_sku = "0212"; chip_sku = "895"; }
+            ];
+          };
+        };
+      };
+
+      # The V-PROGRAM GPU flavor's driver contract and policy, written to two
+      # destinations from one definition, or the guest would enforce a table
+      # the client never saw: /etc/aleph/gpu.json in the GPU rootfs and the
+      # gpuImage sidecar the bundle copies into the manifest.
       gpuFacts = pkgs.writeText "gpu.json" (builtins.toJSON {
         vendor = "nvidia";
         driver_version = nvidiaDriver.version;
         library_path = "/opt/nvidia/lib";
-        archs = {
-          hopper = {
-            accepted_models = [ "GH100 A01 GSP BROM" ];
-            boards = {
-              "10de:2321" = [ { name = "H100 NVL"; project = "1010"; project_sku = "0210"; chip_sku = "886"; } ];
-              "10de:2330" = [ { name = "H100 SXM5 80GB"; project = "G520"; project_sku = "0200"; chip_sku = "885"; } ];
-              "10de:2331" = [ { name = "H100 PCIe"; project = "1010"; project_sku = "0200"; chip_sku = "882"; } ];
-              "10de:2335" = [ { name = "H200 SXM5 141GB"; project = "G520"; project_sku = "0280"; chip_sku = "895"; } ];
-              "10de:233b" = [ { name = "H200 NVL"; project = "1010"; project_sku = "0230"; chip_sku = "894"; } ];
-            };
-          };
-          blackwell = {
-            accepted_models = [ "NVIDIA RTX PRO 6000 Blackwell Server Edition" ];
-            # Two board SKUs ship under one PCI id; either satisfies it.
-            boards = {
-              "10de:2bb5" = [
-                { name = "RTX PRO 6000 Blackwell Server Edition"; project = "G153"; project_sku = "0210"; chip_sku = "895"; }
-                { name = "RTX PRO 6000 Blackwell Server Edition"; project = "G153"; project_sku = "0212"; chip_sku = "895"; }
-              ];
-            };
-          };
-        };
+        archs = gpuArchTable;
+      } + "\n");
+
+      # The instance GPU flavor's facts, same two destinations
+      # (/etc/aleph/gpu.json in the measured initrd and the instanceGpuImage
+      # sidecar). No library_path: the owner installs the driver userland in
+      # their own LUKS rootfs, so the image makes no promise about where it
+      # lives.
+      instanceGpuFacts = pkgs.writeText "gpu.json" (builtins.toJSON {
+        vendor = "nvidia";
+        driver_version = nvidiaDriver.version;
+        archs = gpuArchTable;
       } + "\n");
 
       # Confidential-GPU platform rootfs: the base busybox content plus the
       # raw driver userland, GSP firmware and NVIDIA's local verifier. See
       # gpu-rootfs.nix.
       gpuRootfs = import ./gpu-rootfs.nix { inherit pkgs nvidiaDriver nvat gpuFacts; };
+
+      # The GPU verifier tree the instance flavor overlays on its measured
+      # initramfs, in place of the verity rootfs a V-PROGRAM runs the
+      # verifier from. See gpu-verifier-tree.nix.
+      gpuVerifierTree = import ./gpu-verifier-tree.nix {
+        inherit pkgs nvidiaDriver nvat;
+        gpuFacts = instanceGpuFacts;
+      };
 
       # fib-service V-PROGRAM workload volume: a content-only ext4 carrying the
       # fib-service binary as /sbin/init, delivered to the measured guest as an
@@ -635,12 +677,55 @@
         echo "${sourceRev}" > $out/source-rev
       '';
 
+      # Confidential-GPU instance image artifacts: the same three members as
+      # instanceImage (the owner still supplies the LUKS rootfs and the
+      # measurement still depends on the owner address), plus gpu.json, the
+      # bytes the initrd carries at /etc/aleph/gpu.json and the bundle
+      # builder copies into the published manifest.
+      instanceGpuImage = pkgs.runCommand "aleph-snp-instance-gpu-image" {} ''
+        mkdir -p $out
+        ln -s ${gpuKernel}/bzImage $out/bzImage
+        ln -s ${instanceGpuInitrd}/initrd $out/initrd
+        cp ${ovmfFd} $out/OVMF.fd
+        echo "${sourceRev}" > $out/source-rev
+        cp ${instanceGpuFacts} $out/gpu.json
+      '';
+
       # Build-covers instanceMeasurementFor with a fixed placeholder owner
       # address: a plain `inherit` cannot expose a function through
       # `packages` (see above), so nothing would otherwise evaluate its body
       # or invoke sev-snp-measure. `nix build ./nix#instanceMeasurementSmoke`
       # exercises exactly that.
       instanceMeasurementSmoke = instanceMeasurementFor {
+        owner = "0x0000000000000000000000000000000000000000";
+      };
+
+      # Per-deployment measurement helper for the confidential-GPU instance
+      # image, the counterpart of instanceMeasurementFor above (same owner
+      # slot, same reason it cannot be a flake package). The cmdline adds the
+      # swiotlb size the driver's bounce buffers need under SEV-SNP and the
+      # GPU requirement tokens the guest enforces; the fixed values here (one
+      # Hopper card, no models token) are what the smoke measurement below is
+      # computed for, and a real launch re-measures with the message's own
+      # requirement.
+      instanceGpuMeasurementFor = { vcpus ? 2, vcpuType ? "EPYC-v4", owner }:
+        # Same reason as instanceMeasurementFor: `owner` reaches a shell
+        # argument through the measured cmdline, so assert its shape.
+        assert (builtins.match "0x[0-9a-fA-F]{40}" owner) != null;
+        let
+        kernelCmdline = "console=ttyS0 luks=1 swiotlb=262144 owner=${owner} gpu_arch=hopper gpu_count=1";
+      in pkgs.runCommand "snp-instance-gpu-measurement-${toString vcpus}vcpus-${vcpuType}" {
+        nativeBuildInputs = [ sev-snp-measure ];
+      } ''
+        sev-snp-measure --mode snp --vcpus ${toString vcpus} --vcpu-type ${vcpuType} \
+          --ovmf ${ovmfFd} --kernel ${gpuKernel}/bzImage --initrd ${instanceGpuInitrd}/initrd \
+          --append "${kernelCmdline}" | tr -d '\n' > $out
+      '';
+
+      # Build coverage for instanceGpuMeasurementFor, same placeholder owner
+      # as instanceMeasurementSmoke above and the golden file's pin on this
+      # flavor's whole measured chain.
+      instanceGpuMeasurementSmoke = instanceGpuMeasurementFor {
         owner = "0x0000000000000000000000000000000000000000";
       };
 
@@ -669,6 +754,8 @@
           instanceInitrd
           composeInitrd
           gpuInitrd
+          gpuVerifierTree
+          instanceGpuInitrd
           rootfs
           composeRootfs
           gpuRootfs
@@ -691,22 +778,25 @@
           composeImage
           gpuImage
           instanceImage
+          instanceGpuImage
           instanceMeasurementSmoke
+          instanceGpuMeasurementSmoke
           instanceTestRootfs;
         default = image;
       };
 
-      # instanceMeasurementFor takes a mandatory `owner` argument, so unlike
-      # the packages above it cannot be a flake package; expose it here so
-      # Tasks 8/11/13 (and any other flake consumer, not just direct
-      # importers of this file) can call
+      # instanceMeasurementFor and instanceGpuMeasurementFor take a mandatory
+      # `owner` argument, so unlike the packages above they cannot be flake
+      # packages; expose them here so the daemon's launch path and tests (and
+      # any other flake consumer, not just direct importers of this file) can
+      # call
       # `(builtins.getFlake ...).lib.${system}.instanceMeasurementFor { ... }`.
       # gpuMeasurementFor takes only optional arguments, so `gpuMeasurement`
       # above already gives it build coverage; it is exposed here for the
       # same reason as instanceMeasurementFor, so a flake consumer can
       # compute a workload-form GPU measurement without importing this file.
       lib.${system} = {
-        inherit instanceMeasurementFor gpuMeasurementFor;
+        inherit instanceMeasurementFor instanceGpuMeasurementFor gpuMeasurementFor;
       };
     };
 }

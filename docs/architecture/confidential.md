@@ -547,6 +547,41 @@ The in-tree example that ships all of this correctly is
 `nix/cuda-workload.nix` (the volume build) paired with `nix/cuda-probe`
 (the workload binary).
 
+### Confidential GPUs on SNP instances
+
+An instance requests the same kind of GPU through `trusted_execution.gpu`
+(`ConfidentialGpuRequirement`: vendor, arch `hopper`/`blackwell`, a count
+up to eight, an optional model narrowing, `sev_snp` only); `run.py`
+refuses `requirements.gpu` on this path regardless, since unmeasured
+pass-through has no place on a confidential launch.
+
+The manifest's optional `gpu` block (`InstanceGpuRuntimeSpec`,
+`src/aleph/vm/vprogram/manifest.py`) carries vendor, `driver_version` and
+per-arch boards, with no `library_path`: the owner installs the CUDA
+userland themselves at that `driver_version` (NVML's "driver/library
+version mismatch" is the failure mode of a wrong one), and nothing is
+bind-mounted into their rootfs the way `/opt/nvidia/lib` is for a
+V-PROGRAM. The luks cmdline template adds `swiotlb=262144` and the same
+`gpu_arch`/`gpu_count`/`gpu_models` slots; `scripts/vprogram_bundle.py
+--flavor instance-gpu` packages it.
+
+`src/aleph/vm/agent/gpu_requirement.py` shares its manifest checks and
+token grammar with the V-PROGRAM path; `snp_instance_launch.py` runs them
+against the manifest and renders the whole cmdline itself, since the
+daemon takes this line verbatim rather than deriving it as it does for a
+V-PROGRAM. Because of that, `snp_config_slice`'s opaque-cmdline arm
+(`check_opaque_cmdline_gpu_tokens`, `lifecycle.rs`) parses the cmdline the
+way the guest does and admits a GPU only when `gpu_arch`, `gpu_count` and
+`swiotlb` each appear exactly once, the count matches the attached cards,
+and each card's device id maps to the required arch.
+
+With the owner's disk still LUKS-locked, `nix/init-instance-gpu.sh` runs
+the same verifier (nvattest, NVML, nvidia-smi, GSP firmware, `gpu.json`)
+shipped resident in the measured initrd by `nix/gpu-verifier-tree.nix`,
+before the attest-agent starts with `--owner`/`--gpu-claims`: a card that
+fails verification powers the VM off before a passphrase is ever
+requested.
+
 ## Key invariants
 
 - Cold migration refuses every confidential mode at two independent gates,

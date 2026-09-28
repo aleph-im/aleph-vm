@@ -21,10 +21,15 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from aleph_message.models.execution.environment import ConfidentialGpuRequirement
 from aleph_message.models.execution.instance import InstanceContent
 from pydantic import ValidationError
 
 from aleph.vm.agent import snp_staging
+from aleph.vm.agent.gpu_requirement import (
+    check_gpu_against_manifest,
+    render_instance_cmdline,
+)
 from aleph.vm.agent.guest_ipv6 import compute_requested_ipv6
 from aleph.vm.agent.vcpu_probe import get_supported_snp_vcpu_types
 from aleph.vm.agent.vcpu_select import requested_vcpu_types, select_snp_vcpu_type
@@ -84,6 +89,12 @@ def is_snp_instance(content) -> bool:
         and content.environment.trusted_execution is not None
         and getattr(content.environment.trusted_execution, "is_snp", False)
     )
+
+
+def confidential_gpu(content: InstanceContent) -> ConfidentialGpuRequirement | None:
+    """The instance's confidential-GPU requirement, or None."""
+    trusted_execution = content.environment.trusted_execution
+    return trusted_execution.gpu if trusted_execution is not None else None
 
 
 async def fetch_instance_runtime_manifest(runtime_ref: str) -> InstanceRuntimeManifest:
@@ -155,7 +166,9 @@ async def build_snp_instance_spec(vm_hash: ItemHash, content: InstanceContent, s
     attestation_port override, a host without SNP support, a policy above 32
     bits, and a non-EVM sender. Because every rejection runs before
     fetch_instance_runtime_manifest/fetch_and_stage_bundle are ever called, a
-    rejection never leaves a staging directory behind.
+    rejection never leaves a staging directory behind. The confidential-GPU
+    checks need the manifest, so they run right after its fetch, still before
+    any staging.
     """
     trusted_execution = content.environment.trusted_execution
     if trusted_execution.attestation_port is not None:
@@ -185,7 +198,18 @@ async def build_snp_instance_spec(vm_hash: ItemHash, content: InstanceContent, s
             vm_hash,
         )
 
-    manifest = await fetch_instance_runtime_manifest(str(trusted_execution.runtime))
+    runtime_ref = str(trusted_execution.runtime)
+    manifest = await fetch_instance_runtime_manifest(runtime_ref)
+    gpu = confidential_gpu(content)
+    check_gpu_against_manifest(
+        what="SNP instance",
+        vm_hash=vm_hash,
+        runtime_ref=runtime_ref,
+        gpu=gpu,
+        manifest_gpu=manifest.gpu,
+        template=manifest.boot.cmdline_template,
+        memory_mib=content.resources.memory,
+    )
     bundle_dir = await snp_staging.fetch_and_stage_bundle(
         vm_hash,
         kind="snp-instance",
@@ -200,8 +224,14 @@ async def build_snp_instance_spec(vm_hash: ItemHash, content: InstanceContent, s
     kernel_path = snp_staging.member_path(bundle_dir, members.kernel, "kernel")
     initrd_path = snp_staging.member_path(bundle_dir, members.initrd, "initrd")
     # The template's slot is named {owner} (a frozen runtime-manifest
-    # contract); the value it binds is the unlock authority above.
-    kernel_cmdline = manifest.boot.cmdline_template.format(owner=unlock_address)
+    # contract); the value it binds is the unlock authority above. A GPU
+    # instance also fills the measured requirement slots here, the same way
+    # the client does before it computes the measurement.
+    try:
+        kernel_cmdline = render_instance_cmdline(manifest.boot.cmdline_template, owner=unlock_address, gpu=gpu)
+    except ValueError as error:
+        msg = f"SNP instance {vm_hash} GPU requirement cannot be measured: {error}"
+        raise VmSetupError(msg) from error
 
     attest_port = select_attestation_port(manifest)
 

@@ -166,17 +166,19 @@ jobs:
           # branch to push to; name the dispatched branch explicitly.
           git push origin HEAD:"$GITHUB_REF_NAME"
 
-  # Confidential-GPU flavor. Its chain shares almost nothing with the base
-  # set: a second guest kernel (gpuKernel), the NVIDIA open kernel modules,
-  # the raw driver userland extracted from the .run archive, and nvat (a CMake
-  # build with a vendored Rust sub-build). Runtime is UNMEASURED until this
-  # job's first run; the timeout below is a guess with room to spare and
-  # should be tightened once there is a real number.
+  # Confidential-GPU flavors (the V-PROGRAM image and the instance image).
+  # Their chain shares almost nothing with the base set: a second guest kernel
+  # (gpuKernel), the NVIDIA open kernel modules, the raw driver userland
+  # extracted from the .run archive, and nvat (a CMake build with a vendored
+  # Rust sub-build), which the instance flavor ships in its initrd rather than
+  # a verity rootfs. Runtime is UNMEASURED until this job's first run; the
+  # timeout below is a guess with room to spare and should be tightened once
+  # there is a real number.
   #
   # Gated so it only runs when it can actually move: always on schedule and
   # manual dispatch, and on push/pull_request only when a GPU input changed.
   golden-measurements-gpu:
-    name: "build the confidential-GPU chain, compare its launch measurement"
+    name: "build the confidential-GPU chains, compare their launch measurements"
     runs-on: ubuntu-24.04
     timeout-minutes: 120
 
@@ -208,8 +210,9 @@ jobs:
             echo "run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # Inputs that can move gpuMeasurement: the GPU-only files, the
-          # shared ones the GPU chain also builds from (flake, lock, OVMF,
+          # Inputs that can move gpuMeasurement or
+          # instanceGpuMeasurementSmoke: the GPU-only files of both flavors,
+          # the shared ones the GPU chain also builds from (flake, lock, OVMF,
           # kernel recipe and base fragment, initrd recipe and every script
           # it ships), the attest-agent's measured source set (the same one
           # the trigger paths above name) and the golden file itself, plus
@@ -223,7 +226,9 @@ jobs:
           nix/nvidia.nix
           nix/nvat.nix
           nix/gpu-rootfs.nix
+          nix/gpu-verifier-tree.nix
           nix/init-gpu.sh
+          nix/init-instance-gpu.sh
           nix/kernel-config-gpu.fragment
           nix/regorus-ffi-Cargo.lock
           nix/golden-measurements.json
