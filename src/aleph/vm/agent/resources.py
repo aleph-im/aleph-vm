@@ -145,7 +145,8 @@ class NvidiaCcDevice(BaseModel):
 
 
 class NvidiaCcProperties(BaseModel):
-    """Cards probed in NVIDIA confidential-computing mode and free to attach."""
+    """Free cards the host can hand over in CC mode: the ones carrying `cc`
+    in `gpu.available_devices[].modes`, kept as a legacy view."""
 
     devices: list[NvidiaCcDevice]
 
@@ -162,8 +163,12 @@ class MachineProperties(BaseModel):
     tee: TeeProperties | None = None
 
 
+GpuMode = Literal["plain", "cc"]
+
+
 class AnnotatedGpuDevice(GpuDevice):
-    """A host GPU annotated with what the network says about it.
+    """A host GPU annotated with what the network says about it and how this
+    host can hand it over.
 
     The supervisor reports raw hardware (GpuDevice); the network-derived
     fields are the agent's to add, from the settings aggregate's
@@ -174,16 +179,16 @@ class AnnotatedGpuDevice(GpuDevice):
         "when the network has no name for this card"
     )
     compatible: bool = Field(description="GPU compatibility with Aleph Network", default=False)
+    # What placement reads: pass-through (plain) and/or NVIDIA CC mode inside
+    # an SEV-SNP guest (cc). cc_mode next to it is where the card sits now.
+    modes: list[GpuMode] = Field(description="Ways this host can hand the card over: plain and/or cc")
 
 
 class GpuProperties(BaseModel):
+    # Every card once, whatever its CC mode; `modes` says what it can serve.
     devices: list[AnnotatedGpuDevice] | None = None
     available_devices: list[AnnotatedGpuDevice] | None = None
-    # Cards in NVIDIA CC mode, the complement of the plain pair: the full
-    # inventory for operators, while tee.nvidia_cc stays the scheduler's view.
-    confidential_devices: list[AnnotatedGpuDevice] | None = None
-    available_confidential_devices: list[AnnotatedGpuDevice] | None = None
-    # Successful CC-mode switches per card since the supervisor started.
+    # Admin-tool CC-mode resets per card since the supervisor started.
     cc_switches: dict[str, int] | None = None
 
 
@@ -237,7 +242,9 @@ async def _network_gpu_models() -> dict[str, str]:
     return {gpu.device_id: gpu.model for gpu in get_compatible_gpus()}
 
 
-async def _gpus_from_host_info(host_info: "HostInfo", network_models: dict[str, str] | None = None) -> GpuProperties:
+async def _gpus_from_host_info(
+    host_info: "HostInfo", network_models: dict[str, str] | None = None, *, confidential: bool
+) -> GpuProperties:
     """Rebuild the rich GPU inventory from the supervisor's HostInfo.
 
     GetHostInfo carries raw GpuDevice fields as plain dicts (gpu_inventory /
@@ -245,37 +252,40 @@ async def _gpus_from_host_info(host_info: "HostInfo", network_models: dict[str, 
     network annotation (AnnotatedGpuDevice: `model`, `compatible`) is
     applied here from the settings aggregate's map. A caller that already
     built that map for the request passes it in; otherwise it is fetched.
+
+    ``confidential`` is whether this host can launch an SEV-SNP guest: without
+    that no card gets the ``cc`` mode, the same gate ``tee.nvidia_cc`` sits
+    behind, since a CC card on a host that cannot run a confidential guest is
+    not a capability.
     """
     if network_models is None:
         network_models = await _network_gpu_models()
 
-    def annotate(gpu: GpuDevice) -> AnnotatedGpuDevice:
+    def modes(gpu: GpuDevice) -> list[GpuMode]:
+        offered: list[GpuMode] = []
+        if gpu.plain_eligible():
+            offered.append("plain")
+        if confidential and gpu.confidential_eligible():
+            offered.append("cc")
+        return offered
+
+    def annotate(raw: dict) -> AnnotatedGpuDevice:
         # The scheduler's model field is required: a card the network has no
         # name for still needs one, so it falls back to the hardware name.
         # `compatible` stays false and already says the network does not
         # support it.
+        gpu = GpuDevice.model_validate(raw)
         return AnnotatedGpuDevice(
             **gpu.model_dump(),
             model=network_models.get(gpu.device_id, gpu.device_name),
             compatible=gpu.device_id in network_models,
+            modes=modes(gpu),
         )
 
-    def split(raw: list[dict]) -> tuple[list[AnnotatedGpuDevice], list[AnnotatedGpuDevice]]:
-        # The plain lists are what the scheduler places pass-through instances
-        # by (a CC card counts since the supervisor moves it at create); the
-        # rest is listed apart so the inventory stays complete.
-        cards = [annotate(GpuDevice.model_validate(gpu)) for gpu in raw]
-        plain = [gpu for gpu in cards if gpu.plain_eligible()]
-        return plain, [gpu for gpu in cards if gpu not in plain]
-
-    devices, confidential_devices = split(host_info.gpu_inventory)
-    available_devices, available_confidential_devices = split(host_info.available_gpus)
     switches = dict(getattr(host_info, "gpu_cc_switches", {}) or {})
     return GpuProperties(
-        devices=devices,
-        available_devices=available_devices,
-        confidential_devices=confidential_devices,
-        available_confidential_devices=available_confidential_devices,
+        devices=[annotate(gpu) for gpu in host_info.gpu_inventory],
+        available_devices=[annotate(gpu) for gpu in host_info.available_gpus],
         cc_switches=switches or None,
     )
 
@@ -405,9 +415,9 @@ async def _get_static_machine_capability() -> MachineCapability:
 
 
 def nvidia_cc_properties(available_gpus: list[dict], network_models: dict[str, str]) -> NvidiaCcProperties | None:
-    """The confidential-GPU block: any card of a known family whose mode
-    decoded, since the supervisor moves it at create. An unprobed card
-    advertises nothing."""
+    """The legacy confidential-GPU block, the `cc` mode of the gpu lists seen
+    on its own: any card of a known family whose mode decoded, since the
+    supervisor moves it at create. An unprobed card advertises nothing."""
     cards = (GpuDevice.model_validate(gpu) for gpu in available_gpus)
     devices = [
         NvidiaCcDevice(device_id=gpu.device_id, arch=gpu.arch, model=network_models.get(gpu.device_id))
@@ -520,7 +530,8 @@ async def about_system_usage(request: web.Request):
             duration_seconds=60,
         ),
         properties=machine_properties,
-        gpu=await _gpus_from_host_info(host_info, network_models),
+        # The tee block exists exactly when this host can launch SNP guests.
+        gpu=await _gpus_from_host_info(host_info, network_models, confidential=machine_properties.tee is not None),
     )
 
     return web.json_response(text=usage.model_dump_json(exclude_none=True))

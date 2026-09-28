@@ -1,7 +1,8 @@
-"""tee.nvidia_cc advertises every card of a known family whose CC mode
-decoded, since the supervisor moves the card at create, and only when the
-host can launch SEV-SNP: a confidential GPU on a host that cannot run a
-confidential guest is not a capability."""
+"""tee.nvidia_cc is the legacy view of the `cc` mode on gpu.available_devices:
+every card of a known family whose CC mode decoded, since the supervisor
+moves the card at create, and only when the host can launch SEV-SNP: a
+confidential GPU on a host that cannot run a confidential guest is not a
+capability."""
 
 import pytest
 

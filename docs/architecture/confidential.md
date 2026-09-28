@@ -106,10 +106,12 @@ facts are different axes, and keeping them siblings leaves room for a future
 `tdx` platform key without a schema break. The third probe is daemon-side:
 `probe_cc_mode` (`rust/crates/supervisor-daemon/src/gpu_cc.rs`) reads a
 GPU's confidential-computing mode out of a BAR0 register and reports it per
-card in `HostInfo.available_gpus[*].cc_mode`; the agent turns cards probed
-`on` into the `nvidia_cc` capability block (`nvidia_cc_properties` in
-`resources.py`), advertised only alongside `sev_snp` since a confidential
-GPU on a host that cannot launch a confidential guest is not usable.
+card in `HostInfo.available_gpus[*].cc_mode`; the agent turns that into the
+per-card `modes` list on `gpu.devices` (`plain` and/or `cc`,
+`_gpus_from_host_info` in `agent/resources.py`), with `tee.nvidia_cc` kept
+as a legacy view of the `cc` mode. Both grant `cc` only alongside `sev_snp`,
+since a confidential GPU on a host that cannot launch a confidential guest
+is not usable.
 
 ### Host requirements for SEV-SNP
 

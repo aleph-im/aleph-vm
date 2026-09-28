@@ -61,27 +61,29 @@ async function fetchHostSystemUsage () {
     }
     if(q.ok){
         const answer = await q.json();
-        // Cards in NVIDIA CC mode live in their own pair of lists, not in gpu.devices.
         const gpu_devices = answer.gpu.devices ?? [];
-        const cc_devices = answer.gpu.confidential_devices ?? [];
-        const available = new Set(
-            [...(answer.gpu.available_devices ?? []), ...(answer.gpu.available_confidential_devices ?? [])]
-                .map((gpu_device) => gpu_device.pci_host)
-        );
-        if (gpu_devices.length + cc_devices.length <= 0) {
+        const available = new Set((answer.gpu.available_devices ?? []).map((gpu_device) => gpu_device.pci_host));
+        if (gpu_devices.length <= 0) {
             res.status = "<b>No GPUs detected</b>";
         }else{
             res.status = "<ul>";
-            for (const gpu_device of [...gpu_devices, ...cc_devices]){
+            for (const gpu_device of gpu_devices){
                 let compatible_str = " is compatible &#9989;";
                 if (!gpu_device.compatible) {
                     compatible_str = " isn't compatible &#10060;";
                 }
-                let mode_str = "";
-                if (gpu_device.cc_mode === "on") {
-                    mode_str = ", confidential &#128274;";
-                } else if (gpu_device.cc_mode === "devtools") {
-                    mode_str = ", CC devtools mode (not offered) &#9888;&#65039;";
+                // modes is how the host can hand the card over; cc_mode is where it sits now.
+                const modes = gpu_device.modes ?? ["plain"];
+                let mode_str = ", not offered &#9888;&#65039;";
+                if (modes.includes("plain") && modes.includes("cc")) {
+                    mode_str = ", plain or confidential &#128274;";
+                } else if (modes.includes("cc")) {
+                    mode_str = ", confidential only &#128274;";
+                } else if (modes.includes("plain")) {
+                    mode_str = "";
+                }
+                if (gpu_device.cc_mode === "on" || gpu_device.cc_mode === "devtools") {
+                    mode_str += ", CC mode " + gpu_device.cc_mode;
                 }
                 const state_str = available.has(gpu_device.pci_host) ? "available" : "in use";
                 res.status += "<li><b>" + gpu_device.vendor + " | " + gpu_device.device_name + "</b> (" + gpu_device.pci_host + ")"
