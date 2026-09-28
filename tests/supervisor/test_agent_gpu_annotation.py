@@ -158,7 +158,8 @@ async def test_unwhitelisted_gpu_model_survives_the_endpoint_serialisation(mocke
 @pytest.mark.asyncio
 async def test_cc_mode_cards_stay_out_of_the_plain_lists(mocker):
     """The plain lists are what pass-through GPU instances are placed by; a
-    card in CC mode belongs to tee.nvidia_cc only."""
+    card in CC mode is served by tee.nvidia_cc and only inventoried in the
+    confidential lists."""
     mocker.patch("aleph.vm.agent.resources.update_aggregate_settings")
     mocker.patch(
         "aleph.vm.agent.resources.get_compatible_gpus",
@@ -167,9 +168,12 @@ async def test_cc_mode_cards_stay_out_of_the_plain_lists(mocker):
     plain = _raw_gpu("10de:27b0", "01:00.0")
     cc = _raw_gpu("10de:233b", "02:00.0") | {"cc_mode": "on", "arch": "hopper"}
     devtools = _raw_gpu("10de:233b", "03:00.0") | {"cc_mode": "devtools", "arch": "hopper"}
-    host_info = SimpleNamespace(gpu_inventory=[plain, cc, devtools], available_gpus=[plain, cc, devtools])
+    host_info = SimpleNamespace(gpu_inventory=[plain, cc, devtools], available_gpus=[plain, devtools])
 
     gpu = await _gpus_from_host_info(host_info)
 
     assert [d.pci_host for d in gpu.devices] == ["01:00.0"]
     assert [d.pci_host for d in gpu.available_devices] == ["01:00.0"]
+    assert [(d.pci_host, d.cc_mode) for d in gpu.confidential_devices] == [("02:00.0", "on"), ("03:00.0", "devtools")]
+    assert [d.pci_host for d in gpu.available_confidential_devices] == ["03:00.0"]
+    assert gpu.confidential_devices[0].model == "H200"
