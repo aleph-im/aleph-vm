@@ -127,16 +127,16 @@ long it sat idle.
 ## 3. Enable CC mode once
 
 CC mode is a setting on the card itself and persists across host reboots.
-With `ALEPH_VM_GPU_CC_AUTOSWITCH=true` in `supervisor.env` the daemon moves
-an idle card into the mode each create needs (on for a confidential guest,
-off for a plain pass-through instance), so this step is optional: the
-first confidential create switches the card. With the flag off (the
-default) the card stays in whatever mode you set here, and a create that
-needs the other mode is refused.
+The daemon moves an idle card into the mode each create needs (on for a
+confidential guest, off for a plain pass-through instance), so this step is
+optional: the first confidential create switches the card. Setting it by
+hand only spares that first create the switch.
 
 Switching a card off after a confidential guest relies on the GPU scrubbing
-its protected memory on reset, which NVIDIA documents but which has not yet
-been verified on our hardware. That is why the flag defaults to off.
+its memory on the reset that applies the new mode. Checked on an H200 NVL:
+after a confidential guest filled the whole HBM, the card was switched off
+and a plain guest read it back all zero, and the same held with the guest
+killed mid-run so the driver never freed anything.
 
 ```bash
 git clone https://github.com/NVIDIA/gpu-admin-tools
@@ -155,9 +155,9 @@ driver development, but it lifts confidentiality guarantees and is refused
 by the CRN: `snp_config_slice` (`rust/crates/supervisor-daemon/src/lifecycle.rs`)
 only ever admits a card whose probed mode is exactly `On`.
 
-A card advertised while the autoswitch is on appears both in
-`properties.gpu.available_devices` and in `properties.tee.nvidia_cc.devices`
-of `/about/usage/system`; the scheduler counts it once. Each switch is
+A card of a known family appears both in `properties.gpu.available_devices`
+and in `properties.tee.nvidia_cc.devices` of `/about/usage/system`; the
+scheduler counts it once. Each switch is
 logged at WARN by the daemon (card, direction, VM id, wall time) and counted
 per card in `properties.gpu.cc_switches`: admin-tool runs that exited 0,
 so resets the card went through, since the supervisor last started (the

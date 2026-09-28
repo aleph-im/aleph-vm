@@ -377,7 +377,7 @@ Before the gate, `ensure_gpu_modes` (`rust/crates/supervisor-daemon/src/lifecycl
 runs under the creation lock only, after `validate_spec_gpus` has found the
 cards unattached: it probes each NVIDIA card and, when the mode differs
 from what the VM needs (`On` for SEV-SNP, `Off` for anything else),
-refuses, or with `ALEPH_VM_GPU_CC_AUTOSWITCH` moves the card with NVIDIA's
+moves the card with NVIDIA's
 admin tool (`switch_cc_mode`, `gpu_cc.rs`: mode write plus the reset that
 applies it, killed at `ALEPH_VM_GPU_CC_SWITCH_TIMEOUT`), forgets the cached
 mode and reads the card back, refusing on any mismatch. The plain arm gets

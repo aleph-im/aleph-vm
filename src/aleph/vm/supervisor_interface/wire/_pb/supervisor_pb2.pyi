@@ -291,7 +291,6 @@ class HostInfo(google.protobuf.message.Message):
     AVAILABLE_DISK_BYTES_FIELD_NUMBER: builtins.int
     GPU_INVENTORY_JSON_FIELD_NUMBER: builtins.int
     AVAILABLE_GPUS_JSON_FIELD_NUMBER: builtins.int
-    GPU_CC_AUTOSWITCH_FIELD_NUMBER: builtins.int
     GPU_CC_SWITCHES_JSON_FIELD_NUMBER: builtins.int
     cpu_count: builtins.int
     """CPU"""
@@ -330,8 +329,6 @@ class HostInfo(google.protobuf.message.Message):
     """list[dict] as JSON; rich agent GPU inventory"""
     available_gpus_json: builtins.str
     """list[dict] as JSON"""
-    gpu_cc_autoswitch: builtins.bool
-    """the daemon moves idle NVIDIA cards into the CC mode a create needs"""
     gpu_cc_switches_json: builtins.str
     """{pci_host: admin-tool resets run since the daemon started} as JSON"""
     @property
@@ -363,10 +360,9 @@ class HostInfo(google.protobuf.message.Message):
         available_disk_bytes: builtins.int = ...,
         gpu_inventory_json: builtins.str = ...,
         available_gpus_json: builtins.str = ...,
-        gpu_cc_autoswitch: builtins.bool = ...,
         gpu_cc_switches_json: builtins.str = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing.Literal["available_disk_bytes", b"available_disk_bytes", "available_gpus_json", b"available_gpus_json", "cpu_architecture", b"cpu_architecture", "cpu_count", b"cpu_count", "cpu_frequency_mhz", b"cpu_frequency_mhz", "cpu_model", b"cpu_model", "cpu_vendor", b"cpu_vendor", "gpu_cc_autoswitch", b"gpu_cc_autoswitch", "gpu_cc_switches_json", b"gpu_cc_switches_json", "gpu_inventory_json", b"gpu_inventory_json", "gpus", b"gpus", "host_ipv4", b"host_ipv4", "hostname", b"hostname", "kernel_version", b"kernel_version", "memory_clock_mhz", b"memory_clock_mhz", "memory_mib", b"memory_mib", "memory_type", b"memory_type", "numa_nodes", b"numa_nodes", "sev_es_supported", b"sev_es_supported", "sev_snp_supported", b"sev_snp_supported", "sev_supported", b"sev_supported", "tdx_supported", b"tdx_supported"]) -> None: ...
+    def ClearField(self, field_name: typing.Literal["available_disk_bytes", b"available_disk_bytes", "available_gpus_json", b"available_gpus_json", "cpu_architecture", b"cpu_architecture", "cpu_count", b"cpu_count", "cpu_frequency_mhz", b"cpu_frequency_mhz", "cpu_model", b"cpu_model", "cpu_vendor", b"cpu_vendor", "gpu_cc_switches_json", b"gpu_cc_switches_json", "gpu_inventory_json", b"gpu_inventory_json", "gpus", b"gpus", "host_ipv4", b"host_ipv4", "hostname", b"hostname", "kernel_version", b"kernel_version", "memory_clock_mhz", b"memory_clock_mhz", "memory_mib", b"memory_mib", "memory_type", b"memory_type", "numa_nodes", b"numa_nodes", "sev_es_supported", b"sev_es_supported", "sev_snp_supported", b"sev_snp_supported", "sev_supported", b"sev_supported", "tdx_supported", b"tdx_supported"]) -> None: ...
 
 global___HostInfo = HostInfo
 

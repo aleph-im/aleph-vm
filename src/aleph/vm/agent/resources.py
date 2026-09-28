@@ -260,14 +260,12 @@ async def _gpus_from_host_info(host_info: "HostInfo", network_models: dict[str, 
             compatible=gpu.device_id in network_models,
         )
 
-    autoswitch = bool(getattr(host_info, "gpu_cc_autoswitch", False))
-
     def split(raw: list[dict]) -> tuple[list[AnnotatedGpuDevice], list[AnnotatedGpuDevice]]:
         # The plain lists are what the scheduler places pass-through instances
-        # by (a CC card counts once the supervisor can move it at create); the
+        # by (a CC card counts since the supervisor moves it at create); the
         # rest is listed apart so the inventory stays complete.
         cards = [annotate(GpuDevice.model_validate(gpu)) for gpu in raw]
-        plain = [gpu for gpu in cards if gpu.plain_eligible(autoswitch=autoswitch)]
+        plain = [gpu for gpu in cards if gpu.plain_eligible()]
         return plain, [gpu for gpu in cards if gpu not in plain]
 
     devices, confidential_devices = split(host_info.gpu_inventory)
@@ -306,11 +304,7 @@ async def _tee_properties(
     if host_info is not None:
         if network_models is None:
             network_models = await _network_gpu_models()
-        nvidia_cc = nvidia_cc_properties(
-            list(host_info.available_gpus),
-            network_models,
-            autoswitch=bool(getattr(host_info, "gpu_cc_autoswitch", False)),
-        )
+        nvidia_cc = nvidia_cc_properties(list(host_info.available_gpus), network_models)
     return TeeProperties(
         sev_snp=SevSnpProperties(supported_vcpu_types=supported_vcpu_types),
         nvidia_cc=nvidia_cc,
@@ -410,17 +404,15 @@ async def _get_static_machine_capability() -> MachineCapability:
     )
 
 
-def nvidia_cc_properties(
-    available_gpus: list[dict], network_models: dict[str, str], *, autoswitch: bool = False
-) -> NvidiaCcProperties | None:
-    """The confidential-GPU block. Without the autoswitch only cards probed
-    `on` count; with it any card of a known family whose mode decoded, since
-    the supervisor moves it at create. An unprobed card advertises nothing."""
+def nvidia_cc_properties(available_gpus: list[dict], network_models: dict[str, str]) -> NvidiaCcProperties | None:
+    """The confidential-GPU block: any card of a known family whose mode
+    decoded, since the supervisor moves it at create. An unprobed card
+    advertises nothing."""
     cards = (GpuDevice.model_validate(gpu) for gpu in available_gpus)
     devices = [
         NvidiaCcDevice(device_id=gpu.device_id, arch=gpu.arch, model=network_models.get(gpu.device_id))
         for gpu in cards
-        if gpu.confidential_eligible(autoswitch=autoswitch)
+        if gpu.confidential_eligible()
     ]
     return NvidiaCcProperties(devices=devices) if devices else None
 

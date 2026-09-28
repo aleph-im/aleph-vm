@@ -350,7 +350,6 @@ impl SupervisorService {
             available_gpus_json: available_json,
             sev_snp_supported: crate::checks::check_amd_sev_snp_supported(),
             numa_nodes,
-            gpu_cc_autoswitch: self.state.host.settings.gpu_cc_autoswitch,
             gpu_cc_switches_json,
             ..Default::default()
         })

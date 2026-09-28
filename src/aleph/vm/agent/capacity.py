@@ -493,8 +493,6 @@ class CapacityManager(PlanAdmission):
         self.registry = registry
         self.holds: dict[str, GpuHold] = {}
         self._lock = asyncio.Lock()
-        # Whether the supervisor moves a card's CC mode at create; refreshed on every host-info read.
-        self._cc_autoswitch: bool = False
 
     def check_message(self, content: ExecutableContent, *, exclude_vm_hash: ItemHash | None = None) -> None:
         """Admission from the message alone, before a byte is allocated.
@@ -765,11 +763,7 @@ class CapacityManager(PlanAdmission):
             "disk_mib": self._available_disk_bytes() // (1024 * 1024),
             "gpus": None
             if available_gpus is None
-            else [
-                gpu.device_id
-                for gpu in self._unheld_gpus(available_gpus)
-                if gpu.plain_eligible(autoswitch=self._cc_autoswitch)
-            ],
+            else [gpu.device_id for gpu in self._unheld_gpus(available_gpus) if gpu.plain_eligible()],
         }
 
     def simulate(
@@ -855,11 +849,7 @@ class CapacityManager(PlanAdmission):
         committed_program = max(committed_program, 0)
         committed_vcpus = max(committed_vcpus, 0)
 
-        gpu_pool = (
-            None
-            if available_gpus is None
-            else [gpu for gpu in available_gpus if gpu.plain_eligible(autoswitch=self._cc_autoswitch)]
-        )
+        gpu_pool = None if available_gpus is None else [gpu for gpu in available_gpus if gpu.plain_eligible()]
 
         verdicts: list[AdmissionVerdict] = []
         committed_disk = 0
@@ -1080,7 +1070,6 @@ class CapacityManager(PlanAdmission):
         that calls them reads it first.
         """
         host_info = await self.supervisor.get_host_info()
-        self._cc_autoswitch = host_info.gpu_cc_autoswitch
         return [GpuDevice.model_validate(gpu) for gpu in host_info.available_gpus]
 
     def _get_valid_hold(self, pci_host: str) -> GpuHold | None:
@@ -1170,7 +1159,7 @@ class CapacityManager(PlanAdmission):
             candidates = [
                 gpu
                 for gpu in await self.available_gpus()
-                if gpu.confidential_eligible(autoswitch=self._cc_autoswitch)
+                if gpu.confidential_eligible()
                 if gpu.arch == arch
                 if models is None or gpu.device_id in models
             ]
@@ -1229,8 +1218,8 @@ class CapacityManager(PlanAdmission):
         for device_id in requested_device_ids:
             for gpu in available_gpus:
                 # A CC-mode card answers a plain device_id request only when
-                # the supervisor can move it at create.
-                if gpu.device_id != device_id or not gpu.plain_eligible(autoswitch=self._cc_autoswitch):
+                # the supervisor knows its family and so can move it at create.
+                if gpu.device_id != device_id or not gpu.plain_eligible():
                     continue
                 if not self._is_available_to(gpu.pci_host, user):
                     continue
@@ -1246,12 +1235,6 @@ class CapacityManager(PlanAdmission):
                 raise InsufficientResourcesError(
                     detail,
                     required={"gpu_device_id": device_id},
-                    available={
-                        "gpus": [
-                            gpu.device_id
-                            for gpu in available_gpus
-                            if gpu.plain_eligible(autoswitch=self._cc_autoswitch)
-                        ]
-                    },
+                    available={"gpus": [gpu.device_id for gpu in available_gpus if gpu.plain_eligible()]},
                 )
         return resolved

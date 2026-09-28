@@ -2562,9 +2562,6 @@ fn ensure_gpu_modes(
         if !needs_switch {
             continue;
         }
-        if !settings.gpu_cc_autoswitch {
-            return Err(cc_mode_mismatch(&device.pci_host, wanted, probed));
-        }
         tracing::warn!(
             vm_id,
             pci_host = %device.pci_host,
@@ -4379,7 +4376,6 @@ mod tests {
             Vec::new(),
             crate::gpu_cc::no_probe,
             crate::gpu_cc::no_switch,
-            false,
         )
     }
 
@@ -4389,7 +4385,6 @@ mod tests {
         gpus: Vec<crate::lspci::GpuDevice>,
         gpu_cc_probe: crate::gpu_cc::CcProbe,
         gpu_cc_switch: crate::gpu_cc::CcSwitch,
-        gpu_cc_autoswitch: bool,
     ) -> Harness {
         let tmp = tempfile::tempdir().unwrap();
         let mut settings = Settings::from_vars(
@@ -4402,7 +4397,6 @@ mod tests {
         .unwrap();
         settings.allow_vm_networking = true;
         settings.ipv6_allocation_policy = ipv6_allocation_policy;
-        settings.gpu_cc_autoswitch = gpu_cc_autoswitch;
         crate::server::prepare_directories(&settings).unwrap();
         ports::ensure_schema(&settings.supervisor_database).unwrap();
 
@@ -4448,7 +4442,6 @@ mod tests {
             gpus,
             crate::gpu_cc::no_probe,
             crate::gpu_cc::no_switch,
-            false,
         )
     }
 
@@ -4465,11 +4458,10 @@ mod tests {
             gpus,
             probe,
             crate::gpu_cc::no_switch,
-            false,
         )
     }
 
-    /// A GPU harness with the autoswitch on and both hardware seams injected.
+    /// A GPU harness with both hardware seams injected.
     fn harness_with_gpu_switch(
         gpus: Vec<crate::lspci::GpuDevice>,
         probe: crate::gpu_cc::CcProbe,
@@ -4481,7 +4473,6 @@ mod tests {
             gpus,
             probe,
             switch,
-            true,
         )
     }
 
@@ -10307,9 +10298,9 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_vm_is_refused_a_cc_on_card_when_the_autoswitch_is_off() {
-        // The driver in a plain guest cannot initialise a CC-on card; until
-        // now only the agent's list filter kept such a card away.
+    fn a_plain_vm_is_refused_a_cc_on_card_the_daemon_cannot_move() {
+        // The driver in a plain guest cannot initialise a CC-on card, so a
+        // failed switch refuses the create instead of launching into it.
         let harness = harness_with_gpu_probe(vec![nvidia_card("06:00.0")], switchable_probe);
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -10328,7 +10319,7 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_vm_is_refused_a_devtools_card_when_the_autoswitch_is_off() {
+    fn a_plain_vm_is_refused_a_devtools_card_the_daemon_cannot_move() {
         let harness = harness_with_gpu_probe(vec![nvidia_card("06:00.0")], switchable_probe);
         let state = &harness.state;
         let root = state.host.settings.execution_root.clone();
@@ -10362,7 +10353,7 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_vm_switches_a_cc_on_card_off_when_the_autoswitch_is_on() {
+    fn a_plain_vm_switches_a_cc_on_card_off_before_launch() {
         let harness = harness_with_gpu_switch(
             vec![nvidia_card("06:00.0")],
             switchable_probe,
@@ -10433,7 +10424,7 @@ mod tests {
     }
 
     #[test]
-    fn ensure_gpu_modes_refuses_a_wrong_mode_with_the_autoswitch_off() {
+    fn ensure_gpu_modes_refuses_a_wrong_mode_without_a_switch_backend() {
         let harness = harness_with_gpu_probe(vec![nvidia_card("06:00.0")], switchable_probe);
         let state = &harness.state;
         PROBED_CC_MODE.with(|mode| mode.set(Some(crate::gpu_cc::CcMode::Off)));
