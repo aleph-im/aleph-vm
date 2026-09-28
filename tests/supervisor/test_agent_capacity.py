@@ -45,6 +45,7 @@ def _gpu_device(
     *,
     device_id: str = _DEVICE_ID,
     cc_mode: Literal["on", "devtools", "off"] | None = None,
+    arch: Literal["hopper", "blackwell"] | None = None,
 ) -> GpuDevice:
     return GpuDevice(
         vendor="NVIDIA",
@@ -53,6 +54,7 @@ def _gpu_device(
         pci_host=pci_host,
         device_id=device_id,
         cc_mode=cc_mode,
+        arch=arch,
     )
 
 
@@ -356,8 +358,9 @@ async def test_reserve_gpus_raises_when_none_match():
 
 
 @pytest.mark.asyncio
-async def test_reserve_gpus_never_hands_out_a_cc_mode_card():
-    """A CC-mode card only initialises inside a confidential guest: the plain
+async def test_reserve_gpus_never_hands_out_a_cc_mode_card_of_unknown_family():
+    """A CC-mode card only initialises inside a confidential guest, and the
+    supervisor cannot move a card whose family it does not know: the plain
     path treats it as absent, down to the headroom it reports."""
     manager = _manager([_gpu_device(cc_mode="on"), _gpu_device("0000:02:00.0", cc_mode="devtools")])
 
@@ -366,6 +369,32 @@ async def test_reserve_gpus_never_hands_out_a_cc_mode_card():
 
     assert excinfo.value.available == {"gpus": []}
     assert manager.holds == {}
+
+
+@pytest.mark.asyncio
+async def test_a_cc_mode_card_of_a_known_family_answers_a_plain_request():
+    manager = _manager([_gpu_device(cc_mode="on", arch="hopper")])
+
+    resolved = await manager.resolve_gpus([_DEVICE_ID], "0xUSER")
+
+    assert [gpu.pci_host for gpu in resolved] == ["0000:01:00.0"]
+
+
+@pytest.mark.asyncio
+async def test_an_off_card_answers_a_confidential_request():
+    manager = _manager([_gpu_device(cc_mode="off", arch="hopper")])
+
+    resolved = await manager.resolve_confidential_gpus(arch="hopper", count=1, models=None, owner="0xUSER")
+
+    assert [gpu.pci_host for gpu in resolved] == ["0000:01:00.0"]
+
+
+@pytest.mark.asyncio
+async def test_an_unprobed_card_is_no_confidential_capacity():
+    manager = _manager([_gpu_device(cc_mode=None, arch="hopper")])
+
+    with pytest.raises(InsufficientResourcesError):
+        await manager.resolve_confidential_gpus(arch="hopper", count=1, models=None, owner="0xUSER")
 
 
 @pytest.mark.asyncio
@@ -511,11 +540,11 @@ def _cc_gpu(
 
 
 @pytest.mark.asyncio
-async def test_resolve_confidential_gpus_takes_only_on_mode_cards():
+async def test_resolve_confidential_gpus_takes_any_decoded_card_but_not_an_unprobed_one():
     manager = _manager([_cc_gpu("06:00.0", "off"), _cc_gpu("07:00.0", None), _cc_gpu("08:00.0", "on")])
-    resolved = await manager.resolve_confidential_gpus(arch="blackwell", count=1, models=None, owner="0xUSER")
-    assert [str(g.pci_host) for g in resolved] == ["08:00.0"]
-    assert resolved[0].supports_x_vga is False
+    resolved = await manager.resolve_confidential_gpus(arch="blackwell", count=2, models=None, owner="0xUSER")
+    assert [str(g.pci_host) for g in resolved] == ["06:00.0", "08:00.0"]
+    assert all(g.supports_x_vga is False for g in resolved)
 
 
 @pytest.mark.asyncio
@@ -548,7 +577,7 @@ async def test_resolve_confidential_gpus_rejects_another_architecture():
 
 @pytest.mark.asyncio
 async def test_resolve_confidential_gpus_names_the_confidential_requirement():
-    manager = _manager([_cc_gpu("06:00.0", "devtools")])
+    manager = _manager([_cc_gpu("06:00.0", None)])
     with pytest.raises(InsufficientResourcesError) as excinfo:
         await manager.resolve_confidential_gpus(arch="blackwell", count=1, models=None, owner="0xUSER")
     assert excinfo.value.required == {"confidential_gpu": {"arch": "blackwell", "count": 1, "models": None}}

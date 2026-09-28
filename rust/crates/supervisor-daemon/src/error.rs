@@ -79,6 +79,15 @@ pub enum DaemonError {
     )]
     GpuUnreadable { pci_host: String },
 
+    #[error(
+        "cannot switch the GPU at {pci_host} to confidential-computing mode {target}: {detail}"
+    )]
+    GpuModeSwitch {
+        pci_host: String,
+        target: String,
+        detail: String,
+    },
+
     #[error("PCI resource line {line:?} does not describe an addressable region: {reason}")]
     GpuBarRange { line: String, reason: &'static str },
 

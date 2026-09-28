@@ -1,6 +1,7 @@
-"""tee.nvidia_cc is advertised only for cards probed in CC mode 'on', and
-only when the host can launch SEV-SNP: a confidential GPU on a host that
-cannot run a confidential guest is not a capability."""
+"""tee.nvidia_cc advertises every card of a known family whose CC mode
+decoded, since the supervisor moves the card at create, and only when the
+host can launch SEV-SNP: a confidential GPU on a host that cannot run a
+confidential guest is not a capability."""
 
 import pytest
 
@@ -22,18 +23,17 @@ def _gpu(device_id: str, pci_host: str, cc_mode: str | None, arch: str | None = 
     return raw
 
 
-def test_only_on_mode_cards_are_listed():
+def test_decoded_cards_are_listed_and_an_unprobed_one_is_not():
     props = nvidia_cc_properties(
         [
             _gpu("10de:2b85", "06:00.0", "on"),
-            _gpu("10de:2b85", "07:00.0", "devtools"),
+            _gpu("10de:2b85", "07:00.0", "off"),
             _gpu("10de:2b85", "08:00.0", None),
         ],
         {"10de:2b85": "RTX PRO 6000"},
     )
-    assert props == NvidiaCcProperties(
-        devices=[{"device_id": "10de:2b85", "arch": "blackwell", "model": "RTX PRO 6000"}]
-    )
+    card = {"device_id": "10de:2b85", "arch": "blackwell", "model": "RTX PRO 6000"}
+    assert props == NvidiaCcProperties(devices=[card, card])
 
 
 def test_the_architecture_is_advertised_alongside_the_device_id():
@@ -49,9 +49,24 @@ def test_a_card_without_an_architecture_is_not_advertised():
     assert nvidia_cc_properties([_gpu("10de:2b85", "06:00.0", "on", arch=None)], {}) is None
 
 
-def test_no_on_mode_card_means_no_block():
-    assert nvidia_cc_properties([_gpu("10de:2b85", "06:00.0", "off")], {}) is None
+def test_no_decoded_card_means_no_block():
+    assert nvidia_cc_properties([_gpu("10de:2b85", "06:00.0", None)], {}) is None
     assert nvidia_cc_properties([], {}) is None
+
+
+def test_any_decoded_mode_with_an_arch_is_offered():
+    # The daemon moves the card at create; off and devtools cards with a
+    # known family are confidential capacity too. An unprobed card is not.
+    props = nvidia_cc_properties(
+        [
+            _gpu("10de:2b85", "06:00.0", "off"),
+            _gpu("10de:2b85", "07:00.0", "devtools"),
+            _gpu("10de:2b85", "08:00.0", None),
+            _gpu("10de:2b85", "09:00.0", "off", arch=None),
+        ],
+        {},
+    )
+    assert [d.device_id for d in props.devices] == ["10de:2b85", "10de:2b85"]
 
 
 @pytest.mark.asyncio

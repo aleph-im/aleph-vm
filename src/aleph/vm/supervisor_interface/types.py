@@ -408,3 +408,5 @@ class HostInfo:
     available_disk_bytes: int = 0
     gpu_inventory: list[dict] = field(default_factory=list)
     available_gpus: list[dict] = field(default_factory=list)
+    # Per card: admin-tool resets run since the supervisor last started.
+    gpu_cc_switches: dict[str, int] = field(default_factory=dict)

@@ -192,6 +192,13 @@ pub struct Settings {
     /// confidential-computing mode is served from the cache before the card is
     /// read again. An answer with no mode is held for a fixed minute instead.
     pub gpu_cc_mode_ttl: u64,
+
+    /// ALEPH_VM_GPU_CC_ADMIN_TOOL: NVIDIA's `nvidia_gpu_tools.py`, the only
+    /// thing that writes the mode a create needs.
+    pub gpu_cc_admin_tool: PathBuf,
+    /// ALEPH_VM_GPU_CC_SWITCH_TIMEOUT, in SECONDS, default 60: a hang guard
+    /// on the tool (a switch measures under three seconds).
+    pub gpu_cc_switch_timeout_secs: u64,
 }
 
 /// conf.py DnsResolver: how DNS_NAMESERVERS is derived when unset.
@@ -383,6 +390,20 @@ impl Settings {
         let gpu_cc_mode_ttl = env
             .get_u64("GPU_CC_MODE_TTL")?
             .unwrap_or(crate::gpu_cc::DEFAULT_CC_MODE_TTL_SECS);
+        let gpu_cc_admin_tool = env
+            .get("GPU_CC_ADMIN_TOOL")
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/opt/aleph-vm/gpu-admin-tools/nvidia_gpu_tools.py"));
+        let gpu_cc_switch_timeout_secs = env.get_u64("GPU_CC_SWITCH_TIMEOUT")?.unwrap_or(60);
+        // Zero would kill the tool on the first poll, before it can write anything.
+        if gpu_cc_switch_timeout_secs == 0 {
+            return Err(DaemonError::InvalidSetting {
+                key: format!("{ENV_PREFIX}GPU_CC_SWITCH_TIMEOUT"),
+                value: "0".to_string(),
+                expected: "a positive number of seconds",
+            });
+        }
         let dns_resolution = match env.get("DNS_RESOLUTION") {
             None => DnsResolution::Detect,
             Some(value) if value == "detect" => DnsResolution::Detect,
@@ -438,6 +459,8 @@ impl Settings {
             numa_hugepages_headroom_mb,
             numa_hugepages_limit_mb,
             gpu_cc_mode_ttl,
+            gpu_cc_admin_tool,
+            gpu_cc_switch_timeout_secs,
         })
     }
 
@@ -669,6 +692,39 @@ mod tests {
         // A non-integer or negative value is a hard error, like the other ints.
         assert!(Settings::from_vars(vars(&[("ALEPH_VM_GPU_CC_MODE_TTL", "often")])).is_err());
         assert!(Settings::from_vars(vars(&[("ALEPH_VM_GPU_CC_MODE_TTL", "-1")])).is_err());
+    }
+
+    #[test]
+    fn the_gpu_cc_switch_settings_have_defaults() {
+        let defaults = Settings::from_vars(vars(&[])).unwrap();
+        assert_eq!(
+            defaults.gpu_cc_admin_tool,
+            std::path::PathBuf::from("/opt/aleph-vm/gpu-admin-tools/nvidia_gpu_tools.py")
+        );
+        assert_eq!(defaults.gpu_cc_switch_timeout_secs, 60);
+
+        let tuned = Settings::from_vars(vars(&[
+            (
+                "ALEPH_VM_GPU_CC_ADMIN_TOOL",
+                "/srv/tools/nvidia_gpu_tools.py",
+            ),
+            ("ALEPH_VM_GPU_CC_SWITCH_TIMEOUT", "15"),
+        ]))
+        .unwrap();
+        assert_eq!(
+            tuned.gpu_cc_admin_tool,
+            std::path::PathBuf::from("/srv/tools/nvidia_gpu_tools.py")
+        );
+        assert_eq!(tuned.gpu_cc_switch_timeout_secs, 15);
+
+        // An empty tool path falls back to the packaged one.
+        let empty = Settings::from_vars(vars(&[("ALEPH_VM_GPU_CC_ADMIN_TOOL", "")])).unwrap();
+        assert_eq!(
+            empty.gpu_cc_admin_tool,
+            std::path::PathBuf::from("/opt/aleph-vm/gpu-admin-tools/nvidia_gpu_tools.py")
+        );
+        assert!(Settings::from_vars(vars(&[("ALEPH_VM_GPU_CC_SWITCH_TIMEOUT", "soon")])).is_err());
+        assert!(Settings::from_vars(vars(&[("ALEPH_VM_GPU_CC_SWITCH_TIMEOUT", "0")])).is_err());
     }
 
     #[test]

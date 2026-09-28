@@ -126,9 +126,17 @@ long it sat idle.
 
 ## 3. Enable CC mode once
 
-CC mode is a setting on the card itself and persists across host reboots,
-so this is a one-time step per card, not something the CRN or the daemon
-manages at runtime.
+CC mode is a setting on the card itself and persists across host reboots.
+The daemon moves an idle card into the mode each create needs (on for a
+confidential guest, off for a plain pass-through instance), so this step is
+optional: the first confidential create switches the card. Setting it by
+hand only spares that first create the switch.
+
+Switching a card off after a confidential guest relies on the GPU scrubbing
+its memory on the reset that applies the new mode. Checked on an H200 NVL:
+after a confidential guest filled the whole HBM, the card was switched off
+and a plain guest read it back all zero, and the same held with the guest
+killed mid-run so the driver never freed anything.
 
 ```bash
 git clone https://github.com/NVIDIA/gpu-admin-tools
@@ -146,6 +154,18 @@ A card reporting `devtools` instead of `on` is a valid NVIDIA mode, used for
 driver development, but it lifts confidentiality guarantees and is refused
 by the CRN: `snp_config_slice` (`rust/crates/supervisor-daemon/src/lifecycle.rs`)
 only ever admits a card whose probed mode is exactly `On`.
+
+A card of a known family appears both in `properties.gpu.available_devices`
+and in `properties.tee.nvidia_cc.devices` of `/about/usage/system`; the
+scheduler counts it once. Each switch is
+logged at WARN by the daemon (card, direction, VM id, wall time) and counted
+per card in `properties.gpu.cc_switches`: admin-tool runs that exited 0,
+so resets the card went through, since the supervisor last started (the
+count resets with the daemon, so watch restarts too). The mode lives in the
+card's non-volatile store and NVIDIA publishes no endurance figure, so a
+count that climbs by more than a handful a day is worth a look at what the
+node is being scheduled. A failed switch refuses the create and leaves the
+card as the tool left it: run `--query-cc-mode` to see where it is.
 
 ## 4. Confirm the advertisement
 
@@ -186,7 +206,8 @@ If `nvidia_cc` is absent from `/about/capability` while
   `src/aleph/vm/agent/resources.py`): a CC-mode card on a host that cannot
   currently launch SNP is not advertised as a usable capability.
 - Check the daemon log for `GPU CC mode probe failed` or similar
-  (`DaemonError::GpuProbe`, `rust/crates/supervisor-daemon/src/gpu_cc.rs`).
+  (`DaemonError::GpuRegisterRead` or `DaemonError::GpuUnreadable`,
+  `rust/crates/supervisor-daemon/src/gpu_cc.rs`).
   The probe reads the card's BAR0 through
   `/sys/bus/pci/devices/<bdf>/resource0`; that file must be readable by the
   daemon's user (root by default). A permissions problem, a card not bound
@@ -290,9 +311,12 @@ guest console directly rather than in an API response:
   `init-instance-gpu.sh`), reached
   over the guest's own network path. The CRN process never talks to
   `rim.attestation.nvidia.com` or `ocsp.ndis.nvidia.com` itself.
-- **No reading of the CC register while a VM owns the card.** The daemon's
-  probe (`rust/crates/supervisor-daemon/src/gpu_cc.rs`) only ever runs
-  against a card no VM's world-view entry currently attaches
-  (`refresh_cc_modes_with`, `rust/crates/supervisor-daemon/src/service.rs`);
-  once a card is attached to a guest, its cached mode is left untouched
-  until the guest releases it.
+- **No reading or writing of the CC register while a VM owns the card.** The
+  daemon's probe (`rust/crates/supervisor-daemon/src/gpu_cc.rs`) only ever
+  runs against a card no VM's world-view entry currently attaches
+  (`refresh_cc_modes_with`, `rust/crates/supervisor-daemon/src/service.rs`),
+  and a mode switch (`ensure_gpu_modes`,
+  `rust/crates/supervisor-daemon/src/lifecycle.rs`) only against a card a
+  create has just found unattached, under the creation lock, before the VM
+  exists. Once a card is attached to a guest, its mode is neither read nor
+  written until the guest releases it.
