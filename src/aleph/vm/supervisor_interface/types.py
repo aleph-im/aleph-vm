@@ -411,4 +411,5 @@ class HostInfo:
     # Whether the supervisor moves an idle NVIDIA card into the CC mode a
     # create needs; the agent's card lists widen accordingly.
     gpu_cc_autoswitch: bool = False
+    # Per card: admin-tool resets run since the supervisor last started.
     gpu_cc_switches: dict[str, int] = field(default_factory=dict)

@@ -157,9 +157,11 @@ only ever admits a card whose probed mode is exactly `On`.
 
 A card advertised while the autoswitch is on appears both in
 `properties.gpu.available_devices` and in `properties.tee.nvidia_cc.devices`
-of `/about/usage/system`; the scheduler counts it once. Each successful
-switch is logged at WARN by the daemon (card, direction, VM id, wall time) and
-counted per card in `properties.gpu.cc_switches`. The mode lives in the
+of `/about/usage/system`; the scheduler counts it once. Each switch is
+logged at WARN by the daemon (card, direction, VM id, wall time) and counted
+per card in `properties.gpu.cc_switches`: admin-tool runs that exited 0,
+so resets the card went through, since the supervisor last started (the
+count resets with the daemon, so watch restarts too). The mode lives in the
 card's non-volatile store and NVIDIA publishes no endurance figure, so a
 count that climbs by more than a handful a day is worth a look at what the
 node is being scheduled. A failed switch refuses the create and leaves the

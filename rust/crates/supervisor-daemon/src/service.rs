@@ -186,8 +186,9 @@ pub struct DaemonState {
     /// How a card's CC mode is written: NVIDIA's admin tool in production,
     /// `gpu_cc::no_switch` on hermetic state so tests never touch a card.
     pub gpu_cc_switch: crate::gpu_cc::CcSwitch,
-    /// Successful mode switches per card since the daemon started; the mode
-    /// lives in the card's non-volatile store, so the rate is worth watching.
+    /// Admin-tool runs that exited 0 per card since the daemon started (a
+    /// reset ran, whether or not the read-back agreed); the mode lives in the
+    /// card's non-volatile store, so the rate is worth watching.
     pub gpu_cc_switches: std::sync::Mutex<HashMap<String, u64>>,
 }
 

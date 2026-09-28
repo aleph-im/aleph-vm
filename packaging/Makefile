@@ -22,7 +22,8 @@ debian-package-rust: debian-package-code gpu-admin-tools
 	install -m 0755 ../rust/target/release/alephctl ./aleph-vm/opt/aleph-vm/bin/alephctl
 	rm -rf ./aleph-vm/opt/aleph-vm/gpu-admin-tools
 	mkdir -p ./aleph-vm/opt/aleph-vm/gpu-admin-tools
-	cp -pr ./build/gpu-admin-tools/nvidia_gpu_tools.py ./build/gpu-admin-tools/cli ./build/gpu-admin-tools/gpu ./build/gpu-admin-tools/pci ./build/gpu-admin-tools/utils ./build/gpu-admin-tools/LICENSE ./aleph-vm/opt/aleph-vm/gpu-admin-tools/
+	cp -pr ./build/gpu-admin-tools/. ./aleph-vm/opt/aleph-vm/gpu-admin-tools/
+	rm -rf ./aleph-vm/opt/aleph-vm/gpu-admin-tools/.git
 
 debian-package-code:
 	rm -fr ./aleph-vm/opt/aleph-vm

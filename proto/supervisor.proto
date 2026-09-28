@@ -142,7 +142,7 @@ message HostInfo {
   string gpu_inventory_json = 19;    // list[dict] as JSON; rich agent GPU inventory
   string available_gpus_json = 20;   // list[dict] as JSON
   bool gpu_cc_autoswitch = 21;       // the daemon moves idle NVIDIA cards into the CC mode a create needs
-  string gpu_cc_switches_json = 22;  // {pci_host: successful switches since start} as JSON
+  string gpu_cc_switches_json = 22;  // {pci_host: admin-tool resets run since the daemon started} as JSON
 }
 
 message NumaNode {

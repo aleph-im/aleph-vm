@@ -2538,32 +2538,19 @@ fn ensure_gpu_modes(
         if device.vendor != "NVIDIA" {
             continue;
         }
-        let probed = if wanted == crate::gpu_cc::CcMode::Off {
+        let probed = match probe_and_cache(state, device, state.gpu_cc_probe) {
+            Ok(mode) => mode,
             // Fail open: a wrongly moded card in a plain guest only fails to boot.
-            match (state.gpu_cc_probe)(&device.pci_host, &device.device_id) {
-                Ok(mode) => {
-                    state
-                        .gpu_cc_modes
-                        .lock()
-                        .expect("gpu_cc_modes poisoned")
-                        .insert(
-                            device.pci_host.clone(),
-                            crate::gpu_cc::ProbedCcMode::now(mode),
-                        );
-                    mode
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        vm_id,
-                        pci_host = %device.pci_host,
-                        %error,
-                        "cannot read the GPU's confidential-computing mode; passing it to a plain VM"
-                    );
-                    continue;
-                }
+            Err(error) if wanted == crate::gpu_cc::CcMode::Off => {
+                tracing::warn!(
+                    vm_id,
+                    pci_host = %device.pci_host,
+                    %error,
+                    "cannot read the GPU's confidential-computing mode; passing it to a plain VM"
+                );
+                continue;
             }
-        } else {
-            probe_and_cache(state, device, state.gpu_cc_probe)?
+            Err(error) => return Err(error),
         };
         let needs_switch = match (probed, wanted) {
             (Some(mode), _) if mode == wanted => false,

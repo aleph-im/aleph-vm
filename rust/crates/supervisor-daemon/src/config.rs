@@ -400,6 +400,14 @@ impl Settings {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/opt/aleph-vm/gpu-admin-tools/nvidia_gpu_tools.py"));
         let gpu_cc_switch_timeout_secs = env.get_u64("GPU_CC_SWITCH_TIMEOUT")?.unwrap_or(60);
+        // Zero would kill the tool on the first poll, before it can write anything.
+        if gpu_cc_switch_timeout_secs == 0 {
+            return Err(DaemonError::InvalidSetting {
+                key: format!("{ENV_PREFIX}GPU_CC_SWITCH_TIMEOUT"),
+                value: "0".to_string(),
+                expected: "a positive number of seconds",
+            });
+        }
         let dns_resolution = match env.get("DNS_RESOLUTION") {
             None => DnsResolution::Detect,
             Some(value) if value == "detect" => DnsResolution::Detect,
@@ -726,6 +734,7 @@ mod tests {
         );
         assert!(Settings::from_vars(vars(&[("ALEPH_VM_GPU_CC_AUTOSWITCH", "maybe")])).is_err());
         assert!(Settings::from_vars(vars(&[("ALEPH_VM_GPU_CC_SWITCH_TIMEOUT", "soon")])).is_err());
+        assert!(Settings::from_vars(vars(&[("ALEPH_VM_GPU_CC_SWITCH_TIMEOUT", "0")])).is_err());
     }
 
     #[test]

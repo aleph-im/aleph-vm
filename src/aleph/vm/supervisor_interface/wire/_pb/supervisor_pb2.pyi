@@ -333,7 +333,7 @@ class HostInfo(google.protobuf.message.Message):
     gpu_cc_autoswitch: builtins.bool
     """the daemon moves idle NVIDIA cards into the CC mode a create needs"""
     gpu_cc_switches_json: builtins.str
-    """{pci_host: successful switches since start} as JSON"""
+    """{pci_host: admin-tool resets run since the daemon started} as JSON"""
     @property
     def numa_nodes(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___NumaNode]:
         """Topology"""
