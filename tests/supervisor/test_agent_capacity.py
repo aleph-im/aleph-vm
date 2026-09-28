@@ -577,7 +577,7 @@ async def test_resolve_confidential_gpus_rejects_another_architecture():
 
 @pytest.mark.asyncio
 async def test_resolve_confidential_gpus_names_the_confidential_requirement():
-    manager = _manager([_cc_gpu("06:00.0", "devtools")])
+    manager = _manager([_cc_gpu("06:00.0", None)])
     with pytest.raises(InsufficientResourcesError) as excinfo:
         await manager.resolve_confidential_gpus(arch="blackwell", count=1, models=None, owner="0xUSER")
     assert excinfo.value.required == {"confidential_gpu": {"arch": "blackwell", "count": 1, "models": None}}
