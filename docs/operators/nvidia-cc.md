@@ -155,9 +155,13 @@ driver development, but it lifts confidentiality guarantees and is refused
 by the CRN: `snp_config_slice` (`rust/crates/supervisor-daemon/src/lifecycle.rs`)
 only ever admits a card whose probed mode is exactly `On`.
 
-A card of a known family appears both in `properties.gpu.available_devices`
-and in `properties.tee.nvidia_cc.devices` of `/about/usage/system`; the
-scheduler counts it once. Each switch is
+Every card appears once in `gpu.available_devices` of `/about/usage/system`,
+and its `modes` list says how this host can hand it over: `plain`, `cc`,
+both (any decoded mode of a known family) or neither (a CC card whose
+family the daemon cannot place). The scheduler places against `modes`;
+`cc_mode` next to it is the probed hardware state, for operators.
+`properties.tee.nvidia_cc.devices` still lists the free `cc`-capable cards
+as a legacy view. Each switch is
 logged at WARN by the daemon (card, direction, VM id, wall time) and counted
 per card in `properties.gpu.cc_switches`: admin-tool runs that exited 0,
 so resets the card went through, since the supervisor last started (the
@@ -177,8 +181,9 @@ card's BAR0 register and caches the result. Confirm the CRN sees it:
 curl -s http://<crn>/about/capability | jq .tee
 ```
 
-The response's `tee.nvidia_cc.devices` lists every card currently probed
-`on` and not attached to a running VM; `tee.sev_snp` must also be present,
+The response's `tee.nvidia_cc.devices` lists every free card the host can
+hand over in CC mode (any decoded mode of a known family) and not attached
+to a running VM; `tee.sev_snp` must also be present,
 since `nvidia_cc` is only advertised alongside a working SNP launch
 capability. This list can still include a card another user's in-flight
 request already reserved: reservations are an agent-side, in-memory,
@@ -192,11 +197,13 @@ section 5. For the full per-card picture including cards attached to a VM
 or in `devtools`/`off`, check:
 
 ```bash
-curl -s http://<crn>/about/usage/system | jq '.gpu.devices[] | {device_id, arch, cc_mode}'
+curl -s http://<crn>/about/usage/system | jq '.gpu.devices[] | {device_id, arch, cc_mode, modes}'
 ```
 
 `cc_mode` is one of `"on"`, `"devtools"`, `"off"`, or absent (the field is
-`null`/omitted when the probe has not run or failed for that card).
+`null`/omitted when the probe has not run or failed for that card). `modes`
+is the placement signal: `cc` in it means the CRN will attach this card to a
+confidential guest, `plain` that it will attach it to a pass-through one.
 
 If `nvidia_cc` is absent from `/about/capability` while
 `nvidia_gpu_tools.py --query-cc-mode` reports `on` on the host:
