@@ -2531,6 +2531,7 @@ version = "0.1.0"
 dependencies = [
  "aleph-tee",
  "anyhow",
+ "base64",
  "clap",
  "memsizes",
  "serde",

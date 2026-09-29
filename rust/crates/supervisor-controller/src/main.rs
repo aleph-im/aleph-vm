@@ -77,6 +77,16 @@ enum ControllerError {
     )]
     MalformedRootfsOverride,
 
+    #[error(
+        "TDX backend marker (tdx=true) is set but the config is missing a launch field \
+         (ovmf_path/kernel_path/initrd_path/kernel_cmdline/mrconfigid); refusing to launch \
+         a partial TDX config"
+    )]
+    PartialTdxConfig,
+
+    #[error("config carries both the tdx and sev_snp backend markers; refusing to pick one")]
+    ConflictingTeeMarkers,
+
     #[error("this controller only runs QEMU VMs, not Firecracker")]
     OnlyQemu,
 
@@ -155,8 +165,8 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
     }
 
     // Dispatch with Python's `execute_persistent_vm` precedence: the hypervisor
-    // field first (firecracker rejected), then SNP, then the confidential-
-    // superset shape, then the plain QEMU path.
+    // field first (firecracker rejected), then TDX, then SNP, then the
+    // confidential-superset shape, then the plain QEMU path.
     let target = select_run_target(&config)?;
 
     // Wait for the supervisor to create the tap interface. The controller
@@ -175,6 +185,9 @@ fn run(cli: &Cli) -> anyhow::Result<()> {
         }
         RunTarget::Snp(qemu_config) => {
             runtime.block_on(qemu::run_snp(&config.vm_hash, qemu_config))
+        }
+        RunTarget::Tdx(qemu_config) => {
+            runtime.block_on(qemu::run_tdx(&config.vm_hash, qemu_config))
         }
     };
     result.map_err(ControllerError::from)?;
@@ -212,12 +225,13 @@ fn interface_exists(interface_name: &str) -> bool {
 }
 
 /// The selected QEMU run path: plain (`QemuVM.start()`), SEV/SEV-ES
-/// confidential (`QemuConfidentialVM.start()`), or SEV-SNP measured boot
-/// (increment B1).
+/// confidential (`QemuConfidentialVM.start()`), SEV-SNP measured boot
+/// (increment B1), or Intel TDX measured boot.
 enum RunTarget {
     Plain(QemuConfig),
     Confidential(QemuConfig),
     Snp(QemuConfig),
+    Tdx(QemuConfig),
 }
 
 /// Select the QEMU run path, replicating the Python `execute_persistent_vm`
@@ -233,24 +247,42 @@ fn select_run_target(config: &Configuration) -> Result<RunTarget, ControllerErro
         return Err(ControllerError::NotAFirecrackerController);
     }
     match &config.vm_configuration {
-        // SEV-SNP is checked first: it is a distinct measured-boot path with no
+        // Two backend markers on one config is a corrupt or hand-edited file;
+        // neither measured path may be guessed.
+        VmConfiguration::Qemu(qemu_config)
+            if qemu_config.is_tdx_marked() && qemu_config.is_snp_marked() =>
+        {
+            Err(ControllerError::ConflictingTeeMarkers)
+        }
+        // A half-populated rootfs override is refused on both measured paths
+        // BEFORE the complete/partial split below (see the SNP arm's comment).
+        VmConfiguration::Qemu(qemu_config)
+            if (qemu_config.is_tdx() || qemu_config.is_snp())
+                && matches!(qemu_config.rootfs_override(), RootfsOverride::Malformed) =>
+        {
+            Err(ControllerError::MalformedRootfsOverride)
+        }
+        // TDX: same complete-or-refuse contract as SNP below; `is_tdx()`
+        // requires every field `build_tdx_argv` `.expect()`s, and a marked
+        // but partial config is a clean refusal, never a plain launch.
+        VmConfiguration::Qemu(qemu_config) if qemu_config.is_tdx() => {
+            Ok(RunTarget::Tdx((**qemu_config).clone()))
+        }
+        VmConfiguration::Qemu(qemu_config) if qemu_config.is_tdx_marked() => {
+            Err(ControllerError::PartialTdxConfig)
+        }
+        // SEV-SNP is checked next: it is a distinct measured-boot path with no
         // session/godh, so it is NOT `is_confidential()`, but routing it
         // explicitly keeps the intent clear. `is_snp()` requires ALL of the
         // fields `build_snp_argv` `.expect()`s, so this only routes a complete
         // config into the SNP builder (its debug_assert can never trip).
         // A complete SNP config with a half-populated rootfs override
         // (image_format present without image_readonly, or vice versa) is
-        // refused here too, BEFORE the Snp/PartialSnpConfig split below: the
+        // refused above, BEFORE the Snp/PartialSnpConfig split: the
         // writer always sets the pair together, so this can only be a
         // corrupt or hand-edited config, and build_snp_argv must never be
         // asked to guess which half is right (its own debug_assert only
         // documents the invariant, it does not enforce it in release builds).
-        VmConfiguration::Qemu(qemu_config)
-            if qemu_config.is_snp()
-                && matches!(qemu_config.rootfs_override(), RootfsOverride::Malformed) =>
-        {
-            Err(ControllerError::MalformedRootfsOverride)
-        }
         VmConfiguration::Qemu(qemu_config) if qemu_config.is_snp() => {
             Ok(RunTarget::Snp((**qemu_config).clone()))
         }
@@ -420,6 +452,7 @@ mod tests {
                     RunTarget::Plain(_) => "plain",
                     RunTarget::Confidential(_) => "confidential",
                     RunTarget::Snp(_) => "snp",
+                    RunTarget::Tdx(_) => "tdx",
                 }
             ),
         }
@@ -469,10 +502,64 @@ mod tests {
                         RunTarget::Plain(_) => "plain",
                         RunTarget::Confidential(_) => "confidential",
                         RunTarget::Snp(_) => "snp",
+                        RunTarget::Tdx(_) => "tdx",
                     }
                 ),
             }
         }
+    }
+
+    const TDX_FIELDS: &str = r#""tdx":true,"ovmf_path":"/TDVF.fd",
+        "kernel_path":"/bzImage","initrd_path":"/initrd",
+        "kernel_cmdline":"console=ttyS0 root=/dev/mapper/verity-root ro roothash=abc aleph_tdx_descriptor=1",
+        "mrconfigid":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA""#;
+
+    #[test]
+    fn a_tdx_marked_config_dispatches_to_the_tdx_runner() {
+        let config = parse("qemu", &format!("{QEMU_VM_CONFIG},{TDX_FIELDS}"));
+        assert!(matches!(select_run_target(&config), Ok(RunTarget::Tdx(_))));
+    }
+
+    #[test]
+    fn a_partial_tdx_config_is_refused_cleanly_not_launched_plain() {
+        // tdx=true with the mrconfigid absent: refuse, never fall through to
+        // the plain builder (which would boot the image unmeasured).
+        let partial = format!(
+            r#"{QEMU_VM_CONFIG},"tdx":true,"ovmf_path":"/TDVF.fd",
+               "kernel_path":"/bzImage","initrd_path":"/initrd",
+               "kernel_cmdline":"console=ttyS0""#
+        );
+        let config = parse("qemu", &partial);
+        match select_run_target(&config) {
+            Err(error) => {
+                let message = error.to_string();
+                assert!(
+                    message.contains("TDX") && message.contains("missing"),
+                    "unexpected refusal message: {message}"
+                );
+            }
+            Ok(_) => panic!("a partial TDX config must be refused"),
+        }
+    }
+
+    #[test]
+    fn a_config_with_both_tee_markers_is_refused() {
+        let both = format!(r#"{QEMU_VM_CONFIG},{TDX_FIELDS},"sev_snp":true,"sev_policy":196608"#);
+        let config = parse("qemu", &both);
+        assert!(matches!(
+            select_run_target(&config),
+            Err(ControllerError::ConflictingTeeMarkers)
+        ));
+    }
+
+    #[test]
+    fn a_tdx_config_with_a_half_populated_rootfs_override_is_refused() {
+        let half = format!(r#"{QEMU_VM_CONFIG},{TDX_FIELDS},"image_format":"qcow2""#);
+        let config = parse("qemu", &half);
+        assert!(matches!(
+            select_run_target(&config),
+            Err(ControllerError::MalformedRootfsOverride)
+        ));
     }
 
     #[test]
