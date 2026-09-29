@@ -9,8 +9,9 @@
 //!
 //! Both are on by default. The SEV-SNP report parser, the `report_data`
 //! binding schemes, the owner-auth envelope and the X.509 extension are
-//! always available, since both sides share them. TDX, its quote parser
-//! included, is verify-only: no guest parses quotes.
+//! always available, since both sides share them. TDX's quote parser and
+//! verifier are verify-only (no guest parses quotes); its QEMU argv
+//! generator is always available, like the SEV-SNP one.
 
 #[cfg(feature = "verify")]
 mod fetch;
@@ -20,7 +21,6 @@ pub mod owner_auth;
 mod pki;
 pub mod report_data;
 pub mod sev_snp;
-#[cfg(feature = "verify")]
 pub mod tdx;
 pub mod traits;
 pub mod types;

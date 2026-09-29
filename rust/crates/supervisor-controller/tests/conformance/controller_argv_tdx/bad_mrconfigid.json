@@ -1,0 +1,31 @@
+{
+  "config_json": {
+    "qemu_bin_path": "/usr/bin/qemu-system-x86_64",
+    "image_path": "/var/lib/aleph/vm/volumes/persistent/abcdef/rootfs.ext4",
+    "monitor_socket_path": "/var/lib/aleph/vm/abcdef-monitor.socket",
+    "qmp_socket_path": "/var/lib/aleph/vm/abcdef-qmp.socket",
+    "qga_socket_path": "/var/lib/aleph/vm/abcdef-qga.socket",
+    "vcpu_count": 2,
+    "mem_size_mb": 2048,
+    "host_volumes": [
+      {
+        "mount": "",
+        "path_on_host": "/var/lib/aleph/vm/volumes/persistent/abcdef/rootfs.ext4.verity",
+        "read_only": true
+      },
+      {
+        "mount": "",
+        "path_on_host": "/var/lib/aleph/vm/volumes/persistent/abcdef/rootfs.ext4.tdx_descriptor",
+        "read_only": true
+      }
+    ],
+    "gpus": [],
+    "tdx": true,
+    "ovmf_path": "/var/lib/aleph/vm/tdvf/TDVF.fd",
+    "kernel_path": "/var/lib/aleph/vm/image/bzImage",
+    "initrd_path": "/var/lib/aleph/vm/image/initrd",
+    "kernel_cmdline": "console=ttyS0 root=/dev/mapper/verity-root ro roothash=abc123 aleph_tdx_descriptor=1",
+    "mrconfigid": "eHVvJGOhL2zL0OaAZQguXTZIz0vMYvH3vemIFciUCWY="
+  },
+  "expected_error": "TDX mrconfigid decodes to 32 bytes, expected 48"
+}
