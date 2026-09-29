@@ -11,6 +11,8 @@
 //! launch argv generator) and `measure` (MRTD/RTMR1/RTMR2/MRCONFIGID
 //! prediction, SHA-384 only).
 //!
+//! `guest`: `report` (the local TDREPORT over `/dev/tdx_guest`).
+//!
 //! `verify`: the chain, TCB appraisal and collateral clients.
 
 #[cfg(feature = "verify")]
@@ -24,6 +26,8 @@ pub mod pck_extension;
 pub mod pcs;
 pub mod qemu;
 pub mod quote;
+#[cfg(feature = "guest")]
+pub mod report;
 #[cfg(feature = "verify")]
 pub mod tcb;
 #[cfg(feature = "verify")]
