@@ -95,6 +95,7 @@ CONFIDENTIAL_MODE_TO_PB = {
     ConfidentialMode.SEV: pb.CONFIDENTIAL_MODE_SEV,
     ConfidentialMode.SEV_ES: pb.CONFIDENTIAL_MODE_SEV_ES,
     ConfidentialMode.SEV_SNP: pb.CONFIDENTIAL_MODE_SEV_SNP,
+    ConfidentialMode.TDX: pb.CONFIDENTIAL_MODE_TDX,
 }
 CONFIDENTIAL_MODE_FROM_PB = {v: k for k, v in CONFIDENTIAL_MODE_TO_PB.items()}
 

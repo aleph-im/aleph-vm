@@ -106,6 +106,26 @@ def test_tee_backend_enum_complete():
     assert meas_field.enum_type is supervisor_pb2.TeeBackend.DESCRIPTOR
 
 
+def test_confidential_mode_enum_complete():
+    from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
+
+    values = {v.name: v.number for v in supervisor_pb2.ConfidentialMode.DESCRIPTOR.values}
+    assert values == {
+        "CONFIDENTIAL_MODE_NONE": 0,
+        "CONFIDENTIAL_MODE_SEV": 1,
+        "CONFIDENTIAL_MODE_SEV_ES": 2,
+        "CONFIDENTIAL_MODE_SEV_SNP": 3,
+        "CONFIDENTIAL_MODE_TDX": 4,
+    }
+    field = supervisor_pb2.VmInfo.DESCRIPTOR.fields_by_name["confidential_mode"]
+    assert field.enum_type is supervisor_pb2.ConfidentialMode.DESCRIPTOR
+
+    from aleph.vm.supervisor_interface.types import ConfidentialMode
+    from aleph.vm.supervisor_interface.wire.proto_convert import CONFIDENTIAL_MODE_FROM_PB
+
+    assert CONFIDENTIAL_MODE_FROM_PB[supervisor_pb2.CONFIDENTIAL_MODE_TDX] is ConfidentialMode.TDX
+
+
 def test_health_status_enum_typed():
     from aleph.vm.supervisor_interface.wire._pb import supervisor_pb2
 
