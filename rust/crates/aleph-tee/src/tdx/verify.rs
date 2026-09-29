@@ -149,6 +149,11 @@ mod tests {
     const QUOTE_OUTDATED: &[u8] = include_bytes!("../../tests/fixtures/tdx/tdx_quote_outdated.bin");
     const COLLATERAL_OUTDATED: &[u8] =
         include_bytes!("../../tests/fixtures/tdx/tdx_quote_outdated_collateral.json");
+    const QUOTE_XEON6: &[u8] = include_bytes!("../../tests/fixtures/tdx/tdx_quote_xeon6_ratls.bin");
+    const COLLATERAL_XEON6: &[u8] =
+        include_bytes!("../../tests/fixtures/tdx/tdx_quote_xeon6_ratls_collateral.json");
+    const RATLS_CERT_XEON6: &[u8] =
+        include_bytes!("../../tests/fixtures/tdx/tdx_ratls_xeon6_cert.pem");
 
     /// Inside the v4 collateral's windows: 2025-06-20T00:00:00Z.
     fn now_v4() -> SystemTime {
@@ -158,6 +163,11 @@ mod tests {
     /// Inside the outdated collateral's windows: 2026-02-19T00:00:00Z.
     fn now_outdated() -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(1_771_459_200)
+    }
+
+    /// Inside the xeon6 collateral's windows: 2026-10-01T00:00:00Z.
+    fn now_xeon6() -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(1_790_812_800)
     }
 
     #[test]
@@ -291,6 +301,58 @@ mod tests {
         assert_eq!(verified.tcb.status, TcbStatus::UpToDate);
         assert_eq!(verified.registers, extract_registers(&quote.body));
         assert_eq!(verified.report_data, quote.body.report_data);
+    }
+
+    #[test]
+    fn attested_tls_certificate_from_our_runtime_verifies_end_to_end() {
+        // The relying party's whole path on a real capture: pull the quote
+        // out of the certificate the measured runtime served, verify chain,
+        // signatures and TCB, then bind the TLS key. The platform is
+        // OutOfDate (old firmware), so the default policy refuses it and an
+        // operator policy admitting that status is what lets it through:
+        // the registers and report_data come back only in the second case.
+        use crate::report_data::key_bound_report_data;
+        use crate::tdx::tcb::{TcbStatus, TdxTcbPolicy};
+        use crate::types::TeeType;
+        use crate::x509::extract_attestation_from_cert;
+
+        let cert_der = crate::pki::pem_certs_to_der("RA-TLS cert", RATLS_CERT_XEON6)
+            .expect("PEM parses")
+            .swap_remove(0);
+        let report = extract_attestation_from_cert(&cert_der)
+            .expect("extension parses")
+            .expect("the certificate carries the attestation extension");
+        assert_eq!(report.tee_type, TeeType::Tdx);
+        assert_eq!(report.data, QUOTE_XEON6);
+
+        let quote = parse_tdx_quote(&report.data).expect("quote parses");
+        let collateral = TdxCollateral::from_json(COLLATERAL_XEON6).expect("collateral parses");
+        let err = format!(
+            "{:#}",
+            verify_tdx_quote(&quote, &collateral, now_xeon6(), &TdxTcbPolicy::default())
+                .unwrap_err()
+        );
+        assert!(err.contains("OutOfDate"), "got: {err}");
+
+        let mut policy = TdxTcbPolicy::default();
+        policy.accepted_statuses.insert(TcbStatus::OutOfDate);
+        let verified = verify_tdx_quote(&quote, &collateral, now_xeon6(), &policy)
+            .expect("verifies once OutOfDate is admitted");
+        assert_eq!(verified.tcb.status, TcbStatus::OutOfDate);
+        assert_eq!(verified.tcb.advisory_ids.len(), 8);
+        assert_eq!(verified.registers, extract_registers(&quote.body));
+
+        // report_data binds the served key: SHA-384 over the domain tag and
+        // the raw subjectPublicKey, as the agent computes it at start-up.
+        let (_, cert) = x509_parser::parse_x509_certificate(&cert_der).expect("X.509 parses");
+        let public_key_raw = cert.public_key().subject_public_key.data.as_ref();
+        assert_eq!(public_key_raw.len(), 97, "uncompressed P-384 point");
+        assert_eq!(verified.report_data, key_bound_report_data(public_key_raw));
+        assert_ne!(
+            verified.report_data,
+            key_bound_report_data(&public_key_raw[1..]),
+            "any other key bytes must not bind"
+        );
     }
 
     #[test]
