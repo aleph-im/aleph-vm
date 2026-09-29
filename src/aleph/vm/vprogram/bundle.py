@@ -408,10 +408,10 @@ def make_manifest(  # noqa: PLR0913 -- one flag per mutually exclusive workload 
     if sum((exec_runtime, compose_runtime, gpu_runtime)) > 1:
         msg = "exec_runtime, compose_runtime and gpu_runtime are mutually exclusive"
         raise ValueError(msg)
+    _check_platform_facts(info, platform, compose_runtime=compose_runtime, gpu_runtime=gpu_runtime)
     if gpu_runtime and info.gpu is None:
         msg = "gpu_runtime needs the gpu facts recorded by the gpu flavor build"
         raise ValueError(msg)
-    _check_platform_facts(info, platform, compose_runtime=compose_runtime, gpu_runtime=gpu_runtime)
     if exec_runtime or gpu_runtime:
         workload = EXEC_WORKLOAD
     elif compose_runtime:
