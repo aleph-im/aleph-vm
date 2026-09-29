@@ -404,6 +404,7 @@ mod tests {
         assert_eq!(quote.signature.qe_report[320..352], bound);
     }
 
+    #[cfg(feature = "verify")]
     #[test]
     fn quote_signature_verifies_over_signed_region() {
         // Pins the framing contract in CI: the quote's ECDSA P-256
