@@ -1,6 +1,7 @@
 """Tests for deterministic bundle packaging and manifest construction."""
 
 import hashlib
+import json
 import tarfile
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from aleph.vm.vprogram.bundle import (
     CMDLINE_TEMPLATE_GPU_V1,
     CMDLINE_TEMPLATE_INSTANCE_GPU_V1,
     CMDLINE_TEMPLATE_LUKS_V1,
+    CMDLINE_TEMPLATE_TDX_V1,
     BundleInfo,
     InstanceBundleInfo,
     build_bundle,
@@ -25,10 +27,13 @@ from aleph.vm.vprogram.manifest import (
     InstanceRuntimeManifest,
     RuntimeManifest,
     SourceInfo,
+    TdxBootSpec,
+    TdxMeasurements,
 )
 
 ROOTHASH = "cb121a317be7dc7969dd633ca9b6c3718ffe9ea6715b64e0e35a871d484b56b8"
 MEASUREMENT = "de" * 48
+TDX_MEASUREMENTS = {"mrtd": "ab" * 48, "rtmr1": "cd" * 48, "rtmr2": "ef" * 48}
 EPOCH = 1700000000
 
 SOURCE = SourceInfo(
@@ -69,6 +74,22 @@ def gpu_image_dir(image_dir: Path) -> Path:
         '"project":"G153","project_sku":"0212","chip_sku":"895"}]}}}}'
     )
     return image_dir
+
+
+@pytest.fixture()
+def tdx_image_dir(tmp_path: Path) -> Path:
+    """The nix tdxImage output: the image_dir layout with TDVF in the OVMF.fd
+    slot and measurements.json in place of measurement.hex."""
+    d = tmp_path / "tdx-image"
+    d.mkdir()
+    (d / "OVMF.fd").write_bytes(b"tdvf firmware")
+    (d / "bzImage").write_bytes(b"kernel")
+    (d / "initrd").write_bytes(b"initrd contents")
+    (d / "rootfs.ext4").write_bytes(b"rootfs")
+    (d / "rootfs.ext4.verity").write_bytes(b"hash tree")
+    (d / "rootfs.ext4.roothash").write_text(ROOTHASH + "\n")
+    (d / "measurements.json").write_text(json.dumps(TDX_MEASUREMENTS, indent=2) + "\n")
+    return d
 
 
 def _out(tmp_path: Path, name: str) -> Path:
@@ -453,3 +474,115 @@ def test_make_instance_manifest_gpu_runtime_from_bundle_info(instance_gpu_image_
     assert info.instance_gpu is not None
     assert manifest.gpu.archs == info.instance_gpu.archs
     assert "library_path" not in manifest.gpu.model_dump()
+
+
+def test_build_bundle_tdx_flavor_records_the_measurements(tdx_image_dir: Path, tmp_path: Path) -> None:
+    out = _out(tmp_path, "out")
+    info = build_bundle(image_dir=tdx_image_dir, out_dir=out, source_epoch=EPOCH, source=SOURCE, flavor="tdx")
+    assert isinstance(info, BundleInfo)
+    assert info.measurement is None
+    assert info.tdx_measurements == TdxMeasurements(**TDX_MEASUREMENTS)
+    assert info.platform_roothash == ROOTHASH
+    # Same member map as the snp flavors: TDVF rides in the ovmf slot.
+    assert info.members.ovmf == "image/OVMF.fd"
+    with tarfile.open(out / BUNDLE_NAME, "r:gz") as tar:
+        names = tar.getnames()
+        tdvf = tar.extractfile("image/OVMF.fd")
+        assert tdvf is not None
+        assert tdvf.read() == b"tdvf firmware"
+    assert "image/measurements.json" in names
+    assert "image/measurement.hex" not in names
+    on_disk = BundleInfo.model_validate_json((out / BUNDLE_INFO_NAME).read_text())
+    assert on_disk == info
+
+
+def test_tdx_flavor_requires_measurements_json(image_dir: Path, tmp_path: Path) -> None:
+    # An snp image dir carries measurement.hex, not the triple.
+    with pytest.raises(FileNotFoundError):
+        build_bundle(
+            image_dir=image_dir, out_dir=_out(tmp_path, "out"), source_epoch=EPOCH, source=SOURCE, flavor="tdx"
+        )
+
+
+def test_tdx_flavor_rejects_a_malformed_triple(tdx_image_dir: Path, tmp_path: Path) -> None:
+    (tdx_image_dir / "measurements.json").write_text(json.dumps({**TDX_MEASUREMENTS, "mrtd": "ab" * 32}))
+    with pytest.raises(ValidationError):
+        build_bundle(
+            image_dir=tdx_image_dir, out_dir=_out(tmp_path, "out"), source_epoch=EPOCH, source=SOURCE, flavor="tdx"
+        )
+
+
+def test_bundle_info_records_exactly_one_measurement(image_dir: Path, tmp_path: Path) -> None:
+    info = build_bundle(image_dir=image_dir, out_dir=_out(tmp_path, "out"), source_epoch=EPOCH, source=SOURCE)
+    assert isinstance(info, BundleInfo)
+    both = info.model_dump(mode="json") | {"tdx_measurements": TDX_MEASUREMENTS}
+    with pytest.raises(ValidationError, match="exactly one"):
+        BundleInfo.model_validate(both)
+    neither = info.model_dump(mode="json") | {"measurement": None}
+    with pytest.raises(ValidationError, match="exactly one"):
+        BundleInfo.model_validate(neither)
+
+
+def test_make_manifest_tdx_platform(tdx_image_dir: Path, tmp_path: Path) -> None:
+    info = build_bundle(
+        image_dir=tdx_image_dir, out_dir=_out(tmp_path, "out"), source_epoch=EPOCH, source=SOURCE, flavor="tdx"
+    )
+    assert isinstance(info, BundleInfo)
+    manifest = make_manifest(
+        info=info, bundle_ref=BUNDLE_REF, name="aleph-tdx-attest", runtime_version="2026.09.29", platform="tdx"
+    )
+    assert manifest.platform == "tdx"
+    assert isinstance(manifest.boot, TdxBootSpec)
+    assert manifest.boot.cmdline_template == CMDLINE_TEMPLATE_TDX_V1
+    assert manifest.boot.kernel_hashes is False
+    assert manifest.boot.cpu_models == []
+    assert manifest.boot.platform_roothash == ROOTHASH
+    assert manifest.measurements == info.tdx_measurements
+    assert manifest.measurements is not info.tdx_measurements
+    assert manifest.workload.contract == "aleph.builtin/1"
+    assert manifest.gpu is None
+    assert RuntimeManifest.model_validate_json(manifest.to_canonical_json()) == manifest
+
+
+def test_make_manifest_tdx_exec_runtime_keeps_the_fixed_template(tdx_image_dir: Path, tmp_path: Path) -> None:
+    """The workload contract changes, the cmdline does not: on tdx the
+    workload tokens ride on the descriptor drive."""
+    info = build_bundle(
+        image_dir=tdx_image_dir, out_dir=_out(tmp_path, "out"), source_epoch=EPOCH, source=SOURCE, flavor="tdx"
+    )
+    assert isinstance(info, BundleInfo)
+    manifest = make_manifest(
+        info=info, bundle_ref=BUNDLE_REF, name="aleph-tdx-exec", runtime_version="1", exec_runtime=True, platform="tdx"
+    )
+    assert manifest.workload.contract == "aleph.exec/1"
+    assert manifest.boot.cmdline_template == CMDLINE_TEMPLATE_TDX_V1
+
+
+def test_make_manifest_tdx_needs_a_tdx_build(image_dir: Path, tmp_path: Path) -> None:
+    info = build_bundle(image_dir=image_dir, out_dir=_out(tmp_path, "out"), source_epoch=EPOCH, source=SOURCE)
+    assert isinstance(info, BundleInfo)
+    with pytest.raises(ValueError, match="tdx flavor build"):
+        make_manifest(info=info, bundle_ref=BUNDLE_REF, name="x", runtime_version="1", platform="tdx")
+
+
+def test_make_manifest_refuses_a_tdx_build_as_snp(tdx_image_dir: Path, tmp_path: Path) -> None:
+    info = build_bundle(
+        image_dir=tdx_image_dir, out_dir=_out(tmp_path, "out"), source_epoch=EPOCH, source=SOURCE, flavor="tdx"
+    )
+    assert isinstance(info, BundleInfo)
+    with pytest.raises(ValueError, match="cannot be published as a sev_snp runtime"):
+        make_manifest(info=info, bundle_ref=BUNDLE_REF, name="x", runtime_version="1")
+
+
+@pytest.mark.parametrize("flag", ["compose_runtime", "gpu_runtime"])
+def test_make_manifest_tdx_refuses_compose_and_gpu(tdx_image_dir: Path, tmp_path: Path, flag: str) -> None:
+    (tdx_image_dir / "gpu.json").write_text(
+        '{"vendor":"nvidia","driver_version":"595.71.05","library_path":"/opt/nvidia/lib",'
+        '"archs":{"hopper":{"accepted_models":["GH100 A01 GSP BROM"]}}}'
+    )
+    info = build_bundle(
+        image_dir=tdx_image_dir, out_dir=_out(tmp_path, "out"), source_epoch=EPOCH, source=SOURCE, flavor="tdx"
+    )
+    assert isinstance(info, BundleInfo)
+    with pytest.raises(ValueError, match="no tdx image"):
+        make_manifest(info=info, bundle_ref=BUNDLE_REF, name="x", runtime_version="1", platform="tdx", **{flag: True})

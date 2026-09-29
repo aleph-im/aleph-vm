@@ -44,8 +44,8 @@ def _build_command(flavor: str) -> str:
     """The `source.build` provenance recorded in the manifest: the exact nix
     target for this flavor, so an auditor rebuilds the same bundle (the
     instance flavor builds `nix#instanceImage`, the instance-gpu flavor
-    `nix#instanceGpuImage`, and the compose flavor `nix#composeImage`, not
-    `nix#image`)."""
+    `nix#instanceGpuImage`, the compose flavor `nix#composeImage` and the
+    tdx flavor `nix#tdxImage`, not `nix#image`)."""
     return f'nix build "git+file://$REPO?dir=nix#{_nix_target(flavor)}"'
 
 
@@ -75,6 +75,8 @@ def _nix_target(flavor: str) -> str:
         return "composeImage"
     if flavor == "gpu":
         return "gpuImage"
+    if flavor == "tdx":
+        return "tdxImage"
     return "image"
 
 
@@ -144,6 +146,7 @@ def cmd_manifest(args: argparse.Namespace) -> int:
             exec_runtime=args.exec_runtime,
             compose_runtime=args.flavor == "compose",
             gpu_runtime=args.flavor == "gpu",
+            platform="tdx" if args.flavor == "tdx" else "sev_snp",
         )
     out: Path = args.out if args.out is not None else args.bundle_info.parent / MANIFEST_NAME
     out.write_text(manifest.to_canonical_json())
@@ -169,13 +172,14 @@ def main(argv: list[str] | None = None) -> int:
     p_build.add_argument("--out", type=Path, required=True, help="output directory")
     p_build.add_argument(
         "--flavor",
-        choices=("vprogram", "instance", "instance-gpu", "compose", "gpu"),
+        choices=("vprogram", "instance", "instance-gpu", "compose", "gpu", "tdx"),
         default="vprogram",
         help="bundle flavor: vprogram (default, nix#image), instance (nix#instanceImage, "
         "no verity sidecars), instance-gpu (nix#instanceGpuImage, same layout as instance "
         "plus a gpu.json facts sidecar), compose (nix#composeImage, same byte layout as "
-        "vprogram), or gpu (nix#gpuImage, same byte layout as vprogram plus a gpu.json "
-        "facts sidecar)",
+        "vprogram), gpu (nix#gpuImage, same byte layout as vprogram plus a gpu.json "
+        "facts sidecar), or tdx (nix#tdxImage, TDVF in the OVMF.fd slot and "
+        "measurements.json in place of measurement.hex)",
     )
     p_build.set_defaults(func=cmd_build)
 
@@ -187,24 +191,26 @@ def main(argv: list[str] | None = None) -> int:
     p_manifest.add_argument("--out", type=Path, default=None, help="manifest path (default: next to bundle-info)")
     p_manifest.add_argument(
         "--flavor",
-        choices=("vprogram", "instance", "instance-gpu", "compose", "gpu"),
+        choices=("vprogram", "instance", "instance-gpu", "compose", "gpu", "tdx"),
         default="vprogram",
         help="manifest flavor: vprogram (default, aleph-vprogram-runtime), "
         "instance (aleph-instance-runtime, luks cmdline template), "
         "instance-gpu (aleph-instance-runtime, luks cmdline template plus the gpu "
         "requirement slots and the gpu block carried from the bundle-info), "
         "compose (aleph-vprogram-runtime with the aleph.compose/1 workload contract "
-        "and the workload_roothash cmdline template), or "
+        "and the workload_roothash cmdline template), "
         "gpu (aleph-vprogram-runtime with the aleph.exec/1 workload contract, the gpu "
-        "cmdline template, and the gpu block carried from the bundle-info)",
+        "cmdline template, and the gpu block carried from the bundle-info), or "
+        "tdx (aleph-vprogram-runtime with platform tdx, the fixed descriptor cmdline "
+        "template and the measurements triple carried from the bundle-info)",
     )
     p_manifest.add_argument(
         "--exec",
         dest="exec_runtime",
         action="store_true",
         help="build the aleph.exec/1 workload-runtime manifest (workload_roothash in the "
-        "cmdline template) instead of the builtin no-workload form; "
-        "incompatible with --flavor instance/instance-gpu/compose/gpu",
+        "cmdline template; on the descriptor drive for --flavor tdx) instead of the "
+        "builtin no-workload form; incompatible with --flavor instance/instance-gpu/compose/gpu",
     )
     p_manifest.set_defaults(func=cmd_manifest)
 
@@ -212,8 +218,9 @@ def main(argv: list[str] | None = None) -> int:
     # --exec builds the aleph.exec/1 workload-runtime manifest, which has no
     # meaning for an instance (LUKS) manifest and contradicts the compose
     # flavor's own contract; reject the combinations rather than silently
-    # ignoring the flag.
-    if getattr(args, "exec_runtime", False) and args.flavor != "vprogram":
+    # ignoring the flag. The tdx flavor is the same rootfs as vprogram, so
+    # its workload contract is chosen the same way.
+    if getattr(args, "exec_runtime", False) and args.flavor not in ("vprogram", "tdx"):
         parser.error(f"--exec is incompatible with --flavor {args.flavor}")
     return int(args.func(args))
 
