@@ -11,10 +11,13 @@
 //! launch argv generator) and `measure` (MRTD/RTMR1/RTMR2/MRCONFIGID
 //! prediction, SHA-384 only).
 //!
-//! `guest`: `report` (the local TDREPORT over `/dev/tdx_guest`).
+//! `guest`: `report` (the local TDREPORT over `/dev/tdx_guest`) and
+//! `backend` (quotes over configfs-tsm).
 //!
 //! `verify`: the chain, TCB appraisal and collateral clients.
 
+#[cfg(feature = "guest")]
+pub mod backend;
 #[cfg(feature = "verify")]
 pub mod certs;
 #[cfg(feature = "verify")]
@@ -32,3 +35,6 @@ pub mod report;
 pub mod tcb;
 #[cfg(feature = "verify")]
 pub mod verify;
+
+#[cfg(feature = "guest")]
+pub use backend::TdxBackend;
