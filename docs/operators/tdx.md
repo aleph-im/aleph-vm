@@ -124,12 +124,22 @@ Useful when reading a QEMU argv or a guest console:
   is down or on another path. `ss -xl | grep qgs` shows what it listens
   on; `journalctl -u qgsd` shows why it is not up (usually the QPL cannot
   reach PCCS).
-- **`InvalidBackend ... TDX guests need at least 2048 MiB` on `CreateVm`.**
-  The message asked for less memory than a TD boots with; nothing to fix
-  on the host.
-- **`InvalidBackend ... GPU passthrough is not supported on TDX guests`.**
-  A TDX V-PROGRAM with `trusted_execution.gpu`; confidential GPUs are an
-  SEV-SNP feature today. Nothing to fix on the host.
+- **`a TDX guest needs at least 2048 MiB` in the allocation response (or
+  `InvalidBackend ... TDX guests need at least 2048 MiB` on `CreateVm`).**
+  The message asked for less memory than a TD boots with; the agent refuses
+  before staging, the daemon backstops it. Nothing to fix on the host.
+- **`declares a confidential GPU, which TDX guests do not support` (or
+  `InvalidBackend ... GPU passthrough is not supported on TDX guests`).**
+  A TDX V-PROGRAM with a `gpu` block; confidential GPUs are an SEV-SNP
+  feature today. Nothing to fix on the host.
+- **`declares TEE backend 'sev_snp' but runtime ... is a tdx runtime`.** The
+  message was measured for SEV-SNP but points at a TDX runtime manifest.
+  Until aleph-message admits `backend: "tdx"`, no V-PROGRAM can name a TDX
+  runtime; the agent refuses the mismatch rather than boot a VM none of the
+  message's registers describe.
+- **`needs Intel TDX, which this host does not support`.** The scheduler
+  placed a TDX V-PROGRAM on a host that does not advertise `tee.tdx` (see
+  section 2 for the QGS and `kvm_intel.tdx` checks behind that flag).
 - **Guest console: `init: FATAL: aleph_tdx_descriptor=1 but no TDX
   descriptor drive found`.** The descriptor drive did not reach the guest
   within the wait. Check the QEMU argv for the `<rootfs>.tdx_descriptor`
