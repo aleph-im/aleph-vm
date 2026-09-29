@@ -2618,6 +2618,113 @@ fn ensure_gpu_modes(
     Ok(())
 }
 
+/// The trimmed `{rootfs}.roothash` sidecar, required and bounded at
+/// `MAX_ROOTHASH_SIDECAR_BYTES`. The value is spliced verbatim into
+/// `roothash=` on the measured cmdline, so anything but a bare hex string
+/// fails closed (InvalidBackend), never a mismeasured boot.
+fn read_verity_roothash(roothash_path: &str) -> Result<String, RpcError> {
+    use std::io::Read as _;
+    let mut reader = std::fs::File::open(roothash_path)
+        .map_err(|error| {
+            RpcError::InvalidBackend(format!(
+                "cannot read the dm-verity roothash sidecar {roothash_path}: {error}"
+            ))
+        })?
+        .take(MAX_ROOTHASH_SIDECAR_BYTES + 1);
+    let mut contents = String::new();
+    reader.read_to_string(&mut contents).map_err(|error| {
+        RpcError::InvalidBackend(format!(
+            "cannot read the dm-verity roothash sidecar {roothash_path}: {error}"
+        ))
+    })?;
+    if contents.len() as u64 > MAX_ROOTHASH_SIDECAR_BYTES {
+        return Err(RpcError::InvalidBackend(format!(
+            "the dm-verity roothash sidecar {roothash_path} exceeds \
+             {MAX_ROOTHASH_SIDECAR_BYTES} bytes"
+        )));
+    }
+    let roothash = contents.trim().to_string();
+    if roothash.is_empty() || !roothash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(RpcError::InvalidBackend(format!(
+            "the dm-verity roothash in {roothash_path} is not a hex string"
+        )));
+    }
+    Ok(roothash)
+}
+
+/// The per-deployment tokens of a measured V-PROGRAM launch, rendered from
+/// the optional sidecars next to the rootfs in the runtime manifest's
+/// template order: `workload_roothash=<hex>[ swiotlb=N][ verified_volumes=…]
+/// [ gpu_arch=… gpu_count=…[ gpu_models=…]]`. Empty when nothing is staged.
+/// Every value is spliced verbatim into a measured input (the SNP cmdline,
+/// the TDX descriptor), so each sidecar passes a closed grammar or fails
+/// closed. The aleph-rs client renders the same string byte for byte.
+fn measured_cmdline_suffix(rootfs_path: &str) -> Result<String, RpcError> {
+    let mut tokens: Vec<String> = Vec::new();
+    // Optional measured workload: content.workload.roothash arrives as a
+    // sidecar (the proto has no workload field).
+    let workload_roothash_path = format!("{rootfs_path}.workload_roothash");
+    if let Some(contents) = read_optional_sidecar(&workload_roothash_path)? {
+        let workload_roothash = contents.trim();
+        if workload_roothash.is_empty() || !workload_roothash.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(RpcError::InvalidBackend(format!(
+                "the workload roothash in {workload_roothash_path} is not a hex string"
+            )));
+        }
+        tokens.push(format!("workload_roothash={workload_roothash}"));
+    }
+    // Fixed manifest text between the workload and the volumes (today: the
+    // SWIOTLB size a confidential-GPU guest needs); a closed allowlist.
+    let extra_path = format!("{rootfs_path}.cmdline_extra");
+    if let Some(contents) = read_optional_sidecar(&extra_path)? {
+        let extra = contents.trim();
+        let allowed = extra
+            .strip_prefix("swiotlb=")
+            .is_some_and(is_allowed_swiotlb);
+        if !allowed {
+            return Err(RpcError::InvalidBackend(format!(
+                "cmdline_extra sidecar {extra_path} carries {extra:?}; only swiotlb=<decimal digits> is allowed"
+            )));
+        }
+        tokens.push(extra.to_string());
+    }
+    // Verified data volumes: the comma-joined dm-verity roothashes of
+    // content.volumes, message list order = device order.
+    let verified_volumes_path = format!("{rootfs_path}.verified_volumes");
+    if let Some(contents) = read_optional_sidecar(&verified_volumes_path)? {
+        let joined = contents.trim();
+        let roothashes: Vec<&str> = joined.split(',').collect();
+        let entry_ok = |entry: &&str| {
+            entry.len() == 64
+                && entry
+                    .bytes()
+                    .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        };
+        if roothashes.len() > MAX_VERIFIED_VOLUMES || !roothashes.iter().all(entry_ok) {
+            return Err(RpcError::InvalidBackend(format!(
+                "the verified-volumes sidecar {verified_volumes_path} is not a comma-joined \
+                 list of at most {MAX_VERIFIED_VOLUMES} sha256 hex roothashes"
+            )));
+        }
+        tokens.push(format!("verified_volumes={joined}"));
+    }
+    // The measured GPU requirement closes the suffix.
+    let gpu_requirement_path = format!("{rootfs_path}.gpu_requirement");
+    if let Some(contents) = read_optional_sidecar(&gpu_requirement_path)? {
+        let requirement = contents.trim();
+        if !is_canonical_gpu_requirement(requirement) {
+            return Err(RpcError::InvalidBackend(format!(
+                "the GPU requirement sidecar {gpu_requirement_path} carries {requirement:?}; \
+                 only gpu_arch=<hopper|blackwell> gpu_count=<1..8> \
+                 [gpu_models=<sorted vvvv:dddd list>] is allowed"
+            )));
+        }
+        tokens.push(requirement.to_string());
+    }
+    Ok(tokens.join(" "))
+}
+
 fn snp_config_slice(state: &DaemonState, spec: &pb::VmSpec) -> Result<Option<SnpSlice>, RpcError> {
     snp_config_slice_with(
         state,
@@ -2740,133 +2847,16 @@ fn snp_config_slice_with(
     // DERIVED here from the roothash, exactly as the donor's
     // `build_kernel_cmdline` does. There is no Python oracle for SNP, so the
     // donor and the measured image are the reference here.
-    // Bound the sidecar read: a real dm-verity roothash is ~64 hex chars, so a
-    // 4 KiB cap is generous. A pathological sidecar (the node builds its own
-    // image, but defense in depth) cannot then load unbounded into RAM; an
-    // over-cap file fails closed (InvalidBackend), never a mismeasured boot.
-    let roothash = {
-        use std::io::Read as _;
-        let mut reader = std::fs::File::open(&roothash_path)
-            .map_err(|error| {
-                RpcError::InvalidBackend(format!(
-                    "cannot read the dm-verity roothash sidecar {roothash_path}: {error}"
-                ))
-            })?
-            .take(MAX_ROOTHASH_SIDECAR_BYTES + 1);
-        let mut contents = String::new();
-        reader.read_to_string(&mut contents).map_err(|error| {
-            RpcError::InvalidBackend(format!(
-                "cannot read the dm-verity roothash sidecar {roothash_path}: {error}"
-            ))
-        })?;
-        if contents.len() as u64 > MAX_ROOTHASH_SIDECAR_BYTES {
-            return Err(RpcError::InvalidBackend(format!(
-                "the dm-verity roothash sidecar {roothash_path} exceeds \
-                 {MAX_ROOTHASH_SIDECAR_BYTES} bytes"
-            )));
-        }
-        contents.trim().to_string()
-    };
-    // The roothash goes verbatim into the kernel cmdline; reject anything that
-    // is not a bare hex string so it cannot inject extra kernel parameters.
-    if roothash.is_empty() || !roothash.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(RpcError::InvalidBackend(format!(
-            "the dm-verity roothash in {roothash_path} is not a hex string"
-        )));
-    }
+    let roothash = read_verity_roothash(&roothash_path)?;
     let kernel_cmdline =
         format!("console=ttyS0 root=/dev/mapper/verity-root ro roothash={roothash}");
-    // Optional measured workload: if the launcher staged a
-    // {rootfs}.workload_roothash sidecar (from content.workload.roothash), bind
-    // the workload volume into the launch digest via the cmdline too. The
-    // proto has no workload field (frozen), so this mirrors the dm-verity
-    // roothash sidecar convention above. An absent sidecar leaves the cmdline
-    // byte-identical to a workload-less SNP VM (parity with every existing
-    // measured image).
-    let workload_roothash_path = format!("{rootfs_path}.workload_roothash");
-    let kernel_cmdline = match read_optional_sidecar(&workload_roothash_path)? {
-        Some(contents) => {
-            let workload_roothash = contents.trim().to_string();
-            // Like the platform roothash, this is spliced verbatim into
-            // -append, so only a bare hex string is accepted.
-            if workload_roothash.is_empty()
-                || !workload_roothash.bytes().all(|b| b.is_ascii_hexdigit())
-            {
-                return Err(RpcError::InvalidBackend(format!(
-                    "the workload roothash in {workload_roothash_path} is not a hex string"
-                )));
-            }
-            format!("{kernel_cmdline} workload_roothash={workload_roothash}")
-        }
-        None => kernel_cmdline,
-    };
-    // Fixed cmdline text the runtime manifest carries between the workload
-    // roothash and the verified volumes (today: the SWIOTLB size a
-    // confidential-GPU guest needs). The agent copies it from the manifest
-    // into this sidecar; it is spliced verbatim into the measured cmdline,
-    // so only a closed allowlist may pass, never free text.
-    let extra_path = format!("{rootfs_path}.cmdline_extra");
-    let kernel_cmdline = match read_optional_sidecar(&extra_path)? {
-        Some(contents) => {
-            let extra = contents.trim();
-            let allowed = extra
-                .strip_prefix("swiotlb=")
-                .is_some_and(is_allowed_swiotlb);
-            if !allowed {
-                return Err(RpcError::InvalidBackend(format!(
-                    "cmdline_extra sidecar {extra_path} carries {extra:?}; only swiotlb=<decimal digits> is allowed"
-                )));
-            }
-            format!("{kernel_cmdline} {extra}")
-        }
-        None => kernel_cmdline,
-    };
-    // Verified data volumes: the launcher stages a {rootfs}.verified_volumes
-    // sidecar holding the comma-joined dm-verity roothashes of
-    // content.volumes (message list order = device order). Bound into the
-    // measured cmdline after the workload token; an absent sidecar leaves
-    // the cmdline byte-identical to a volume-less V-PROGRAM, matching the
-    // CLI's template-token dropping.
-    let verified_volumes_path = format!("{rootfs_path}.verified_volumes");
-    let kernel_cmdline = match read_optional_sidecar(&verified_volumes_path)? {
-        Some(contents) => {
-            // Spliced verbatim into -append: only a comma-joined list of at
-            // most MAX_VERIFIED_VOLUMES bare lowercase sha256 hex roothashes
-            // is accepted.
-            let joined = contents.trim().to_string();
-            let roothashes: Vec<&str> = joined.split(',').collect();
-            let entry_ok = |entry: &&str| {
-                entry.len() == 64
-                    && entry
-                        .bytes()
-                        .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-            };
-            if roothashes.len() > MAX_VERIFIED_VOLUMES || !roothashes.iter().all(entry_ok) {
-                return Err(RpcError::InvalidBackend(format!(
-                    "the verified-volumes sidecar {verified_volumes_path} is not a comma-joined \
-                     list of at most {MAX_VERIFIED_VOLUMES} sha256 hex roothashes"
-                )));
-            }
-            format!("{kernel_cmdline} verified_volumes={joined}")
-        }
-        None => kernel_cmdline,
-    };
-    // The measured GPU requirement closes the cmdline, the GPU manifest
-    // template's order. Absent sidecar, cmdline byte-identical to before.
-    let gpu_requirement_path = format!("{rootfs_path}.gpu_requirement");
-    let kernel_cmdline = match read_optional_sidecar(&gpu_requirement_path)? {
-        Some(contents) => {
-            let requirement = contents.trim();
-            if !is_canonical_gpu_requirement(requirement) {
-                return Err(RpcError::InvalidBackend(format!(
-                    "the GPU requirement sidecar {gpu_requirement_path} carries {requirement:?}; \
-                     only gpu_arch=<hopper|blackwell> gpu_count=<1..8> \
-                     [gpu_models=<sorted vvvv:dddd list>] is allowed"
-                )));
-            }
-            format!("{kernel_cmdline} {requirement}")
-        }
-        None => kernel_cmdline,
+    // The per-deployment tokens close the cmdline; none staged, cmdline
+    // byte-identical to a workload-less SNP VM.
+    let suffix = measured_cmdline_suffix(&rootfs_path)?;
+    let kernel_cmdline = if suffix.is_empty() {
+        kernel_cmdline
+    } else {
+        format!("{kernel_cmdline} {suffix}")
     };
     Ok(Some(SnpSlice {
         ovmf_path: tee.firmware_path.clone(),
