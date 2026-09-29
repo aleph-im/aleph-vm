@@ -32,6 +32,7 @@ dependencies = [
  "der",
  "hex",
  "k256",
+ "libc",
  "rcgen",
  "reqwest",
  "ring",
