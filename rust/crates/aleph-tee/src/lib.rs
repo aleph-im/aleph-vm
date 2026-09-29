@@ -8,10 +8,10 @@
 //! - `verify`: everything a relying party needs, for client SDKs.
 //!
 //! Both are on by default. The SEV-SNP report parser, the `report_data`
-//! binding schemes, the owner-auth envelope and the X.509 extension are
-//! always available, since both sides share them. TDX's quote parser and
-//! verifier are verify-only (no guest parses quotes); its QEMU argv
-//! generator is always available, like the SEV-SNP one.
+//! binding schemes, the owner-auth envelope, the X.509 extension, the TDX
+//! measurement predictor and both QEMU argv generators are always available,
+//! since both sides share them. The rest of TDX, its quote parser included,
+//! is verify-only: no guest parses quotes.
 
 #[cfg(feature = "verify")]
 mod fetch;

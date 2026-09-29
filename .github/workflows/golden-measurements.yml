@@ -41,6 +41,9 @@ on:
       - "rust/Cargo.toml"
       - "rust/crates/aleph-attest-agent/**"
       - "rust/crates/aleph-tee/**"
+      # tdxMeasurement is computed by this script, so a change to it moves
+      # the predicted triple without touching the measured chain.
+      - "src/aleph/vm/vprogram/tdx_measurement.py"
       - ".github/workflows/golden-measurements.yml"
   pull_request:
     # od/** covers stacked PRs (increment N+1 based on increment N's
@@ -57,6 +60,9 @@ on:
       - "rust/Cargo.toml"
       - "rust/crates/aleph-attest-agent/**"
       - "rust/crates/aleph-tee/**"
+      # tdxMeasurement is computed by this script, so a change to it moves
+      # the predicted triple without touching the measured chain.
+      - "src/aleph/vm/vprogram/tdx_measurement.py"
       - ".github/workflows/golden-measurements.yml"
 
 
