@@ -594,6 +594,30 @@
         workloadRoothash = builtins.readFile "${cudaWorkloadVerity}/roothash";
       };
 
+      # TDX runtime measurement: the {mrtd, rtmr1, rtmr2} triple the TDX runtime
+      # manifest publishes, predicted by the Python mirror of
+      # aleph_tee::tdx::measure (stdlib only, run as a plain script). No vCPU
+      # inputs, RTMR0 unpinned: one triple covers every deployment of a runtime.
+      tdxMeasurementFor = { cmdline, kernelDrv ? kernel, initrdDrv ? initrd, name ? "tdx-measurement" }:
+        pkgs.runCommand name {
+          nativeBuildInputs = [ pkgs.python3 ];
+        } ''
+          mkdir -p $out
+          python3 ${../src/aleph/vm/vprogram/tdx_measurement.py} \
+            --tdvf ${tdvf}/OVMF.fd \
+            --kernel ${kernelDrv}/bzImage \
+            --initrd ${initrdDrv}/initrd \
+            --cmdline "${cmdline}" \
+            > $out/measurements.json
+        '';
+
+      # Base-flavor TDX cmdline: the platform-only form plus aleph_tdx_descriptor=1,
+      # which moves the per-deployment tokens to the MRCONFIGID-bound descriptor
+      # drive, so RTMR2 is a per-runtime constant.
+      tdxMeasurement = tdxMeasurementFor {
+        cmdline = "console=ttyS0 root=/dev/mapper/verity-root ro roothash=${builtins.readFile "${verity}/roothash"} aleph_tdx_descriptor=1";
+      };
+
       # Convenience: all measured-image artifacts in one directory.
       image = pkgs.runCommand "aleph-cvm-image" {} ''
         mkdir -p $out
@@ -778,6 +802,7 @@
           cudaWorkloadMeasurement
           composeMeasurement
           gpuMeasurement
+          tdxMeasurement
           image
           composeImage
           gpuImage
@@ -800,7 +825,7 @@
       # same reason as instanceMeasurementFor, so a flake consumer can
       # compute a workload-form GPU measurement without importing this file.
       lib.${system} = {
-        inherit instanceMeasurementFor instanceGpuMeasurementFor gpuMeasurementFor;
+        inherit instanceMeasurementFor instanceGpuMeasurementFor gpuMeasurementFor tdxMeasurementFor;
       };
     };
 }
