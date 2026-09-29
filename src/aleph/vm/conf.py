@@ -23,6 +23,7 @@ from aleph.vm.storage_budget import parse_budget
 from aleph.vm.utils import (
     check_amd_sev_es_supported,
     check_amd_sev_supported,
+    check_intel_tdx_supported,
     file_hashes_differ,
     is_command_available,
 )
@@ -612,13 +613,7 @@ class Settings(BaseSettings):
             ), "Command `qemu-system-x86_64` not found, run `apt install qemu-system-x86`"
 
         if self.ENABLE_CONFIDENTIAL_COMPUTING:
-            assert self.SEV_CTL_PATH.is_file(), f"File not found {self.SEV_CTL_PATH}"
-            assert check_amd_sev_supported(), "SEV feature isn't enabled, enable it in BIOS"
-            assert check_amd_sev_es_supported(), "SEV-ES feature isn't enabled, enable it in BIOS"
-            # Not available on the test machine yet
-            # assert check_amd_sev_snp_supported(), "SEV-SNP feature isn't enabled, enable it in BIOS"
-            assert self.ENABLE_QEMU_SUPPORT, "Qemu Support is needed for confidential computing and it's disabled, "
-            "enable it setting the env variable `ENABLE_QEMU_SUPPORT=True` in configuration"
+            self.check_confidential_computing()
         if self.ENABLE_GPU_SUPPORT:
             assert self.ENABLE_QEMU_SUPPORT, "Qemu Support is needed for GPU support and it's disabled, "
 
@@ -627,6 +622,19 @@ class Settings(BaseSettings):
                 parse_budget(getattr(self, setting_name), 0)
             except ValueError as error:
                 raise ValueError(f"Invalid {setting_name}: {error}") from error
+
+    def check_confidential_computing(self):
+        """The host prerequisites of ENABLE_CONFIDENTIAL_COMPUTING. An Intel
+        TDX host has none of the AMD tooling, so a usable TDX stands in for
+        sevctl and the SEV/SEV-ES gates (the daemon's checks.rs does the same)."""
+        if not check_intel_tdx_supported():
+            assert self.SEV_CTL_PATH.is_file(), f"File not found {self.SEV_CTL_PATH}"
+            assert check_amd_sev_supported(), "SEV feature isn't enabled, enable it in BIOS"
+            assert check_amd_sev_es_supported(), "SEV-ES feature isn't enabled, enable it in BIOS"
+            # Not available on the test machine yet
+            # assert check_amd_sev_snp_supported(), "SEV-SNP feature isn't enabled, enable it in BIOS"
+        assert self.ENABLE_QEMU_SUPPORT, "Qemu Support is needed for confidential computing and it's disabled, "
+        "enable it setting the env variable `ENABLE_QEMU_SUPPORT=True` in configuration"
 
     def setup(self):
         """Setup the environment defined by the settings. Call this method after loading the settings."""
