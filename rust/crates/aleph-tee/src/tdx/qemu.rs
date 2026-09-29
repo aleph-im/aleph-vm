@@ -166,7 +166,7 @@ mod tests {
                 "-object",
                 "memory-backend-memfd,id=ram1,size=2048M,share=true",
                 "-object",
-                r#"{"qom-type":"tdx-guest","id":"tdx0","mrconfigid":"paWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWl","quote-generation-socket":{"type":"unix","path":"/var/run/tdx-qgs/qgs.socket"}}"#,
+                r#"{"qom-type":"tdx-guest","id":"tdx0","mrconfigid":"paWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWl","quote-generation-socket":{"type":"unix","path":"/var/run/tdx-qgs/qgs.socket"}}"#,
                 "-nodefaults",
                 "-bios",
                 DEFAULT_TDVF_PATH,
