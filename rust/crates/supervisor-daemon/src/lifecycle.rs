@@ -854,11 +854,11 @@ fn stop_vm_execution(state: &DaemonState, vm_id: &str) -> Result<(), RpcError> {
 
         // vm.teardown(): nftables chains, then the tap (with the ndp range).
         if networking_enabled(state, &entry) {
-            // SNP measured VMs ran a per-tap DHCP server; tear it down with
-            // the tap (idempotent, SNP only). Covers StopVm and
-            // delete_tracked_vm, which both route through here. Plain and SEV
-            // VMs never started one, so this is a no-op for them.
-            if entry.config.snp().is_some()
+            // Measured VMs (SNP, TDX) ran a per-tap DHCP server; tear it down
+            // with the tap (idempotent). Covers StopVm and delete_tracked_vm,
+            // which both route through here. Plain and SEV VMs never started
+            // one, so this is a no-op for them.
+            if entry.config.is_measured()
                 && let Err(dhcp_error) = state
                     .dhcp
                     .stop(vm_id, &dhcp::lease_file_path(&dhcp_lease_dir(state), vm_id))
@@ -1137,10 +1137,10 @@ fn start_vm_execution_marked(
         // Even when the interface survived, the nftables rules may have
         // been flushed; always re-apply (create-if-absent).
         nft_setup_vm(state, entry.vm_index, &tap.device_name)?;
-        // Stop tore the SNP per-tap DHCP server down with the tap; recreate it,
+        // Stop tore the per-tap DHCP server down with the tap; recreate it,
         // or the rebooting measured guest (whose cmdline has no `ip=`) never
         // leases its IP. `DhcpBackend::start` replaces a leftover unit.
-        if entry.config.snp().is_some() {
+        if entry.config.is_measured() {
             let config = dhcp::DhcpConfig::for_snp(
                 vm_id,
                 &tap,
@@ -1269,7 +1269,7 @@ pub fn reboot_vm(state: &DaemonState, vm_id: &str) -> Result<(VmEntry, bool), Rp
     // is fatal like the StartVm one, since a reboot without a leasable
     // address is a brick. No renew can race the gap: the guest's DHCP
     // clients exit after configuring the interface.
-    if entry.config.snp().is_some() && networking_enabled(state, &entry) {
+    if entry.config.is_measured() && networking_enabled(state, &entry) {
         let lease_file = dhcp::lease_file_path(&dhcp_lease_dir(state), vm_id);
         if let Err(dhcp_error) = state.dhcp.stop(vm_id, &lease_file) {
             tracing::warn!(vm_id, %dhcp_error, "cannot stop the DHCP server, continuing");
@@ -1378,7 +1378,7 @@ pub fn delete_vm(
     // entries), so releasing its vCPUs would subtract a reservation that was
     // never added and steal capacity from co-located VMs (increment C1). Its
     // drop-in is still removed below for cleanliness.
-    let mut discarded_is_snp = false;
+    let mut discarded_is_measured = false;
     {
         let mut world = state.world.blocking_write();
         world.failed_reattach.remove(vm_id);
@@ -1387,15 +1387,15 @@ pub fn delete_vm(
         {
             world.reserved_vm_indices.remove(&config.vm_index);
             if let VmConfiguration::Qemu(qemu) = &config.vm {
-                discarded_is_snp = qemu.snp().is_some();
+                discarded_is_measured = qemu.is_measured();
             }
         }
     }
-    // A still-live SNP VM whose adoption failed ran a per-tap DHCP server, and
-    // this discard path is a teardown like any other: without the stop,
-    // aleph-vm-dhcp-<hash>.service and its lease file are orphaned. Gated on
-    // the parsed config being SNP so plain/SEV VMs are untouched.
-    if discarded_is_snp
+    // A still-live measured VM whose adoption failed ran a per-tap DHCP
+    // server, and this discard path is a teardown like any other: without the
+    // stop, aleph-vm-dhcp-<hash>.service and its lease file are orphaned.
+    // Gated on the parsed config being measured so plain/SEV VMs are untouched.
+    if discarded_is_measured
         && let Err(dhcp_error) = state
             .dhcp
             .stop(vm_id, &dhcp::lease_file_path(&dhcp_lease_dir(state), vm_id))
@@ -1403,7 +1403,7 @@ pub fn delete_vm(
         tracing::warn!(
             vm_id,
             %dhcp_error,
-            "cannot stop the DHCP server for a discarded SNP VM, continuing"
+            "cannot stop the DHCP server for a discarded measured VM, continuing"
         );
     }
     remove_numa_dropin(state, vm_id);
@@ -7251,6 +7251,87 @@ mod tests {
         assert_eq!(tdx.mrconfigid, tdx_mrconfigid(""));
         assert!(qemu.snp().is_none() && qemu.confidential().is_none());
         assert!(qemu.is_measured());
+    }
+
+    #[test]
+    fn create_tdx_starts_immediately_and_reports_tdx() {
+        // Like SNP, a TDX VM has no session handshake: started at create, no
+        // cloud-init drive, IPv4 by the per-tap DHCP server, and reported as
+        // CONFIDENTIAL_MODE_TDX.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('t');
+        let request = tdx_spec(&vm_id, &root);
+
+        let (entry, running) = create_vm(state, request).unwrap();
+        assert!(running, "a TDX VM starts at create, no session to await");
+        let unit = controller_unit_name(&vm_id);
+        assert_eq!(
+            harness.systemd.actions(),
+            vec![format!("enable {unit}"), format!("start {unit}")]
+        );
+        let info = crate::service::vm_info_message(
+            state,
+            &entry,
+            running,
+            entry_liveness(state, &entry),
+            now_ns(),
+        );
+        assert_eq!(info.confidential_mode, pb::ConfidentialMode::Tdx as i32);
+        assert!(!info.awaiting_confidential_init);
+        assert!(
+            !root.join(format!("cloud-init-{vm_id}.img")).exists(),
+            "TDX carries no cloud-init drive"
+        );
+        assert_eq!(
+            harness.dhcp.started().len(),
+            1,
+            "one DHCP server for the TDX VM"
+        );
+        assert!(harness.dhcp.is_running(&vm_id));
+        assert!(entry.config.is_measured());
+
+        // Stop tears the server down on the same predicate.
+        stop_vm(state, &vm_id).unwrap();
+        assert!(!harness.dhcp.is_running(&vm_id));
+        assert_eq!(harness.dhcp.stopped(), vec![vm_id]);
+    }
+
+    #[test]
+    fn adopted_tdx_vm_reconstructs_its_tee_config() {
+        // After a restart, an adopted TDX VM has no stored spec; the
+        // reconstruction reports backend TDX with the TDVF, and an empty
+        // cmdline (derived, never sent by the agent), so an idempotent
+        // re-create compares the TeeConfig equal to what the agent sends.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('u');
+        let request = tdx_spec(&vm_id, &root);
+        let sent_tee = request.tee.clone().unwrap();
+        create_vm(state, request).unwrap();
+
+        let units = crate::units::StaticUnitStates::with_active_vms(&[vm_id.as_str()]);
+        let world = world::build_world_view(&state.host.settings, &units, &[], &*state.taps);
+        let adopted = &world.entries[vm_id.as_str()];
+        assert!(adopted.spec.is_none(), "adoption keeps no stored spec");
+        assert!(
+            adopted.config.tdx().is_some(),
+            "the adopted config resolves as TDX"
+        );
+
+        let reconstructed = vm_spec_message(adopted);
+        let tee = reconstructed
+            .tee
+            .expect("an adopted TDX VM reconstructs a TeeConfig");
+        assert_eq!(tee.backend, pb::TeeBackend::Tdx as i32);
+        assert_eq!(tee.firmware_path, root.join("TDVF.fd").to_string_lossy());
+        assert_eq!(tee.kernel_cmdline, "", "the derived cmdline is not echoed");
+        assert_eq!(tee, sent_tee, "the TeeConfig round-trips byte for byte");
+        let info =
+            crate::service::vm_info_message(state, adopted, true, UnitLiveness::Active, now_ns());
+        assert_eq!(info.confidential_mode, pb::ConfidentialMode::Tdx as i32);
     }
 
     #[test]

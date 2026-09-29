@@ -120,6 +120,9 @@ pub fn session_dir(state: &DaemonState, vm_id: &str) -> PathBuf {
 }
 
 fn confidential_mode(entry: &crate::world::VmEntry) -> pb::ConfidentialMode {
+    if entry.config.tdx().is_some() {
+        return pb::ConfidentialMode::Tdx;
+    }
     if entry.config.snp().is_some() {
         return pb::ConfidentialMode::SevSnp;
     }

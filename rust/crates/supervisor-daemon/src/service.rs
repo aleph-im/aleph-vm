@@ -654,8 +654,9 @@ pub fn vm_info_message(
         0
     };
     let confidential = entry.config.confidential();
-    let snp = entry.config.snp();
-    let confidential_mode = if snp.is_some() {
+    let confidential_mode = if entry.config.tdx().is_some() {
+        pb::ConfidentialMode::Tdx
+    } else if entry.config.snp().is_some() {
         pb::ConfidentialMode::SevSnp
     } else {
         match &confidential {
@@ -762,11 +763,12 @@ pub fn vm_spec_message(entry: &VmEntry) -> pb::VmSpec {
     // Reconstruct the TeeConfig the agent sent, so an adopted confidential VM
     // round-trips through GetVmSpec and compares equal on an idempotent
     // re-create. A SEV/SEV-ES config resolves via `confidential()`; an SEV-SNP
-    // config resolves via `snp()` (mutually exclusive: SNP carries no
-    // session/godh). The measured cmdline is echoed back only for the
-    // opaque-cmdline arm, where the agent supplied it (identified by the
-    // writable-rootfs `image_format`); the verity arm's cmdline is
-    // daemon-derived from the roothash sidecar, so the agent never sends it.
+    // config via `snp()`, a TDX one via `tdx()` (mutually exclusive: the
+    // measured backends carry no session/godh). The measured cmdline is
+    // echoed back only for the opaque-cmdline arm, where the agent supplied
+    // it (identified by the writable-rootfs `image_format`); the verity arms
+    // (SNP and TDX) derive it from the roothash sidecar, so the agent never
+    // sends it.
     let tee = config
         .confidential()
         .map(|confidential| pb::TeeConfig {
@@ -796,6 +798,17 @@ pub fn vm_spec_message(entry: &VmEntry) -> pb::VmSpec {
                     String::new()
                 },
                 cpu_model: snp.cpu_model.clone().unwrap_or_default(),
+            })
+        })
+        .or_else(|| {
+            config.tdx().map(|tdx| pb::TeeConfig {
+                backend: pb::TeeBackend::Tdx as i32,
+                // No policy, no session, no CPU model: TDX measures none.
+                policy: String::new(),
+                session_dir: String::new(),
+                firmware_path: tdx.tdvf_path.clone(),
+                kernel_cmdline: String::new(),
+                cpu_model: String::new(),
             })
         });
     // Echo back the assigned /124 (persisted as `guest_ipv6_cidr` under
