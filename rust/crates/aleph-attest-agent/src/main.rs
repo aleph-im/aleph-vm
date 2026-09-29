@@ -3,14 +3,17 @@ mod gpu;
 mod gpu_policy;
 mod proxy;
 mod secrets;
+mod tdx;
 mod tls;
 
+use std::path::Path;
 use std::sync::Arc;
 
 use actix_web::web;
 use actix_web::{App, HttpServer};
 use aleph_tee::none::NoTeeBackend;
 use aleph_tee::sev_snp::SevSnpBackend;
+use aleph_tee::tdx::TdxBackend;
 use aleph_tee::traits::TeeBackend;
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -20,6 +23,7 @@ use gpu::CollectorProcess;
 use gpu_policy::GpuPolicyArgs;
 use proxy::{AppState, GpuState, attestation_endpoint, gpu_attestation_endpoint, proxy_handler};
 use secrets::{OwnerAuth, SecretStore, inject_secret_handler};
+use tdx::{TdxDescriptorArgs, TdxReportArgs};
 use tls::{build_rustls_config, generate_attested_tls_identity};
 
 /// Aleph attestation agent: in-VM sidecar that provides attested HTTPS
@@ -40,6 +44,7 @@ struct Cli {
     upstream: String,
 
     /// AMD product name for the SEV-SNP backend (e.g., "Milan", "Genoa", "Turin").
+    /// Ignored on a TDX guest.
     #[arg(long, default_value = "Genoa")]
     amd_product: String,
 
@@ -88,6 +93,58 @@ enum Command {
     /// line on stderr when one does not, 2 on a malformed input. Never starts
     /// the server.
     GpuPolicy(GpuPolicyArgs),
+
+    /// Check that the descriptor drive carries the tokens this TD was
+    /// launched with (its MRCONFIGID), then exit: 0 with the suffix line on
+    /// stdout, 1 with one reason line on stderr and nothing on stdout.
+    TdxDescriptor(TdxDescriptorArgs),
+
+    /// Dump the local TDREPORT registers as hex JSON, then exit.
+    TdxReport(TdxReportArgs),
+}
+
+/// The guest devices each TEE driver creates; the one present picks the
+/// backend.
+const TDX_GUEST_DEVICE: &str = aleph_tee::tdx::report::TDX_GUEST_DEVICE;
+const SEV_GUEST_DEVICE: &str = "/dev/sev-guest";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuestTee {
+    Tdx,
+    SevSnp,
+}
+
+/// TDX first: a TDX guest never has /dev/sev-guest, and an SNP guest never
+/// has /dev/tdx_guest, so the order only matters for the error.
+fn pick_guest_tee(has_tdx_device: bool, has_sev_device: bool) -> Result<GuestTee> {
+    match (has_tdx_device, has_sev_device) {
+        (true, _) => Ok(GuestTee::Tdx),
+        (false, true) => Ok(GuestTee::SevSnp),
+        (false, false) => anyhow::bail!(
+            "no TEE guest device: neither {TDX_GUEST_DEVICE} nor {SEV_GUEST_DEVICE} exists"
+        ),
+    }
+}
+
+fn probe_backend(amd_product: &str) -> Result<Arc<dyn TeeBackend>> {
+    let tee = pick_guest_tee(
+        Path::new(TDX_GUEST_DEVICE).exists(),
+        Path::new(SEV_GUEST_DEVICE).exists(),
+    )?;
+    Ok(match tee {
+        GuestTee::Tdx => {
+            info!(device = TDX_GUEST_DEVICE, "TEE backend: Intel TDX");
+            Arc::new(TdxBackend::new())
+        }
+        GuestTee::SevSnp => {
+            info!(
+                device = SEV_GUEST_DEVICE,
+                product = amd_product,
+                "TEE backend: AMD SEV-SNP"
+            );
+            Arc::new(SevSnpBackend::new(amd_product))
+        }
+    })
 }
 
 /// The boot claims are the `claims` array init cut out of NVIDIA's verifier
@@ -176,6 +233,8 @@ fn main() -> Result<()> {
     let mut cli = Cli::parse();
     match cli.command.take() {
         Some(Command::GpuPolicy(args)) => std::process::exit(gpu_policy::run(&args)),
+        Some(Command::TdxDescriptor(args)) => std::process::exit(tdx::run_descriptor(&args)),
+        Some(Command::TdxReport(args)) => std::process::exit(tdx::run_report(&args)),
         None => serve(cli),
     }
 }
@@ -199,10 +258,7 @@ async fn serve(cli: Cli) -> Result<()> {
             tracing::warn!("INSECURE: plain HTTP, no TEE; local testing only");
             (Arc::new(NoTeeBackend::new()), None)
         } else {
-            // The outer tuple annotation is what lets each element coerce to
-            // Arc<dyn TeeBackend>; the local binding is widened explicitly so
-            // generate_attested_tls_identity sees the trait object too.
-            let backend: Arc<dyn TeeBackend> = Arc::new(SevSnpBackend::new(&cli.amd_product));
+            let backend = probe_backend(&cli.amd_product)?;
             let identity = generate_attested_tls_identity(backend.as_ref())
                 .context("failed to generate attested TLS identity")?;
             info!("generated attested TLS identity");
@@ -417,6 +473,39 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn the_guest_device_picks_the_backend() {
+        assert_eq!(pick_guest_tee(true, false).unwrap(), GuestTee::Tdx);
+        assert_eq!(pick_guest_tee(false, true).unwrap(), GuestTee::SevSnp);
+        assert_eq!(pick_guest_tee(true, true).unwrap(), GuestTee::Tdx);
+        let err = pick_guest_tee(false, false).unwrap_err().to_string();
+        assert!(err.contains("no TEE guest device"), "got: {err}");
+    }
+
+    /// The TDX subcommands take their own arguments and none of the server
+    /// flags.
+    #[test]
+    fn tdx_subcommands_parse() {
+        let cli = Cli::parse_from([
+            "aleph-attest-agent",
+            "tdx-descriptor",
+            "--device",
+            "/dev/vdb",
+            "--print-report",
+        ]);
+        assert!(matches!(cli.command, Some(Command::TdxDescriptor(_))));
+        assert!(Cli::try_parse_from(["aleph-attest-agent", "tdx-descriptor"]).is_err());
+        let cli = Cli::parse_from(["aleph-attest-agent", "tdx-report"]);
+        assert!(matches!(cli.command, Some(Command::TdxReport(_))));
+        let cli = Cli::parse_from([
+            "aleph-attest-agent",
+            "tdx-report",
+            "--reportdata",
+            &"00".repeat(64),
+        ]);
+        assert!(matches!(cli.command, Some(Command::TdxReport(_))));
     }
 
     #[test]
