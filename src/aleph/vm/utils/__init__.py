@@ -4,6 +4,8 @@ import functools
 import hashlib
 import json
 import logging
+import os
+import socket
 import subprocess
 from base64 import b16decode, b16encode, b32decode, b32encode
 from collections.abc import Callable, Coroutine
@@ -188,6 +190,44 @@ def check_amd_sev_snp_supported() -> bool:
     memory re-mapping, and more in order to create an isolated execution environment.
     """
     return (check_system_module("kvm_amd/parameters/sev_snp") == "Y") and Path("/dev/sev").exists()
+
+
+DEFAULT_TDX_QGS_SOCKET = Path("/var/run/tdx-qgs/qgs.socket")
+TDX_QGS_CONNECT_TIMEOUT = 0.5
+
+
+def tdx_qgs_socket_path() -> Path:
+    """Where the Intel Quote Generation Service listens: ALEPH_VM_TDX_QGS_SOCKET
+    or the DCAP default. Read from the environment because conf.py imports
+    this module."""
+    return Path(os.environ.get("ALEPH_VM_TDX_QGS_SOCKET") or DEFAULT_TDX_QGS_SOCKET)
+
+
+def check_intel_tdx_module() -> bool:
+    """The kvm_intel `tdx` parameter is on."""
+    return check_system_module("kvm_intel/parameters/tdx") == "Y"
+
+
+def check_tdx_qgs_reachable(socket_path: Path | None = None, timeout: float = TDX_QGS_CONNECT_TIMEOUT) -> bool:
+    """The Quote Generation Service accepts a connection; dropped at once."""
+    path = socket_path if socket_path is not None else tdx_qgs_socket_path()
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            sock.connect(str(path))
+    except OSError:
+        return False
+    return True
+
+
+def check_intel_tdx_supported() -> bool:
+    """Check if Intel TDX is usable on the system.
+
+    Intel Trust Domain Extensions (TDX). The kernel must expose it and the
+    Quote Generation Service must be up: a TD without QGS boots but can never
+    produce a quote, so it is not a capability.
+    """
+    return check_intel_tdx_module() and check_tdx_qgs_reachable()
 
 
 def fix_message_validation(message: dict) -> dict:

@@ -26,6 +26,7 @@ from conftest import cargo_missing
 from aleph.vm.supervisor_interface.client import GrpcSupervisor
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
 from aleph.vm.supervisor_interface.types import HealthStatus, VmId
+from aleph.vm.utils import check_intel_tdx_supported
 
 HAVE_LSPCI = shutil.which("lspci") is not None
 
@@ -148,7 +149,9 @@ async def test_get_host_info_matches_the_python_sources(rust_daemon):
     assert info.sev_supported is False
     assert info.sev_es_supported is False
     assert info.sev_snp_supported is False
-    assert info.tdx_supported is False
+    # Host-dependent: the Rust probe and the Python one apply the same rule
+    # (kvm_intel tdx=Y and a live QGS socket), so they must agree here.
+    assert info.tdx_supported is check_intel_tdx_supported()
 
     # NUMA topology reporting is a Rust-only addition (increment C1): the Python
     # daemon has no NUMA source, so this is verified against the same primary
