@@ -382,6 +382,7 @@ mod tests {
     // Provenance and licences: tests/fixtures/tdx/README.md.
     const QUOTE_V4: &[u8] = include_bytes!("../../tests/fixtures/tdx/tdx_quote_v4.bin");
     const QUOTE_V5: &[u8] = include_bytes!("../../tests/fixtures/tdx/tdx_quote_v5.bin");
+    const QUOTE_XEON6: &[u8] = include_bytes!("../../tests/fixtures/tdx/tdx_quote_xeon6_ratls.bin");
 
     fn assert_structure(quote: &TdxQuote) {
         assert_eq!(quote.header.tee_type, TEE_TYPE_TDX);
@@ -412,7 +413,7 @@ mod tests {
         // here for both fixtures.
         use crate::pki::{Curve, verify_raw_ecdsa};
 
-        for (name, raw) in [("v4", QUOTE_V4), ("v5", QUOTE_V5)] {
+        for (name, raw) in [("v4", QUOTE_V4), ("v5", QUOTE_V5), ("xeon6", QUOTE_XEON6)] {
             let quote = parse_tdx_quote(raw).expect(name);
             let mut key = vec![0x04];
             key.extend_from_slice(&quote.signature.attestation_key);
@@ -459,6 +460,43 @@ mod tests {
             hex::encode(quote.body.rtmr2),
             "d833feef2cd945148aa38ead2c53e9b7f138190aaaebfc551dccd829fc207aa3ba80b70870d7330733642e01d48c3132"
         );
+    }
+
+    #[test]
+    fn parses_the_quote_our_runtime_produced() {
+        // The quote the measured tdxImage runtime served over attested TLS
+        // on a Xeon 6731E. Its registers are the ones the nix build
+        // predicted (mrtd from TDVF, rtmr1 from the kernel, rtmr2 from the
+        // cmdline and initrd), so a parser that shifts the body by a field
+        // fails here against values known before the TD ever booted.
+        let quote = parse_tdx_quote(QUOTE_XEON6).expect("xeon6 quote parses");
+        assert_eq!(quote.header.version, 4);
+        assert!(quote.body.v15.is_none());
+        assert_structure(&quote);
+        assert_eq!(
+            hex::encode(quote.body.tee_tcb_svn),
+            "07010300000000000000000000000000"
+        );
+        assert_eq!(
+            hex::encode(quote.body.mrtd),
+            "d4f5ee3d5fe9a5a3cbb1df8c40946714f55d5918b9b0e9ecd82a1d8adeea668495901baee134e3152dd5e0e2d1781262"
+        );
+        assert_eq!(
+            hex::encode(quote.body.rtmr1),
+            "8d91abe1ea40a7dba9dbd110eea6fff8e3c79d983a7cae359a046ec8ae339cfbfbed4298c66ec2bdbbf08abb9c63e5c8"
+        );
+        assert_eq!(
+            hex::encode(quote.body.rtmr2),
+            "c785503b238756732626c8162997f514084d10d699b602bba0691dcbb94a97901acc63c8aea322af4946141573d0766e"
+        );
+        // The TD booted with an empty descriptor suffix: SHA-384("").
+        assert_eq!(
+            hex::encode(quote.body.mrconfigid),
+            "38b060a751ac96384cd9327eb1b1e36a21fdb71114be07434c0cc7bf63f6e1da274edebfe76f65fbd51ad2f14898b95b"
+        );
+        assert_eq!(quote.body.rtmr3, [0u8; 48]);
+        // TD_ATTRIBUTES.DEBUG clear; the platform gate must let it through.
+        assert_eq!(quote.body.td_attributes[0] & 0x01, 0);
     }
 
     #[test]
