@@ -121,7 +121,9 @@ def test_confidential_mode_enum_complete():
     assert field.enum_type is supervisor_pb2.ConfidentialMode.DESCRIPTOR
 
     from aleph.vm.supervisor_interface.types import ConfidentialMode
-    from aleph.vm.supervisor_interface.wire.proto_convert import CONFIDENTIAL_MODE_FROM_PB
+    from aleph.vm.supervisor_interface.wire.proto_convert import (
+        CONFIDENTIAL_MODE_FROM_PB,
+    )
 
     assert CONFIDENTIAL_MODE_FROM_PB[supervisor_pb2.CONFIDENTIAL_MODE_TDX] is ConfidentialMode.TDX
 
