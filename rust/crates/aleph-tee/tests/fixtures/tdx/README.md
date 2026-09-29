@@ -34,3 +34,37 @@ Properties verified at vendoring time, for both quotes:
 
 The files are byte-identical to upstream at the commits pinned above. Do
 not regenerate or re-encode them; tests pin exact register values.
+
+# TDX boot measurement vectors
+
+Hardware vectors for `aleph_tee::tdx::measure` (and its Python mirror
+`aleph.vm.vprogram.tdx_measurement`), taken on 2026-09-29 from a PhoenixNAP
+DL320 Gen12 / Xeon 6731E node running QEMU 10.2.4 with the edk2 202602
+IntelTdxX64 TDVF (`nix/tdvf.nix`) direct-booting an Ubuntu kernel. The
+inputs are tens of megabytes and are not vendored; this is the Tier 2 check
+to run whenever the walk or the event model changes:
+
+| Input | SHA-256 | Size | Register |
+|---|---|---|---|
+| TDVF `OVMF.fd` | `6e0fc1c5ce4b0052e1baaf1ab5ea005557a878f2f19625b9328ca24d64b52941` | | MRTD `d4f5ee3d5fe9a5a3cbb1df8c40946714f55d5918b9b0e9ecd82a1d8adeea668495901baee134e3152dd5e0e2d1781262` |
+| `vmlinuz-7.0.0-34-generic` | `73d9c6e40b210deb638070d6af591a68bb6d7ff0280d0ec34c9ccf705a4f47ac` | 17009032 B | RTMR1 `dc26aab111d74fb3e36bf597bc19fbd9c152183237fcebe5b362007fa8a6135b0a7cb172de3a0815a9ec1fcac4f889b7` |
+| initrd | `fae29cf71e03be42cbc47ab448a37939db1407cd33769b4b9918ffc278b391b8` | 82864902 B | RTMR2 `972547466cb6bcb8a23cd479e9258c3affbbc4f0ba2805d732477200d0dff8432447c7a775e70453cdb51f018a306ece` (with the cmdline below) |
+
+Kernel cmdline: `root=LABEL=cloudimg-rootfs ro console=ttyS0`. Two of its
+components need no large file and are asserted by the unit tests in both
+languages:
+
+- LoadOptions event digest, `sha384(utf16le("initrd=initrd " + cmdline) || 0x0000)`:
+  `b8c85d40a1d555a451571e24d7d7c4c331bc15721d6e4b2a5cb5093214c44174822a0916aa4d622d4309644de99cd59c`
+- initrd event digest, `sha384(initrd)`:
+  `88de90bedcc560064688c74ccd6609a25ed9d48b0a0e13d8b2a558212724d8755b2c8114dcf04b8d51ea4cf7782e3091`
+
+Replaying those two into a zeroed register gives the RTMR2 above. RTMR1 is
+the Authenticode SHA-384 of the RAW kernel file (QEMU leaves the setup header
+alone under `confidential-guest-support`) followed by the four constant edk2
+events `Calling EFI Application from Boot Option`, `00 00 00 00`,
+`Exit Boot Services Invocation`, `Exit Boot Services Returned with Success`.
+The Authenticode range selection was additionally checked against the
+`messageDigest` embedded in the signatures of three signed PEs (a 6.6 bzImage
+signed with sbsign, `mmx64.efi`, `grubx64.efi.signed`), swapping the hash for
+SHA-256 for the comparison.

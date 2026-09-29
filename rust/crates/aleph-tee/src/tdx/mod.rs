@@ -11,11 +11,14 @@
 //!
 //! `qemu` (the launch argv generator) has no crypto or HTTP dependency and
 //! stays available without the `verify` feature.
+//! `measure` predicts MRTD/RTMR1/RTMR2/MRCONFIGID from the runtime files and
+//! needs only SHA-384, so it is available without `verify`.
 
 #[cfg(feature = "verify")]
 pub mod certs;
 #[cfg(feature = "verify")]
 pub mod collateral;
+pub mod measure;
 #[cfg(feature = "verify")]
 pub mod pck_extension;
 #[cfg(feature = "verify")]
