@@ -1,20 +1,24 @@
-"""SEV-SNP launch path for V-PROGRAM messages: runtime bundle staging and
-CreateVmSpec construction.
+"""Confidential launch path for V-PROGRAM messages: runtime bundle staging
+and CreateVmSpec construction, for SEV-SNP and Intel TDX runtimes.
 
 A V-PROGRAM pins its measured platform through a runtime manifest (a STORE
 message holding JSON parsed by ``aleph.vm.vprogram.manifest.RuntimeManifest``).
-The manifest pins the runtime bundle: ONE tar.gz holding the measured OVMF,
-kernel, initrd and the dm-verity platform rootfs plus its hash tree.
+The manifest pins the runtime bundle: ONE tar.gz holding the measured firmware
+(OVMF, or TDVF for a tdx runtime), kernel, initrd and the dm-verity platform
+rootfs plus its hash tree. The manifest's ``platform`` picks the TEE backend.
 
 This module is the agent half of the launch: fetch the manifest, fetch and
 integrity-check the bundle (sha256 pinned by the manifest), extract it into a
 per-VM staging directory, make sure the dm-verity sidecars sit where the
-supervisor daemon looks for them, and build the SNP CreateVmSpec. The daemon
+supervisor daemon looks for them, and build the CreateVmSpec. The daemon
 derives the measured kernel cmdline itself from the ``<rootfs>.roothash``
 sidecar next to the rootfs disk and reads the hash tree at ``<rootfs>.verity``
-(see rust/crates/supervisor-daemon/src/lifecycle.rs, snp_config_slice, and
-docs/plans/rust-port-divergences.md entry 68c): the proto deliberately has no
-cmdline field, so nothing here passes one.
+(see rust/crates/supervisor-daemon/src/lifecycle.rs, snp_config_slice and
+tdx_config_slice): the proto deliberately has no cmdline field, so nothing
+here passes one. Both backends read the same per-deployment sidecars
+(workload roothash, verified volumes, cmdline extra, GPU requirement); SNP
+splices them into the cmdline, TDX writes them to the MRCONFIGID-bound
+descriptor drive.
 
 Every check fails closed with VmSetupError: a mismeasured or tampered bundle
 must never reach create_vm.
@@ -57,15 +61,20 @@ from aleph.vm.supervisor_interface.types import (
     TeeConfig,
     VmId,
 )
-from aleph.vm.utils import get_hostname_from_hash
+from aleph.vm.utils import check_intel_tdx_supported, get_hostname_from_hash
 from aleph.vm.vm_type import VmType
-from aleph.vm.vprogram.manifest import RuntimeManifest
+from aleph.vm.vprogram.bundle import TDX_MEASUREMENTS_FILE
+from aleph.vm.vprogram.manifest import RuntimeManifest, TdxMeasurements
 
 if TYPE_CHECKING:
     from aleph_message.models import ItemHash
     from aleph_message.models.execution.vprogram import VerifiableProgramContent
 
 logger = logging.getLogger(__name__)
+
+# The daemon's TDX floor (lifecycle.rs TDX_MIN_MEMORY_MB), mirrored so the
+# refusal names the cause before any bundle is staged.
+TDX_MIN_MEMORY_MIB = 2048
 
 # The one fixed (non-placeholder) cmdline token a format-version-1 template
 # may carry today: the GPU runtime's swiotlb size. manifest.py's validator
@@ -143,6 +152,89 @@ def _ensure_verity_sidecars(rootfs_path: Path, hash_tree_path: Path, platform_ro
             shutil.copyfile(hash_tree_path, verity_path)
 
 
+def _check_platform(vm_hash: ItemHash, content: VerifiableProgramContent, manifest: RuntimeManifest) -> None:
+    """Refuse a message and a runtime that disagree on the TEE, and a TDX
+    launch this host or the daemon would refuse, all before any staging I/O.
+
+    The message's verification.backend is what the client measured for and
+    what the CCN validated; a runtime of another platform would boot a VM no
+    register in the message describes.
+    """
+    backend = content.verification.backend
+    if backend != manifest.platform:
+        msg = (
+            f"V-PROGRAM {vm_hash} declares TEE backend {backend!r} but runtime "
+            f"{content.runtime.ref} is a {manifest.platform} runtime"
+        )
+        raise VmSetupError(msg)
+    if manifest.platform != "tdx":
+        return
+    if not check_intel_tdx_supported():
+        msg = f"V-PROGRAM {vm_hash} needs Intel TDX, which this host does not support"
+        raise VmSetupError(msg)
+    if content.gpu is not None:
+        msg = f"V-PROGRAM {vm_hash} declares a confidential GPU, which TDX guests do not support"
+        raise VmSetupError(msg)
+    if content.resources.memory < TDX_MIN_MEMORY_MIB:
+        msg = (
+            f"V-PROGRAM {vm_hash} declares {content.resources.memory} MiB; "
+            f"a TDX guest needs at least {TDX_MIN_MEMORY_MIB} MiB"
+        )
+        raise VmSetupError(msg)
+
+
+def _check_tdx_measurements(image_dir: Path, manifest: RuntimeManifest) -> None:
+    """A tdx bundle records the {mrtd, rtmr1, rtmr2} triple its build
+    predicted; when it does, it must be the triple the manifest publishes
+    (the one clients pin). A disagreement is a mispackaged or tampered
+    bundle: never boot a runtime the manifest mismeasures."""
+    recorded_path = image_dir / TDX_MEASUREMENTS_FILE
+    if manifest.measurements is None or not recorded_path.is_file():
+        return
+    try:
+        recorded = TdxMeasurements.model_validate_json(recorded_path.read_bytes())
+    except (ValidationError, ValueError, OSError) as error:
+        msg = f"bundle measurements {recorded_path} are invalid: {error}"
+        raise VmSetupError(msg) from error
+    if recorded != manifest.measurements:
+        msg = (
+            f"bundle measurements {recorded_path} disagree with the manifest: "
+            f"expected {manifest.measurements.model_dump()}, got {recorded.model_dump()}"
+        )
+        raise VmSetupError(msg)
+
+
+async def _tee_config(
+    content: VerifiableProgramContent, *, firmware_path: Path, session_dir: Path, tdx: bool
+) -> TeeConfig:
+    """The measured launch's TEE half. Neither backend gets a cmdline: the
+    daemon derives it from the roothash sidecar. The session directory is a
+    required-but-ignored placeholder (the daemon derives its own)."""
+    if tdx:
+        # TDVF as the firmware; no SEV policy, and no vCPU model since the
+        # TDX registers do not depend on it (the daemon launches -cpu host).
+        return TeeConfig(
+            backend=TeeBackend.TDX,
+            policy="",
+            session_dir=DirectoryPath(session_dir),
+            firmware_path=firmware_path,
+        )
+    # The launched CPU model IS a measurement input: only a model one of the
+    # message's measurements was computed for, and that this host's QEMU can
+    # actually launch, may be used. Fails closed.
+    cpu_model = select_snp_vcpu_type(
+        requested_vcpu_types(content.verification.measurements),
+        await get_supported_snp_vcpu_types(),
+    )
+    return TeeConfig(
+        backend=TeeBackend.SEV_SNP,
+        policy=str(content.verification.policy),
+        session_dir=DirectoryPath(session_dir),
+        firmware_path=firmware_path,
+        cpu_model=cpu_model,
+    )
+
+
 def _select_attestation_port(manifest: RuntimeManifest) -> int | None:
     """The RA-TLS attestation port a CRN maps to a host IPv4 port, so an
     external client (the aleph CLI) can reach the guest's attestation
@@ -175,12 +267,15 @@ async def resolve_vprogram_attestation_port(content: VerifiableProgramContent) -
 
 
 async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramContent) -> tuple[CreateVmSpec, int | None]:
-    """Fetch, verify and stage the runtime bundle, then build the SNP spec.
+    """Fetch, verify and stage the runtime bundle, then build the spec.
 
     Mirrors the on-host launch template (aleph-testnets test_vm_snp.py): QEMU
     backend, direct-kernel boot from the measured bundle members, and a disk
     order that IS the contract: the guest init reads the platform rootfs from
-    /dev/vda and the dm-verity hash tree from /dev/vdb.
+    /dev/vda and the dm-verity hash tree from /dev/vdb. The manifest's
+    platform picks the TEE backend: sev_snp launches with the measured OVMF
+    and the selected vCPU model, tdx with TDVF, no policy and no model (the
+    registers do not depend on it); the daemon writes the descriptor drive.
 
     Also returns the manifest's RA-TLS attestation port (or None), so the
     caller can map it to a host port after the VM reaches RUNNING. Nothing
@@ -188,6 +283,8 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
     host-only DNAT concern, entirely orthogonal to the measured launch.
     """
     manifest = await fetch_runtime_manifest(str(content.runtime.ref))
+    _check_platform(vm_hash, content, manifest)
+    tdx = manifest.platform == "tdx"
 
     gpu = content.gpu
     check_gpu_against_manifest(
@@ -221,6 +318,8 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
     hash_tree_path = snp_staging.member_path(bundle_dir, members.platform_hash_tree, "platform_hash_tree")
 
     _ensure_verity_sidecars(rootfs_path, hash_tree_path, manifest.boot.platform_roothash)
+    if tdx:
+        _check_tdx_measurements(rootfs_path.parent, manifest)
 
     # Disk ORDER is load-bearing: the guest init reads the rootfs from the
     # first virtio disk (/dev/vda), the platform dm-verity hash tree from
@@ -262,8 +361,9 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
     # A runtime whose template has no {verified_volumes} slot cannot bind
     # volumes into its measurement: refuse the launch up front (the CLI
     # refuses the same way before signing), rather than boot a 1.0 initrd
-    # that ignores the token and fail later as an attestation mismatch.
-    if content.volumes and "{verified_volumes}" not in manifest.boot.cmdline_template:
+    # that ignores the token and fail later as an attestation mismatch. The
+    # TDX template has no slot by design: the token rides the descriptor.
+    if content.volumes and not tdx and "{verified_volumes}" not in manifest.boot.cmdline_template:
         msg = f"V-PROGRAM {vm_hash} declares verified volumes but runtime {content.runtime.ref} has no {{verified_volumes}} cmdline slot"
         raise VmSetupError(msg)
     if len(content.volumes) > MAX_VERIFIED_VOLUMES:
@@ -332,14 +432,6 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
     # before the create).
     requested_ipv6, ipv6_prefix_len = compute_requested_ipv6(vm_hash, VmType.from_message_content(content))
 
-    # The launched CPU model IS a measurement input: only a model one of the
-    # message's measurements was computed for, and that this host's QEMU can
-    # actually launch, may be used. Fails closed.
-    cpu_model = select_snp_vcpu_type(
-        requested_vcpu_types(content.verification.measurements),
-        await get_supported_snp_vcpu_types(),
-    )
-
     spec = CreateVmSpec(
         vm_id=VmId(str(vm_hash)),
         backend=Backend.QEMU,
@@ -348,15 +440,7 @@ async def build_vprogram_spec(vm_hash: ItemHash, content: VerifiableProgramConte
         disks=disks,
         vcpus=content.resources.vcpus,
         memory_mib=content.resources.memory,
-        tee=TeeConfig(
-            backend=TeeBackend.SEV_SNP,
-            policy=str(content.verification.policy),
-            # The daemon derives its own CONFIDENTIAL_SESSION_DIRECTORY/<vm_id>
-            # for SNP (lifecycle.rs): required-but-ignored placeholder.
-            session_dir=DirectoryPath(Path(session_base) / str(vm_hash)),
-            firmware_path=ovmf_path,
-            cpu_model=cpu_model,
-        ),
+        tee=await _tee_config(content, firmware_path=ovmf_path, session_dir=Path(session_base) / str(vm_hash), tdx=tdx),
         network=NetworkConfig(
             internet_access=bool(content.environment.internet),
             requested_ipv6=requested_ipv6,

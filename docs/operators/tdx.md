@@ -48,9 +48,19 @@ V-PROGRAMs.
     installer asks for an Intel PCS API key
     (api.portal.trustedservices.intel.com). Without it QGS can build a
     quote but no certificate chain, and every client verification fails.
-  - `sgx-pck-id-retrieval-tool` (`PCKIDRetrievalTool`): run once after
-    PCCS is up to register this platform's PCK id with it, so the first
-    quote does not have to wait for the certificate fetch.
+  - `sgx-pck-id-retrieval-tool` (`PCKIDRetrievalTool`): **mandatory**, not an
+    optimisation. Xeon 6 platforms are unknown to Intel PCS until their
+    platform manifest is registered (PCS answers 404 for the PPID and QGS
+    reports `No certificate data for this platform`). Run
+    `PCKIDRetrievalTool -url https://localhost:8081 -user_token <PCCS user
+    token> -use_secure_cert false` once after PCCS is up: PCCS registers the
+    manifest with Intel and caches the PCK certificates, TCB info and CRLs.
+    A BIOS `SgxFactoryReset` produces a new manifest and needs a re-run.
+- **TCB status.** Clients appraise the quote against Intel's current TCB
+  level. A host on old firmware (microcode CPUSVN or TDX module SVN behind
+  Intel's TCB-R) verifies cryptographically but is reported `OutOfDate` with
+  the matching INTEL-SA advisories, and the default client policy rejects it.
+  Firmware updates fix that on the host side; nothing on the CRN can.
 - **Daemon settings** (`src/aleph/vm/conf.py`):
   `ENABLE_CONFIDENTIAL_COMPUTING=true` and `ENABLE_QEMU_SUPPORT=true`. The
   daemon's startup check accepts a TDX host without `sevctl` or the AMD
@@ -109,7 +119,11 @@ Useful when reading a QEMU argv or a guest console:
   verified volumes) are on a 64 KiB raw drive attached LAST, starting with
   the line `ALEPH-TDX-DESCRIPTOR-v1`, and `mrconfigid` is the SHA-384 of
   that token line. The guest init checks the two against each other from a
-  local TDREPORT before using the tokens, and powers off on a mismatch.
+  local TDREPORT before using the tokens, and powers off on a mismatch. The
+  one exception is a plain-QEMU local run whose cmdline carries
+  `aleph_insecure_unattested=1` (the CLI's `vprogram run`, never a CRN):
+  there is no TD to report, so the init takes the tokens unchecked behind an
+  `init: WARNING: INSECURE UNATTESTED MODE` console line.
 - Memory floor: 2 GiB per TD (guest-side need, not a measurement input).
 - A guest reboot ends the QEMU process: TD reset is not supported by the
   platform, so a TD that "reboots" is gone and shows up as an exited VM.
@@ -124,12 +138,22 @@ Useful when reading a QEMU argv or a guest console:
   is down or on another path. `ss -xl | grep qgs` shows what it listens
   on; `journalctl -u qgsd` shows why it is not up (usually the QPL cannot
   reach PCCS).
-- **`InvalidBackend ... TDX guests need at least 2048 MiB` on `CreateVm`.**
-  The message asked for less memory than a TD boots with; nothing to fix
-  on the host.
-- **`InvalidBackend ... GPU passthrough is not supported on TDX guests`.**
-  A TDX V-PROGRAM with `trusted_execution.gpu`; confidential GPUs are an
-  SEV-SNP feature today. Nothing to fix on the host.
+- **`a TDX guest needs at least 2048 MiB` in the allocation response (or
+  `InvalidBackend ... TDX guests need at least 2048 MiB` on `CreateVm`).**
+  The message asked for less memory than a TD boots with; the agent refuses
+  before staging, the daemon backstops it. Nothing to fix on the host.
+- **`declares a confidential GPU, which TDX guests do not support` (or
+  `InvalidBackend ... GPU passthrough is not supported on TDX guests`).**
+  A TDX V-PROGRAM with a `gpu` block; confidential GPUs are an SEV-SNP
+  feature today. Nothing to fix on the host.
+- **`declares TEE backend 'sev_snp' but runtime ... is a tdx runtime`** (or
+  the reverse). The message was measured for one platform but points at a
+  runtime manifest of the other; the agent refuses the mismatch rather than
+  boot a VM none of the message's registers describe. The CCN rejects the
+  pair too, so this only shows up for a message that bypassed it.
+- **`needs Intel TDX, which this host does not support`.** The scheduler
+  placed a TDX V-PROGRAM on a host that does not advertise `tee.tdx` (see
+  section 2 for the QGS and `kvm_intel.tdx` checks behind that flag).
 - **Guest console: `init: FATAL: aleph_tdx_descriptor=1 but no TDX
   descriptor drive found`.** The descriptor drive did not reach the guest
   within the wait. Check the QEMU argv for the `<rootfs>.tdx_descriptor`
