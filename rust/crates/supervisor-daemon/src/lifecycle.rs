@@ -14,6 +14,7 @@
 //! slow edges except where the Python creation_lock semantics require
 //! serialization (one create at a time, held across the whole boot wait).
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -1896,34 +1897,42 @@ fn build_written_config(
         .ok_or_else(|| RpcError::Internal("qemu-system-x86_64 not found on PATH".to_string()))?;
     let image_path = require_rootfs(spec)?.path.clone();
     // `tee.kernel_cmdline` is an SEV-SNP-only field: only the SNP launch path
-    // takes a cmdline (SEV/SEV-ES boot the disk through OVMF). Silently
-    // dropping it would boot a VM the agent believes it configured, so a
-    // cmdline on any other backend fails closed BEFORE any slice is resolved.
+    // takes a cmdline (SEV/SEV-ES boot the disk through OVMF, TDX derives its
+    // own and refuses one in its slice). Silently dropping it would boot a VM
+    // the agent believes it configured, so a cmdline on any other backend
+    // fails closed BEFORE any slice is resolved.
     if let Some(tee) = &spec.tee
         && !tee.kernel_cmdline.is_empty()
         && tee.backend != pb::TeeBackend::SevSnp as i32
+        && tee.backend != pb::TeeBackend::Tdx as i32
     {
         return Err(RpcError::InvalidBackend(format!(
             "kernel_cmdline is only valid for SEV-SNP (VM {vm_hash} requests TEE backend {})",
             tee.backend
         )));
     }
-    // SEV-SNP (increment B1) is resolved first: it is a distinct measured-boot
-    // path (no session/godh), so the SEV confidential slice is suppressed when
-    // an SNP slice is present and the two never overlap.
+    // The measured-boot slices (TDX, then SEV-SNP) are resolved first: each
+    // is a distinct launch path (no session/godh), so the SEV confidential
+    // slice is suppressed when one is present and the three never overlap.
+    // A spec selects exactly one backend, so at most one slice resolves.
+    let tdx_slice = tdx_config_slice(spec)?;
     let snp_slice = snp_config_slice(state, spec)?;
-    let confidential_slice = if snp_slice.is_some() {
+    let confidential_slice = if snp_slice.is_some() || tdx_slice.is_some() {
         None
     } else {
         confidential_config_slice(state, spec)?
     };
     // dm-verity hash tree device (/dev/vdb) is inserted as the FIRST host
-    // volume for a VERITY SNP VM, before any agent-supplied extra disks,
-    // mirroring the aleph-cvm donor (vm/manager.rs inserts the hash tree at
-    // index 1). The opaque-cmdline arm has no hash tree (hashtree_path None),
-    // so nothing is inserted and its extra disks keep their spec order.
+    // volume for a VERITY SNP or TDX VM, before any agent-supplied extra
+    // disks, mirroring the aleph-cvm donor (vm/manager.rs inserts the hash
+    // tree at index 1). The opaque-cmdline arm has no hash tree (hashtree_path
+    // None), so nothing is inserted and its extra disks keep their spec order.
     let mut host_volumes: Vec<WrittenHostVolume> = Vec::new();
-    if let Some(hashtree_path) = snp_slice.as_ref().and_then(|snp| snp.hashtree_path.clone()) {
+    let hashtree_path = snp_slice
+        .as_ref()
+        .and_then(|snp| snp.hashtree_path.clone())
+        .or_else(|| tdx_slice.as_ref().map(|tdx| tdx.hashtree_path.clone()));
+    if let Some(hashtree_path) = hashtree_path {
         host_volumes.push(WrittenHostVolume {
             mount: String::new(),
             path_on_host: hashtree_path,
@@ -1942,9 +1951,20 @@ fn build_written_config(
                 read_only: disk.readonly,
             }),
     );
+    // The TDX descriptor drive is the LAST volume on the bus: the guest init
+    // scans /dev/vd* for its magic, and a fixed position keeps user volumes
+    // at the same device letters as on SNP.
+    if let Some(tdx) = &tdx_slice {
+        host_volumes.push(WrittenHostVolume {
+            mount: String::new(),
+            path_on_host: tdx.descriptor_path.clone(),
+            read_only: true,
+        });
+    }
     // The confidential build (build_qemu_confidential_configuration) creates
     // QemuGPU(pci_host=...) with the default supports_x_vga=True, unlike the
-    // plain path which passes the spec's flag. SNP is confidential-like here.
+    // plain path which passes the spec's flag. SNP is confidential-like here
+    // (TDX carries no GPU, the slice refuses one).
     let confidential_like = confidential_slice.is_some() || snp_slice.is_some();
     let gpus = spec
         .gpus
@@ -1955,8 +1975,10 @@ fn build_written_config(
         })
         .collect();
     // SNP shares ovmf_path/sev_policy with the SEV slot but adds the measured
-    // kernel/initrd/cmdline and the sev_snp marker; SEV/SEV-ES fills the
-    // session/godh slots instead. A plain VM leaves them all None.
+    // kernel/initrd/cmdline and the sev_snp marker; TDX shares the firmware
+    // slot (TDVF) and the trio, with its own marker and no policy or CPU
+    // model; SEV/SEV-ES fills the session/godh slots instead. A plain VM
+    // leaves them all None.
     let (
         ovmf_path,
         sev_session_file,
@@ -1967,8 +1989,19 @@ fn build_written_config(
         initrd_path,
         kernel_cmdline,
         cpu_model,
-    ) = match (&snp_slice, confidential_slice) {
-        (Some(snp), _) => (
+    ) = match (&tdx_slice, &snp_slice, confidential_slice) {
+        (Some(tdx), _, _) => (
+            Some(tdx.tdvf_path.clone()),
+            None,
+            None,
+            None,
+            None,
+            Some(tdx.kernel_path.clone()),
+            Some(tdx.initrd_path.clone()),
+            Some(tdx.kernel_cmdline.clone()),
+            None,
+        ),
+        (None, Some(snp), _) => (
             Some(snp.ovmf_path.clone()),
             None,
             None,
@@ -1979,7 +2012,7 @@ fn build_written_config(
             Some(snp.kernel_cmdline.clone()),
             snp.cpu_model.clone(),
         ),
-        (None, Some(slice)) => (
+        (None, None, Some(slice)) => (
             Some(slice.ovmf_path),
             Some(slice.sev_session_file),
             Some(slice.sev_dh_cert_file),
@@ -1990,12 +2023,12 @@ fn build_written_config(
             None,
             None,
         ),
-        (None, None) => (None, None, None, None, None, None, None, None, None),
+        (None, None, None) => (None, None, None, None, None, None, None, None, None),
     };
-    // A measured SNP VM boots from the Nix image via kernel+initrd (its in-guest
-    // init handles networking / provisioning), so it carries NO cloud-init drive
-    // (which the SEV/plain paths always attach).
-    let cloud_init_drive_path = if snp_slice.is_some() {
+    // A measured SNP or TDX VM boots from the Nix image via kernel+initrd (its
+    // in-guest init handles networking / provisioning), so it carries NO
+    // cloud-init drive (which the SEV/plain paths always attach).
+    let cloud_init_drive_path = if snp_slice.is_some() || tdx_slice.is_some() {
         None
     } else {
         Some(
@@ -2075,10 +2108,11 @@ fn build_written_config(
             // read-only verity one); every other config leaves them absent.
             image_format: snp_slice.as_ref().and_then(|snp| snp.rootfs_format.clone()),
             image_readonly: snp_slice.as_ref().and_then(|snp| snp.rootfs_readonly),
-            // The TDX slice is not produced by this create path yet.
-            tdx: None,
-            mrconfigid: None,
-            qgs_socket: None,
+            // The TDX marker, MRCONFIGID and QGS socket; None (and so
+            // omitted) on every other config.
+            tdx: tdx_slice.as_ref().map(|_| true),
+            mrconfigid: tdx_slice.as_ref().map(|tdx| tdx.mrconfigid.clone()),
+            qgs_socket: tdx_slice.as_ref().map(|tdx| tdx.qgs_socket.clone()),
         },
         hypervisor: "qemu",
     })
@@ -2875,6 +2909,161 @@ fn snp_config_slice_with(
     }))
 }
 
+/// Smallest guest RAM a TDX launch accepts, the controller's
+/// `TDX_MIN_MEMORY_MB`; checked here so nothing is written for a VM the
+/// controller would refuse to start.
+const TDX_MIN_MEMORY_MB: u64 = 2048;
+
+/// The descriptor drive image: a fixed 64 KiB raw block device, so the
+/// guest init can read it as a whole without probing its size.
+const TDX_DESCRIPTOR_SIZE: usize = 64 * 1024;
+
+/// First line of the descriptor drive; the guest scans /dev/vd* for it.
+const TDX_DESCRIPTOR_MAGIC: &[u8] = b"ALEPH-TDX-DESCRIPTOR-v1\n";
+
+/// The Intel TDX launch slice `build_written_config` fills, or `None` when
+/// the spec is not TDX. Verity-only: the cmdline is derived from the roothash
+/// sidecar and is the same for every deployment of a runtime, so RTMR2 is a
+/// per-runtime constant. The per-deployment tokens travel on the descriptor
+/// drive instead and are bound to the launch through MRCONFIGID.
+#[derive(Debug)]
+struct TdxSlice {
+    tdvf_path: String,
+    kernel_path: String,
+    initrd_path: String,
+    kernel_cmdline: String,
+    /// `base64(sha384(suffix))`, standard alphabet with padding.
+    mrconfigid: String,
+    qgs_socket: PathBuf,
+    /// The dm-verity hash tree image, the first host volume.
+    hashtree_path: String,
+    /// The written descriptor image, the last host volume.
+    descriptor_path: String,
+}
+
+/// The raw descriptor image: magic line, the suffix, a newline, zero padding
+/// to `TDX_DESCRIPTOR_SIZE`. `None` when the suffix does not fit.
+fn tdx_descriptor_image(suffix: &str) -> Option<Vec<u8>> {
+    let mut image = Vec::with_capacity(TDX_DESCRIPTOR_SIZE);
+    image.extend_from_slice(TDX_DESCRIPTOR_MAGIC);
+    image.extend_from_slice(suffix.as_bytes());
+    image.push(b'\n');
+    if image.len() > TDX_DESCRIPTOR_SIZE {
+        return None;
+    }
+    image.resize(TDX_DESCRIPTOR_SIZE, 0);
+    Some(image)
+}
+
+/// MRCONFIGID for a suffix: sha384 of its bytes, base64 with padding, the
+/// text the `tdx-guest` QEMU object takes.
+fn tdx_mrconfigid(suffix: &str) -> String {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    base64::engine::general_purpose::STANDARD.encode(sha2::Sha384::digest(suffix.as_bytes()))
+}
+
+/// Write the descriptor image atomically (temp file beside it, fsync,
+/// 0644, rename) so a half-written drive can never be attached.
+fn write_tdx_descriptor(path: &str, image: &[u8]) -> Result<(), RpcError> {
+    use std::io::Write as _;
+    let path = std::path::Path::new(path);
+    let failed = |stage: &str, error: std::io::Error| {
+        RpcError::Internal(format!(
+            "cannot {stage} the TDX descriptor {}: {error}",
+            path.display()
+        ))
+    };
+    let directory = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
+    let mut temp = tempfile::Builder::new()
+        .prefix(".tdx_descriptor.")
+        .suffix(".tmp")
+        .tempfile_in(directory.unwrap_or_else(|| std::path::Path::new(".")))
+        .map_err(|error| failed("create", error))?;
+    temp.write_all(image)
+        .and_then(|_| temp.flush())
+        .and_then(|_| temp.as_file().sync_all())
+        .map_err(|error| failed("write", error))?;
+    std::fs::set_permissions(temp.path(), {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::Permissions::from_mode(0o644)
+    })
+    .map_err(|error| failed("chmod", error))?;
+    temp.persist(path)
+        .map_err(|error| failed("rename", error.error))?;
+    Ok(())
+}
+
+/// Resolve the TDX slice: every launch input is validated first, and the
+/// descriptor drive is written only once nothing can refuse the spec any
+/// more. Fails closed (InvalidBackend) on any missing or malformed input.
+fn tdx_config_slice(spec: &pb::VmSpec) -> Result<Option<TdxSlice>, RpcError> {
+    let Some(tee) = &spec.tee else {
+        return Ok(None);
+    };
+    if tee.backend != pb::TeeBackend::Tdx as i32 {
+        return Ok(None);
+    }
+    let vm_id = &spec.vm_id;
+    if tee.firmware_path.is_empty() {
+        return Err(RpcError::InvalidBackend(
+            "TDX spec has no resolved firmware_path (TDVF); refusing to build configuration"
+                .to_string(),
+        ));
+    }
+    if spec.kernel_path.is_empty() || spec.initrd_path.is_empty() {
+        return Err(RpcError::InvalidBackend(
+            "TDX measured boot requires kernel_path and initrd_path".to_string(),
+        ));
+    }
+    // Verity-only: the agent has no cmdline to render, the daemon derives it.
+    if !tee.kernel_cmdline.is_empty() {
+        return Err(RpcError::InvalidBackend(format!(
+            "TDX VM {vm_id} carries tee.kernel_cmdline; the TDX cmdline is derived from the \
+             dm-verity roothash sidecar and cannot be supplied by the agent"
+        )));
+    }
+    if !spec.gpus.is_empty() {
+        return Err(RpcError::InvalidBackend(format!(
+            "GPU passthrough is not supported on TDX guests (VM {vm_id} requests {})",
+            spec.gpus.len()
+        )));
+    }
+    if spec.memory_mib < TDX_MIN_MEMORY_MB {
+        return Err(RpcError::InvalidBackend(format!(
+            "TDX guests need at least {TDX_MIN_MEMORY_MB} MiB, VM {vm_id} requests {}",
+            spec.memory_mib
+        )));
+    }
+    let rootfs_path = require_rootfs(spec)?.path.clone();
+    let roothash = read_verity_roothash(&format!("{rootfs_path}.roothash"))?;
+    let kernel_cmdline = format!(
+        "console=ttyS0 root=/dev/mapper/verity-root ro roothash={roothash} aleph_tdx_descriptor=1"
+    );
+    let suffix = measured_cmdline_suffix(&rootfs_path)?;
+    let descriptor_path = format!("{rootfs_path}.tdx_descriptor");
+    let image = tdx_descriptor_image(&suffix).ok_or_else(|| {
+        RpcError::InvalidBackend(format!(
+            "the measured tokens of VM {vm_id} do not fit the {TDX_DESCRIPTOR_SIZE}-byte TDX \
+             descriptor"
+        ))
+    })?;
+    // Last refusal above; the only side effect follows.
+    write_tdx_descriptor(&descriptor_path, &image)?;
+    Ok(Some(TdxSlice {
+        tdvf_path: tee.firmware_path.clone(),
+        kernel_path: spec.kernel_path.clone(),
+        initrd_path: spec.initrd_path.clone(),
+        kernel_cmdline,
+        mrconfigid: tdx_mrconfigid(&suffix),
+        qgs_socket: checks::tdx_qgs_socket_path(),
+        hashtree_path: format!("{rootfs_path}.verity"),
+        descriptor_path,
+    }))
+}
+
 /// Python `int(tee.policy, 0)`: base-0 integer parsing. Matches CPython's
 /// grammar exactly (see [`parse_int_base0`]), so a policy string Python
 /// rejects (`"010"`, `"07"`, `"1__0"`, `"_10"`, ...) is rejected here too and
@@ -3218,18 +3407,17 @@ fn create_vm_inner(
     // configuration produces the extra SEV fields; execution.start leaves it
     // in awaiting_confidential_init.
     //
-    // SEV-SNP (increment B1) is the exception: it has NO session/godh handshake
-    // (secrets are injected at runtime over the attested channel), so there is
-    // nothing to await and it starts immediately like a plain VM. It also boots
-    // the measured Nix image directly (kernel+initrd), so it takes no cloud-init
-    // drive.
-    let snp = request
-        .tee
-        .as_ref()
-        .is_some_and(|tee| tee.backend == pb::TeeBackend::SevSnp as i32);
+    // The measured backends (SEV-SNP, TDX) are the exception: they have NO
+    // session/godh handshake (secrets are injected at runtime over the
+    // attested channel), so there is nothing to await and they start
+    // immediately like a plain VM. They also boot the measured Nix image
+    // directly (kernel+initrd), so they take no cloud-init drive.
+    let measured = request.tee.as_ref().is_some_and(|tee| {
+        tee.backend == pb::TeeBackend::SevSnp as i32 || tee.backend == pb::TeeBackend::Tdx as i32
+    });
     let confidential = request.tee.is_some();
-    // SEV/SEV-ES only: the create-then-await path. SNP does not await.
-    let await_session = confidential && !snp;
+    // SEV/SEV-ES only: the create-then-await path. Measured VMs do not await.
+    let await_session = confidential && !measured;
     if !request.persistent {
         // Python boots this path and fails inside AlephQemuInstance.start()
         // (NotImplementedError -> INTERNAL); refuse up front with the same
@@ -3377,13 +3565,13 @@ fn create_vm_inner(
             // Set below once the NUMA placement is chosen (increment C1).
             numa_node: None,
         };
-        // Create starts the per-tap DHCP server on the request predicate `snp`
-        // and every teardown path keys the cleanup on `config.snp().is_some()`.
-        // The two must agree, or a started server leaks.
+        // Create starts the per-tap DHCP server on the request predicate
+        // `measured` and every teardown path keys the cleanup on
+        // `config.is_measured()`. The two must agree, or a started server leaks.
         debug_assert_eq!(
-            entry.config.snp().is_some(),
-            snp,
-            "create's SNP predicate must match the written config's snp()"
+            entry.config.is_measured(),
+            measured,
+            "create's measured predicate must match the written config's is_measured()"
         );
         match stale_ordinal {
             Some(ordinal) => {
@@ -3472,10 +3660,10 @@ fn create_vm_inner(
                     ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
                 }
                 nft_setup_vm(state, vm_index, &tap.device_name)?;
-                // SNP measured VMs get their IPv4 by DHCP, not cloud-init: the
+                // Measured VMs get their IPv4 by DHCP, not cloud-init: the
                 // measured cmdline omits `ip=` so the launch measurement stays
                 // host-independent. Plain and SEV VMs keep the static config.
-                if snp {
+                if measured {
                     let config = dhcp::DhcpConfig::for_snp(
                         &vm_id,
                         tap,
@@ -3487,11 +3675,11 @@ fn create_vm_inner(
             }
 
             // The cloud-init seed, then the controller config (same order as
-            // build_qemu_configuration + save_controller_configuration). SNP boots
-            // the measured Nix image directly and carries no cloud-init drive, so
-            // the seed is skipped (build_written_config leaves cloud_init_drive_path
-            // unset for SNP; the two must agree).
-            if !snp {
+            // build_qemu_configuration + save_controller_configuration). A
+            // measured VM boots the Nix image directly and carries no cloud-init
+            // drive, so the seed is skipped (build_written_config leaves
+            // cloud_init_drive_path unset for it; the two must agree).
+            if !measured {
                 cloudinit::CloudInitDrive {
                     execution_root: &state.host.settings.execution_root,
                     vm_hash: &vm_id,
@@ -3565,10 +3753,10 @@ fn create_vm_inner(
         // seed are left behind, exactly like Python.
         if let Some(tap) = &tap {
             let _net = net_lock(state);
-            // Tear the per-tap DHCP server down alongside the tap (SNP only,
-            // idempotent): a failed SNP boot must not leave a dnsmasq bound to
-            // a tap that is about to be deleted.
-            if snp
+            // Tear the per-tap DHCP server down alongside the tap (measured
+            // VMs only, idempotent): a failed boot must not leave a dnsmasq
+            // bound to a tap that is about to be deleted.
+            if measured
                 && let Err(dhcp_error) = state.dhcp.stop(
                     &vm_id,
                     &dhcp::lease_file_path(&dhcp_lease_dir(state), &vm_id),
@@ -6686,6 +6874,383 @@ mod tests {
                 "an oversized workload roothash sidecar must be InvalidBackend, got {other:?}"
             ),
         }
+    }
+
+    /// An Intel TDX spec: the SNP verity layout (raw rootfs + roothash and
+    /// hash tree sidecars, kernel/initrd) with a TDX tee config pointing at
+    /// the TDVF, at the 2 GiB memory floor.
+    fn tdx_spec(vm_id: &str, root: &Path) -> pb::VmSpec {
+        let tdvf = root.join("TDVF.fd");
+        std::fs::write(&tdvf, b"tdvf").unwrap();
+        let mut request = snp_spec(vm_id, root, &tdvf.to_string_lossy());
+        request.memory_mib = TDX_MIN_MEMORY_MB;
+        request.tee.as_mut().unwrap().backend = pb::TeeBackend::Tdx as i32;
+        request
+    }
+
+    const TDX_CMDLINE: &str =
+        "console=ttyS0 root=/dev/mapper/verity-root ro roothash=deadbeef00 aleph_tdx_descriptor=1";
+
+    /// The descriptor image a suffix must produce: magic, suffix, newline,
+    /// zeros to 64 KiB.
+    fn expected_descriptor(suffix: &str) -> Vec<u8> {
+        let mut image = TDX_DESCRIPTOR_MAGIC.to_vec();
+        image.extend_from_slice(suffix.as_bytes());
+        image.push(b'\n');
+        image.resize(TDX_DESCRIPTOR_SIZE, 0);
+        image
+    }
+
+    #[test]
+    fn tdx_config_slice_derives_the_fixed_cmdline_and_writes_the_descriptor() {
+        // The minimal TDX VM: no per-deployment tokens. The cmdline is the
+        // per-runtime constant (roothash from the sidecar plus the descriptor
+        // switch), the descriptor drive carries an empty suffix, and
+        // MRCONFIGID is the sha384 of that empty suffix. The descriptor is a
+        // 0644 raw image of exactly 64 KiB.
+        let harness = harness();
+        let root = harness.state.host.settings.execution_root.clone();
+        let vm_id = hash('t');
+        let spec = tdx_spec(&vm_id, &root);
+
+        let slice = tdx_config_slice(&spec)
+            .expect("a TDX spec builds a slice")
+            .expect("a TDX spec yields a slice");
+        assert_eq!(slice.kernel_cmdline, TDX_CMDLINE);
+        assert_eq!(slice.tdvf_path, root.join("TDVF.fd").to_string_lossy());
+        assert!(slice.kernel_path.ends_with("bzImage"));
+        assert!(slice.initrd_path.ends_with("initrd"));
+        assert!(slice.hashtree_path.ends_with("-rootfs.ext4.verity"));
+        assert_eq!(slice.qgs_socket, checks::tdx_qgs_socket_path());
+        assert_eq!(slice.mrconfigid, tdx_mrconfigid(""));
+        {
+            use base64::Engine as _;
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(&slice.mrconfigid)
+                .expect("mrconfigid is standard base64 with padding");
+            assert_eq!(decoded.len(), 48, "MRCONFIGID is a sha384 digest");
+        }
+
+        let descriptor = root.join(format!("{vm_id}-rootfs.ext4.tdx_descriptor"));
+        assert_eq!(slice.descriptor_path, descriptor.to_string_lossy());
+        let bytes = std::fs::read(&descriptor).expect("the descriptor was written");
+        assert_eq!(bytes.len(), TDX_DESCRIPTOR_SIZE);
+        assert_eq!(bytes, expected_descriptor(""));
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&descriptor).unwrap().permissions().mode() & 0o777;
+            assert_eq!(
+                mode, 0o644,
+                "the descriptor is world-readable like the config"
+            );
+        }
+        assert!(
+            std::fs::read_dir(&root).unwrap().all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")),
+            "the atomic write leaves no temp file behind"
+        );
+    }
+
+    #[test]
+    fn tdx_config_slice_puts_the_measured_tokens_in_the_descriptor_not_the_cmdline() {
+        // Every per-deployment token (workload roothash, swiotlb, verified
+        // volumes) stays OUT of the cmdline, so RTMR2 is constant per runtime,
+        // and goes onto the descriptor drive in the SNP suffix order; the
+        // MRCONFIGID binds exactly that string.
+        let harness = harness();
+        let root = harness.state.host.settings.execution_root.clone();
+        let vm_id = hash('u');
+        let spec = tdx_spec(&vm_id, &root);
+        let rootfs = root.join(format!("{vm_id}-rootfs.ext4"));
+        std::fs::write(
+            format!("{}.workload_roothash", rootfs.display()),
+            "cafef00d00\n",
+        )
+        .unwrap();
+        std::fs::write(
+            format!("{}.cmdline_extra", rootfs.display()),
+            b"swiotlb=262144\n",
+        )
+        .unwrap();
+        let vol_a = "aa".repeat(32);
+        let vol_b = "bb".repeat(32);
+        std::fs::write(
+            format!("{}.verified_volumes", rootfs.display()),
+            format!("{vol_a},{vol_b}\n"),
+        )
+        .unwrap();
+
+        let slice = tdx_config_slice(&spec).unwrap().unwrap();
+        assert_eq!(
+            slice.kernel_cmdline, TDX_CMDLINE,
+            "no per-deployment token enters the TDX cmdline"
+        );
+        let suffix =
+            format!("workload_roothash=cafef00d00 swiotlb=262144 verified_volumes={vol_a},{vol_b}");
+        let bytes = std::fs::read(&slice.descriptor_path).unwrap();
+        assert_eq!(bytes, expected_descriptor(&suffix));
+        assert_eq!(slice.mrconfigid, tdx_mrconfigid(&suffix));
+        assert_ne!(
+            slice.mrconfigid,
+            tdx_mrconfigid(""),
+            "a deployment with tokens measures differently from one without"
+        );
+    }
+
+    #[test]
+    fn tdx_mrconfigid_pins_the_sha384_vector() {
+        // Fixed vector (python3: base64(hashlib.sha384(suffix).digest())), so
+        // the daemon, the guest check and the aleph-rs client cannot drift.
+        let suffix = "workload_roothash=\
+                      0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            tdx_mrconfigid(suffix),
+            "32FMrB3nPTqxHjHQrQh1BY55HpzwyACPWkrcI1BCAGM/1a/CXjfqYXRfn/bgBVu+"
+        );
+    }
+
+    #[test]
+    fn tdx_descriptor_image_refuses_a_suffix_that_does_not_fit() {
+        // Magic + suffix + newline must fit the 64 KiB drive exactly; one byte
+        // over is refused rather than truncated (a truncated suffix would still
+        // hash to a valid-looking MRCONFIGID the guest could never match).
+        let room = TDX_DESCRIPTOR_SIZE - TDX_DESCRIPTOR_MAGIC.len() - 1;
+        let fits = "a".repeat(room);
+        let image = tdx_descriptor_image(&fits).expect("a suffix filling the drive fits");
+        assert_eq!(image.len(), TDX_DESCRIPTOR_SIZE);
+        assert_eq!(image, expected_descriptor(&fits));
+        assert!(tdx_descriptor_image(&"a".repeat(room + 1)).is_none());
+    }
+
+    #[test]
+    fn tdx_config_slice_rejects_a_malformed_roothash() {
+        // Same barrier as SNP: the roothash is spliced verbatim into the
+        // cmdline, so anything but bare hex fails closed and no descriptor is
+        // written.
+        let harness = harness();
+        let root = harness.state.host.settings.execution_root.clone();
+        for (label, malformed) in [
+            ("injection", "abc ro init=/bin/sh"),
+            ("internally-spaced", "dead beef"),
+            ("empty-but-present", ""),
+        ] {
+            let vm_id = hash('v');
+            let spec = tdx_spec(&vm_id, &root);
+            let rootfs = root.join(format!("{vm_id}-rootfs.ext4"));
+            std::fs::write(format!("{}.roothash", rootfs.display()), malformed).unwrap();
+            match tdx_config_slice(&spec) {
+                Err(RpcError::InvalidBackend(_)) => {}
+                other => {
+                    panic!("malformed roothash ({label}) must be InvalidBackend, got {other:?}")
+                }
+            }
+            assert!(
+                !root
+                    .join(format!("{vm_id}-rootfs.ext4.tdx_descriptor"))
+                    .exists(),
+                "no descriptor is written for a refused spec ({label})"
+            );
+        }
+    }
+
+    #[test]
+    fn tdx_config_slice_rejects_an_oversized_sidecar() {
+        // The read cap applies to the roothash and to every suffix sidecar.
+        let harness = harness();
+        let root = harness.state.host.settings.execution_root.clone();
+        let oversized = "a".repeat(MAX_ROOTHASH_SIDECAR_BYTES as usize + 1);
+        for sidecar in ["roothash", "workload_roothash"] {
+            let vm_id = hash('w');
+            let spec = tdx_spec(&vm_id, &root);
+            let rootfs = root.join(format!("{vm_id}-rootfs.ext4"));
+            std::fs::write(format!("{}.{sidecar}", rootfs.display()), &oversized).unwrap();
+            match tdx_config_slice(&spec) {
+                Err(RpcError::InvalidBackend(_)) => {}
+                other => {
+                    panic!("an oversized {sidecar} sidecar must be InvalidBackend, got {other:?}")
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tdx_config_slice_refuses_an_agent_cmdline() {
+        // TDX is verity-only: the daemon derives the cmdline, so an agent that
+        // sends one has a different launch in mind. Refuse it at the slice and
+        // at the whole create (the kernel_cmdline gate lets TDX through to
+        // this refusal rather than the SNP-only message).
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('x');
+        let mut spec = tdx_spec(&vm_id, &root);
+        spec.tee.as_mut().unwrap().kernel_cmdline = OPAQUE_CMDLINE.to_string();
+        match tdx_config_slice(&spec) {
+            Err(RpcError::InvalidBackend(message)) => assert!(
+                message.contains("kernel_cmdline"),
+                "the refusal names the field, got {message:?}"
+            ),
+            other => panic!("an agent cmdline on TDX must be InvalidBackend, got {other:?}"),
+        }
+        assert!(matches!(
+            create_vm(state, spec),
+            Err(RpcError::InvalidBackend(_))
+        ));
+        assert!(
+            !root
+                .join(format!("{vm_id}-rootfs.ext4.tdx_descriptor"))
+                .exists()
+        );
+    }
+
+    #[test]
+    fn tdx_config_slice_refuses_a_gpu() {
+        let harness = harness();
+        let root = harness.state.host.settings.execution_root.clone();
+        let vm_id = hash('y');
+        let mut spec = tdx_spec(&vm_id, &root);
+        spec.gpus.push(pb::GpuConfig {
+            pci_host: "0000:01:00.0".to_string(),
+            supports_x_vga: true,
+        });
+        match tdx_config_slice(&spec) {
+            Err(RpcError::InvalidBackend(message)) => assert!(
+                message.contains("GPU"),
+                "the refusal names the GPU, got {message:?}"
+            ),
+            other => panic!("a GPU on TDX must be InvalidBackend, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tdx_config_slice_refuses_memory_below_the_floor() {
+        // The controller would refuse the launch anyway; refusing here keeps
+        // the descriptor and the config off the disk.
+        let harness = harness();
+        let root = harness.state.host.settings.execution_root.clone();
+        let vm_id = hash('z');
+        let mut spec = tdx_spec(&vm_id, &root);
+        spec.memory_mib = TDX_MIN_MEMORY_MB - 1;
+        match tdx_config_slice(&spec) {
+            Err(RpcError::InvalidBackend(message)) => assert!(
+                message.contains("2048"),
+                "the refusal names the floor, got {message:?}"
+            ),
+            other => panic!("memory below the floor must be InvalidBackend, got {other:?}"),
+        }
+        assert!(
+            !root
+                .join(format!("{vm_id}-rootfs.ext4.tdx_descriptor"))
+                .exists(),
+            "nothing is written for a refused spec"
+        );
+    }
+
+    #[test]
+    fn tdx_config_slice_refuses_missing_launch_inputs() {
+        // Firmware, kernel and initrd are all measured inputs: a missing one
+        // fails closed like SNP.
+        let harness = harness();
+        let root = harness.state.host.settings.execution_root.clone();
+        let vm_id = hash('t');
+        let mut no_firmware = tdx_spec(&vm_id, &root);
+        no_firmware.tee.as_mut().unwrap().firmware_path = String::new();
+        let mut no_kernel = tdx_spec(&vm_id, &root);
+        no_kernel.kernel_path = String::new();
+        let mut no_initrd = tdx_spec(&vm_id, &root);
+        no_initrd.initrd_path = String::new();
+        for (label, spec) in [
+            ("firmware", no_firmware),
+            ("kernel", no_kernel),
+            ("initrd", no_initrd),
+        ] {
+            match tdx_config_slice(&spec) {
+                Err(RpcError::InvalidBackend(_)) => {}
+                other => panic!("a missing {label} must be InvalidBackend, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn tdx_config_slice_is_none_for_other_backends() {
+        let harness = harness();
+        let root = harness.state.host.settings.execution_root.clone();
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let snp = snp_spec(&hash('s'), &root, &firmware.to_string_lossy());
+        assert!(tdx_config_slice(&snp).unwrap().is_none());
+        let plain = spec(&hash('p'), &root);
+        assert!(tdx_config_slice(&plain).unwrap().is_none());
+    }
+
+    #[test]
+    fn build_written_config_attaches_the_tdx_descriptor_as_the_last_volume() {
+        // Bus order: hash tree first, the agent's extra disks in spec order,
+        // the descriptor LAST. The written config carries the TDX marker,
+        // MRCONFIGID and QGS socket alongside the TDVF and the trio, and none
+        // of the SNP/SEV keys (no policy, no CPU model, no session/godh, no
+        // cloud-init drive).
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('t');
+        let mut spec = tdx_spec(&vm_id, &root);
+        let extra = root.join("data.img");
+        std::fs::write(&extra, b"data").unwrap();
+        spec.disks.push(pb::DiskConfig {
+            path: extra.to_string_lossy().into_owned(),
+            readonly: false,
+            format: pb::disk_config::Format::Raw as i32,
+            role: pb::disk_config::DiskRole::Extra as i32,
+        });
+
+        let written = build_written_config(state, &spec, 7, Some("vmtap7".to_string()))
+            .expect("a TDX spec builds a config");
+        let vm = &written.vm_configuration;
+        let volumes: Vec<(&str, bool)> = vm
+            .host_volumes
+            .iter()
+            .map(|volume| (volume.path_on_host.as_str(), volume.read_only))
+            .collect();
+        assert_eq!(volumes.len(), 3);
+        assert!(volumes[0].0.ends_with("-rootfs.ext4.verity") && volumes[0].1);
+        assert_eq!(volumes[1], (extra.to_string_lossy().as_ref(), false));
+        assert!(
+            volumes[2].0.ends_with("-rootfs.ext4.tdx_descriptor") && volumes[2].1,
+            "the descriptor is the last volume and read-only, got {volumes:?}"
+        );
+
+        assert_eq!(vm.tdx, Some(true));
+        assert_eq!(vm.mrconfigid.as_deref(), Some(tdx_mrconfigid("").as_str()));
+        assert_eq!(vm.qgs_socket, Some(checks::tdx_qgs_socket_path()));
+        assert_eq!(
+            vm.ovmf_path.as_deref(),
+            Some(root.join("TDVF.fd").to_str().unwrap())
+        );
+        assert_eq!(vm.kernel_cmdline.as_deref(), Some(TDX_CMDLINE));
+        assert!(vm.kernel_path.is_some() && vm.initrd_path.is_some());
+        assert_eq!(vm.sev_snp, None);
+        assert_eq!(vm.sev_policy, None);
+        assert_eq!(vm.cpu_model, None);
+        assert_eq!(vm.sev_session_file, None);
+        assert_eq!(vm.sev_dh_cert_file, None);
+        assert_eq!(vm.image_format, None);
+        assert_eq!(vm.pci_mmio64_mb, None);
+        assert!(vm.cloud_init_drive_path.is_none(), "measured boot, no seed");
+
+        // The JSON reads back as TDX and as nothing else.
+        let parsed = parse_controller_config(&written.to_json()).unwrap();
+        let VmConfiguration::Qemu(qemu) = parsed.vm else {
+            panic!("the written config must be QEMU");
+        };
+        let tdx = qemu.tdx().expect("the written config resolves as TDX");
+        assert_eq!(tdx.kernel_cmdline, TDX_CMDLINE);
+        assert_eq!(tdx.mrconfigid, tdx_mrconfigid(""));
+        assert!(qemu.snp().is_none() && qemu.confidential().is_none());
+        assert!(qemu.is_measured());
     }
 
     #[test]
