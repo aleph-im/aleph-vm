@@ -48,9 +48,19 @@ V-PROGRAMs.
     installer asks for an Intel PCS API key
     (api.portal.trustedservices.intel.com). Without it QGS can build a
     quote but no certificate chain, and every client verification fails.
-  - `sgx-pck-id-retrieval-tool` (`PCKIDRetrievalTool`): run once after
-    PCCS is up to register this platform's PCK id with it, so the first
-    quote does not have to wait for the certificate fetch.
+  - `sgx-pck-id-retrieval-tool` (`PCKIDRetrievalTool`): **mandatory**, not an
+    optimisation. Xeon 6 platforms are unknown to Intel PCS until their
+    platform manifest is registered (PCS answers 404 for the PPID and QGS
+    reports `No certificate data for this platform`). Run
+    `PCKIDRetrievalTool -url https://localhost:8081 -user_token <PCCS user
+    token> -use_secure_cert false` once after PCCS is up: PCCS registers the
+    manifest with Intel and caches the PCK certificates, TCB info and CRLs.
+    A BIOS `SgxFactoryReset` produces a new manifest and needs a re-run.
+- **TCB status.** Clients appraise the quote against Intel's current TCB
+  level. A host on old firmware (microcode CPUSVN or TDX module SVN behind
+  Intel's TCB-R) verifies cryptographically but is reported `OutOfDate` with
+  the matching INTEL-SA advisories, and the default client policy rejects it.
+  Firmware updates fix that on the host side; nothing on the CRN can.
 - **Daemon settings** (`src/aleph/vm/conf.py`):
   `ENABLE_CONFIDENTIAL_COMPUTING=true` and `ENABLE_QEMU_SUPPORT=true`. The
   daemon's startup check accepts a TDX host without `sevctl` or the AMD
