@@ -109,7 +109,11 @@ Useful when reading a QEMU argv or a guest console:
   verified volumes) are on a 64 KiB raw drive attached LAST, starting with
   the line `ALEPH-TDX-DESCRIPTOR-v1`, and `mrconfigid` is the SHA-384 of
   that token line. The guest init checks the two against each other from a
-  local TDREPORT before using the tokens, and powers off on a mismatch.
+  local TDREPORT before using the tokens, and powers off on a mismatch. The
+  one exception is a plain-QEMU local run whose cmdline carries
+  `aleph_insecure_unattested=1` (the CLI's `vprogram run`, never a CRN):
+  there is no TD to report, so the init takes the tokens unchecked behind an
+  `init: WARNING: INSECURE UNATTESTED MODE` console line.
 - Memory floor: 2 GiB per TD (guest-side need, not a measurement input).
 - A guest reboot ends the QEMU process: TD reset is not supported by the
   platform, so a TD that "reboots" is gone and shows up as an exited VM.
