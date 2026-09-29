@@ -133,7 +133,7 @@ def test_vm_info_has_no_persistent_field():
 
 
 def test_confidential_mode_members():
-    assert [m.name for m in ConfidentialMode] == ["NONE", "SEV", "SEV_ES", "SEV_SNP"]
+    assert [m.name for m in ConfidentialMode] == ["NONE", "SEV", "SEV_ES", "SEV_SNP", "TDX"]
 
 
 def test_measurement_defaults_keep_existing_callers_working():
