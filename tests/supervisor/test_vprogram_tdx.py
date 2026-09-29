@@ -4,10 +4,9 @@ Mirrors test_vprogram_launch.py: get_existing_file serves a tdx runtime
 manifest and a locally built bundle (TDVF in the OVMF.fd slot, the
 measurements.json triple beside the members) from tmp_path, no network.
 
-aleph-message still pins verification.backend to "sev_snp", so the tdx
-messages here are built with model_construct, the unvalidated route; the
-launch path must therefore hold on its own, and refuse a validated (sev_snp)
-message that names a tdx runtime.
+The tdx messages are the fixture message with a validated tdx verification
+block (aleph-message 1.7.0); the launch path must still refuse a sev_snp
+message that names a tdx runtime, and the reverse.
 """
 
 from __future__ import annotations
@@ -144,12 +143,11 @@ def no_snp_probe(mocker):
 
 
 def tdx_message(*, memory: int | None = None, **content_updates: Any) -> VerifiableProgramMessage:
-    """The fixture message re-pointed at a tdx backend: aleph-message pins
-    backend to sev_snp, so the verification block is built unvalidated."""
+    """The fixture message re-pointed at a tdx backend, through the schema:
+    no policy, one measurement with the runtime's triple."""
     message = load_vprogram_message()
-    verification = TeeVerification.model_construct(
+    verification = TeeVerification(
         backend="tdx",
-        policy=0,
         measurements=[
             LaunchMeasurement(
                 platform=TeePlatform.tdx,
@@ -281,9 +279,8 @@ async def test_tdx_refusals_stage_nothing(staged_tdx_bundle, tdx_host, no_snp_pr
 
 @pytest.mark.asyncio
 async def test_sev_snp_message_refuses_a_tdx_runtime(staged_tdx_bundle, tdx_host, no_snp_probe):
-    """The schema-valid message (backend sev_snp) pointing at a tdx runtime
-    is a mismatch: nothing launches TDX until aleph-message admits it, and
-    an SNP-measured message must never boot a TD."""
+    """The fixture message (backend sev_snp) pointing at a tdx runtime is a
+    mismatch: an SNP-measured message must never boot a TD."""
     message = load_vprogram_message()
     assert message.content.verification.backend == "sev_snp"
     with pytest.raises(VmSetupError, match="declares TEE backend 'sev_snp' but runtime .* is a tdx runtime"):

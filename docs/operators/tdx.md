@@ -146,11 +146,11 @@ Useful when reading a QEMU argv or a guest console:
   `InvalidBackend ... GPU passthrough is not supported on TDX guests`).**
   A TDX V-PROGRAM with a `gpu` block; confidential GPUs are an SEV-SNP
   feature today. Nothing to fix on the host.
-- **`declares TEE backend 'sev_snp' but runtime ... is a tdx runtime`.** The
-  message was measured for SEV-SNP but points at a TDX runtime manifest.
-  Until aleph-message admits `backend: "tdx"`, no V-PROGRAM can name a TDX
-  runtime; the agent refuses the mismatch rather than boot a VM none of the
-  message's registers describe.
+- **`declares TEE backend 'sev_snp' but runtime ... is a tdx runtime`** (or
+  the reverse). The message was measured for one platform but points at a
+  runtime manifest of the other; the agent refuses the mismatch rather than
+  boot a VM none of the message's registers describe. The CCN rejects the
+  pair too, so this only shows up for a message that bypassed it.
 - **`needs Intel TDX, which this host does not support`.** The scheduler
   placed a TDX V-PROGRAM on a host that does not advertise `tee.tdx` (see
   section 2 for the QGS and `kvm_intel.tdx` checks behind that flag).
