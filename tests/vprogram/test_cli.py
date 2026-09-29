@@ -252,3 +252,76 @@ def test_manifest_rejects_exec_with_instance_flavor(tmp_path: Path) -> None:
     )
     assert result.returncode == 2
     assert "--exec is incompatible with --flavor instance" in result.stderr
+
+
+@pytest.fixture()
+def tdx_image_dir(tmp_path: Path) -> Path:
+    d = tmp_path / "tdx-image"
+    d.mkdir()
+    (d / "OVMF.fd").write_bytes(b"tdvf firmware")
+    (d / "bzImage").write_bytes(b"kernel")
+    (d / "initrd").write_bytes(b"initrd contents")
+    (d / "rootfs.ext4").write_bytes(b"rootfs")
+    (d / "rootfs.ext4.verity").write_bytes(b"hash tree")
+    (d / "rootfs.ext4.roothash").write_text(ROOTHASH + "\n")
+    (d / "measurements.json").write_text(
+        json.dumps({"mrtd": "ab" * 48, "rtmr1": "cd" * 48, "rtmr2": "ef" * 48}, indent=2) + "\n"
+    )
+    return d
+
+
+def test_build_then_manifest_tdx_flavor(tdx_image_dir: Path, tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    result = _run("build", "--image-dir", str(tdx_image_dir), "--out", str(out), "--flavor", "tdx")
+    assert result.returncode == 0, result.stderr
+    info = json.loads((out / "bundle-info.json").read_text())
+    assert info["platform_roothash"] == ROOTHASH
+    assert info["measurement"] is None
+    assert info["tdx_measurements"] == {"mrtd": "ab" * 48, "rtmr1": "cd" * 48, "rtmr2": "ef" * 48}
+    assert info["source"]["build"] == 'nix build "git+file://$REPO?dir=nix#tdxImage"'
+
+    result = _run(
+        "manifest",
+        "--bundle-info",
+        str(out / "bundle-info.json"),
+        "--bundle-ref",
+        BUNDLE_REF,
+        "--name",
+        "aleph-tdx-attest",
+        "--runtime-version",
+        "2026.09.29",
+        "--flavor",
+        "tdx",
+        "--exec",
+    )
+    assert result.returncode == 0, result.stderr
+    manifest = RuntimeManifest.model_validate_json((out / "manifest.json").read_text())
+    assert manifest.platform == "tdx"
+    assert manifest.measurements is not None
+    assert manifest.measurements.mrtd == "ab" * 48
+    assert manifest.boot.kernel_hashes is False
+    assert manifest.boot.cpu_models == []
+    assert manifest.boot.cmdline_template.endswith(" aleph_tdx_descriptor=1")
+    assert "{workload_roothash}" not in manifest.boot.cmdline_template
+    # --exec still picks the workload contract; the cmdline stays fixed.
+    assert manifest.workload.contract == "aleph.exec/1"
+
+
+def test_manifest_tdx_flavor_rejects_an_snp_build(image_dir: Path, tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    assert _run("build", "--image-dir", str(image_dir), "--out", str(out)).returncode == 0
+    result = _run(
+        "manifest",
+        "--bundle-info",
+        str(out / "bundle-info.json"),
+        "--bundle-ref",
+        BUNDLE_REF,
+        "--name",
+        "x",
+        "--runtime-version",
+        "1",
+        "--flavor",
+        "tdx",
+    )
+    assert result.returncode != 0
+    assert "tdx flavor build" in result.stderr
