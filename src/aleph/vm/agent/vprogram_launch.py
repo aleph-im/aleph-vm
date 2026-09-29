@@ -158,8 +158,7 @@ def _check_platform(vm_hash: ItemHash, content: VerifiableProgramContent, manife
 
     The message's verification.backend is what the client measured for and
     what the CCN validated; a runtime of another platform would boot a VM no
-    register in the message describes. The schema pins the backend to sev_snp
-    today, so a tdx runtime cannot launch until it admits tdx.
+    register in the message describes.
     """
     backend = content.verification.backend
     if backend != manifest.platform:
