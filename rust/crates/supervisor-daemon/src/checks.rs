@@ -12,11 +12,21 @@
 //! Agent-side settings the daemon does not model (CONNECTOR_URL, the
 //! FAKE_DATA_* fixtures) are out of scope. The confidential-computing gates
 //! (SEV_CTL_PATH, the SEV/SEV-ES kernel modules) are ported, gated on
-//! ENABLE_CONFIDENTIAL_COMPUTING (increment 6).
+//! ENABLE_CONFIDENTIAL_COMPUTING (increment 6), and waived on an Intel TDX
+//! host, which the Python check never modelled.
 
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::config::Settings;
+
+/// Where the Intel Quote Generation Service listens unless
+/// ALEPH_VM_TDX_QGS_SOCKET says otherwise.
+pub const DEFAULT_TDX_QGS_SOCKET: &str = "/var/run/tdx-qgs/qgs.socket";
+
+/// How long the QGS probe waits for a connect() to settle.
+const TDX_QGS_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Startup precondition failures from [`check`]. Display strings are
 /// identical to the pre-typed messages they replace (pinned by the Python
@@ -188,18 +198,21 @@ pub fn check(settings: &Settings, resolved_interface: Option<&str>) -> Result<()
     // Confidential computing (increment 6): the sevctl tool plus the SEV /
     // SEV-ES kernel-module gates, only when the feature is enabled. Ported
     // from conf.py check(); SEV-SNP is intentionally left commented out
-    // there, so it is not checked here either.
+    // there, so it is not checked here either. An Intel TDX host has none
+    // of the AMD tooling, so the TDX probe stands in for those three gates.
     if settings.enable_confidential_computing {
-        if !settings.sev_ctl_path.is_file() {
-            return Err(ChecksError::FileNotFound {
-                path: settings.sev_ctl_path.clone(),
-            });
-        }
-        if !check_amd_sev_supported() {
-            return Err(ChecksError::SevDisabled);
-        }
-        if !check_amd_sev_es_supported() {
-            return Err(ChecksError::SevEsDisabled);
+        if !check_intel_tdx_supported() {
+            if !settings.sev_ctl_path.is_file() {
+                return Err(ChecksError::FileNotFound {
+                    path: settings.sev_ctl_path.clone(),
+                });
+            }
+            if !check_amd_sev_supported() {
+                return Err(ChecksError::SevDisabled);
+            }
+            if !check_amd_sev_es_supported() {
+                return Err(ChecksError::SevEsDisabled);
+            }
         }
         if !settings.enable_qemu_support {
             return Err(ChecksError::QemuDisabledConfidential);
@@ -242,11 +255,143 @@ pub(crate) fn check_amd_sev_snp_supported() -> bool {
     check_system_module("kvm_amd/parameters/sev_snp").as_deref() == Some("Y")
 }
 
+/// Python `check_intel_tdx_supported`: the kvm_intel `tdx` parameter is "Y"
+/// and the Quote Generation Service answers on its socket. Without QGS a TD
+/// boots but can never produce a quote, so it is not a capability. Feeds
+/// `HostInfo.tdx_supported`.
+pub fn check_intel_tdx_supported() -> bool {
+    tdx_module_enabled(check_system_module("kvm_intel/parameters/tdx").as_deref())
+        && tdx_qgs_reachable(&tdx_qgs_socket_path(), TDX_QGS_CONNECT_TIMEOUT)
+}
+
+/// The QGS socket path: ALEPH_VM_TDX_QGS_SOCKET, or the DCAP default.
+pub fn tdx_qgs_socket_path() -> PathBuf {
+    std::env::var_os("ALEPH_VM_TDX_QGS_SOCKET")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_TDX_QGS_SOCKET))
+}
+
+/// The kvm_intel `tdx` parameter value means TDX is on.
+fn tdx_module_enabled(parameter: Option<&str>) -> bool {
+    parameter == Some("Y")
+}
+
+/// A non-blocking connect() to the QGS socket, waited on for at most
+/// `timeout`; the connection is dropped at once. Any failure is "unreachable".
+pub(crate) fn tdx_qgs_reachable(socket: &Path, timeout: Duration) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = socket.as_os_str().as_bytes();
+    // SAFETY: sockaddr_un is plain data; all-zero is a valid value.
+    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    if path.len() >= addr.sun_path.len() {
+        return false;
+    }
+    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (dst, src) in addr.sun_path.iter_mut().zip(path) {
+        *dst = *src as _;
+    }
+    let addr_len = (std::mem::size_of::<libc::sa_family_t>() + path.len() + 1) as libc::socklen_t;
+
+    // SAFETY: plain socket() call; the fd is owned below and closed on drop.
+    let raw = unsafe {
+        libc::socket(
+            libc::AF_UNIX,
+            libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+            0,
+        )
+    };
+    if raw < 0 {
+        return false;
+    }
+    // SAFETY: `raw` is a fresh, valid descriptor nobody else owns.
+    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+    // SAFETY: `addr` is a fully initialised sockaddr_un of `addr_len` bytes.
+    let rc = unsafe {
+        libc::connect(
+            fd.as_raw_fd(),
+            (&addr as *const libc::sockaddr_un).cast::<libc::sockaddr>(),
+            addr_len,
+        )
+    };
+    if rc == 0 {
+        return true;
+    }
+    if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINPROGRESS) {
+        return false;
+    }
+    let mut pollfd = libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    let timeout_ms = libc::c_int::try_from(timeout.as_millis()).unwrap_or(libc::c_int::MAX);
+    // SAFETY: `pollfd` is one valid element and lives for the call.
+    let ready = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
+    if ready <= 0 {
+        return false;
+    }
+    let mut so_error: libc::c_int = 0;
+    let mut so_len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: `so_error`/`so_len` are valid out-pointers of the sizes given.
+    let rc = unsafe {
+        libc::getsockopt(
+            fd.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_ERROR,
+            (&mut so_error as *mut libc::c_int).cast::<libc::c_void>(),
+            &mut so_len,
+        )
+    };
+    rc == 0 && so_error == 0
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    #[test]
+    fn the_tdx_module_parameter_must_read_exactly_y() {
+        assert!(tdx_module_enabled(Some("Y")));
+        assert!(!tdx_module_enabled(Some("N")));
+        assert!(!tdx_module_enabled(Some("1")));
+        assert!(!tdx_module_enabled(None));
+    }
+
+    #[test]
+    fn the_qgs_probe_follows_a_live_listener() {
+        let tmp = tempfile::tempdir().unwrap();
+        let socket = tmp.path().join("qgs.socket");
+        let timeout = Duration::from_millis(200);
+        // Nothing bound yet: ENOENT.
+        assert!(!tdx_qgs_reachable(&socket, timeout));
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        assert!(tdx_qgs_reachable(&socket, timeout));
+        // A path that is not a socket at all.
+        std::fs::write(tmp.path().join("plain"), b"x").unwrap();
+        assert!(!tdx_qgs_reachable(&tmp.path().join("plain"), timeout));
+        // Listener gone but the inode left behind: ECONNREFUSED.
+        drop(listener);
+        assert!(!tdx_qgs_reachable(&socket, timeout));
+        // Over sun_path.
+        let long = tmp.path().join("x".repeat(120));
+        assert!(!tdx_qgs_reachable(&long, timeout));
+    }
+
+    #[test]
+    fn the_qgs_socket_path_defaults_to_the_dcap_location() {
+        // The env override is read at call time and the test process shares
+        // its environment with sibling tests, so only the default is pinned.
+        if std::env::var_os("ALEPH_VM_TDX_QGS_SOCKET").is_none() {
+            assert_eq!(
+                tdx_qgs_socket_path(),
+                PathBuf::from("/var/run/tdx-qgs/qgs.socket")
+            );
+        }
+    }
 
     fn settings_with_stub_hypervisors(root: &Path) -> Settings {
         for name in ["firecracker", "jailer", "vmlinux.bin"] {

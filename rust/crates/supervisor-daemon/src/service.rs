@@ -334,12 +334,12 @@ impl SupervisorService {
         let gpu_cc_switches_json = gpu_cc_switches_json(&self.state)?;
         Ok(pb::HostInfo {
             // Only the fields LocalSupervisor.get_host_info fills, plus
-            // sev_snp_supported (increment B1, the SNP host capability check)
-            // and numa_nodes (increment C1); the rest keep their proto
-            // defaults, exactly like the Python HostInfo dataclass defaults
-            // (cpu_architecture, cpu_vendor, cpu_model, frequencies, memory
-            // type, the narrow gpus list and the remaining SEV/TDX flags
-            // still ride empty).
+            // sev_snp_supported (increment B1, the SNP host capability check),
+            // tdx_supported (the TDX host probe) and numa_nodes (increment
+            // C1); the rest keep their proto defaults, exactly like the
+            // Python HostInfo dataclass defaults (cpu_architecture,
+            // cpu_vendor, cpu_model, frequencies, memory type, the narrow
+            // gpus list and the SEV/SEV-ES flags still ride empty).
             cpu_count: host::cpu_count(),
             memory_mib: host::memory_total_mib()?,
             kernel_version,
@@ -349,6 +349,7 @@ impl SupervisorService {
             gpu_inventory_json: inventory_json,
             available_gpus_json: available_json,
             sev_snp_supported: crate::checks::check_amd_sev_snp_supported(),
+            tdx_supported: crate::checks::check_intel_tdx_supported(),
             numa_nodes,
             gpu_cc_switches_json,
             ..Default::default()
