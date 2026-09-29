@@ -631,6 +631,22 @@
         echo "${sourceRev}" > $out/source-rev
       '';
 
+      # The TDX runtime's artifacts: TDVF in the OVMF.fd slot, the SAME
+      # kernel/initrd/rootfs/hash tree as `image`, and measurements.json
+      # ({mrtd, rtmr1, rtmr2}) in place of measurement.hex. No sev-snp-measure
+      # runs here; the triple comes from tdxMeasurement.
+      tdxImage = pkgs.runCommand "aleph-tdx-image" {} ''
+        mkdir -p $out
+        ln -s ${kernel}/bzImage $out/bzImage
+        ln -s ${initrd}/initrd $out/initrd
+        ln -s ${rootfs} $out/rootfs.ext4
+        cp ${tdvf}/OVMF.fd $out/OVMF.fd
+        cp ${tdxMeasurement}/measurements.json $out/measurements.json
+        cp ${verity}/hashtree $out/rootfs.ext4.verity
+        cp ${verity}/roothash $out/rootfs.ext4.roothash
+        echo "${sourceRev}" > $out/source-rev
+      '';
+
       # Convenience: all measured-image artifacts in one directory, for the
       # compose flavor (aleph.compose/1). Mirrors `image` above exactly, with
       # composeInitrd/composeRootfs/composeMeasurement/composeVerity in place
@@ -804,6 +820,7 @@
           gpuMeasurement
           tdxMeasurement
           image
+          tdxImage
           composeImage
           gpuImage
           instanceImage
