@@ -144,7 +144,9 @@ wait_for_dev() {
 # from a local TDREPORT and prints the tokens only on a match. They are then
 # merged into $cmdline_tokens for the same parsers the SNP cmdline feeds.
 # No-op unless the measured cmdline carries aleph_tdx_descriptor=1; every
-# other outcome powers off (no drive, no /dev/tdx_guest, mismatch).
+# other outcome powers off (no drive, no /dev/tdx_guest, mismatch). Under
+# the cmdline's aleph_insecure_unattested=1 (a plain-QEMU local run, no TD,
+# nothing attested anyway) the tokens are taken unchecked, loudly.
 read_tdx_descriptor() {
     local dev descriptor suffix n
     [ -n "$(echo "$cmdline_tokens" | /bin/busybox sed -n 's/.*\baleph_tdx_descriptor=1\b.*/1/p')" ] || return 0
@@ -170,11 +172,16 @@ read_tdx_descriptor() {
         echo "init: FATAL: aleph_tdx_descriptor=1 but no TDX descriptor drive found"
         exec /bin/busybox poweroff -f
     fi
-    if ! suffix=$(/bin/aleph-attest-agent tdx-descriptor --device "$descriptor"); then
+    if [ -n "$unattested_mode" ]; then
+        # The suffix is the second line; the drive is zero-padded after it.
+        suffix=$(/bin/busybox dd if="$descriptor" bs=64k count=1 2>/dev/null | /bin/busybox tr -d '\000' | /bin/busybox sed -n '2p')
+        echo "init: WARNING: INSECURE UNATTESTED MODE: TDX descriptor on ${descriptor} taken without an MRCONFIGID check: ${suffix:-(no tokens)}"
+    elif ! suffix=$(/bin/aleph-attest-agent tdx-descriptor --device "$descriptor"); then
         echo "init: FATAL: TDX descriptor rejected"
         exec /bin/busybox poweroff -f
+    else
+        echo "init: TDX descriptor on ${descriptor} matches MRCONFIGID: ${suffix:-(no tokens)}"
     fi
-    echo "init: TDX descriptor on ${descriptor} matches MRCONFIGID: ${suffix:-(no tokens)}"
     cmdline_tokens="${cmdline_tokens} ${suffix}"
 }
 
