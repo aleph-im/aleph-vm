@@ -110,7 +110,7 @@ pub fn local_tdreport_bytes_from(
         };
         // SAFETY: the fd is open for the call's duration and `req` is a
         // live, correctly sized struct tdx_report_req the kernel fills.
-        let rc = unsafe { libc::ioctl(file.as_raw_fd(), TDX_CMD_GET_REPORT0, &mut req) };
+        let rc = unsafe { libc::ioctl(file.as_raw_fd(), TDX_CMD_GET_REPORT0 as _, &mut req) };
         if rc != 0 {
             let e = std::io::Error::last_os_error();
             bail!("TDX_CMD_GET_REPORT0 on {} failed: {e}", device.display());
