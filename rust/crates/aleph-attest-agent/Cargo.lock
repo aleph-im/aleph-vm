@@ -256,6 +256,7 @@ dependencies = [
  "der",
  "hex",
  "k256",
+ "libc",
  "serde",
  "serde_json",
  "sev",
