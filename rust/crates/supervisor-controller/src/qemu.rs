@@ -32,6 +32,18 @@ pub enum QemuError {
     #[error("Missing guest owner certificates, cannot start the VM.")]
     MissingCerts,
 
+    #[error("TDX mrconfigid is not base64: {source}")]
+    MrconfigidNotBase64 { source: base64::DecodeError },
+
+    #[error("TDX mrconfigid decodes to {len} bytes, expected {MRCONFIGID_LEN}")]
+    MrconfigidLength { len: usize },
+
+    #[error("TDX guests need at least {TDX_MIN_MEMORY_MB} MiB, config carries {mem_size_mb}")]
+    TdxMemoryTooSmall { mem_size_mb: u64 },
+
+    #[error("GPU passthrough is not supported on TDX guests")]
+    TdxGpuUnsupported,
+
     #[error("cannot spawn qemu: {source}")]
     Spawn { source: std::io::Error },
 
@@ -68,6 +80,17 @@ const QMP_CALL_BUDGET: Duration = Duration::from_secs(qmp::COMMAND_DEADLINE.as_s
 /// test asserts the two agree. Controller configs written before the
 /// `cpu_model` field existed carry none and must keep producing this argv.
 const DEFAULT_SNP_CPU_MODEL: &str = "EPYC-v4";
+
+/// Default QGS unix socket, used when a TDX config carries none. Mirrors
+/// `aleph_tee::tdx::qemu::DEFAULT_QGS_SOCKET`; the parity test pins the two.
+pub const DEFAULT_QGS_SOCKET: &str = "/var/run/tdx-qgs/qgs.socket";
+
+/// Decoded size of the TD's MRCONFIGID register.
+pub const MRCONFIGID_LEN: usize = 48;
+
+/// Smallest guest RAM a TDX launch accepts; below this the TDVF + measured
+/// initrd boot does not have room, unrelated to any measurement.
+pub const TDX_MIN_MEMORY_MB: u64 = 2048;
 
 /// The qga chardev socket path as the Python f-string renders it. Python
 /// interpolates `qga_socket_path` unconditionally, so a `None` renders as the
@@ -527,6 +550,34 @@ pub fn snp_tee_fragment(
     ]
 }
 
+/// The rootfs `-drive` of a measured direct-kernel boot (SNP and TDX): the
+/// dm-verity DATA device (/dev/vda), read-only raw, unless the luks arm's
+/// image_format/image_readonly pair asks for a writable image. A half-populated
+/// pair is refused by `select_run_target` before reaching here; the fallback
+/// keeps a stray Malformed value on the safe read-only default.
+fn measured_rootfs_drive(config: &QemuConfig) -> String {
+    debug_assert!(
+        !matches!(config.rootfs_override(), RootfsOverride::Malformed),
+        "measured builders require image_format/image_readonly to be both present or both absent"
+    );
+    match config.rootfs_override() {
+        RootfsOverride::Writable(format, false) => {
+            format!(
+                "file={},format={format},if=virtio,media=disk",
+                config.image_path
+            )
+        }
+        RootfsOverride::Writable(format, true) => format!(
+            "file={},format={format},if=virtio,readonly=on,media=disk",
+            config.image_path
+        ),
+        RootfsOverride::Default | RootfsOverride::Malformed => format!(
+            "file={},format=raw,if=virtio,readonly=on,media=disk",
+            config.image_path
+        ),
+    }
+}
+
 /// Build the QEMU argv for an SEV-SNP measured-boot persistent VM (increment
 /// B1). Unlike the SEV/SEV-ES path this is a MEASURED DIRECT-KERNEL boot: the
 /// exact OVMF + kernel + initrd + append + `EPYC-v4` + vcpu count are what the
@@ -583,36 +634,7 @@ pub fn build_snp_argv(config: &QemuConfig, sev: SevHostInfo) -> Vec<String> {
     let policy = config.sev_policy.expect("SNP config carries sev_policy");
     let cpu_model = config.cpu_model.as_deref();
 
-    // rootfs drive. Default: dm-verity DATA device (/dev/vda), read-only raw.
-    // The opaque-cmdline luks arm (the image_format/image_readonly pair)
-    // instead boots a WRITABLE image in the given format, so no `readonly=on`
-    // attribute is emitted at all. A
-    // half-populated pair cannot reach here in production: `select_run_target`
-    // (main.rs) refuses to dispatch it into this function; the debug_assert
-    // documents that invariant a second time for direct callers (tests, the
-    // rare panic-in-debug case) and this match's fallback keeps a stray
-    // Malformed value from producing anything other than the safe read-only
-    // default.
-    debug_assert!(
-        !matches!(config.rootfs_override(), RootfsOverride::Malformed),
-        "build_snp_argv requires image_format/image_readonly to be both present or both absent"
-    );
-    let rootfs_drive = match config.rootfs_override() {
-        RootfsOverride::Writable(format, false) => {
-            format!(
-                "file={},format={format},if=virtio,media=disk",
-                config.image_path
-            )
-        }
-        RootfsOverride::Writable(format, true) => format!(
-            "file={},format={format},if=virtio,readonly=on,media=disk",
-            config.image_path
-        ),
-        RootfsOverride::Default | RootfsOverride::Malformed => format!(
-            "file={},format=raw,if=virtio,readonly=on,media=disk",
-            config.image_path
-        ),
-    };
+    let rootfs_drive = measured_rootfs_drive(config);
 
     let mut args: Vec<String> = vec![
         config.qemu_bin_path.clone(),
@@ -689,6 +711,179 @@ pub fn build_snp_argv(config: &QemuConfig, sev: SevHostInfo) -> Vec<String> {
         sev.cbitpos,
         sev.reduced_phys_bits,
         cpu_model,
+    ));
+
+    args
+}
+
+/// The `tdx-guest` QOM object as one JSON argv element: QEMU only accepts the
+/// nested `quote-generation-socket` in JSON form. Key order is fixed;
+/// `mrconfigid` is re-encoded from the validated bytes, so the emitted text is
+/// canonical whatever spelling the config carried.
+fn tdx_guest_object(mrconfigid: &[u8; MRCONFIGID_LEN], qgs_socket: &str) -> String {
+    use base64::Engine;
+
+    #[derive(serde::Serialize)]
+    struct TdxGuestObject<'a> {
+        #[serde(rename = "qom-type")]
+        qom_type: &'static str,
+        id: &'static str,
+        mrconfigid: String,
+        #[serde(rename = "quote-generation-socket")]
+        quote_generation_socket: SocketAddress<'a>,
+    }
+
+    #[derive(serde::Serialize)]
+    struct SocketAddress<'a> {
+        #[serde(rename = "type")]
+        kind: &'static str,
+        path: &'a str,
+    }
+
+    let object = TdxGuestObject {
+        qom_type: "tdx-guest",
+        id: "tdx0",
+        mrconfigid: base64::engine::general_purpose::STANDARD.encode(mrconfigid),
+        quote_generation_socket: SocketAddress {
+            kind: "unix",
+            path: qgs_socket,
+        },
+    };
+    serde_json::to_string(&object).expect("tdx-guest object always serializes")
+}
+
+/// The TDX TEE argv fragment, byte-identical to the aleph-tee generator
+/// (`tdx_qemu_args`). `-cpu host` (no model pin: TDX measures no VMSA), the
+/// q35 machine bound to `tdx0` and `ram1`, the same memfd object as SNP (NUMA
+/// and hugepage suffix included), the JSON `tdx-guest` object, `-nodefaults`,
+/// the TDVF, then the direct-boot trio (TDVF measures them into RTMR1/RTMR2; there is no
+/// `kernel-hashes`).
+///
+/// `pub` so the conformance test can assert byte-parity against the generator.
+#[allow(clippy::too_many_arguments)]
+pub fn tdx_tee_fragment(
+    mem_size_mb: u64,
+    tdvf_path: &str,
+    numa_node: Option<u32>,
+    hugepage_size: Option<&str>,
+    mrconfigid: &[u8; MRCONFIGID_LEN],
+    qgs_socket: &str,
+    kernel: &str,
+    initrd: &str,
+    cmdline: &str,
+) -> Vec<String> {
+    let suffix = memory_backend_suffix(numa_node, hugepage_size);
+    vec![
+        "-cpu".into(),
+        "host".into(),
+        "-machine".into(),
+        "q35,kernel-irqchip=split,confidential-guest-support=tdx0,hpet=off,vmport=off,memory-backend=ram1"
+            .into(),
+        "-object".into(),
+        format!("memory-backend-memfd,id=ram1,size={mem_size_mb}M,share=true{suffix}"),
+        "-object".into(),
+        tdx_guest_object(mrconfigid, qgs_socket),
+        "-nodefaults".into(),
+        "-bios".into(),
+        tdvf_path.to_string(),
+        "-kernel".into(),
+        kernel.to_string(),
+        "-initrd".into(),
+        initrd.to_string(),
+        "-append".into(),
+        cmdline.to_string(),
+    ]
+}
+
+/// Build the QEMU argv for an Intel TDX measured-boot persistent VM. Same
+/// disk, monitor, NIC and console layout as [`build_snp_argv`]; the TEE
+/// fragment differs and carries the direct-boot trio itself. `mrconfigid` is
+/// the decoded register value from [`tdx_prelaunch_check`], which also
+/// enforces the memory floor and the no-GPU rule, so this stays infallible.
+pub fn build_tdx_argv(config: &QemuConfig, mrconfigid: &[u8; MRCONFIGID_LEN]) -> Vec<String> {
+    debug_assert!(
+        config.is_tdx(),
+        "build_tdx_argv requires a TDX config (tdx marker set)"
+    );
+
+    let qga_socket_path = qga_socket_or_none(config);
+    let tdvf_path = config
+        .ovmf_path
+        .as_deref()
+        .expect("TDX config carries ovmf_path");
+    let kernel = config
+        .kernel_path
+        .as_deref()
+        .expect("TDX config carries kernel_path");
+    let initrd = config
+        .initrd_path
+        .as_deref()
+        .expect("TDX config carries initrd_path");
+    let cmdline = config
+        .kernel_cmdline
+        .as_deref()
+        .expect("TDX config carries kernel_cmdline");
+    let qgs_socket = config
+        .qgs_socket
+        .as_deref()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| DEFAULT_QGS_SOCKET.to_string());
+
+    let mut args: Vec<String> = vec![
+        config.qemu_bin_path.clone(),
+        "-enable-kvm".into(),
+        "-m".into(),
+        config.mem_size_mb.count().to_string(),
+        "-smp".into(),
+        config.vcpu_count.to_string(),
+        "-drive".into(),
+        measured_rootfs_drive(config),
+    ];
+
+    // dm-verity hash tree (/dev/vdb) then any further host volumes, in order.
+    args.extend(host_volume_args(&config.host_volumes));
+
+    args.extend([
+        "-display".into(),
+        "none".into(),
+        // A TD cannot reset in place: a guest reboot ends QEMU either way.
+        "--no-reboot".into(),
+        "-monitor".into(),
+        format!("unix:{},server,nowait", config.monitor_socket_path),
+        "-qmp".into(),
+        format!("unix:{},server,nowait", config.qmp_socket_path),
+        "-chardev".into(),
+        format!("socket,path={qga_socket_path},server=on,wait=off,id=qga0"),
+        "-device".into(),
+        "virtio-serial".into(),
+        "-device".into(),
+        "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0".into(),
+        "-serial".into(),
+        "stdio".into(),
+        "-nographic".into(),
+    ]);
+
+    if let Some(interface_name) = &config.interface_name
+        && !interface_name.is_empty()
+    {
+        args.push("-device".into());
+        args.push("virtio-net-pci,netdev=net0".into());
+        args.push("-netdev".into());
+        args.push(format!(
+            "tap,id=net0,ifname={interface_name},script=no,downscript=no"
+        ));
+    }
+
+    args.extend(tdx_tee_fragment(
+        config.mem_size_mb.count(),
+        tdvf_path,
+        config.numa_node,
+        config.hugepage_size.as_deref(),
+        mrconfigid,
+        &qgs_socket,
+        kernel,
+        initrd,
+        cmdline,
     ));
 
     args
@@ -773,6 +968,45 @@ fn confidential_prelaunch_check(
     }
 
     Ok(sev)
+}
+
+/// Launch an Intel TDX measured-boot VM. No host CPUID is needed (TDX has no
+/// C-bit); the pre-launch check validates what the argv depends on.
+pub async fn run_tdx(vm_hash: &str, config: &QemuConfig) -> Result<i32, QemuError> {
+    let mrconfigid = tdx_prelaunch_check(config)?;
+    let argv = build_tdx_argv(config, &mrconfigid);
+    spawn_and_supervise(vm_hash, config, argv).await
+}
+
+/// The TDX pre-launch guards, a pure function like [`confidential_prelaunch_check`]:
+/// `mrconfigid` must be base64 (standard alphabet) of exactly 48 bytes, guest
+/// RAM must meet the floor, and no GPU may be attached. Any failure is a
+/// refusal, never a fallback value.
+pub fn tdx_prelaunch_check(config: &QemuConfig) -> Result<[u8; MRCONFIGID_LEN], QemuError> {
+    use base64::Engine;
+
+    debug_assert!(
+        config.is_tdx(),
+        "tdx_prelaunch_check requires a TDX config (tdx marker set)"
+    );
+
+    let mem_size_mb = config.mem_size_mb.count();
+    if mem_size_mb < TDX_MIN_MEMORY_MB {
+        return Err(QemuError::TdxMemoryTooSmall { mem_size_mb });
+    }
+    if !config.gpus.is_empty() {
+        return Err(QemuError::TdxGpuUnsupported);
+    }
+
+    let text = config
+        .mrconfigid
+        .as_deref()
+        .expect("TDX config carries mrconfigid");
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(text)
+        .map_err(|source| QemuError::MrconfigidNotBase64 { source })?;
+    <[u8; MRCONFIGID_LEN]>::try_from(bytes.as_slice())
+        .map_err(|_| QemuError::MrconfigidLength { len: bytes.len() })
 }
 
 /// The shared spawn + supervise lifecycle for both the plain and confidential
@@ -1283,5 +1517,96 @@ mod tests {
             ]
         );
         assert!(snp_gpu_args(&[], Some(1024)).is_empty());
+    }
+
+    /// A complete TDX config with the given `mrconfigid` text, memory and GPUs
+    /// spliced in, for the pre-launch guard.
+    fn tdx_config(mrconfigid: &str, mem_size_mb: u64, gpus: &str) -> QemuConfig {
+        let json = format!(
+            r#"{{"qemu_bin_path":"/usr/bin/qemu-system-x86_64",
+                "image_path":"/rootfs.ext4","monitor_socket_path":"/m.sock",
+                "qmp_socket_path":"/q.sock","vcpu_count":2,"mem_size_mb":{mem_size_mb},
+                "host_volumes":[],"gpus":[{gpus}],"tdx":true,"ovmf_path":"/TDVF.fd",
+                "kernel_path":"/bzImage","initrd_path":"/initrd",
+                "kernel_cmdline":"console=ttyS0 aleph_tdx_descriptor=1",
+                "mrconfigid":{mrconfigid:?}}}"#
+        );
+        let config = QemuConfig::from_json(&json).expect("TDX config parses");
+        assert!(config.is_tdx());
+        config
+    }
+
+    const MRCONFIGID_B64: &str = "paWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWl";
+
+    #[test]
+    fn tdx_prelaunch_check_decodes_a_48_byte_mrconfigid() {
+        let config = tdx_config(MRCONFIGID_B64, 2048, "");
+        assert_eq!(
+            tdx_prelaunch_check(&config).unwrap(),
+            [0xA5; MRCONFIGID_LEN]
+        );
+    }
+
+    #[test]
+    fn tdx_prelaunch_check_rejects_a_malformed_mrconfigid() {
+        // Not base64, wrong length (32 and 64 bytes), unpadded, url-safe
+        // alphabet, and a smuggled JSON fragment: none may reach the argv.
+        for text in [
+            "not base64!",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "paWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaW",
+            "-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_",
+            "\",\"debug\":true,\"x\":\"",
+            "",
+        ] {
+            let config = tdx_config(text, 2048, "");
+            let error = tdx_prelaunch_check(&config).unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    QemuError::MrconfigidNotBase64 { .. } | QemuError::MrconfigidLength { .. }
+                ),
+                "{text:?} must be refused, got {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn tdx_prelaunch_check_enforces_the_memory_floor_and_no_gpu() {
+        let error = tdx_prelaunch_check(&tdx_config(MRCONFIGID_B64, 2047, "")).unwrap_err();
+        assert!(matches!(
+            error,
+            QemuError::TdxMemoryTooSmall { mem_size_mb: 2047 }
+        ));
+        let error = tdx_prelaunch_check(&tdx_config(
+            MRCONFIGID_B64,
+            4096,
+            r#"{"pci_host":"0000:01:00.0"}"#,
+        ))
+        .unwrap_err();
+        assert!(matches!(error, QemuError::TdxGpuUnsupported));
+    }
+
+    #[test]
+    fn build_tdx_argv_defaults_the_qgs_socket_and_honours_an_override() {
+        let config = tdx_config(MRCONFIGID_B64, 2048, "");
+        let mrconfigid = tdx_prelaunch_check(&config).unwrap();
+        let argv = build_tdx_argv(&config, &mrconfigid);
+        let object = argv
+            .iter()
+            .find(|a| a.starts_with('{'))
+            .expect("one JSON -object");
+        assert!(object.contains(&format!("\"path\":\"{DEFAULT_QGS_SOCKET}\"")));
+        assert!(argv.iter().any(|a| a == "-nodefaults"));
+        assert!(!argv.iter().any(|a| a.contains("EPYC")));
+
+        let mut config = config;
+        config.qgs_socket = Some("/run/other/qgs.sock".into());
+        let argv = build_tdx_argv(&config, &mrconfigid);
+        assert!(
+            argv.iter()
+                .any(|a| a.contains("\"path\":\"/run/other/qgs.sock\""))
+        );
     }
 }
