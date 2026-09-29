@@ -17,9 +17,11 @@ import re
 import string
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SHA256_HEX_PATTERN = r"^[0-9a-f]{64}$"
+# TDX measurement registers (MRTD, RTMRs) are SHA-384 digests.
+SHA384_HEX_PATTERN = r"^[0-9a-f]{96}$"
 # Namespaced identifier such as "aleph.ra-tls": at least two dot-separated
 # labels, so bare names cannot collide with future namespaces.
 PROTOCOL_PATTERN = r"^[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)+$"
@@ -45,6 +47,14 @@ CMDLINE_PLACEHOLDERS_LUKS_V1 = frozenset({"owner", "gpu_arch", "gpu_count", "gpu
 # else may ride along (e.g. init=/bin/sh), same rationale as the placeholder
 # allowlist above.
 CMDLINE_FIXED_TOKENS_V1 = frozenset({"console=ttyS0", "root=/dev/mapper/verity-root", "ro", "swiotlb=262144"})
+# The TDX runtime's cmdline is fixed per runtime: the per-deployment tokens
+# ride on the MRCONFIGID-bound descriptor drive, which aleph_tdx_descriptor=1
+# switches the guest init to. {platform_roothash} is its only slot.
+CMDLINE_PLACEHOLDERS_TDX_V1 = frozenset({"platform_roothash"})
+CMDLINE_TDX_DESCRIPTOR_SWITCH_V1 = "aleph_tdx_descriptor=1"
+CMDLINE_FIXED_TOKENS_TDX_V1 = frozenset(
+    {"console=ttyS0", "root=/dev/mapper/verity-root", "ro", CMDLINE_TDX_DESCRIPTOR_SWITCH_V1}
+)
 # The closed set of purely-literal tokens for the aleph-instance-runtime luks
 # cmdline template. swiotlb=262144 only rides along on an instance-gpu
 # flavored template, same rationale as CMDLINE_FIXED_TOKENS_V1's.
@@ -250,6 +260,42 @@ class BootSpec(StrictModel):
         return _validate_cmdline_template(value, CMDLINE_PLACEHOLDERS_V1, "platform_roothash", CMDLINE_FIXED_TOKENS_V1)
 
 
+class TdxBootSpec(StrictModel):
+    """Boot recipe of a `platform: "tdx"` runtime. TDVF measures the kernel,
+    initrd and cmdline itself (RTMR1/RTMR2), so there is no kernel-hashes
+    switch, and the registers do not depend on the vCPU model, so there is
+    no model list: both may only be stated in their empty form."""
+
+    method: Literal["qemu-direct-kernel"]
+    kernel_hashes: Literal[False] = False
+    cpu_models: list[str] = Field(default_factory=list, max_length=0)
+    platform_roothash: str = Field(
+        pattern=SHA256_HEX_PATTERN,
+        description="dm-verity root hash of the platform rootfs; measured via the cmdline",
+    )
+    cmdline_template: str
+
+    @field_validator("cmdline_template")
+    @classmethod
+    def check_cmdline_template(cls, value: str) -> str:
+        _validate_cmdline_template(value, CMDLINE_PLACEHOLDERS_TDX_V1, "platform_roothash", CMDLINE_FIXED_TOKENS_TDX_V1)
+        # Without the switch the guest never reads its descriptor drive.
+        if CMDLINE_TDX_DESCRIPTOR_SWITCH_V1 not in value.split():
+            msg = f"tdx cmdline template must carry {CMDLINE_TDX_DESCRIPTOR_SWITCH_V1}"
+            raise ValueError(msg)
+        return value
+
+
+class TdxMeasurements(StrictModel):
+    """The per-runtime TDX register triple: MRTD pins TDVF, RTMR1 the
+    kernel, RTMR2 the cmdline and initrd. One triple covers every
+    deployment (RTMR0 is unpinned, MRCONFIGID is per deployment)."""
+
+    mrtd: str = Field(pattern=SHA384_HEX_PATTERN)
+    rtmr1: str = Field(pattern=SHA384_HEX_PATTERN)
+    rtmr2: str = Field(pattern=SHA384_HEX_PATTERN)
+
+
 class AttestationTransport(StrictModel):
     type: Literal["tcp"]
     port: int = Field(ge=1, le=65535)
@@ -343,22 +389,48 @@ class RuntimeManifest(StrictModel):
     format_version: Literal[1]
     name: str = Field(min_length=1)
     version: str = Field(min_length=1)
-    platform: Literal["sev_snp"]
+    platform: Literal["sev_snp", "tdx"]
     bundle: RuntimeBundle
-    boot: BootSpec
+    # The two shapes are disjoint on kernel_hashes (True vs False), so the
+    # union never resolves the wrong way; check_platform_shape pins each to
+    # its platform.
+    boot: BootSpec | TdxBootSpec
     # Ordered by preference; protocol identity lives ONLY here, never in
     # V-PROGRAM messages (rejected as denormalization in the protocol design).
     attestation: list[AttestationProtocol] = Field(min_length=1)
     workload: WorkloadSpec
     gpu: GpuRuntimeSpec | None = None
+    # Required on tdx (the registers a client pins), forbidden elsewhere.
+    measurements: TdxMeasurements | None = None
     source: SourceInfo
+
+    @model_validator(mode="after")
+    def check_platform_shape(self) -> RuntimeManifest:
+        if self.platform == "tdx":
+            if self.measurements is None:
+                msg = "a tdx runtime must publish its measurements {mrtd, rtmr1, rtmr2}"
+                raise ValueError(msg)
+            if not isinstance(self.boot, TdxBootSpec):
+                msg = "a tdx runtime's boot must have kernel_hashes false and no cpu_models"
+                raise ValueError(msg)
+            if self.gpu is not None:
+                msg = "confidential GPUs are not supported on tdx runtimes"
+                raise ValueError(msg)
+        else:
+            if self.measurements is not None:
+                msg = f"measurements are a tdx field, not a {self.platform} one"
+                raise ValueError(msg)
+            if not isinstance(self.boot, BootSpec):
+                msg = f"a {self.platform} runtime's boot must have kernel_hashes true and cpu_models"
+                raise ValueError(msg)
+        return self
 
     def to_canonical_json(self) -> str:
         """The exact bytes to publish: compact separators, sorted keys, so
-        independently regenerated manifests hash identically. `gpu` is
-        omitted entirely (not published as null) when the runtime has no
-        gpu facts, so a non-gpu manifest hashes exactly as it did before
-        the field existed."""
+        independently regenerated manifests hash identically. `gpu` and
+        `measurements` are omitted entirely (not published as null) when
+        unset, so a manifest without them hashes exactly as it did before
+        the fields existed."""
         return json.dumps(self.model_dump(mode="json", exclude_none=True), separators=(",", ":"), sort_keys=True)
 
 

@@ -10,11 +10,13 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from aleph.vm.vprogram.bundle import COMPOSE_WORKLOAD
+from aleph.vm.vprogram.bundle import CMDLINE_TEMPLATE_TDX_V1, COMPOSE_WORKLOAD
 from aleph.vm.vprogram.manifest import (
     CONTRACT_PATTERN,
+    BootSpec,
     InstanceRuntimeManifest,
     RuntimeManifest,
+    TdxBootSpec,
 )
 
 # The reference manifest from the design doc, with the real mainnet bundle values.
@@ -78,6 +80,109 @@ def test_workload_roothash_and_verified_volumes_slots_are_legal() -> None:
     RuntimeManifest.model_validate(data)  # must not raise
 
 
+TDX_MEASUREMENTS: dict[str, str] = {"mrtd": "ab" * 48, "rtmr1": "cd" * 48, "rtmr2": "ef" * 48}
+
+# The TDX runtime: same bundle layout (TDVF in the ovmf slot), the fixed
+# descriptor cmdline with no per-deployment slot, no kernel-hashes switch,
+# no vCPU models, and the register triple a client pins.
+TDX_REFERENCE_MANIFEST: dict[str, Any] = {
+    **copy.deepcopy(REFERENCE_MANIFEST),
+    "name": "aleph-tdx-attest",
+    "platform": "tdx",
+    "boot": {
+        "method": "qemu-direct-kernel",
+        "kernel_hashes": False,
+        "cpu_models": [],
+        "platform_roothash": REFERENCE_MANIFEST["boot"]["platform_roothash"],
+        "cmdline_template": CMDLINE_TEMPLATE_TDX_V1,
+    },
+    "measurements": dict(TDX_MEASUREMENTS),
+}
+
+
+def test_tdx_reference_manifest_validates_and_roundtrips() -> None:
+    manifest = RuntimeManifest.model_validate(TDX_REFERENCE_MANIFEST)
+    assert manifest.platform == "tdx"
+    assert isinstance(manifest.boot, TdxBootSpec)
+    assert manifest.measurements is not None
+    assert manifest.measurements.model_dump() == TDX_MEASUREMENTS
+    canonical = manifest.to_canonical_json()
+    assert RuntimeManifest.model_validate_json(canonical) == manifest
+    assert json.loads(canonical) == TDX_REFERENCE_MANIFEST
+    # The snp reference still resolves to the snp boot shape.
+    assert isinstance(RuntimeManifest.model_validate(REFERENCE_MANIFEST).boot, BootSpec)
+
+
+def test_tdx_boot_accepts_the_absent_spelling() -> None:
+    """kernel_hashes and cpu_models may be left out on tdx; they publish in
+    their empty form either way."""
+    data = copy.deepcopy(TDX_REFERENCE_MANIFEST)
+    del data["boot"]["kernel_hashes"]
+    del data["boot"]["cpu_models"]
+    manifest = RuntimeManifest.model_validate(data)
+    assert manifest.to_canonical_json() == RuntimeManifest.model_validate(TDX_REFERENCE_MANIFEST).to_canonical_json()
+
+
+TDX_REJECTION_CASES: list[tuple[str, Callable[[dict[str, Any]], None]]] = [
+    ("no measurements", lambda d: d.pop("measurements")),
+    ("measurements null", lambda d: d.update(measurements=None)),
+    ("mrtd is a sha256", lambda d: d["measurements"].update(mrtd="ab" * 32)),
+    ("rtmr1 uppercase", lambda d: d["measurements"].update(rtmr1="AB" * 48)),
+    ("rtmr2 missing", lambda d: d["measurements"].pop("rtmr2")),
+    ("extra register", lambda d: d["measurements"].update(rtmr0="ab" * 48)),
+    ("kernel_hashes true", lambda d: d["boot"].update(kernel_hashes=True)),
+    ("cpu_models set", lambda d: d["boot"].update(cpu_models=["EPYC-v4"])),
+    (
+        "gpu block",
+        lambda d: d.update(
+            gpu={
+                "vendor": "nvidia",
+                "driver_version": "1.2",
+                "library_path": "/x",
+                "archs": {"hopper": {"accepted_models": ["m"]}},
+            }
+        ),
+    ),
+    (
+        "template without the descriptor switch",
+        lambda d: d["boot"].update(
+            cmdline_template="console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash}"
+        ),
+    ),
+    (
+        "template with a workload slot",
+        lambda d: d["boot"].update(cmdline_template=CMDLINE_TEMPLATE_TDX_V1 + " workload_roothash={workload_roothash}"),
+    ),
+    (
+        "template with a verified_volumes slot",
+        lambda d: d["boot"].update(cmdline_template=CMDLINE_TEMPLATE_TDX_V1 + " verified_volumes={verified_volumes}"),
+    ),
+    ("template with swiotlb", lambda d: d["boot"].update(cmdline_template=CMDLINE_TEMPLATE_TDX_V1 + " swiotlb=262144")),
+    ("template with init=", lambda d: d["boot"].update(cmdline_template=CMDLINE_TEMPLATE_TDX_V1 + " init=/bin/sh")),
+    (
+        "switch with another value",
+        lambda d: d["boot"].update(cmdline_template=CMDLINE_TEMPLATE_TDX_V1.replace("=1", "=0")),
+    ),
+    ("tdx shape under platform sev_snp", lambda d: d.update(platform="sev_snp")),
+]
+
+
+@pytest.mark.parametrize(("description", "mutate"), TDX_REJECTION_CASES, ids=[c[0] for c in TDX_REJECTION_CASES])
+def test_tdx_rejections(description: str, mutate: Callable[[dict[str, Any]], None]) -> None:  # noqa: ARG001
+    data = copy.deepcopy(TDX_REFERENCE_MANIFEST)
+    mutate(data)
+    with pytest.raises(ValidationError):
+        RuntimeManifest.model_validate(data)
+
+
+def test_tdx_cmdline_template_is_fixed_but_for_the_roothash() -> None:
+    assert CMDLINE_TEMPLATE_TDX_V1 == (
+        "console=ttyS0 root=/dev/mapper/verity-root ro roothash={platform_roothash} aleph_tdx_descriptor=1"
+    )
+    assert "{workload_roothash}" not in CMDLINE_TEMPLATE_TDX_V1
+    assert "{verified_volumes}" not in CMDLINE_TEMPLATE_TDX_V1
+
+
 REJECTION_CASES: list[tuple[str, Callable[[dict[str, Any]], None]]] = [
     ("roothash too short", lambda d: d["boot"].update(platform_roothash="cb12")),
     ("roothash uppercase", lambda d: d["boot"].update(platform_roothash="CB" * 32)),
@@ -104,8 +209,12 @@ REJECTION_CASES: list[tuple[str, Callable[[dict[str, Any]], None]]] = [
     ("unnamespaced contract", lambda d: d["workload"].update(contract="builtin/1")),
     ("unknown format", lambda d: d.update(format="aleph-runtime")),
     ("unknown format_version", lambda d: d.update(format_version=2)),
-    ("unknown platform", lambda d: d.update(platform="tdx")),
+    ("unknown platform", lambda d: d.update(platform="foo")),
     ("kernel_hashes false", lambda d: d["boot"].update(kernel_hashes=False)),
+    ("tdx measurements on an snp runtime", lambda d: d.update(measurements=dict(TDX_MEASUREMENTS))),
+    # The tdx boot shape under sev_snp, and the snp boot shape under tdx.
+    ("tdx boot shape on sev_snp", lambda d: d["boot"].update(kernel_hashes=False, cpu_models=[])),
+    ("platform tdx with the snp boot shape", lambda d: d.update(platform="tdx", measurements=dict(TDX_MEASUREMENTS))),
     ("empty cpu_models", lambda d: d["boot"].update(cpu_models=[])),
     ("bundle size zero", lambda d: d["bundle"].update(size=0)),
     ("empty name", lambda d: d.update(name="")),
