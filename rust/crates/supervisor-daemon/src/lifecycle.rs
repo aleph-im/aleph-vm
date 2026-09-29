@@ -2075,6 +2075,10 @@ fn build_written_config(
             // read-only verity one); every other config leaves them absent.
             image_format: snp_slice.as_ref().and_then(|snp| snp.rootfs_format.clone()),
             image_readonly: snp_slice.as_ref().and_then(|snp| snp.rootfs_readonly),
+            // The TDX slice is not produced by this create path yet.
+            tdx: None,
+            mrconfigid: None,
+            qgs_socket: None,
         },
         hypervisor: "qemu",
     })
