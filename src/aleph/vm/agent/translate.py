@@ -48,7 +48,7 @@ async def build_create_vm_spec(
     - non-instance messages
     - non-QEMU hypervisor (instances are QEMU-only)
     - measured TEE modes: sev_snp belongs to build_snp_instance_spec, and
-      tdx has no launch path on this CRN yet
+      tdx instances have no launch path (TDX launches V-PROGRAMs only)
 
     Confidential (trusted_execution set) instances ARE supported: the firmware
     ref is resolved to a host path and ``spec.tee`` is populated so the engine
@@ -83,10 +83,11 @@ async def build_create_vm_spec(
             # a SEV spec with no firmware. Fail loudly instead.
             raise InvalidBackendError("SNP instances are built by build_snp_instance_spec, not this path")
         if getattr(trusted_execution, "is_measured", False):
-            # Other measured modes (tdx) have no launch path on this CRN yet.
-            # Their messages carry no firmware ref (measured modes forbid it),
-            # so falling through would crash on the firmware resolve with an
-            # error that hides the real cause. Reject with the real cause.
+            # Other measured modes (tdx) have no instance launch path: TDX
+            # runs V-PROGRAMs only (vprogram_launch.py). Their messages carry
+            # no firmware ref (measured modes forbid it), so falling through
+            # would crash on the firmware resolve with an error that hides
+            # the real cause. Reject with the real cause.
             raise InvalidBackendError(f"{trusted_execution.mode} instances are not supported by this CRN")
 
     # --- Materialise resources ---
