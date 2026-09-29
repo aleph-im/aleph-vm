@@ -8,15 +8,20 @@
 # time, right through the DHCPv6 block, and plain (non-`local`) assignments
 # (e.g. $iface, $gateway) stay set in the caller after the source returns.
 # The functions defined at the end (wait_for_rootfs_blkdev, wait_for_dev,
-# prepare_chroot, mount_verified_volumes, run_attest_agent,
-# start_attest_agent) are only defined here; the caller decides when to call
-# them.
+# read_tdx_descriptor, prepare_chroot, mount_verified_volumes,
+# run_attest_agent, start_attest_agent) are only defined here; the caller
+# decides when to call them.
 
 # Mount essential filesystems.
 /bin/busybox mount -t proc proc /proc
 /bin/busybox mount -t sysfs sysfs /sys
 /bin/busybox mount -t devtmpfs devtmpfs /dev
 /bin/busybox mkdir -p /etc /tmp
+
+# Every measured-token parser reads this, never /proc/cmdline directly: on
+# TDX, read_tdx_descriptor appends the verified per-deployment tokens here,
+# so one grammar serves both platforms. Plain SNP leaves it as the cmdline.
+cmdline_tokens=$(/bin/busybox cat /proc/cmdline)
 
 # Bring up loopback.
 /bin/busybox ip link set lo up
@@ -36,7 +41,7 @@ if [ -z "$iface" ]; then
     echo "init: no network interface found"
 else
     # Parse ip= from kernel command line: ip=<client>:::<gateway>:<mask>::<iface>:off
-    kernel_ip=$(/bin/busybox sed -n 's/.*ip=\([^ ]*\).*/\1/p' /proc/cmdline)
+    kernel_ip=$(echo "$cmdline_tokens" | /bin/busybox sed -n 's/.*ip=\([^ ]*\).*/\1/p')
     if [ -n "$kernel_ip" ]; then
         client_ip=$(echo "$kernel_ip" | /bin/busybox cut -d: -f1)
         gateway=$(echo "$kernel_ip" | /bin/busybox cut -d: -f4)
@@ -129,6 +134,48 @@ wait_for_dev() {
         n=$((n + 1))
     done
     return 1
+}
+
+# TDX: the per-deployment tokens (workload_roothash, verified_volumes, ...)
+# ride on a raw descriptor drive instead of the cmdline, so RTMR2 stays a
+# per-runtime constant. The drive is the LAST virtio disk, after the hash
+# tree, the workload pair and any verified volumes, and starts with a magic
+# line; the attest-agent hashes its suffix line, compares with MRCONFIGID
+# from a local TDREPORT and prints the tokens only on a match. They are then
+# merged into $cmdline_tokens for the same parsers the SNP cmdline feeds.
+# No-op unless the measured cmdline carries aleph_tdx_descriptor=1; every
+# other outcome powers off (no drive, no /dev/tdx_guest, mismatch).
+read_tdx_descriptor() {
+    local dev descriptor suffix n
+    [ -n "$(echo "$cmdline_tokens" | /bin/busybox sed -n 's/.*\baleph_tdx_descriptor=1\b.*/1/p')" ] || return 0
+    # configfs-tsm is the agent's quote path; mount it once, here.
+    if [ ! -d /sys/kernel/config/tsm ] && ! /bin/busybox mount -t configfs configfs /sys/kernel/config; then
+        echo "init: FATAL: configfs mount failed; TDX quotes would be unavailable"
+        exec /bin/busybox poweroff -f
+    fi
+    descriptor=""
+    n=0
+    while [ -z "$descriptor" ] && [ "$n" -lt 30 ]; do
+        for dev in /dev/vd*; do
+            [ -b "$dev" ] || continue
+            if [ "$(/bin/busybox dd if="$dev" bs=24 count=1 2>/dev/null)" = "ALEPH-TDX-DESCRIPTOR-v1" ]; then
+                descriptor="$dev"
+                break
+            fi
+        done
+        [ -n "$descriptor" ] || /bin/busybox sleep 0.1
+        n=$((n + 1))
+    done
+    if [ -z "$descriptor" ]; then
+        echo "init: FATAL: aleph_tdx_descriptor=1 but no TDX descriptor drive found"
+        exec /bin/busybox poweroff -f
+    fi
+    if ! suffix=$(/bin/aleph-attest-agent tdx-descriptor --device "$descriptor"); then
+        echo "init: FATAL: TDX descriptor rejected"
+        exec /bin/busybox poweroff -f
+    fi
+    echo "init: TDX descriptor on ${descriptor} matches MRCONFIGID: ${suffix:-(no tokens)}"
+    cmdline_tokens="${cmdline_tokens} ${suffix}"
 }
 
 # Prepare a chroot environment: bind-mount /proc, /sys, /dev, the secret dir,
@@ -293,7 +340,9 @@ mount_verified_volumes() {
 #
 # Same \b reasoning as the roothash tokens: no other token ends in
 # "aleph_insecure_unattested", and the trailing \b pins the value to exactly "1".
-unattested_mode=$(/bin/busybox sed -n 's/.*\baleph_insecure_unattested=1\b.*/1/p' /proc/cmdline)
+# Read at source time, before any read_tdx_descriptor call, so the token can
+# only ever come from the measured cmdline, never from the descriptor drive.
+unattested_mode=$(echo "$cmdline_tokens" | /bin/busybox sed -n 's/.*\baleph_insecure_unattested=1\b.*/1/p')
 
 # Run the agent in the background with the given extra flags. It is the VM's
 # only reachable listener, so its exit powers the VM off, like the
