@@ -158,6 +158,9 @@
       ovmf = import ./ovmf.nix { inherit pkgs; };
       ovmfFd = "${ovmf}/OVMF.fd";
 
+      # TDVF: the Intel TDX firmware, pinned by MRTD in the TDX runtime.
+      tdvf = import ./tdvf.nix { inherit pkgs; };
+
       # sev-snp-measure 0.0.11 had a measurement calculation bug; nixos-26.05
       # ships 0.0.12 (the fixed release the flake previously pinned by hand),
       # so the nixpkgs package is used as-is. Keep any future channel bump
@@ -591,6 +594,30 @@
         workloadRoothash = builtins.readFile "${cudaWorkloadVerity}/roothash";
       };
 
+      # TDX runtime measurement: the {mrtd, rtmr1, rtmr2} triple the TDX runtime
+      # manifest publishes, predicted by the Python mirror of
+      # aleph_tee::tdx::measure (stdlib only, run as a plain script). No vCPU
+      # inputs, RTMR0 unpinned: one triple covers every deployment of a runtime.
+      tdxMeasurementFor = { cmdline, kernelDrv ? kernel, initrdDrv ? initrd, name ? "tdx-measurement" }:
+        pkgs.runCommand name {
+          nativeBuildInputs = [ pkgs.python3 ];
+        } ''
+          mkdir -p $out
+          python3 ${../src/aleph/vm/vprogram/tdx_measurement.py} \
+            --tdvf ${tdvf}/OVMF.fd \
+            --kernel ${kernelDrv}/bzImage \
+            --initrd ${initrdDrv}/initrd \
+            --cmdline "${cmdline}" \
+            > $out/measurements.json
+        '';
+
+      # Base-flavor TDX cmdline: the platform-only form plus aleph_tdx_descriptor=1,
+      # which moves the per-deployment tokens to the MRCONFIGID-bound descriptor
+      # drive, so RTMR2 is a per-runtime constant.
+      tdxMeasurement = tdxMeasurementFor {
+        cmdline = "console=ttyS0 root=/dev/mapper/verity-root ro roothash=${builtins.readFile "${verity}/roothash"} aleph_tdx_descriptor=1";
+      };
+
       # Convenience: all measured-image artifacts in one directory.
       image = pkgs.runCommand "aleph-cvm-image" {} ''
         mkdir -p $out
@@ -599,6 +626,22 @@
         ln -s ${rootfs} $out/rootfs.ext4
         cp ${ovmfFd} $out/OVMF.fd
         cp ${measurement} $out/measurement.hex
+        cp ${verity}/hashtree $out/rootfs.ext4.verity
+        cp ${verity}/roothash $out/rootfs.ext4.roothash
+        echo "${sourceRev}" > $out/source-rev
+      '';
+
+      # The TDX runtime's artifacts: TDVF in the OVMF.fd slot, the SAME
+      # kernel/initrd/rootfs/hash tree as `image`, and measurements.json
+      # ({mrtd, rtmr1, rtmr2}) in place of measurement.hex. No sev-snp-measure
+      # runs here; the triple comes from tdxMeasurement.
+      tdxImage = pkgs.runCommand "aleph-tdx-image" {} ''
+        mkdir -p $out
+        ln -s ${kernel}/bzImage $out/bzImage
+        ln -s ${initrd}/initrd $out/initrd
+        ln -s ${rootfs} $out/rootfs.ext4
+        cp ${tdvf}/OVMF.fd $out/OVMF.fd
+        cp ${tdxMeasurement}/measurements.json $out/measurements.json
         cp ${verity}/hashtree $out/rootfs.ext4.verity
         cp ${verity}/roothash $out/rootfs.ext4.roothash
         echo "${sourceRev}" > $out/source-rev
@@ -744,6 +787,7 @@
           attest-agent
           fib-service
           ovmf
+          tdvf
           kernel
           gpuKernel
           nvidiaModules
@@ -774,7 +818,9 @@
           cudaWorkloadMeasurement
           composeMeasurement
           gpuMeasurement
+          tdxMeasurement
           image
+          tdxImage
           composeImage
           gpuImage
           instanceImage
@@ -796,7 +842,7 @@
       # same reason as instanceMeasurementFor, so a flake consumer can
       # compute a workload-form GPU measurement without importing this file.
       lib.${system} = {
-        inherit instanceMeasurementFor instanceGpuMeasurementFor gpuMeasurementFor;
+        inherit instanceMeasurementFor instanceGpuMeasurementFor gpuMeasurementFor tdxMeasurementFor;
       };
     };
 }

@@ -159,6 +159,20 @@ pub struct SnpConfig {
     pub cpu_model: Option<String>,
 }
 
+/// The Intel TDX launch slice. Shares the direct-boot trio and the firmware
+/// slot (`ovmf_path` holds the TDVF) with [`SnpConfig`]; instead of a policy
+/// and CPU model it carries the MRCONFIGID (base64 as written, 48 bytes
+/// decoded) and the QGS socket the controller hands QEMU (`None` = default).
+#[derive(Debug, Clone)]
+pub struct TdxConfig {
+    pub tdvf_path: String,
+    pub kernel_path: String,
+    pub initrd_path: String,
+    pub kernel_cmdline: String,
+    pub mrconfigid: String,
+    pub qgs_socket: Option<PathBuf>,
+}
+
 /// `QemuVMConfiguration` / `QemuConfidentialVMConfiguration` (the plain
 /// fields are shared; the confidential four are optional here and resolved
 /// by [`QemuVmConfig::confidential`]).
@@ -239,6 +253,15 @@ pub struct QemuVmConfig {
     pub image_format: Option<String>,
     #[serde(default)]
     pub image_readonly: Option<bool>,
+
+    // Intel TDX slice, Rust-only. `tdx: true` is the backend marker; the
+    // direct-boot trio and ovmf_path (the TDVF) are shared with SNP above.
+    #[serde(default)]
+    tdx: Option<bool>,
+    #[serde(default)]
+    mrconfigid: Option<String>,
+    #[serde(default)]
+    qgs_socket: Option<PathBuf>,
 }
 
 impl QemuVmConfig {
@@ -275,6 +298,9 @@ impl QemuVmConfig {
             guest_ipv6_cidr: None,
             image_format: None,
             image_readonly: None,
+            tdx: None,
+            mrconfigid: None,
+            qgs_socket: None,
         }
     }
 
@@ -326,6 +352,40 @@ impl QemuVmConfig {
             }
             _ => None,
         }
+    }
+
+    /// The TDX launch slice when this is a TDX config (`tdx` marker set with
+    /// every launch field present), `None` otherwise; a marker with a missing
+    /// field is `None` (non-TDX, fail-closed), like [`QemuVmConfig::snp`].
+    pub fn tdx(&self) -> Option<TdxConfig> {
+        if self.tdx != Some(true) {
+            return None;
+        }
+        match (
+            &self.ovmf_path,
+            &self.kernel_path,
+            &self.initrd_path,
+            &self.kernel_cmdline,
+            &self.mrconfigid,
+        ) {
+            (Some(tdvf), Some(kernel), Some(initrd), Some(cmdline), Some(mrconfigid)) => {
+                Some(TdxConfig {
+                    tdvf_path: tdvf.clone(),
+                    kernel_path: kernel.clone(),
+                    initrd_path: initrd.clone(),
+                    kernel_cmdline: cmdline.clone(),
+                    mrconfigid: mrconfigid.clone(),
+                    qgs_socket: self.qgs_socket.clone(),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether this VM boots a measured Nix image (SEV-SNP or TDX): no
+    /// cloud-init drive, IPv4 by a per-tap DHCP server, started at create.
+    pub fn is_measured(&self) -> bool {
+        self.snp().is_some() || self.tdx().is_some()
     }
 }
 
@@ -541,6 +601,15 @@ pub struct WrittenQemuVmConfiguration {
     pub image_format: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_readonly: Option<bool>,
+    // Intel TDX slice, Rust-only: the marker, the base64 MRCONFIGID and the
+    // QGS socket (None = the controller's default). All None (and so omitted)
+    // on plain, SEV and SNP configs, keeping their bytes unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tdx: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mrconfigid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qgs_socket: Option<PathBuf>,
 }
 
 /// The top-level `Configuration` as written (QEMU instances only in this
@@ -808,6 +877,78 @@ mod tests {
         assert!(snp.cpu_model.is_none());
     }
 
+    fn tdx_config_json_with(extra: &str) -> String {
+        format!(
+            r#"{{
+            "vm_id": 9, "vm_hash": "abcd", "settings": {{}},
+            "hypervisor": "qemu",
+            "vm_configuration": {{
+                "qemu_bin_path": "/usr/bin/qemu-system-x86_64",
+                "image_path": "/img/rootfs.ext4",
+                "monitor_socket_path": "/m.sock", "qmp_socket_path": "/q.sock",
+                "vcpu_count": 2, "mem_size_mb": 2048,
+                "host_volumes": [], "gpus": [],
+                "tdx": true,
+                "ovmf_path": "/img/TDVF.fd",
+                "kernel_path": "/img/bzImage",
+                "initrd_path": "/img/initrd",
+                {extra}
+                "kernel_cmdline": "console=ttyS0 root=/dev/mapper/verity-root ro roothash=abc aleph_tdx_descriptor=1"
+            }}
+        }}"#
+        )
+    }
+
+    #[test]
+    fn a_tdx_config_resolves_as_tdx_not_snp_or_sev() {
+        let json = tdx_config_json_with(
+            r#""mrconfigid": "oojP8rp9llEpLqDVmhNqdC6TfHS5NIgw3hdVrE3S9igZfMKwzxcJIgI+bf0G/zjE",
+               "qgs_socket": "/run/aleph/qgs.socket","#,
+        );
+        let config = parse_controller_config(&json).unwrap();
+        let VmConfiguration::Qemu(vm) = &config.vm else {
+            panic!("expected a QEMU configuration");
+        };
+        assert!(vm.confidential().is_none() && vm.snp().is_none());
+        let tdx = vm.tdx().expect("must resolve as TDX");
+        assert_eq!(tdx.tdvf_path, "/img/TDVF.fd");
+        assert_eq!(tdx.kernel_path, "/img/bzImage");
+        assert_eq!(tdx.initrd_path, "/img/initrd");
+        assert!(tdx.kernel_cmdline.ends_with("aleph_tdx_descriptor=1"));
+        assert_eq!(
+            tdx.mrconfigid,
+            "oojP8rp9llEpLqDVmhNqdC6TfHS5NIgw3hdVrE3S9igZfMKwzxcJIgI+bf0G/zjE"
+        );
+        assert_eq!(
+            tdx.qgs_socket.as_deref(),
+            Some(std::path::Path::new("/run/aleph/qgs.socket"))
+        );
+
+        // The QGS socket is optional; a marker without the mrconfigid is not TDX.
+        let json = tdx_config_json_with(r#""mrconfigid": "AAAA","#);
+        let config = parse_controller_config(&json).unwrap();
+        let VmConfiguration::Qemu(vm) = &config.vm else {
+            panic!("expected a QEMU configuration");
+        };
+        assert!(vm.tdx().unwrap().qgs_socket.is_none());
+        let json = tdx_config_json_with("");
+        let config = parse_controller_config(&json).unwrap();
+        let VmConfiguration::Qemu(vm) = &config.vm else {
+            panic!("expected a QEMU configuration");
+        };
+        assert!(
+            vm.tdx().is_none(),
+            "marker without mrconfigid is fail-closed"
+        );
+
+        // An SNP config never resolves as TDX.
+        let snp = parse_controller_config(&snp_config_json_with("")).unwrap();
+        let VmConfiguration::Qemu(snp_vm) = &snp.vm else {
+            panic!("expected a QEMU configuration");
+        };
+        assert!(snp_vm.tdx().is_none());
+    }
+
     #[test]
     fn a_firecracker_config_resolves_to_the_unsupported_variant() {
         let json = r#"{
@@ -983,6 +1124,9 @@ mod tests {
                 // keys.
                 image_format: None,
                 image_readonly: None,
+                tdx: None,
+                mrconfigid: None,
+                qgs_socket: None,
             },
             hypervisor: "qemu",
         };
@@ -1026,6 +1170,9 @@ mod tests {
             guest_ipv6_cidr: None,
             image_format: None,
             image_readonly: None,
+            tdx: None,
+            mrconfigid: None,
+            qgs_socket: None,
         };
 
         // Unset: the key is absent, so legacy configs and the pydantic writer
@@ -1069,6 +1216,86 @@ mod tests {
             panic!("expected a QEMU configuration");
         };
         assert_eq!(vm.guest_ipv6_cidr, None);
+    }
+
+    #[test]
+    fn the_tdx_keys_round_trip_and_are_omitted_when_unset() {
+        let mut config = WrittenControllerConfig {
+            vm_id: 7,
+            vm_hash: "cd".to_string(),
+            settings: WrittenControllerSettings {
+                jailer_base_dir: None,
+                network_interface: None,
+                ipv4_address_pool: "172.16.0.0/12".to_string(),
+                ipv4_network_prefix_length: 24,
+                ipv6_address_pool: "fc00:1:2:3::/64".to_string(),
+                ipv6_allocation_policy: AllocationPolicyValue::Static,
+                ipv6_subnet_prefix: 124,
+                ipv6_forwarding_enabled: true,
+                use_ndp_proxy: true,
+            },
+            vm_configuration: WrittenQemuVmConfiguration {
+                qemu_bin_path: "/usr/bin/qemu-system-x86_64".to_string(),
+                cloud_init_drive_path: None,
+                image_path: "/img/rootfs.ext4".to_string(),
+                monitor_socket_path: "/m.socket".to_string(),
+                qmp_socket_path: "/q.socket".to_string(),
+                qga_socket_path: None,
+                vcpu_count: 2,
+                mem_size_mb: 2048,
+                interface_name: Some("vmtap7".to_string()),
+                host_volumes: Vec::new(),
+                gpus: Vec::new(),
+                ovmf_path: Some("/img/TDVF.fd".to_string()),
+                sev_session_file: None,
+                sev_dh_cert_file: None,
+                sev_policy: None,
+                sev_snp: None,
+                kernel_path: Some("/img/bzImage".to_string()),
+                initrd_path: Some("/img/initrd".to_string()),
+                kernel_cmdline: Some("console=ttyS0 aleph_tdx_descriptor=1".to_string()),
+                cpu_model: None,
+                numa_node: None,
+                hugepage_size: None,
+                pci_mmio64_mb: None,
+                guest_ipv6_cidr: None,
+                image_format: None,
+                image_readonly: None,
+                tdx: None,
+                mrconfigid: None,
+                qgs_socket: None,
+            },
+            hypervisor: "qemu",
+        };
+        // Unset: none of the three keys appear.
+        let json = config.to_json();
+        for key in ["\"tdx\"", "mrconfigid", "qgs_socket"] {
+            assert!(!json.contains(key), "{key} leaked into a non-TDX config");
+        }
+
+        config.vm_configuration.tdx = Some(true);
+        config.vm_configuration.mrconfigid = Some("AAAA".to_string());
+        let json = config.to_json();
+        assert!(json.contains("\"tdx\": true"));
+        assert!(json.contains("\"mrconfigid\": \"AAAA\""));
+        assert!(!json.contains("qgs_socket"), "None still omits the socket");
+        let parsed = parse_controller_config(&json).unwrap();
+        let VmConfiguration::Qemu(vm) = parsed.vm else {
+            panic!("expected a QEMU configuration");
+        };
+        let tdx = vm.tdx().expect("the written TDX config reads back as TDX");
+        assert_eq!(tdx.mrconfigid, "AAAA");
+        assert!(tdx.qgs_socket.is_none());
+
+        config.vm_configuration.qgs_socket = Some(PathBuf::from("/run/aleph/qgs.socket"));
+        let parsed = parse_controller_config(&config.to_json()).unwrap();
+        let VmConfiguration::Qemu(vm) = parsed.vm else {
+            panic!("expected a QEMU configuration");
+        };
+        assert_eq!(
+            vm.tdx().unwrap().qgs_socket.as_deref(),
+            Some(std::path::Path::new("/run/aleph/qgs.socket"))
+        );
     }
 
     #[test]
@@ -1116,6 +1343,9 @@ mod tests {
                 guest_ipv6_cidr: None,
                 image_format: None,
                 image_readonly: None,
+                tdx: None,
+                mrconfigid: None,
+                qgs_socket: None,
             },
             hypervisor: "qemu",
         };

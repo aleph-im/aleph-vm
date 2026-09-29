@@ -139,18 +139,20 @@ class _ConfidentialModeEnumTypeWrapper(google.protobuf.internal.enum_type_wrappe
     CONFIDENTIAL_MODE_SEV: _ConfidentialMode.ValueType  # 1
     CONFIDENTIAL_MODE_SEV_ES: _ConfidentialMode.ValueType  # 2
     CONFIDENTIAL_MODE_SEV_SNP: _ConfidentialMode.ValueType  # 3
+    CONFIDENTIAL_MODE_TDX: _ConfidentialMode.ValueType  # 4
 
 class ConfidentialMode(_ConfidentialMode, metaclass=_ConfidentialModeEnumTypeWrapper):
     """The confidential-computing mode a VM is actually running under. Precise by
     design: the agent reduces this to a boolean for Aleph APIs; the contract does
     not pre-reduce it. SEV vs SEV-ES is distinguished by the AMD SEV policy;
-    SEV-SNP is a distinct measured-boot launch path.
+    SEV-SNP and TDX are distinct measured-boot launch paths.
     """
 
 CONFIDENTIAL_MODE_NONE: ConfidentialMode.ValueType  # 0
 CONFIDENTIAL_MODE_SEV: ConfidentialMode.ValueType  # 1
 CONFIDENTIAL_MODE_SEV_ES: ConfidentialMode.ValueType  # 2
 CONFIDENTIAL_MODE_SEV_SNP: ConfidentialMode.ValueType  # 3
+CONFIDENTIAL_MODE_TDX: ConfidentialMode.ValueType  # 4
 global___ConfidentialMode = ConfidentialMode
 
 class _Protocol:

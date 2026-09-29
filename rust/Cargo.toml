@@ -77,7 +77,10 @@ der = { version = "0.7", features = ["alloc"] }
 # pins live here.
 time = "0.3"
 hex = "0.4"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "charset", "http2"] }
+# aleph-tee tdx::qemu renders mrconfigid as base64 on the tdx-guest object;
+# the controller decodes the same text. Already in the agent's lock via sev.
+base64 = "0.22"
+reqwest ={ version = "0.12", default-features = false, features = ["rustls-tls", "json", "charset", "http2"] }
 # owner_auth: EIP-191 personal-sign over the owner-auth payload (secp256k1
 # recoverable ECDSA signatures, Keccak256 for the Ethereum message digest and
 # address derivation).

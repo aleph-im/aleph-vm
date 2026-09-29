@@ -8,8 +8,9 @@ description = "AMD SEV-SNP and Intel TDX attestation library: report and quote g
 
 [features]
 default = ["guest", "verify"]
-# The in-guest side: the SEV-SNP firmware backend over /dev/sev-guest.
-guest = []
+# The in-guest side: the SEV-SNP backend over /dev/sev-guest and the TDX
+# backend over /dev/tdx_guest and configfs-tsm.
+guest = ["dep:libc"]
 # The verifier side: AMD and Intel chains, the KDS and PCS clients, TDX.
 # Pulls the crypto and HTTP closure the measured guest agent does not need.
 verify = [
@@ -27,11 +28,14 @@ sev.workspace = true
 x509-parser = { workspace = true, optional = true }
 ring = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
+# guest only: the TDREPORT ioctl and the configfs mount for the TDX backend.
+libc = { workspace = true, optional = true }
 # Non-optional: sev_snp::qemu (always on) logs a fallback warning for a
 # malformed guest policy, not just the verify-side fetch client.
 tracing.workspace = true
 der.workspace = true
 hex.workspace = true
+base64.workspace = true
 sha2.workspace = true
 sha3.workspace = true
 k256.workspace = true

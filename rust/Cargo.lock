@@ -28,9 +28,11 @@ name = "aleph-tee"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "der",
  "hex",
  "k256",
+ "libc",
  "rcgen",
  "reqwest",
  "ring",
@@ -2530,6 +2532,7 @@ version = "0.1.0"
 dependencies = [
  "aleph-tee",
  "anyhow",
+ "base64",
  "clap",
  "memsizes",
  "serde",
@@ -2546,6 +2549,7 @@ name = "supervisor-daemon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "clap",
  "hyper-util",
  "libc",
@@ -2555,6 +2559,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "supervisor-proto",
  "tempfile",
  "thiserror 2.0.18",

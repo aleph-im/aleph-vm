@@ -139,7 +139,11 @@ async fn serves_health_and_host_info_on_a_unix_socket() {
     assert!(!info.sev_supported);
     assert!(!info.sev_es_supported);
     assert!(!info.sev_snp_supported);
-    assert!(!info.tdx_supported);
+    // Host-dependent: a TDX host with QGS up answers true.
+    assert_eq!(
+        info.tdx_supported,
+        supervisor_daemon::checks::check_intel_tdx_supported()
+    );
 
     // Guest quiescence (the daemon's only part in a backup): FreezeGuest for
     // an unknown VM is NOT_FOUND with the VM_NOT_FOUND trailer (the empty

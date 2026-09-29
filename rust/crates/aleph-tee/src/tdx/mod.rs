@@ -1,18 +1,40 @@
 //! Intel TDX attestation stack.
 //!
 //! Sibling of `sev_snp`: same crate-level conventions, different TEE.
-//! Quote parsing and the full software verification path (chain, TCB
-//! appraisal and platform gates) are implemented; the hardware-backed
-//! backend and QGS round trip arrive in a later increment.
 //!
 //! `verify_tdx_quote` is the entry point callers outside the crate use. The
 //! steps under it pass certificates around as DER bytes and parsed
 //! x509-parser views, both crate-private.
+//!
+//! Always available: `quote` (structure-only parsing, so the guest can read
+//! its own registers and `report_data` back out of a quote), `qemu` (the
+//! launch argv generator) and `measure` (MRTD/RTMR1/RTMR2/MRCONFIGID
+//! prediction, SHA-384 only).
+//!
+//! `guest`: `report` (the local TDREPORT over `/dev/tdx_guest`) and
+//! `backend` (quotes over configfs-tsm).
+//!
+//! `verify`: the chain, TCB appraisal and collateral clients.
 
+#[cfg(feature = "guest")]
+pub mod backend;
+#[cfg(feature = "verify")]
 pub mod certs;
+#[cfg(feature = "verify")]
 pub mod collateral;
+pub mod measure;
+#[cfg(feature = "verify")]
 pub mod pck_extension;
+#[cfg(feature = "verify")]
 pub mod pcs;
+pub mod qemu;
 pub mod quote;
+#[cfg(feature = "guest")]
+pub mod report;
+#[cfg(feature = "verify")]
 pub mod tcb;
+#[cfg(feature = "verify")]
 pub mod verify;
+
+#[cfg(feature = "guest")]
+pub use backend::TdxBackend;
