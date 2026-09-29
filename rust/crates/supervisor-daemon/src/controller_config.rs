@@ -381,6 +381,12 @@ impl QemuVmConfig {
             _ => None,
         }
     }
+
+    /// Whether this VM boots a measured Nix image (SEV-SNP or TDX): no
+    /// cloud-init drive, IPv4 by a per-tap DHCP server, started at create.
+    pub fn is_measured(&self) -> bool {
+        self.snp().is_some() || self.tdx().is_some()
+    }
 }
 
 /// The resolved `vm_configuration` union member.
