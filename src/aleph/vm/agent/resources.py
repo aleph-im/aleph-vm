@@ -29,7 +29,10 @@ from aleph.vm.utils import (
     check_amd_sev_es_supported,
     check_amd_sev_snp_supported,
     check_amd_sev_supported,
+    check_intel_tdx_module,
+    check_intel_tdx_supported,
     cors_allow_all,
+    tdx_qgs_socket_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -151,11 +154,19 @@ class NvidiaCcProperties(BaseModel):
     devices: list[NvidiaCcDevice]
 
 
+class TdxProperties(BaseModel):
+    qgs: bool = Field(
+        default=True,
+        description="The Quote Generation Service answers on this host, so a TD can be quoted.",
+    )
+
+
 class TeeProperties(BaseModel):
-    """TEE launch capability, keyed by platform so TDX and friends slot in later."""
+    """TEE launch capability, keyed by platform."""
 
     sev_snp: SevSnpProperties | None = None
     nvidia_cc: NvidiaCcProperties | None = None
+    tdx: TdxProperties | None = None
 
 
 class MachineProperties(BaseModel):
@@ -226,9 +237,9 @@ class MachineCapability(BaseModel):
     tee: TeeProperties | None = None
     tee_unavailable_reason: str | None = Field(
         default=None,
-        description="Why SEV-SNP is not advertised, for a node whose silicon supports it but "
-        "cannot currently launch (e.g. QEMU too old). Human-facing only: the scheduler reads "
-        "/about/usage/system, whose tee block is the same one but which carries no such "
+        description="Why SEV-SNP or TDX is not advertised, for a node whose silicon supports it but "
+        "cannot currently launch (e.g. QEMU too old, QGS down). Human-facing only: the scheduler "
+        "reads /about/usage/system, whose tee block is the same one but which carries no such "
         "explanation field.",
     )
 
@@ -307,9 +318,14 @@ async def _tee_properties(
     block is withheld and the rest of the tee block stands. A caller that
     already built the network model map for this request passes it in, so
     the settings aggregate is refreshed once per request, not per block.
+
+    ``tdx`` is its own axis: no vCPU-model selection (one measurement per
+    runtime) and no confidential GPU yet, so it needs neither the probe nor
+    the host info.
     """
+    tdx = TdxProperties() if check_intel_tdx_supported() else None
     if not supported_vcpu_types:
-        return None
+        return TeeProperties(tdx=tdx) if tdx else None
     nvidia_cc = None
     if host_info is not None:
         if network_models is None:
@@ -318,6 +334,7 @@ async def _tee_properties(
     return TeeProperties(
         sev_snp=SevSnpProperties(supported_vcpu_types=supported_vcpu_types),
         nvidia_cc=nvidia_cc,
+        tdx=tdx,
     )
 
 
@@ -346,6 +363,7 @@ async def _get_static_machine_properties() -> MachineProperties:
                         "sev" if check_amd_sev_supported() else None,
                         "sev_es" if check_amd_sev_es_supported() else None,
                         "sev_snp" if check_amd_sev_snp_supported() else None,
+                        "tdx" if check_intel_tdx_supported() else None,
                     ),
                 )
             ),
@@ -400,6 +418,7 @@ async def _get_static_machine_capability() -> MachineCapability:
                         "sev" if check_amd_sev_supported() else None,
                         "sev_es" if check_amd_sev_es_supported() else None,
                         "sev_snp" if check_amd_sev_snp_supported() else None,
+                        "tdx" if check_intel_tdx_supported() else None,
                     ),
                 )
             ),
@@ -445,18 +464,31 @@ async def get_machine_capability(supervisor: Supervisor) -> MachineCapability:
 
     The tee block itself comes from the same builder ``/about/usage/system``
     uses, so the two endpoints agree. Unlike ``get_machine_properties``, this
-    also names *why* SNP is not advertised when the silicon supports it but
-    the current QEMU cannot launch it (e.g. too old): human-facing only, so it
-    is populated solely when ``check_amd_sev_snp_supported()`` is true, to keep
-    the non-TEE fleet's response free of noise.
+    also names *why* a TEE is not advertised when the silicon supports it but
+    the host cannot currently launch or quote it (SNP: QEMU too old; TDX: the
+    Quote Generation Service down): human-facing only, so it is populated
+    solely when the kernel module says the platform is there, to keep the
+    non-TEE fleet's response free of noise.
     """
     static = await _get_static_machine_capability()
     capability = await get_snp_launch_capability()
-    tee = None
-    if capability.supported_vcpu_types:
-        tee = await _tee_properties(capability.supported_vcpu_types, await _host_info_for_capability(supervisor))
-    reason = capability.unavailable_reason if check_amd_sev_snp_supported() else None
+    # The supervisor is only consulted for the confidential-GPU block, which
+    # rides with sev_snp.
+    host_info = await _host_info_for_capability(supervisor) if capability.supported_vcpu_types else None
+    tee = await _tee_properties(capability.supported_vcpu_types, host_info)
+    reasons = [
+        capability.unavailable_reason if check_amd_sev_snp_supported() else None,
+        _tdx_unavailable_reason(),
+    ]
+    reason = "; ".join(r for r in reasons if r) or None
     return static.model_copy(update={"tee": tee, "tee_unavailable_reason": reason})
+
+
+def _tdx_unavailable_reason() -> str | None:
+    """Why ``tee.tdx`` is withheld on a host whose kernel has TDX on."""
+    if not check_intel_tdx_module() or check_intel_tdx_supported():
+        return None
+    return f"TDX is enabled but the Quote Generation Service does not answer on {tdx_qgs_socket_path()}"
 
 
 HUGEPAGES_SYSFS_PATH = Path("/sys/kernel/mm/hugepages")

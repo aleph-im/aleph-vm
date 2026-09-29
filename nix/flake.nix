@@ -158,6 +158,9 @@
       ovmf = import ./ovmf.nix { inherit pkgs; };
       ovmfFd = "${ovmf}/OVMF.fd";
 
+      # TDVF: the Intel TDX firmware, pinned by MRTD in the TDX runtime.
+      tdvf = import ./tdvf.nix { inherit pkgs; };
+
       # sev-snp-measure 0.0.11 had a measurement calculation bug; nixos-26.05
       # ships 0.0.12 (the fixed release the flake previously pinned by hand),
       # so the nixpkgs package is used as-is. Keep any future channel bump
@@ -744,6 +747,7 @@
           attest-agent
           fib-service
           ovmf
+          tdvf
           kernel
           gpuKernel
           nvidiaModules
