@@ -287,10 +287,39 @@ fn tdx_module_enabled(parameter: Option<&str>) -> bool {
     parameter == Some("Y")
 }
 
-/// A connect() to the QGS socket, dropped at once. On AF_UNIX the kernel
-/// answers immediately, so any failure simply means "unreachable".
+/// A non-blocking connect() to the QGS socket, dropped at once. AF_UNIX
+/// answers synchronously except when the accept backlog is full, where a
+/// blocking socket sleeps until the listener drains; O_NONBLOCK turns that
+/// into EAGAIN, and any error means "unreachable".
 pub(crate) fn tdx_qgs_reachable(socket: &Path) -> bool {
-    std::os::unix::net::UnixStream::connect(socket).is_ok()
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = socket.as_os_str().as_bytes();
+    // SAFETY: sockaddr_un is plain data; all-zero is a valid value.
+    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    if path.is_empty() || path.len() >= addr.sun_path.len() {
+        return false;
+    }
+    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (dst, src) in addr.sun_path.iter_mut().zip(path) {
+        *dst = *src as libc::c_char;
+    }
+    let len = (std::mem::size_of::<libc::sa_family_t>() + path.len() + 1) as libc::socklen_t;
+    // SAFETY: the descriptor is owned and closed here; addr is initialised
+    // and len covers the bytes written.
+    unsafe {
+        let raw = libc::socket(
+            libc::AF_UNIX,
+            libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+            0,
+        );
+        if raw < 0 {
+            return false;
+        }
+        let _fd = OwnedFd::from_raw_fd(raw);
+        libc::connect(raw, std::ptr::from_ref(&addr).cast::<libc::sockaddr>(), len) == 0
+    }
 }
 
 #[cfg(test)]
@@ -324,6 +353,23 @@ mod tests {
         // Over sun_path.
         let long = tmp.path().join("x".repeat(120));
         assert!(!tdx_qgs_reachable(&long));
+    }
+
+    #[test]
+    fn a_full_accept_backlog_reads_unreachable_instead_of_blocking() {
+        use std::os::fd::AsRawFd;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let socket = tmp.path().join("qgs.socket");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        // Shrink the backlog so one unaccepted connection fills it.
+        // SAFETY: listen() on a bound, listening descriptor we own.
+        assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), 0) }, 0);
+        let _queued = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        // A blocking connect would sleep here until the listener drained.
+        assert!(!tdx_qgs_reachable(&socket));
+        let (_accepted, _) = listener.accept().unwrap();
+        assert!(tdx_qgs_reachable(&socket));
     }
 
     #[test]
