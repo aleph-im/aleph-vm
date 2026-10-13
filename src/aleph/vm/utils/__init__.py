@@ -213,9 +213,9 @@ def check_tdx_qgs_reachable(socket_path: Path | None = None, timeout: float = TD
     path = socket_path if socket_path is not None else tdx_qgs_socket_path()
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            # The timeout makes the socket non-blocking: AF_UNIX answers at
-            # once, and a full accept backlog raises EAGAIN instead of
-            # sleeping, so the probe never stalls the event loop.
+            # The timeout makes the socket non-blocking: a full accept
+            # backlog raises EAGAIN at once instead of sleeping, and the
+            # 0.5 s bounds anything else on the calling event loop.
             sock.settimeout(timeout)
             sock.connect(str(path))
     except OSError:

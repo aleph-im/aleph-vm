@@ -151,7 +151,7 @@ async def test_get_host_info_matches_the_python_sources(rust_daemon):
     assert info.sev_snp_supported is False
     # Host-dependent: the Rust probe and the Python one apply the same rule
     # (kvm_intel tdx=Y and a live QGS socket), so they must agree here.
-    assert info.tdx_supported is check_intel_tdx_supported()
+    assert info.tdx_supported == check_intel_tdx_supported()
 
     # NUMA topology reporting is a Rust-only addition (increment C1): the Python
     # daemon has no NUMA source, so this is verified against the same primary
