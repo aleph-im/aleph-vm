@@ -194,9 +194,20 @@ pub fn check(settings: &Settings, resolved_interface: Option<&str>) -> Result<()
     // SEV-ES kernel-module gates, only when the feature is enabled. Ported
     // from conf.py check(); SEV-SNP is intentionally left commented out
     // there, so it is not checked here either. An Intel TDX host has none
-    // of the AMD tooling, so the TDX probe stands in for those three gates.
+    // of the AMD tooling, so the TDX module parameter stands in for those
+    // three gates. QGS liveness is a capability, not a startup condition:
+    // the daemon must come up before qgs.service does, and HostInfo re-probes
+    // the socket on every call.
     if settings.enable_confidential_computing {
-        if !check_intel_tdx_supported() {
+        if check_intel_tdx_module() {
+            if !tdx_qgs_reachable(&tdx_qgs_socket_path()) {
+                tracing::warn!(
+                    socket = %tdx_qgs_socket_path().display(),
+                    "Intel TDX is enabled but the Quote Generation Service does not answer; \
+                     the host advertises no TDX until it does"
+                );
+            }
+        } else {
             if !settings.sev_ctl_path.is_file() {
                 return Err(ChecksError::FileNotFound {
                     path: settings.sev_ctl_path.clone(),
@@ -255,8 +266,12 @@ pub(crate) fn check_amd_sev_snp_supported() -> bool {
 /// boots but can never produce a quote, so it is not a capability. Feeds
 /// `HostInfo.tdx_supported`.
 pub fn check_intel_tdx_supported() -> bool {
+    check_intel_tdx_module() && tdx_qgs_reachable(&tdx_qgs_socket_path())
+}
+
+/// Python `check_intel_tdx_module`: the kvm_intel `tdx` parameter is "Y".
+pub fn check_intel_tdx_module() -> bool {
     tdx_module_enabled(check_system_module("kvm_intel/parameters/tdx").as_deref())
-        && tdx_qgs_reachable(&tdx_qgs_socket_path())
 }
 
 /// The QGS socket path: ALEPH_VM_TDX_QGS_SOCKET, or the DCAP default.
