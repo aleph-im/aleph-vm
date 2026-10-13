@@ -200,9 +200,10 @@ pub fn check(settings: &Settings, resolved_interface: Option<&str>) -> Result<()
     // the socket on every call.
     if settings.enable_confidential_computing {
         if check_intel_tdx_module() {
-            if !tdx_qgs_reachable(&tdx_qgs_socket_path()) {
+            let socket = tdx_qgs_socket_path();
+            if !tdx_qgs_reachable(&socket) {
                 tracing::warn!(
-                    socket = %tdx_qgs_socket_path().display(),
+                    socket = %socket.display(),
                     "Intel TDX is enabled but the Quote Generation Service does not answer; \
                      the host advertises no TDX until it does"
                 );
@@ -276,7 +277,12 @@ pub fn check_intel_tdx_module() -> bool {
 
 /// The QGS socket path: ALEPH_VM_TDX_QGS_SOCKET, or the DCAP default.
 pub fn tdx_qgs_socket_path() -> PathBuf {
-    std::env::var_os("ALEPH_VM_TDX_QGS_SOCKET")
+    tdx_qgs_socket_path_from(std::env::var_os("ALEPH_VM_TDX_QGS_SOCKET"))
+}
+
+/// The env value's resolution, split out for a deterministic test.
+fn tdx_qgs_socket_path_from(value: Option<std::ffi::OsString>) -> PathBuf {
+    value
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(DEFAULT_TDX_QGS_SOCKET))
@@ -374,14 +380,13 @@ mod tests {
 
     #[test]
     fn the_qgs_socket_path_defaults_to_the_dcap_location() {
-        // The env override is read at call time and the test process shares
-        // its environment with sibling tests, so only the default is pinned.
-        if std::env::var_os("ALEPH_VM_TDX_QGS_SOCKET").is_none() {
-            assert_eq!(
-                tdx_qgs_socket_path(),
-                PathBuf::from("/var/run/tdx-qgs/qgs.socket")
-            );
-        }
+        let default = PathBuf::from("/var/run/tdx-qgs/qgs.socket");
+        assert_eq!(tdx_qgs_socket_path_from(None), default);
+        assert_eq!(tdx_qgs_socket_path_from(Some("".into())), default);
+        assert_eq!(
+            tdx_qgs_socket_path_from(Some("/run/qgs/q.sock".into())),
+            PathBuf::from("/run/qgs/q.sock")
+        );
     }
 
     fn settings_with_stub_hypervisors(root: &Path) -> Settings {

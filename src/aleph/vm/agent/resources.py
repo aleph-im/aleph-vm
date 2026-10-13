@@ -331,7 +331,7 @@ async def _tee_properties(
     """
     tdx = TdxProperties() if check_intel_tdx_supported() else None
     if not supported_vcpu_types:
-        return TeeProperties(tdx=tdx) if tdx else None
+        return TeeProperties(tdx=tdx) if tdx is not None else None
     nvidia_cc = None
     if host_info is not None:
         if network_models is None:
