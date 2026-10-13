@@ -354,7 +354,8 @@ async def _get_static_machine_properties() -> MachineProperties:
     ``get_machine_properties``: it depends on the QEMU probe, which can fail
     transiently and then recover, and caching it alongside the static facts
     would freeze a failed probe's empty advertisement for the life of the
-    process.
+    process. The `tdx` feature means the silicon, not QGS liveness, which
+    `tee.tdx` carries per call.
     """
     hw = await get_hardware_info()
     cpu_info = get_cpu_info(hw)
@@ -369,7 +370,7 @@ async def _get_static_machine_properties() -> MachineProperties:
                         "sev" if check_amd_sev_supported() else None,
                         "sev_es" if check_amd_sev_es_supported() else None,
                         "sev_snp" if check_amd_sev_snp_supported() else None,
-                        "tdx" if check_intel_tdx_supported() else None,
+                        "tdx" if check_intel_tdx_module() else None,
                     ),
                 )
             ),
@@ -424,7 +425,7 @@ async def _get_static_machine_capability() -> MachineCapability:
                         "sev" if check_amd_sev_supported() else None,
                         "sev_es" if check_amd_sev_es_supported() else None,
                         "sev_snp" if check_amd_sev_snp_supported() else None,
-                        "tdx" if check_intel_tdx_supported() else None,
+                        "tdx" if check_intel_tdx_module() else None,
                     ),
                 )
             ),

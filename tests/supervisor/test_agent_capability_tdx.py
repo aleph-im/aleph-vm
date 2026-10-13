@@ -116,7 +116,10 @@ async def test_cpu_features_list_tdx(mocker):
     )
     for name in ("check_amd_sev_supported", "check_amd_sev_es_supported", "check_amd_sev_snp_supported"):
         mocker.patch.object(resources, name, return_value=False)
-    mocker.patch.object(resources, "check_intel_tdx_supported", return_value=True)
+    # The silicon flag, not QGS liveness: the builders are cached for the
+    # life of the agent while QGS can come and go.
+    mocker.patch.object(resources, "check_intel_tdx_module", return_value=True)
+    mocker.patch.object(resources, "check_intel_tdx_supported", return_value=False)
 
     properties = await resources._get_static_machine_properties.__wrapped__()
     capability = await resources._get_static_machine_capability.__wrapped__()
