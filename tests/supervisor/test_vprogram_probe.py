@@ -125,6 +125,13 @@ def _mock_cpu_info() -> dict:
 
 
 @pytest.fixture(autouse=True)
+def _no_tdx(monkeypatch):
+    """These tests describe an SNP host; keep the host's TDX silicon out."""
+    monkeypatch.setattr(resources, "check_intel_tdx_module", lambda: False)
+    monkeypatch.setattr(resources, "check_intel_tdx_supported", lambda: False)
+
+
+@pytest.fixture(autouse=True)
 def _fresh_static_properties(monkeypatch):
     """The static half of the machine properties is process-cached; give each
     test its own cache so a mock from one cannot leak into the next."""
