@@ -253,6 +253,12 @@ async def _network_gpu_models() -> dict[str, str]:
     return {gpu.device_id: gpu.model for gpu in get_compatible_gpus()}
 
 
+def _can_launch_confidential_gpu(tee: "TeeProperties | None") -> bool:
+    """Confidential GPUs ride on SEV-SNP guests only; a tdx-only tee block
+    does not qualify, since TDX has no confidential GPU path yet."""
+    return tee is not None and tee.sev_snp is not None
+
+
 async def _gpus_from_host_info(
     host_info: "HostInfo", network_models: dict[str, str] | None = None, *, confidential: bool
 ) -> GpuProperties:
@@ -562,8 +568,9 @@ async def about_system_usage(request: web.Request):
             duration_seconds=60,
         ),
         properties=machine_properties,
-        # The tee block exists exactly when this host can launch SNP guests.
-        gpu=await _gpus_from_host_info(host_info, network_models, confidential=machine_properties.tee is not None),
+        gpu=await _gpus_from_host_info(
+            host_info, network_models, confidential=_can_launch_confidential_gpu(machine_properties.tee)
+        ),
     )
 
     return web.json_response(text=usage.model_dump_json(exclude_none=True))

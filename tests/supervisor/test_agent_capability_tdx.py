@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from aleph.vm.agent import resources
-from aleph.vm.agent.resources import TdxProperties, TeeProperties
+from aleph.vm.agent.resources import SevSnpProperties, TdxProperties, TeeProperties
 
 
 def _static(mocker, name):
@@ -122,3 +122,16 @@ async def test_cpu_features_list_tdx(mocker):
     capability = await resources._get_static_machine_capability.__wrapped__()
     assert properties.cpu.features == ["tdx"]
     assert capability.cpu.features == ["tdx"]
+
+
+def test_a_tdx_only_tee_block_offers_no_confidential_gpu_mode():
+    """/about/usage/system gates the GPU `cc` mode on the same condition as
+    tee.nvidia_cc: an SNP host. A tdx-only tee block must not open it."""
+    assert not resources._can_launch_confidential_gpu(None)
+    assert not resources._can_launch_confidential_gpu(TeeProperties(tdx=TdxProperties(qgs=True)))
+    assert resources._can_launch_confidential_gpu(
+        TeeProperties(sev_snp=SevSnpProperties(supported_vcpu_types=["EPYC-v4"]))
+    )
+    assert resources._can_launch_confidential_gpu(
+        TeeProperties(sev_snp=SevSnpProperties(supported_vcpu_types=["EPYC-v4"]), tdx=TdxProperties(qgs=True))
+    )
