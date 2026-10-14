@@ -41,15 +41,15 @@ pub fn dhcp_unit_name(vm_hash: &str) -> String {
 }
 
 /// The per-VM dnsmasq lease file under `lease_dir`, named by the VM hash. The
-/// single source of truth shared by [`DhcpConfig::for_snp`] (which passes it to
+/// single source of truth shared by [`DhcpConfig::for_tap`] (which passes it to
 /// dnsmasq) and the teardown (which removes it), so start and stop never
 /// disagree on the path.
 pub fn lease_file_path(lease_dir: &std::path::Path, vm_hash: &str) -> std::path::PathBuf {
     lease_dir.join(format!("{vm_hash}.leases"))
 }
 
-/// One SNP VM's DHCP server configuration: hand the guest EXACTLY its
-/// allocated IPv4, with the correct gateway, netmask and nameservers.
+/// One measured VM's DHCP server configuration (SNP or TDX, their cmdline
+/// carries no `ip=`): hand the guest EXACTLY its allocated IPv4, with the correct gateway, netmask and nameservers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DhcpConfig {
     /// The VM hash, keys the transient unit for start and teardown.
@@ -98,7 +98,7 @@ impl DhcpConfig {
     /// falling back to `/32` would hand the guest an unroutable single-host
     /// netmask, while silently dropping malformed DNS configuration would boot
     /// a guest with no working resolver.
-    pub fn for_snp(
+    pub fn for_tap(
         vm_hash: &str,
         tap: &TapAssignment,
         nameservers: &[String],
@@ -184,7 +184,7 @@ impl DhcpConfig {
             ),
             "--enable-ra".to_string(),
         ];
-        // `for_snp` mirrors conf.py's DNS_NAMESERVERS_IPV4 split so DHCPv4
+        // `for_tap` mirrors conf.py's DNS_NAMESERVERS_IPV4 split so DHCPv4
         // option 6 never receives an IPv6 address.
         if !self.nameservers.is_empty() {
             args.push(format!("--dhcp-option=6,{}", self.nameservers.join(",")));
@@ -220,7 +220,7 @@ impl DhcpConfig {
 
 /// The prefix length of a CIDR string, fail-closed: a malformed prefix must
 /// surface at config-build time rather than as a dnsmasq startup failure
-/// (v4) or an unroutable netmask (see `for_snp`).
+/// (v4) or an unroutable netmask (see `for_tap`).
 fn cidr_prefix_len(network_cidr: &str, family: &'static str) -> Result<u8, DhcpError> {
     let (_, prefix_str) = network_cidr
         .split_once('/')
@@ -524,7 +524,7 @@ mod tests {
 
     #[test]
     fn config_derives_the_single_address_range_from_the_tap() {
-        let config = DhcpConfig::for_snp(
+        let config = DhcpConfig::for_tap(
             &"e".repeat(64),
             &snp_tap(),
             &["1.1.1.1".to_string(), "9.9.9.9".to_string()],
@@ -547,7 +547,7 @@ mod tests {
 
     #[test]
     fn dnsmasq_args_hand_the_guest_exactly_its_allocated_ip() {
-        let config = DhcpConfig::for_snp(
+        let config = DhcpConfig::for_tap(
             &"e".repeat(64),
             &snp_tap(),
             &["1.1.1.1".to_string(), "9.9.9.9".to_string()],
@@ -579,7 +579,7 @@ mod tests {
 
     #[test]
     fn dnsmasq_args_omit_option_6_without_nameservers() {
-        let config = DhcpConfig::for_snp(
+        let config = DhcpConfig::for_tap(
             &"e".repeat(64),
             &snp_tap(),
             &[],
@@ -597,7 +597,7 @@ mod tests {
 
     #[test]
     fn dnsmasq_args_filter_ipv6_nameservers_from_option_6() {
-        let config = DhcpConfig::for_snp(
+        let config = DhcpConfig::for_tap(
             &"e".repeat(64),
             &snp_tap(),
             &[
@@ -620,7 +620,7 @@ mod tests {
 
     #[test]
     fn dnsmasq_args_omit_option_6_with_only_ipv6_nameservers() {
-        let config = DhcpConfig::for_snp(
+        let config = DhcpConfig::for_tap(
             &"e".repeat(64),
             &snp_tap(),
             &["2001:db8::53".to_string(), "2001:db8::54".to_string()],
@@ -635,8 +635,8 @@ mod tests {
     }
 
     #[test]
-    fn for_snp_rejects_a_malformed_nameserver() {
-        let result = DhcpConfig::for_snp(
+    fn for_tap_rejects_a_malformed_nameserver() {
+        let result = DhcpConfig::for_tap(
             &"e".repeat(64),
             &snp_tap(),
             &["192.0.2.53".to_string(), "1.1.1".to_string()],
@@ -650,7 +650,7 @@ mod tests {
 
     #[test]
     fn systemd_run_wraps_dnsmasq_in_a_keyed_transient_unit() {
-        let config = DhcpConfig::for_snp(
+        let config = DhcpConfig::for_tap(
             &"e".repeat(64),
             &snp_tap(),
             &["1.1.1.1".to_string()],
@@ -678,7 +678,7 @@ mod tests {
     #[test]
     fn the_fake_backend_records_start_and_stop() {
         let backend = FakeDhcpBackend::new();
-        let config = DhcpConfig::for_snp(
+        let config = DhcpConfig::for_tap(
             &"e".repeat(64),
             &snp_tap(),
             &["1.1.1.1".to_string()],
@@ -699,7 +699,7 @@ mod tests {
     #[test]
     fn the_fake_backend_can_inject_failures() {
         let backend = FakeDhcpBackend::new();
-        let config = DhcpConfig::for_snp(
+        let config = DhcpConfig::for_tap(
             &"e".repeat(64),
             &snp_tap(),
             &[],
@@ -734,7 +734,7 @@ mod tests {
         // dnsmasq's RA for a stateful (non-slaac) range carries M=1/A=0, so
         // the guest gets its default route from the RA (DHCPv6 cannot convey
         // routes) and never SLAACs a second address.
-        let config = DhcpConfig::for_snp(
+        let config = DhcpConfig::for_tap(
             &"e".repeat(64),
             &snp_tap(),
             &["1.1.1.1".to_string()],
@@ -752,7 +752,7 @@ mod tests {
     }
 
     #[test]
-    fn for_snp_rejects_an_ipv6_cidr_without_a_prefix() {
+    fn for_tap_rejects_an_ipv6_cidr_without_a_prefix() {
         // Same fail-closed rule as the v4 CIDR: a malformed prefix must error
         // rather than silently produce a dnsmasq range dnsmasq would reject at
         // startup (an Err here surfaces at create; a bad range would instead
@@ -761,7 +761,7 @@ mod tests {
         let mut tap = snp_tap();
         tap.ipv6.network_cidr = "fc00:1:2:3::10".into(); // no prefix length
         assert!(
-            DhcpConfig::for_snp(
+            DhcpConfig::for_tap(
                 &"e".repeat(64),
                 &tap,
                 &[],
@@ -773,13 +773,13 @@ mod tests {
     }
 
     #[test]
-    fn for_snp_rejects_a_cidr_without_a_prefix() {
+    fn for_tap_rejects_a_cidr_without_a_prefix() {
         // A `/`-less (or non-numeric-prefix) network CIDR must fail rather than
         // silently yield an unroutable /32 (255.255.255.255) that leaves the
         // guest unable to reach its gateway.
         let mut tap = snp_tap();
         tap.ipv4.network_cidr = "172.16.4.0".into(); // no prefix length
-        let result = DhcpConfig::for_snp(
+        let result = DhcpConfig::for_tap(
             &"e".repeat(64),
             &tap,
             &[],
@@ -790,7 +790,7 @@ mod tests {
         let mut tap = snp_tap();
         tap.ipv4.network_cidr = "172.16.4.0/xx".into(); // non-numeric prefix
         assert!(
-            DhcpConfig::for_snp(
+            DhcpConfig::for_tap(
                 &"e".repeat(64),
                 &tap,
                 &[],

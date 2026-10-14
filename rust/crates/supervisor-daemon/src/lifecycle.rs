@@ -1141,7 +1141,7 @@ fn start_vm_execution_marked(
         // or the rebooting measured guest (whose cmdline has no `ip=`) never
         // leases its IP. `DhcpBackend::start` replaces a leftover unit.
         if entry.config.is_measured() {
-            let config = dhcp::DhcpConfig::for_snp(
+            let config = dhcp::DhcpConfig::for_tap(
                 vm_id,
                 &tap,
                 state.host.dns_nameservers.as_deref().unwrap_or(&[]),
@@ -1275,7 +1275,7 @@ pub fn reboot_vm(state: &DaemonState, vm_id: &str) -> Result<(VmEntry, bool), Rp
             tracing::warn!(vm_id, %dhcp_error, "cannot stop the DHCP server, continuing");
         }
         let tap = tap_assignment(state, vm_id)?;
-        let config = dhcp::DhcpConfig::for_snp(
+        let config = dhcp::DhcpConfig::for_tap(
             vm_id,
             &tap,
             state.host.dns_nameservers.as_deref().unwrap_or(&[]),
@@ -3025,6 +3025,20 @@ fn tdx_config_slice(spec: &pb::VmSpec) -> Result<Option<TdxSlice>, RpcError> {
              dm-verity roothash sidecar and cannot be supplied by the agent"
         )));
     }
+    // Same rule for the SNP-only knobs: TDX runs `-cpu host` and takes no
+    // policy, so a value the agent set would be silently ignored.
+    if !tee.cpu_model.is_empty() {
+        return Err(RpcError::InvalidBackend(format!(
+            "TDX VM {vm_id} carries tee.cpu_model ({}); TDX guests run -cpu host",
+            tee.cpu_model
+        )));
+    }
+    if !tee.policy.is_empty() {
+        return Err(RpcError::InvalidBackend(format!(
+            "TDX VM {vm_id} carries tee.policy ({}); a TDX launch takes no SEV policy",
+            tee.policy
+        )));
+    }
     if !spec.gpus.is_empty() {
         return Err(RpcError::InvalidBackend(format!(
             "GPU passthrough is not supported on TDX guests (VM {vm_id} requests {})",
@@ -3664,7 +3678,7 @@ fn create_vm_inner(
                 // measured cmdline omits `ip=` so the launch measurement stays
                 // host-independent. Plain and SEV VMs keep the static config.
                 if measured {
-                    let config = dhcp::DhcpConfig::for_snp(
+                    let config = dhcp::DhcpConfig::for_tap(
                         &vm_id,
                         tap,
                         state.host.dns_nameservers.as_deref().unwrap_or(&[]),
@@ -7104,6 +7118,40 @@ mod tests {
                 .join(format!("{vm_id}-rootfs.ext4.tdx_descriptor"))
                 .exists()
         );
+    }
+
+    #[test]
+    fn tdx_config_slice_refuses_a_cpu_model_and_a_policy() {
+        // Neither reaches the TDX launch, so a spec carrying one describes a
+        // VM the daemon would not build; refuse instead of dropping it.
+        let harness = harness();
+        let root = harness.state.host.settings.execution_root.clone();
+        let vm_id = hash('p');
+        for (field, set) in [
+            (
+                "cpu_model",
+                (|tee: &mut pb::TeeConfig| tee.cpu_model = "GraniteRapids-v1".to_string())
+                    as fn(&mut pb::TeeConfig),
+            ),
+            ("policy", |tee: &mut pb::TeeConfig| {
+                tee.policy = "0x1".to_string()
+            }),
+        ] {
+            let mut spec = tdx_spec(&vm_id, &root);
+            set(spec.tee.as_mut().unwrap());
+            match tdx_config_slice(&spec) {
+                Err(RpcError::InvalidBackend(message)) => assert!(
+                    message.contains(field),
+                    "the refusal names {field}, got {message:?}"
+                ),
+                other => panic!("{field} on TDX must be InvalidBackend, got {other:?}"),
+            }
+            assert!(
+                !root
+                    .join(format!("{vm_id}-rootfs.ext4.tdx_descriptor"))
+                    .exists()
+            );
+        }
     }
 
     #[test]
