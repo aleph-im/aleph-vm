@@ -57,7 +57,7 @@ _SECTION_HEADER_SIZE = 40
 # edk2 TdTcg2Dxe events after the kernel image measurement, in extend order.
 RTMR1_TAIL_EVENTS: tuple[bytes, ...] = (
     b"Calling EFI Application from Boot Option",
-    b"\x00\x00\x00\x00",
+    b"\x00\x00\x00\x00",  # EV_SEPARATOR content (TPM 2.0, non-SHA-1 banks)
     b"Exit Boot Services Invocation",
     b"Exit Boot Services Returned with Success",
 )
@@ -159,7 +159,7 @@ def _check_section(fw: bytes, i: int, section: _TdvfSection) -> None:
 def parse_tdvf_sections(fw: bytes) -> list[_TdvfSection]:
     """The TDVF descriptor's section table."""
     desc = _tdvf_descriptor(fw)
-    signature, _length, version, count = struct.unpack_from("<4sIII", fw, desc)
+    signature, length, version, count = struct.unpack_from("<4sIII", fw, desc)
     if signature != b"TDVF":
         msg = "TDVF descriptor signature not found"
         raise ValueError(msg)
@@ -168,6 +168,9 @@ def parse_tdvf_sections(fw: bytes) -> list[_TdvfSection]:
         raise ValueError(msg)
     if count < _TDVF_MIN_SECTIONS:
         msg = f"TDVF descriptor lists {count} section(s), at least {_TDVF_MIN_SECTIONS} expected"
+        raise ValueError(msg)
+    if length != _TDVF_DESCRIPTOR_HEADER + count * _TDVF_SECTION_SIZE:
+        msg = f"TDVF descriptor length {length} does not match {count} section(s)"
         raise ValueError(msg)
     table_start = desc + _TDVF_DESCRIPTOR_HEADER
     if table_start + count * _TDVF_SECTION_SIZE > len(fw):
@@ -349,7 +352,7 @@ def main(argv: list[str] | None = None) -> int:
             cmdline=args.cmdline,
             initrd=args.initrd.read_bytes(),
         )
-    except ValueError as error:
+    except (OSError, ValueError) as error:
         sys.stderr.write(f"error: {error}\n")
         return 1
     json.dump(measurements.to_dict(), sys.stdout, indent=2)

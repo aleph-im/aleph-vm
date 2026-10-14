@@ -51,6 +51,7 @@ const SECTION_HEADER_SIZE: usize = 40;
 /// edk2 TdTcg2Dxe events after the kernel image measurement, in extend order.
 pub const RTMR1_TAIL_EVENTS: [&[u8]; 4] = [
     b"Calling EFI Application from Boot Option",
+    // EV_SEPARATOR content (TPM 2.0, non-SHA-1 banks).
     &[0, 0, 0, 0],
     b"Exit Boot Services Invocation",
     b"Exit Boot Services Returned with Success",
@@ -157,10 +158,16 @@ fn parse_tdvf_sections(fw: &[u8]) -> Result<Vec<TdvfSection>> {
         "unsupported TDVF descriptor version {version}"
     );
     let count = le_u32(fw, desc + 12)? as usize;
-    // QEMU's own metadata parser refuses fewer than two sections.
+    // QEMU's own metadata parser refuses fewer than two sections and a
+    // length that does not match the section count.
     ensure!(
         count >= 2,
         "TDVF descriptor lists {count} section(s), at least 2 expected"
+    );
+    let length = le_u32(fw, desc + 4)? as usize;
+    ensure!(
+        length == TDVF_DESCRIPTOR_HEADER + count * TDVF_SECTION_SIZE,
+        "TDVF descriptor length {length} does not match {count} section(s)"
     );
     let table_start = desc + TDVF_DESCRIPTOR_HEADER;
     ensure!(
@@ -702,6 +709,14 @@ mod tests {
         let mut fw = build_tdvf();
         fw[0x2000 + 12..0x2000 + 16].copy_from_slice(&1u32.to_le_bytes());
         assert!(mrtd(&fw).unwrap_err().to_string().contains("at least 2"));
+        let mut fw = build_tdvf();
+        fw[0x2000 + 4..0x2000 + 8].copy_from_slice(&(16u32 + 3 * 32).to_le_bytes());
+        assert!(
+            mrtd(&fw)
+                .unwrap_err()
+                .to_string()
+                .contains("does not match")
+        );
     }
 
     #[test]

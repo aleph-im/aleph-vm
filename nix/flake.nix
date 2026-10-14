@@ -607,7 +607,7 @@
             --tdvf ${tdvf}/OVMF.fd \
             --kernel ${kernelDrv}/bzImage \
             --initrd ${initrdDrv}/initrd \
-            --cmdline "${cmdline}" \
+            --cmdline ${lib.escapeShellArg cmdline} \
             > $out/measurements.json
         '';
 
