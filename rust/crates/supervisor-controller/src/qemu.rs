@@ -47,6 +47,11 @@ pub enum QemuError {
     #[error("TDX guests run -cpu host; a pinned cpu_model ({cpu_model}) would not be honoured")]
     TdxCpuModelUnsupported { cpu_model: String },
 
+    #[error(
+        "TDX guests take no SEV owner session, certificate or policy; the config carries {fields}"
+    )]
+    TdxSevFieldsPresent { fields: String },
+
     #[error("cannot spawn qemu: {source}")]
     Spawn { source: std::io::Error },
 
@@ -987,9 +992,9 @@ pub async fn run_tdx(vm_hash: &str, config: &QemuConfig) -> Result<i32, QemuErro
 
 /// The TDX pre-launch guards, a pure function like [`confidential_prelaunch_check`]:
 /// `mrconfigid` must be base64 (standard alphabet) of exactly 48 bytes, guest
-/// RAM must meet the floor, no GPU may be attached and no `cpu_model` may be
-/// pinned (the builder emits `-cpu host`). Any failure is a refusal, never a
-/// fallback value.
+/// RAM must meet the floor, no GPU may be attached, no `cpu_model` may be
+/// pinned (the builder emits `-cpu host`) and no SEV session, certificate or
+/// policy may be present. Any failure is a refusal, never a fallback value.
 pub fn tdx_prelaunch_check(config: &QemuConfig) -> Result<[u8; MRCONFIGID_LEN], QemuError> {
     use base64::Engine;
 
@@ -1010,6 +1015,21 @@ pub fn tdx_prelaunch_check(config: &QemuConfig) -> Result<[u8; MRCONFIGID_LEN], 
     if let Some(cpu_model) = config.cpu_model.as_deref() {
         return Err(QemuError::TdxCpuModelUnsupported {
             cpu_model: cpu_model.to_string(),
+        });
+    }
+    // SEV/SEV-ES launch inputs; SNP shares sev_policy with that path, TDX
+    // shares nothing, so any of them here is a stale config.
+    let sev_fields: Vec<&str> = [
+        ("sev_session_file", config.sev_session_file.is_some()),
+        ("sev_dh_cert_file", config.sev_dh_cert_file.is_some()),
+        ("sev_policy", config.sev_policy.is_some()),
+    ]
+    .iter()
+    .filter_map(|(name, present)| present.then_some(*name))
+    .collect();
+    if !sev_fields.is_empty() {
+        return Err(QemuError::TdxSevFieldsPresent {
+            fields: sev_fields.join(", "),
         });
     }
 
@@ -1574,7 +1594,7 @@ mod tests {
         for text in [
             "not base64!",
             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
             "paWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaW",
             "-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_",
             "\",\"debug\":true,\"x\":\"",
@@ -1606,6 +1626,24 @@ mod tests {
         ))
         .unwrap_err();
         assert!(matches!(error, QemuError::TdxGpuUnsupported));
+    }
+
+    #[test]
+    fn tdx_prelaunch_check_refuses_sev_launch_fields() {
+        for (extra, expected) in [
+            (r#""sev_policy":5,"#, "sev_policy"),
+            (
+                r#""sev_session_file":"/s","sev_dh_cert_file":"/d","#,
+                "sev_session_file, sev_dh_cert_file",
+            ),
+        ] {
+            let error =
+                tdx_prelaunch_check(&tdx_config_with(MRCONFIGID_B64, 2048, "", extra)).unwrap_err();
+            assert!(
+                matches!(error, QemuError::TdxSevFieldsPresent { ref fields } if fields == expected),
+                "{extra}: {error}"
+            );
+        }
     }
 
     #[test]
