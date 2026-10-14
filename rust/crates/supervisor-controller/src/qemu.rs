@@ -44,6 +44,9 @@ pub enum QemuError {
     #[error("GPU passthrough is not supported on TDX guests")]
     TdxGpuUnsupported,
 
+    #[error("TDX guests run -cpu host; a pinned cpu_model ({cpu_model}) would not be honoured")]
+    TdxCpuModelUnsupported { cpu_model: String },
+
     #[error("cannot spawn qemu: {source}")]
     Spawn { source: std::io::Error },
 
@@ -805,6 +808,10 @@ pub fn build_tdx_argv(config: &QemuConfig, mrconfigid: &[u8; MRCONFIGID_LEN]) ->
         config.is_tdx(),
         "build_tdx_argv requires a TDX config (tdx marker set)"
     );
+    debug_assert!(
+        config.gpus.is_empty(),
+        "build_tdx_argv emits no GPU args; tdx_prelaunch_check refuses them"
+    );
 
     let qga_socket_path = qga_socket_or_none(config);
     let tdvf_path = config
@@ -980,8 +987,9 @@ pub async fn run_tdx(vm_hash: &str, config: &QemuConfig) -> Result<i32, QemuErro
 
 /// The TDX pre-launch guards, a pure function like [`confidential_prelaunch_check`]:
 /// `mrconfigid` must be base64 (standard alphabet) of exactly 48 bytes, guest
-/// RAM must meet the floor, and no GPU may be attached. Any failure is a
-/// refusal, never a fallback value.
+/// RAM must meet the floor, no GPU may be attached and no `cpu_model` may be
+/// pinned (the builder emits `-cpu host`). Any failure is a refusal, never a
+/// fallback value.
 pub fn tdx_prelaunch_check(config: &QemuConfig) -> Result<[u8; MRCONFIGID_LEN], QemuError> {
     use base64::Engine;
 
@@ -996,6 +1004,13 @@ pub fn tdx_prelaunch_check(config: &QemuConfig) -> Result<[u8; MRCONFIGID_LEN], 
     }
     if !config.gpus.is_empty() {
         return Err(QemuError::TdxGpuUnsupported);
+    }
+    // The model is an SNP measurement input; TDX measures no VMSA and the
+    // builder emits `-cpu host`, so a pinned model is a stale config, not a knob.
+    if let Some(cpu_model) = config.cpu_model.as_deref() {
+        return Err(QemuError::TdxCpuModelUnsupported {
+            cpu_model: cpu_model.to_string(),
+        });
     }
 
     let text = config
@@ -1522,11 +1537,16 @@ mod tests {
     /// A complete TDX config with the given `mrconfigid` text, memory and GPUs
     /// spliced in, for the pre-launch guard.
     fn tdx_config(mrconfigid: &str, mem_size_mb: u64, gpus: &str) -> QemuConfig {
+        tdx_config_with(mrconfigid, mem_size_mb, gpus, "")
+    }
+
+    /// `tdx_config` with `extra` JSON members spliced in after the marker.
+    fn tdx_config_with(mrconfigid: &str, mem_size_mb: u64, gpus: &str, extra: &str) -> QemuConfig {
         let json = format!(
             r#"{{"qemu_bin_path":"/usr/bin/qemu-system-x86_64",
                 "image_path":"/rootfs.ext4","monitor_socket_path":"/m.sock",
                 "qmp_socket_path":"/q.sock","vcpu_count":2,"mem_size_mb":{mem_size_mb},
-                "host_volumes":[],"gpus":[{gpus}],"tdx":true,"ovmf_path":"/TDVF.fd",
+                "host_volumes":[],"gpus":[{gpus}],"tdx":true,{extra}"ovmf_path":"/TDVF.fd",
                 "kernel_path":"/bzImage","initrd_path":"/initrd",
                 "kernel_cmdline":"console=ttyS0 aleph_tdx_descriptor=1",
                 "mrconfigid":{mrconfigid:?}}}"#
@@ -1586,6 +1606,16 @@ mod tests {
         ))
         .unwrap_err();
         assert!(matches!(error, QemuError::TdxGpuUnsupported));
+    }
+
+    #[test]
+    fn tdx_prelaunch_check_refuses_a_pinned_cpu_model() {
+        let config = tdx_config_with(MRCONFIGID_B64, 2048, "", r#""cpu_model":"EPYC-Genoa-v2","#);
+        let error = tdx_prelaunch_check(&config).unwrap_err();
+        assert!(
+            matches!(error, QemuError::TdxCpuModelUnsupported { ref cpu_model } if cpu_model == "EPYC-Genoa-v2"),
+            "{error}"
+        );
     }
 
     #[test]
