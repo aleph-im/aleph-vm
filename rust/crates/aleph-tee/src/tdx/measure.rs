@@ -157,6 +157,11 @@ fn parse_tdvf_sections(fw: &[u8]) -> Result<Vec<TdvfSection>> {
         "unsupported TDVF descriptor version {version}"
     );
     let count = le_u32(fw, desc + 12)? as usize;
+    // QEMU's own metadata parser refuses fewer than two sections.
+    ensure!(
+        count >= 2,
+        "TDVF descriptor lists {count} section(s), at least 2 expected"
+    );
     let table_start = desc + TDVF_DESCRIPTOR_HEADER;
     ensure!(
         count
@@ -693,6 +698,10 @@ mod tests {
         let mut fw = build_tdvf();
         fw[0x2000 + 16 + 32 + 4..0x2000 + 16 + 32 + 8].copy_from_slice(&0x800u32.to_le_bytes());
         assert!(mrtd(&fw).unwrap_err().to_string().contains("partly backed"));
+        // Fewer sections than QEMU itself accepts.
+        let mut fw = build_tdvf();
+        fw[0x2000 + 12..0x2000 + 16].copy_from_slice(&1u32.to_le_bytes());
+        assert!(mrtd(&fw).unwrap_err().to_string().contains("at least 2"));
     }
 
     #[test]

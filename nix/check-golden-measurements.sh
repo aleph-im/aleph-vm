@@ -51,22 +51,6 @@ gpu_outputs=(
   instanceGpuMeasurementSmoke
 )
 
-# Outputs whose store path is a directory holding measurements.json (a JSON
-# object) instead of a bare hex string; embedded as a nested object.
-nested_outputs=(
-  tdxMeasurement
-)
-
-is_nested() {
-  local candidate
-  for candidate in "${nested_outputs[@]}"; do
-    if [ "$candidate" = "$1" ]; then
-      return 0
-    fi
-  done
-  return 1
-}
-
 mode="all"
 update=0
 for arg in "$@"; do
@@ -107,7 +91,9 @@ trap 'rm -f "$current" "$expected"' EXIT
     if [ "$i" -eq $((${#outputs[@]} - 1)) ]; then
       sep=""
     fi
-    if is_nested "$name"; then
+    # A directory output holds measurements.json (a JSON object) and is
+    # embedded as a nested object; a file output is a bare hex string.
+    if [ -d "$out_path" ]; then
       # Re-indent the object under its key; the separator goes after the brace.
       printf '  "%s": ' "$name"
       sed -e '1!s/^/  /' -e "\$s/\$/$sep/" "$out_path/measurements.json"
@@ -144,7 +130,8 @@ else
       if [ "$i" -eq $((${#outputs[@]} - 1)) ]; then
         sep=""
       fi
-      if is_nested "$name"; then
+      # Nested in the golden file when its key opens an object.
+      if grep -q "^  \"${name}\": {\$" "$golden"; then
         # The key line through the closing brace, minus any trailing comma.
         value="$(sed -n "/^  \"${name}\": {\$/,/^  }/p" "$golden")"
         value="${value%,}"

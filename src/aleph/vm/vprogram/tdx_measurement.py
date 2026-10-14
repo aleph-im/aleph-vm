@@ -46,6 +46,7 @@ _TDX_METADATA_OFFSET_GUID = uuid.UUID("e47a6535-984a-4798-865e-4685a7bf8ec2")
 _FOOTER_ENTRY_HEADER = 18  # u16 size + 16-byte GUID
 _BYTES_AFTER_FOOTER = 32
 _TDVF_DESCRIPTOR_HEADER = 16
+_TDVF_MIN_SECTIONS = 2  # QEMU's own metadata parser refuses fewer
 _TDVF_SECTION_SIZE = 32
 
 _PE_SIGNATURE = b"PE\0\0"
@@ -164,6 +165,9 @@ def parse_tdvf_sections(fw: bytes) -> list[_TdvfSection]:
         raise ValueError(msg)
     if version != 1:
         msg = f"unsupported TDVF descriptor version {version}"
+        raise ValueError(msg)
+    if count < _TDVF_MIN_SECTIONS:
+        msg = f"TDVF descriptor lists {count} section(s), at least {_TDVF_MIN_SECTIONS} expected"
         raise ValueError(msg)
     table_start = desc + _TDVF_DESCRIPTOR_HEADER
     if table_start + count * _TDVF_SECTION_SIZE > len(fw):
@@ -338,12 +342,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--initrd", type=Path, required=True, help="initrd image")
     parser.add_argument("--cmdline", required=True, help="kernel command line, without the initrd token")
     args = parser.parse_args(argv)
-    measurements = measure_runtime(
-        tdvf=args.tdvf.read_bytes(),
-        kernel=args.kernel.read_bytes(),
-        cmdline=args.cmdline,
-        initrd=args.initrd.read_bytes(),
-    )
+    try:
+        measurements = measure_runtime(
+            tdvf=args.tdvf.read_bytes(),
+            kernel=args.kernel.read_bytes(),
+            cmdline=args.cmdline,
+            initrd=args.initrd.read_bytes(),
+        )
+    except ValueError as error:
+        sys.stderr.write(f"error: {error}\n")
+        return 1
     json.dump(measurements.to_dict(), sys.stdout, indent=2)
     sys.stdout.write("\n")
     return 0

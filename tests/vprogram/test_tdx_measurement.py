@@ -216,6 +216,10 @@ def test_mrtd_rejects_firmware_without_tdx_metadata() -> None:
     struct.pack_into("<I", fw, 0x2000 + 16 + 32 + 4, 0x800)
     with pytest.raises(ValueError, match="partly backed"):
         m.mrtd(bytes(fw))
+    fw = bytearray(_build_tdvf())
+    struct.pack_into("<I", fw, 0x2000 + 12, 1)
+    with pytest.raises(ValueError, match="at least 2"):
+        m.mrtd(bytes(fw))
 
 
 def test_measure_runtime_and_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -230,5 +234,8 @@ def test_measure_runtime_and_cli(tmp_path: Path, capsys: pytest.CaptureFixture[s
     argv += ["--initrd", str(tmp_path / "initrd"), "--cmdline", cmdline]
     assert m.main(argv) == 0
     assert json.loads(capsys.readouterr().out) == got.to_dict()
+    (tmp_path / "OVMF.fd").write_bytes(b"tiny")
+    assert m.main(argv) == 1
+    assert "error: " in capsys.readouterr().err
     assert set(got.to_dict()) == {"mrtd", "rtmr1", "rtmr2"}
     assert all(len(v) == 96 for v in got.to_dict().values())

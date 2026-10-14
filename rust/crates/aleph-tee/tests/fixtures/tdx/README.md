@@ -46,7 +46,7 @@ to run whenever the walk or the event model changes:
 
 | Input | SHA-256 | Size | Register |
 |---|---|---|---|
-| TDVF `OVMF.fd` | `6e0fc1c5ce4b0052e1baaf1ab5ea005557a878f2f19625b9328ca24d64b52941` | | MRTD `d4f5ee3d5fe9a5a3cbb1df8c40946714f55d5918b9b0e9ecd82a1d8adeea668495901baee134e3152dd5e0e2d1781262` |
+| TDVF `OVMF.fd` | `6e0fc1c5ce4b0052e1baaf1ab5ea005557a878f2f19625b9328ca24d64b52941` | n/a (firmware image) | MRTD `d4f5ee3d5fe9a5a3cbb1df8c40946714f55d5918b9b0e9ecd82a1d8adeea668495901baee134e3152dd5e0e2d1781262` |
 | `vmlinuz-7.0.0-34-generic` | `73d9c6e40b210deb638070d6af591a68bb6d7ff0280d0ec34c9ccf705a4f47ac` | 17009032 B | RTMR1 `dc26aab111d74fb3e36bf597bc19fbd9c152183237fcebe5b362007fa8a6135b0a7cb172de3a0815a9ec1fcac4f889b7` |
 | initrd | `fae29cf71e03be42cbc47ab448a37939db1407cd33769b4b9918ffc278b391b8` | 82864902 B | RTMR2 `972547466cb6bcb8a23cd479e9258c3affbbc4f0ba2805d732477200d0dff8432447c7a775e70453cdb51f018a306ece` (with the cmdline below) |
 
