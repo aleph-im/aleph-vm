@@ -576,13 +576,11 @@ def test_make_manifest_refuses_a_tdx_build_as_snp(tdx_image_dir: Path, tmp_path:
 
 @pytest.mark.parametrize("flag", ["compose_runtime", "gpu_runtime"])
 def test_make_manifest_tdx_refuses_compose_and_gpu(tdx_image_dir: Path, tmp_path: Path, flag: str) -> None:
-    (tdx_image_dir / "gpu.json").write_text(
-        '{"vendor":"nvidia","driver_version":"595.71.05","library_path":"/opt/nvidia/lib",'
-        '"archs":{"hopper":{"accepted_models":["GH100 A01 GSP BROM"]}}}'
-    )
     info = build_bundle(
         image_dir=tdx_image_dir, out_dir=_out(tmp_path, "out"), source_epoch=EPOCH, source=SOURCE, flavor="tdx"
     )
     assert isinstance(info, BundleInfo)
+    # The tdx flavor never reads gpu facts; the refusal is the platform check.
+    assert info.gpu is None
     with pytest.raises(ValueError, match="no tdx image"):
         make_manifest(info=info, bundle_ref=BUNDLE_REF, name="x", runtime_version="1", platform="tdx", **{flag: True})
