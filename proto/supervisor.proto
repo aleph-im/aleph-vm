@@ -284,12 +284,13 @@ message GpuConfig {
 // The confidential-computing mode a VM is actually running under. Precise by
 // design: the agent reduces this to a boolean for Aleph APIs; the contract does
 // not pre-reduce it. SEV vs SEV-ES is distinguished by the AMD SEV policy;
-// SEV-SNP is a distinct measured-boot launch path.
+// SEV-SNP and TDX are distinct measured-boot launch paths.
 enum ConfidentialMode {
   CONFIDENTIAL_MODE_NONE    = 0;
   CONFIDENTIAL_MODE_SEV     = 1;
   CONFIDENTIAL_MODE_SEV_ES  = 2;
   CONFIDENTIAL_MODE_SEV_SNP = 3;
+  CONFIDENTIAL_MODE_TDX     = 4;
 }
 
 // One address family's assignment for a VM. All fields are empty until the

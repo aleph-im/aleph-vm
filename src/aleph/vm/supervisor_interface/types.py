@@ -43,6 +43,7 @@ class ConfidentialMode(Enum):
     SEV = "sev"
     SEV_ES = "sev_es"
     SEV_SNP = "sev_snp"
+    TDX = "tdx"
 
 
 class DiskFormat(Enum):

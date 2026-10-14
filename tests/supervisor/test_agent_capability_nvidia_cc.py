@@ -6,7 +6,15 @@ capability."""
 
 import pytest
 
+from aleph.vm.agent import resources
 from aleph.vm.agent.resources import NvidiaCcProperties, nvidia_cc_properties
+
+
+@pytest.fixture(autouse=True)
+def _no_tdx(monkeypatch):
+    """These tests describe an SNP host; keep the host's TDX silicon out."""
+    monkeypatch.setattr(resources, "check_intel_tdx_module", lambda: False)
+    monkeypatch.setattr(resources, "check_intel_tdx_supported", lambda: False)
 
 
 def _gpu(device_id: str, pci_host: str, cc_mode: str | None, arch: str | None = "blackwell") -> dict:

@@ -156,12 +156,26 @@ The crate is not SEV-SNP only, even though this doc otherwise is: `TeeType`
 already carries `Tdx` and `NvidiaCc` variants alongside `SevSnp`, and
 `aleph-tee`'s `tdx/` module implements Intel TDX quote parsing and the full
 software verification path (certificate chain, TCB appraisal, platform
-gates). What is still missing is the hardware-backed report-producing side:
-no `TdxBackend: TeeBackend` exists yet (only `SevSnpBackend` and the
-no-op `NoTeeBackend` do), and the QGS round trip to fetch a live quote is a
-later increment. The rest of this doc covers only the SEV/SEV-ES/SEV-SNP
-paths that are wired end to end into VM creation today; TDX and NVIDIA CC on
-SEV-SNP are not yet reachable from a create.
+gates). On the host side the TDX capability probe exists: the daemon's
+`check_intel_tdx_supported` (`supervisor-daemon/src/checks.rs`) and the
+agent's `check_intel_tdx_supported` (`aleph/vm/utils`) apply one rule,
+`/sys/module/kvm_intel/parameters/tdx == Y` and a successful connect to the
+Quote Generation Service socket (`ALEPH_VM_TDX_QGS_SOCKET`, default
+`/var/run/tdx-qgs/qgs.socket`), because a TD without QGS boots but can never
+be quoted. It feeds `HostInfo.tdx_supported`, the `tdx` entry of
+`properties.cpu.features` and `tee.tdx` (`{"qgs": true}`) on both
+`/about/usage/system` and `/about/capability`; when the module is on but
+QGS is down, `/about/capability` names that in `tee_unavailable_reason`.
+With the probe true the `ENABLE_CONFIDENTIAL_COMPUTING` startup check waives
+the sevctl and SEV/SEV-ES module gates, which an Intel host cannot meet.
+`ConfidentialMode` on the wire has a `TDX` value. What is still missing is
+everything after the capability: no controller argv for a `tdx-guest`
+object, no daemon create path, no register prediction (MRTD/RTMR), no
+in-guest `TdxBackend: TeeBackend` (only `SevSnpBackend` and the no-op
+`NoTeeBackend` exist), and no agent routing of a TDX V-PROGRAM. The rest of
+this doc covers only the SEV/SEV-ES/SEV-SNP paths that are wired end to end
+into VM creation today; TDX and NVIDIA CC on SEV-SNP are not yet reachable
+from a create.
 
 **`rust/crates/aleph-attest-agent`** is the in-guest sidecar
 (`main.rs`). On boot it generates an ephemeral ECDSA P-384 key, requests a
