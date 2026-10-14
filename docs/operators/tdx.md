@@ -141,9 +141,10 @@ Useful when reading a QEMU argv or a guest console:
   not read a TDREPORT (`/dev/tdx_guest` missing: the runtime kernel lacks
   the TDX guest driver, so this is a runtime problem, not a host one).
   The guest fails closed and powers off.
-- **Guest console: `init: FATAL: configfs mount failed`.** The runtime
-  kernel has no configfs; again a runtime problem. Every published TDX
-  runtime ships it.
+- **Guest console: `init: FATAL: configfs mount failed`** or **`configfs
+  has no tsm directory`.** The runtime kernel has no configfs, or configfs
+  without TSM reports; again a runtime problem. Every published TDX
+  runtime ships both.
 - **Attested calls fail with `host quote service unreachable`.** The
   guest asked for a quote through configfs-tsm and QGS did not answer
   within 60 s. QGS died after the capability probe, or the socket path in

@@ -153,11 +153,16 @@ read_tdx_descriptor() {
         echo "init: FATAL: configfs mount failed; TDX quotes would be unavailable"
         exec /bin/busybox poweroff -f
     fi
+    if [ ! -d /sys/kernel/config/tsm ]; then
+        echo "init: FATAL: configfs has no tsm directory (kernel without TSM_REPORTS); TDX quotes would be unavailable"
+        exec /bin/busybox poweroff -f
+    fi
     descriptor=""
     n=0
     while [ -z "$descriptor" ] && [ "$n" -lt 30 ]; do
         for dev in /dev/vd*; do
             [ -b "$dev" ] || continue
+            # 24 = the agent's DESCRIPTOR_MAGIC line, 23 bytes plus the newline $(...) strips.
             if [ "$(/bin/busybox dd if="$dev" bs=24 count=1 2>/dev/null)" = "ALEPH-TDX-DESCRIPTOR-v1" ]; then
                 descriptor="$dev"
                 break

@@ -324,7 +324,7 @@ def mrconfigid(suffix: str) -> bytes:
 
 
 @dataclass(frozen=True)
-class TdxMeasurements:
+class TdxRegisters:
     mrtd: bytes
     rtmr1: bytes
     rtmr2: bytes
@@ -333,9 +333,9 @@ class TdxMeasurements:
         return {"mrtd": self.mrtd.hex(), "rtmr1": self.rtmr1.hex(), "rtmr2": self.rtmr2.hex()}
 
 
-def measure_runtime(*, tdvf: bytes, kernel: bytes, cmdline: str, initrd: bytes) -> TdxMeasurements:
+def measure_runtime(*, tdvf: bytes, kernel: bytes, cmdline: str, initrd: bytes) -> TdxRegisters:
     """The per-runtime register triple for a TDVF + kernel + cmdline + initrd."""
-    return TdxMeasurements(mrtd=mrtd(tdvf), rtmr1=rtmr1(kernel), rtmr2=rtmr2(cmdline, initrd))
+    return TdxRegisters(mrtd=mrtd(tdvf), rtmr1=rtmr1(kernel), rtmr2=rtmr2(cmdline, initrd))
 
 
 def main(argv: list[str] | None = None) -> int:

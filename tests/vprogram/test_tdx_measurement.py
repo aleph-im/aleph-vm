@@ -229,7 +229,7 @@ def test_mrtd_rejects_firmware_without_tdx_metadata() -> None:
 def test_measure_runtime_and_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     fw, pe, initrd, cmdline = _build_tdvf(), _build_pe(), b"initrd", "console=ttyS0"
     got = m.measure_runtime(tdvf=fw, kernel=pe, cmdline=cmdline, initrd=initrd)
-    assert got == m.TdxMeasurements(mrtd=m.mrtd(fw), rtmr1=m.rtmr1(pe), rtmr2=m.rtmr2(cmdline, initrd))
+    assert got == m.TdxRegisters(mrtd=m.mrtd(fw), rtmr1=m.rtmr1(pe), rtmr2=m.rtmr2(cmdline, initrd))
 
     (tmp_path / "OVMF.fd").write_bytes(fw)
     (tmp_path / "bzImage").write_bytes(pe)
