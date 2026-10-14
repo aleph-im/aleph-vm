@@ -3,7 +3,7 @@
 #
 # Builds the flake's pinned measurement outputs and compares them to the
 # committed golden file (nix/golden-measurements.json). A mismatch means the
-# measured boot chain changed: OVMF, kernel, initrd contents (the regular
+# measured boot chain changed: OVMF or TDVF, kernel, initrd contents (the regular
 # files listed in initrd.nix, including the attest-agent binary; never a nix
 # store path except in the instance-GPU flavor, whose verifier closure rides
 # in the archive, see initrd.nix), or the kernel cmdline (dm-verity root hashes). That
@@ -33,12 +33,15 @@ golden="$repo_root/nix/golden-measurements.json"
 # `packages` set in nix/flake.nix. instanceMeasurementSmoke pins the
 # confidential-instance chain through its fixed placeholder owner address;
 # real per-deployment instance measurements vary by owner but share every
-# other measured input with it.
+# other measured input with it. tdxMeasurement pins the TDX runtime (TDVF +
+# the shared kernel/initrd + the fixed TDX cmdline) as an {mrtd, rtmr1,
+# rtmr2} object.
 base_outputs=(
   measurement
   composeMeasurement
   workloadMeasurement
   instanceMeasurementSmoke
+  tdxMeasurement
 )
 # The confidential-GPU flavors, built from gpuKernel + the NVIDIA driver
 # pieces: the V-PROGRAM one (gpuInitrd + gpuVerity) and the instance one
@@ -88,7 +91,15 @@ trap 'rm -f "$current" "$expected"' EXIT
     if [ "$i" -eq $((${#outputs[@]} - 1)) ]; then
       sep=""
     fi
-    printf '  "%s": "%s"%s\n' "$name" "$(cat "$out_path")" "$sep"
+    # A directory output holds measurements.json (a JSON object) and is
+    # embedded as a nested object; a file output is a bare hex string.
+    if [ -d "$out_path" ]; then
+      # Re-indent the object under its key; the separator goes after the brace.
+      printf '  "%s": ' "$name"
+      sed -e '1!s/^/  /' -e "\$s/\$/$sep/" "$out_path/measurements.json"
+    else
+      printf '  "%s": "%s"%s\n' "$name" "$(cat "$out_path")" "$sep"
+    fi
   done
   echo "}"
 } > "$current"
@@ -115,16 +126,28 @@ else
     echo "{"
     for i in "${!outputs[@]}"; do
       name="${outputs[$i]}"
-      value="$(sed -n "s/^  \"${name}\": \"\([0-9a-f]*\)\".*\$/\1/p" "$golden")"
-      if [ -z "$value" ]; then
-        echo "No \"${name}\" entry in $golden; run $0 --update and commit the result." >&2
-        exit 1
-      fi
       sep=","
       if [ "$i" -eq $((${#outputs[@]} - 1)) ]; then
         sep=""
       fi
-      printf '  "%s": "%s"%s\n' "$name" "$value" "$sep"
+      # Nested in the golden file when its key opens an object.
+      if grep -q "^  \"${name}\": {\$" "$golden"; then
+        # The key line through the closing brace, minus any trailing comma.
+        value="$(sed -n "/^  \"${name}\": {\$/,/^  }/p" "$golden")"
+        value="${value%,}"
+        if [ -z "$value" ]; then
+          echo "No \"${name}\" entry in $golden; run $0 --update and commit the result." >&2
+          exit 1
+        fi
+        printf '%s%s\n' "$value" "$sep"
+      else
+        value="$(sed -n "s/^  \"${name}\": \"\([0-9a-f]*\)\".*\$/\1/p" "$golden")"
+        if [ -z "$value" ]; then
+          echo "No \"${name}\" entry in $golden; run $0 --update and commit the result." >&2
+          exit 1
+        fi
+        printf '  "%s": "%s"%s\n' "$name" "$value" "$sep"
+      fi
     done
     echo "}"
   } > "$expected"
