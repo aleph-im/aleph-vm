@@ -32,6 +32,7 @@ import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 DIGEST_SIZE = 48
 _PAGE_SIZE = 0x1000
@@ -79,13 +80,17 @@ def rtmr_replay(digests: Iterable[bytes]) -> bytes:
 # --- MRTD -------------------------------------------------------------------
 
 
+class _Hasher(Protocol):
+    def update(self, data: bytes, /) -> None: ...
+
+
 @dataclass(frozen=True)
 class _TdvfSection:
     data_offset: int
     raw_data_size: int
     memory_address: int
     memory_data_size: int
-    section_type: int
+    section_type: int  # parsed for the record layout, no rule keys on it
     attributes: int
 
 
@@ -127,10 +132,11 @@ def _tdvf_descriptor(fw: bytes) -> int:
         msg = "TDX metadata offset entry is not a u32"
         raise ValueError(msg)
     (from_end,) = struct.unpack("<I", offset_entry)
-    if from_end == 0 or from_end > len(fw) or len(fw) - from_end + _TDVF_DESCRIPTOR_HEADER > len(fw):
+    desc = len(fw) - from_end
+    if from_end == 0 or desc < 0 or desc + _TDVF_DESCRIPTOR_HEADER > len(fw):
         msg = "TDX metadata offset points outside the firmware"
         raise ValueError(msg)
-    return len(fw) - from_end
+    return desc
 
 
 def _check_section(fw: bytes, i: int, section: _TdvfSection) -> None:
@@ -202,7 +208,7 @@ def _op_buffer(op: bytes, gpa: int) -> bytes:
 # --- RTMR1 ------------------------------------------------------------------
 
 
-def _hash_pe_headers(pe: bytes, hasher: hashlib._Hash) -> tuple[int, int, list[tuple[int, int]]]:
+def _hash_pe_headers(pe: bytes, hasher: _Hasher) -> tuple[int, int, list[tuple[int, int]]]:
     """Hash the PE headers minus CheckSum and the security data directory.
     Returns SizeOfHeaders, the certificate table size and the (offset, size)
     of every non-empty section, in file order."""
