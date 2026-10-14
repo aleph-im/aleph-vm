@@ -245,6 +245,18 @@ pub struct QemuConfig {
     pub image_format: Option<String>,
     #[serde(default)]
     pub image_readonly: Option<bool>,
+
+    // Intel TDX slice, Rust-only. `tdx: true` is the backend marker; a TDX
+    // launch shares `ovmf_path` (the TDVF), `kernel_path`, `initrd_path` and
+    // `kernel_cmdline` with SNP and adds the base64 MRCONFIGID (48 bytes
+    // decoded, validated at launch) and the QGS unix socket (absent means the
+    // DCAP default path).
+    #[serde(default)]
+    pub tdx: Option<bool>,
+    #[serde(default)]
+    pub mrconfigid: Option<String>,
+    #[serde(default)]
+    pub qgs_socket: Option<PathBuf>,
 }
 
 /// The resolved rootfs-disk override [`QemuConfig::rootfs_override`] produces
@@ -312,6 +324,25 @@ impl QemuConfig {
     /// never a silent plain or SEV launch.
     pub fn is_snp_marked(&self) -> bool {
         self.sev_snp == Some(true)
+    }
+
+    /// True when this is a COMPLETE TDX payload: the `tdx: true` marker AND
+    /// every field `build_tdx_argv` `.expect()`s. Same all-fields pattern as
+    /// [`Self::is_snp`]; `mrconfigid` is only checked for presence here, its
+    /// decoding is the launcher's pre-launch check.
+    pub fn is_tdx(&self) -> bool {
+        self.tdx == Some(true)
+            && self.ovmf_path.is_some()
+            && self.kernel_path.is_some()
+            && self.initrd_path.is_some()
+            && self.kernel_cmdline.is_some()
+            && self.mrconfigid.is_some()
+    }
+
+    /// True when the TDX marker is set, complete or not. A partial TDX config
+    /// must be a clean refusal, never a plain, SEV or SNP launch.
+    pub fn is_tdx_marked(&self) -> bool {
+        self.tdx == Some(true)
     }
 
     /// Resolve the `image_format` / `image_readonly` pair into a
@@ -519,6 +550,46 @@ mod tests {
             );
             assert!(
                 config.is_snp_marked(),
+                "the marker is still set with {missing} missing"
+            );
+        }
+    }
+
+    #[test]
+    fn tdx_resolves_only_when_the_marker_and_all_launch_fields_are_present() {
+        let base = r#""qemu_bin_path":"q","image_path":"i","monitor_socket_path":"m",
+            "qmp_socket_path":"p","vcpu_count":2,"mem_size_mb":2048,
+            "host_volumes":[],"gpus":[]"#;
+        let complete = format!(
+            r#"{{{base},"tdx":true,"ovmf_path":"/TDVF.fd",
+                "kernel_path":"/bzImage","initrd_path":"/initrd",
+                "kernel_cmdline":"console=ttyS0 aleph_tdx_descriptor=1",
+                "mrconfigid":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}}"#
+        );
+        let config = QemuConfig::from_json(&complete).unwrap();
+        assert!(config.is_tdx(), "a complete TDX config resolves as TDX");
+        assert!(config.is_tdx_marked());
+        assert!(!config.is_snp() && !config.is_confidential());
+        // The QGS socket is optional: absent means the DCAP default.
+        assert_eq!(config.qgs_socket, None);
+
+        for missing in [
+            "ovmf_path",
+            "kernel_path",
+            "initrd_path",
+            "kernel_cmdline",
+            "mrconfigid",
+        ] {
+            let mut value: serde_json::Value = serde_json::from_str(&complete).unwrap();
+            value.as_object_mut().unwrap().remove(missing);
+            let partial = serde_json::to_string(&value).unwrap();
+            let config = QemuConfig::from_json(&partial).unwrap();
+            assert!(
+                !config.is_tdx(),
+                "a TDX config missing {missing} must NOT resolve as TDX"
+            );
+            assert!(
+                config.is_tdx_marked(),
                 "the marker is still set with {missing} missing"
             );
         }

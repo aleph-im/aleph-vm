@@ -28,6 +28,7 @@ name = "aleph-tee"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "der",
  "hex",
  "k256",
@@ -2530,6 +2531,7 @@ version = "0.1.0"
 dependencies = [
  "aleph-tee",
  "anyhow",
+ "base64",
  "clap",
  "memsizes",
  "serde",
