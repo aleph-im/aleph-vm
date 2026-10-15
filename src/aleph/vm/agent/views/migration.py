@@ -6,6 +6,7 @@ These endpoints are called by the scheduler to coordinate VM migration:
 2. GET /control/machine/{ref}/migration/disk/{filename} - Download a compressed disk file
 3. POST /control/migrate - Import a VM on the destination from source disk files
 4. POST /control/machine/{ref}/migration/cleanup - Clean up source VM after successful migration
+5. POST /control/machine/{ref}/migration/export/cancel - Abort an export the scheduler gave up on, restart the VM
 """
 
 import asyncio
@@ -30,7 +31,7 @@ from aleph.vm.agent.migration.jobs import (
     export_jobs,
     import_jobs,
 )
-from aleph.vm.agent.migration.runner import run_export, run_import
+from aleph.vm.agent.migration.runner import cancel_export, run_export, run_import
 from aleph.vm.agent.vm.retire import RetireReason, retire_vm
 from aleph.vm.supervisor_interface.abc import Supervisor
 from aleph.vm.supervisor_interface.errors import VmNotFoundError
@@ -190,6 +191,30 @@ async def migration_export_status(request: web.Request) -> web.Response:
         status=HTTPStatus.OK,
         dumps=dumps_for_json,
     )
+
+
+@cors_allow_all
+@requires_allocation_auth
+async def migration_export_cancel(request: web.Request) -> web.Response:
+    """POST /control/machine/{ref}/migration/export/cancel — the scheduler gave up on this export.
+
+    Ends the export, deletes what it staged and restarts the VM, which is not
+    leaving after all. 409 while the destination is still downloading a disk.
+    """
+    vm_hash = get_itemhash_or_400(request.match_info)
+    supervisor: Supervisor = request.app["supervisor"]
+
+    job = export_jobs.get(vm_hash)
+    if job is None:
+        return web.json_response({"error": "No export job"}, status=HTTPStatus.NOT_FOUND)
+    if job.active_downloads > 0:
+        return web.json_response(
+            {"error": "Cannot cancel while disk download in progress"},
+            status=HTTPStatus.CONFLICT,
+        )
+
+    await cancel_export(job, supervisor, restart=True)
+    return web.json_response({"status": "cancelled", "vm_hash": str(vm_hash)}, status=HTTPStatus.OK)
 
 
 @cors_allow_all
