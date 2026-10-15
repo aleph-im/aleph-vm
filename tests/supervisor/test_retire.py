@@ -73,6 +73,41 @@ def _all_present(env) -> bool:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reason", [RetireReason.RECREATE, RetireReason.GONE])
+async def test_retire_ends_the_vm_export_first(env, monkeypatch, reason):
+    """A VM retired mid-export (forgotten, unpaid, rebooted) must not leave
+    the export compressing the files the retire removes, nor holding the
+    host's migration slot. The VM is leaving, so it is not restarted."""
+    import asyncio
+    from datetime import datetime, timezone
+
+    from aleph.vm.agent.migration.jobs import ExportJob, MigrationState, export_jobs
+
+    monkeypatch.setattr(settings, "VOLUME_RETENTION", "reap")
+    staged = env["rootfs"].with_suffix(".qcow2.export.qcow2")
+    staged.write_bytes(b"partial")
+    job = ExportJob(
+        vm_hash=ItemHash(VM_HASH),
+        state=MigrationState.EXPORTING,
+        started_at=datetime.now(timezone.utc),
+        export_paths=[staged],
+    )
+    job.task = asyncio.create_task(asyncio.Event().wait())
+    export_jobs[ItemHash(VM_HASH)] = job
+    env["supervisor"].start_vm = AsyncMock()
+    try:
+        await retire_vm(VM_HASH, reason, supervisor=env["supervisor"], registry=env["registry"])
+    finally:
+        export_jobs.clear()
+
+    assert job.task.cancelled()
+    assert job.state is MigrationState.EXPORT_FAILED
+    assert not staged.exists()
+    env["supervisor"].start_vm.assert_not_awaited()
+    env["supervisor"].delete_vm.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_recreate_only_quiesces(env):
     await retire_vm(VM_HASH, RetireReason.RECREATE, supervisor=env["supervisor"])
 

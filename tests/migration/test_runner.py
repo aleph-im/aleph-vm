@@ -620,6 +620,130 @@ async def test_semaphore_serialises_two_exports(tmp_path, monkeypatch):
     assert job_b.state == MigrationState.EXPORTED
 
 
+def _blocking_compress(monkeypatch):
+    """A compress_disk that writes a partial file, then blocks until released.
+    Returns (entered, release) events."""
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def compress(src, dst):
+        dst.write_bytes(b"partial")
+        entered.set()
+        await release.wait()
+        dst.write_bytes(b"c")
+
+    monkeypatch.setattr("aleph.vm.agent.migration.runner.compress_disk", compress)
+    return entered, release
+
+
+@pytest.mark.asyncio
+async def test_cancel_export_frees_the_slot_and_drops_the_partial_file(tmp_path, monkeypatch):
+    """A cancelled export releases the host-wide slot at once, leaves no
+    partial file, marks the job as failed and restarts the VM when asked."""
+    from aleph.vm.agent.migration.jobs import export_jobs
+    from aleph.vm.agent.migration.runner import cancel_export
+    from aleph.vm.utils import create_task_log_exceptions
+
+    monkeypatch.setattr(settings, "MAX_CONCURRENT_MIGRATIONS", 1)
+    monkeypatch.setattr(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
+    vm_hash = ItemHash(settings.FAKE_INSTANCE_ID)
+    volumes_dir = tmp_path / str(vm_hash)
+    volumes_dir.mkdir()
+    (volumes_dir / "rootfs.qcow2").write_bytes(b"x")
+    entered, release = _blocking_compress(monkeypatch)
+    supervisor = _export_supervisor(volumes_dir)
+
+    job = ExportJob(vm_hash=vm_hash, state=MigrationState.EXPORTING, started_at=datetime.now(timezone.utc))
+    export_jobs[vm_hash] = job
+    job.task = create_task_log_exceptions(run_export(job, supervisor))
+    await asyncio.wait_for(entered.wait(), 1)
+
+    await cancel_export(job, supervisor, restart=True)
+
+    assert job.task.cancelled()
+    assert job.state == MigrationState.EXPORT_FAILED
+    assert job.error == "export cancelled"
+    assert not (volumes_dir / "rootfs.qcow2.export.qcow2").exists()
+    assert vm_hash not in export_jobs
+    supervisor.start_vm.assert_awaited_once_with(vm_hash)
+
+    # The slot is free: a fresh export goes straight through.
+    release.set()
+    again = ExportJob(vm_hash=vm_hash, state=MigrationState.EXPORTING, started_at=datetime.now(timezone.utc))
+    await asyncio.wait_for(run_export(again, supervisor), 1)
+    assert again.state == MigrationState.EXPORTED
+
+
+@pytest.mark.asyncio
+async def test_cancel_export_still_queued_for_the_slot(tmp_path, monkeypatch):
+    """An export cancelled while waiting for the slot never stopped the VM:
+    the job is marked, nothing is restarted when the caller retires the VM."""
+    from aleph.vm.agent.migration.jobs import export_jobs
+    from aleph.vm.agent.migration.runner import cancel_export
+    from aleph.vm.utils import create_task_log_exceptions
+
+    monkeypatch.setattr(settings, "MAX_CONCURRENT_MIGRATIONS", 1)
+    monkeypatch.setattr(settings, "PERSISTENT_VOLUMES_DIR", tmp_path)
+    hash_a = ItemHash(settings.FAKE_INSTANCE_ID)
+    hash_b = ItemHash(hash_a[:-1] + ("0" if hash_a[-1] != "0" else "1"))
+    for h in (hash_a, hash_b):
+        (tmp_path / str(h)).mkdir()
+        (tmp_path / str(h) / "rootfs.qcow2").write_bytes(b"x")
+    entered, release = _blocking_compress(monkeypatch)
+    sup_a = _export_supervisor(tmp_path / str(hash_a))
+    sup_b = _export_supervisor(tmp_path / str(hash_b))
+
+    job_a = ExportJob(vm_hash=hash_a, state=MigrationState.EXPORTING, started_at=datetime.now(timezone.utc))
+    job_b = ExportJob(vm_hash=hash_b, state=MigrationState.EXPORTING, started_at=datetime.now(timezone.utc))
+    export_jobs[hash_a], export_jobs[hash_b] = job_a, job_b
+    job_a.task = create_task_log_exceptions(run_export(job_a, sup_a))
+    await asyncio.wait_for(entered.wait(), 1)
+    job_b.task = create_task_log_exceptions(run_export(job_b, sup_b))
+    await asyncio.sleep(0)  # job_b parks on the semaphore
+    sup_b.stop_vm.assert_not_awaited()
+
+    await cancel_export(job_b, sup_b, restart=False)
+
+    assert job_b.state == MigrationState.EXPORT_FAILED
+    assert job_b.error == "export cancelled"
+    assert hash_b not in export_jobs
+    sup_b.start_vm.assert_not_awaited()
+
+    release.set()
+    await asyncio.wait_for(job_a.task, 1)
+    assert job_a.state == MigrationState.EXPORTED
+    export_jobs.clear()
+
+
+@pytest.mark.asyncio
+async def test_compress_disk_kills_qemu_img_when_cancelled(tmp_path, monkeypatch):
+    """Cancelling the export mid-compress must not leave qemu-img running on
+    files the caller is about to remove."""
+    import os
+
+    from aleph.vm.agent.migration import helpers
+
+    pid_file = tmp_path / "pid"
+    fake_qemu_img = tmp_path / "qemu-img"
+    fake_qemu_img.write_text(f"#!/bin/sh\necho $$ > {pid_file}\nexec sleep 30\n")
+    fake_qemu_img.chmod(0o755)
+    monkeypatch.setattr(helpers.shutil, "which", lambda _name: str(fake_qemu_img))
+
+    task = asyncio.create_task(helpers.compress_disk(tmp_path / "src.qcow2", tmp_path / "dst.qcow2"))
+    for _ in range(100):
+        if pid_file.exists() and pid_file.read_text().strip():
+            break
+        await asyncio.sleep(0.02)
+    pid = int(pid_file.read_text())
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+
 @pytest.mark.asyncio
 async def test_download_disk_verifies_sha256(tmp_path):
     """download_disk_from_source raises and unlinks the partial file when sha256 mismatches."""

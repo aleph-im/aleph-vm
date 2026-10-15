@@ -154,8 +154,9 @@ async def run_export(
 
             for qcow2_file in _collect_export_disks(str(job.vm_hash)):
                 export_path = qcow2_file.with_suffix(".qcow2.export.qcow2")
-                await compress_disk(qcow2_file, export_path)
+                # Listed before the write so an interrupted compress is cleaned up too.
                 export_paths.append(export_path)
+                await compress_disk(qcow2_file, export_path)
                 sha256 = await compute_sha256(export_path)
                 disk_files.append(
                     DiskFileInfo(
@@ -199,6 +200,54 @@ async def run_export(
                 logger.error("Failed to restart VM %s after export failure: %s", job.vm_hash, restart_error)
 
             schedule_export_ttl(job, EXPORT_TTL_SECONDS)
+
+        except asyncio.CancelledError:
+            # cancel_export ended this run; it decides whether the VM comes back.
+            _mark_export_cancelled(job, export_paths)
+            raise
+
+
+def _mark_export_cancelled(job: ExportJob, export_paths: list[Path]) -> None:
+    logger.info("Export of %s cancelled", job.vm_hash)
+    for path in export_paths:
+        try:
+            path.unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning("Failed to delete partial export %s: %s", path, e)
+    job.error = "export cancelled"
+    job.finished_at = datetime.now(timezone.utc)
+    job.state = MigrationState.EXPORT_FAILED
+
+
+async def cancel_export(job: ExportJob, supervisor: "Supervisor", *, restart: bool) -> None:
+    """End an export at whatever point it is, drop what it staged and forget the job.
+
+    restart: the migration is off but the VM stays, so bring it back up (a no-op
+    if the run never got to stop it). False when the caller retires the VM.
+    """
+    if job.ttl_task is not None and not job.ttl_task.done():
+        job.ttl_task.cancel()
+    task = job.task
+    if task is not None and not task.done():
+        task.cancel()
+        await asyncio.wait({task})
+    if job.state is MigrationState.EXPORTING:
+        # Cancelled while queued for the slot: nothing was staged yet.
+        _mark_export_cancelled(job, [])
+    for path in job.export_paths:
+        try:
+            Path(path).unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning("Failed to delete export file %s: %s", path, e)
+    if export_jobs.get(job.vm_hash) is job:
+        del export_jobs[job.vm_hash]
+    if not restart:
+        return
+    try:
+        await supervisor.start_vm(job.vm_hash)
+        logger.info("Restarted VM %s after cancelled export", job.vm_hash)
+    except Exception as e:
+        logger.error("Failed to restart VM %s after cancelled export: %s", job.vm_hash, e)
 
 
 async def _import_ttl_cleanup(job: ImportJob, timeout: int) -> None:

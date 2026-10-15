@@ -29,7 +29,13 @@ async def compress_disk(source_path: Path, dest_path: Path) -> None:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    _stdout, stderr = await proc.communicate()
+    try:
+        _stdout, stderr = await proc.communicate()
+    except asyncio.CancelledError:
+        # A cancelled export must not leave qemu-img writing the file.
+        proc.kill()
+        await proc.wait()
+        raise
     if proc.returncode != 0:
         msg = f"qemu-img convert failed: {stderr.decode()}"
         raise RuntimeError(msg)
