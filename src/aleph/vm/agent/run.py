@@ -699,14 +699,15 @@ async def create_vm_execution(
         return None
 
     if isinstance(content, VerifiableProgramContent):
-        # V-PROGRAM: an auto-booting SEV-SNP VM. build_vprogram_spec fetches
-        # the runtime manifest, integrity-checks and stages the measured
-        # bundle, and returns a spec whose TeeConfig takes the SNP launch
-        # path. Mirrors the instance path above: record early, build spec,
+        # V-PROGRAM: an auto-booting confidential VM. build_vprogram_spec
+        # fetches the runtime manifest, integrity-checks and stages the
+        # measured bundle, and returns a spec whose TeeConfig takes the
+        # measured launch path the manifest's platform names (SEV-SNP or
+        # TDX). Mirrors the instance path above: record early, build spec,
         # create, wait, persist; forget (and tear down) on failure. Unlike
         # SEV instances there is no owner session to wait for: the daemon
-        # boots an SNP VM immediately (awaiting_confidential_init is never
-        # set), so the plain readiness wait applies.
+        # boots a measured VM immediately (awaiting_confidential_init is
+        # never set), so the plain readiness wait applies.
         record = registry.record(vm_hash, message=content, original=original_message.content, persistent=True)
         # Everything from admission to the registry commit runs under the
         # create guard: it adopts any retained volumes for this hash and keeps
@@ -723,6 +724,7 @@ async def create_vm_execution(
                 # cards here, after staging, through the same
                 # resolve_confidential_gpus call the instance path makes. The
                 # message names a family and a count; the CRN picks the cards.
+                # A TDX runtime never gets here with a GPU: the build refuses it.
                 gpu = content.gpu
                 if gpu is not None:
                     resolved = await capacity.resolve_confidential_gpus(
