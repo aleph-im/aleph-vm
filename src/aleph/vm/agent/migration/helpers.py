@@ -1,6 +1,7 @@
 """qemu-img and aiohttp helpers used by the migration runners."""
 
 import asyncio
+import contextlib
 import hashlib
 import logging
 import shutil
@@ -32,8 +33,11 @@ async def compress_disk(source_path: Path, dest_path: Path) -> None:
     try:
         _stdout, stderr = await proc.communicate()
     except asyncio.CancelledError:
-        # A cancelled export must not leave qemu-img writing the file.
-        proc.kill()
+        # A cancelled export must not leave qemu-img writing the file. It
+        # may have just exited on its own: kill then raises ProcessLookupError.
+        if proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
         await proc.wait()
         raise
     if proc.returncode != 0:
