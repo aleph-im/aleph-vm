@@ -26,6 +26,7 @@ import logging
 from enum import Enum
 from pathlib import Path
 
+from aleph_message.exceptions import UnknownHashError
 from aleph_message.models import ItemHash
 
 from aleph.vm.agent.metrics import delete_records_for_vm
@@ -162,6 +163,18 @@ async def retire_vm(
     worth keeping).
     """
     vm_id = VmId(str(vm_hash))
+    # An export in flight holds the host's migration slot and is compressing
+    # the very files the storage pass below unlinks: end it first. Imported
+    # here because the runner imports this module.
+    from aleph.vm.agent.migration.jobs import export_jobs
+    from aleph.vm.agent.migration.runner import cancel_export
+
+    try:
+        export = export_jobs.get(ItemHash(str(vm_hash)))
+    except (UnknownHashError, ValueError):
+        export = None
+    if export is not None:
+        await cancel_export(export, supervisor, restart=False)
     try:
         await supervisor.delete_vm(vm_id, keep_port_mappings=reason is RetireReason.RECREATE)
     except VmNotFoundError:
