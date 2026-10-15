@@ -82,6 +82,7 @@ from .views.migration import (
     migration_cleanup,
     migration_disk_download,
     migration_export,
+    migration_export_cancel,
     migration_export_status,
     migration_import,
     migration_import_status,
@@ -423,6 +424,7 @@ def setup_webapp(supervisor: Supervisor):
         # Migration endpoints (scheduler-only, uses Aleph-EIP191-V1 auth)
         web.post("/control/machine/{ref}/migration/export", migration_export),
         web.get("/control/machine/{ref}/migration/export/status", migration_export_status),
+        web.post("/control/machine/{ref}/migration/export/cancel", migration_export_cancel),
         web.get("/control/machine/{ref}/migration/disk/{filename}", migration_disk_download),
         web.post("/control/migrate", migration_import),
         web.get("/control/migrate/{ref}/status", migration_import_status),
