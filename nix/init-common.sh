@@ -163,9 +163,10 @@ read_tdx_descriptor() {
         for dev in /dev/vd*; do
             [ -b "$dev" ] || continue
             # 24 = the agent's DESCRIPTOR_MAGIC line, 23 bytes plus the newline $(...) strips.
+            # Last match wins: the descriptor is the last drive, so a workload or
+            # volume image carrying the magic cannot shadow it.
             if [ "$(/bin/busybox dd if="$dev" bs=24 count=1 2>/dev/null)" = "ALEPH-TDX-DESCRIPTOR-v1" ]; then
                 descriptor="$dev"
-                break
             fi
         done
         [ -n "$descriptor" ] || /bin/busybox sleep 0.1
