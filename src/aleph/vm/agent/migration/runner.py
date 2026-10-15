@@ -50,6 +50,9 @@ logger = logging.getLogger(__name__)
 
 EXPORT_TTL_SECONDS = 1800  # 30 minutes — matches today's behaviour
 IMPORT_TTL_SECONDS = 1800
+# How long cancel_export waits for the runner to unwind, same bound as the
+# prior-task wait in run_export.
+CANCEL_UNWIND_TIMEOUT = 30
 
 
 def _collect_export_disks(vm_hash: str) -> list[Path]:
@@ -230,7 +233,11 @@ async def cancel_export(job: ExportJob, supervisor: "Supervisor", *, restart: bo
     task = job.task
     if task is not None and not task.done():
         task.cancel()
-        await asyncio.wait({task})
+        _done, pending = await asyncio.wait({task}, timeout=CANCEL_UNWIND_TIMEOUT)
+        if pending:
+            logger.warning(
+                "Export task for %s did not unwind within %ss; proceeding", job.vm_hash, CANCEL_UNWIND_TIMEOUT
+            )
     if job.state is MigrationState.EXPORTING:
         # Cancelled while queued for the slot: nothing was staged yet.
         _mark_export_cancelled(job, [])
