@@ -133,7 +133,9 @@ Useful when reading a QEMU argv or a guest console:
 - **Guest console: `init: FATAL: aleph_tdx_descriptor=1 but no TDX
   descriptor drive found`.** The descriptor drive did not reach the guest
   within the wait. Check the QEMU argv for the `<rootfs>.tdx_descriptor`
-  drive as the last `-drive`.
+  drive as the last `-drive`. `aleph vprogram run` on a TDX runtime ends
+  here too for now: the local launcher attaches no descriptor drive, until
+  the agent-routing change teaches it the TDX launch.
 - **Guest console: `init: FATAL: TDX descriptor rejected`, preceded by the
   attest-agent's reason on the same console.** Either the descriptor's
   token line does not hash to the launch's `mrconfigid` (the drive or the
