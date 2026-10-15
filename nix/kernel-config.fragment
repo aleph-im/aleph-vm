@@ -71,9 +71,13 @@ CONFIG_X86_PAT=y
 CONFIG_VIRT_DRIVERS=y
 # /dev/sev-guest for the attest-agent.
 CONFIG_SEV_GUEST=y
-# TDX guest support is kept from the previous config so the same kernel
-# can serve the planned TDX flavor; it is inert on AMD hardware.
+# One kernel serves the SNP and TDX runtimes; the TDX pieces are inert on
+# AMD hardware. /dev/tdx_guest for the attest-agent's local TDREPORT,
+# configfs-tsm (/sys/kernel/config/tsm) for quotes.
 CONFIG_INTEL_TDX_GUEST=y
+CONFIG_TDX_GUEST_DRIVER=y
+CONFIG_TSM_REPORTS=y
+CONFIG_CONFIGFS_FS=y
 
 # ---------------------------------------------------------------- modules
 CONFIG_MODULES=y

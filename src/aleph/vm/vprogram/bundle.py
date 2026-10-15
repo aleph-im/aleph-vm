@@ -17,10 +17,12 @@ import json
 import re
 import tarfile
 from pathlib import Path
+from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from aleph.vm.vprogram.manifest import (
+    CMDLINE_TDX_DESCRIPTOR_SWITCH_V1,
     SHA256_HEX_PATTERN,
     AttestationProtocol,
     AttestationTransport,
@@ -36,6 +38,8 @@ from aleph.vm.vprogram.manifest import (
     RuntimeManifest,
     SourceInfo,
     StrictModel,
+    TdxBootSpec,
+    TdxMeasurements,
     WorkloadSpec,
 )
 
@@ -44,7 +48,8 @@ BUNDLE_INFO_NAME = "bundle-info.json"
 MANIFEST_NAME = "manifest.json"
 TAR_PREFIX = "image"
 
-# Role -> file name inside the nix `image` output directory.
+# Role -> file name inside the nix `image` output directory. The tdx flavor
+# (nix `tdxImage`) has the same layout with TDVF in the OVMF.fd slot.
 MEMBER_FILES = {
     "ovmf": "OVMF.fd",
     "kernel": "bzImage",
@@ -54,6 +59,8 @@ MEMBER_FILES = {
 }
 ROOTHASH_FILE = "rootfs.ext4.roothash"
 MEASUREMENT_FILE = "measurement.hex"
+# The tdx flavor's {mrtd, rtmr1, rtmr2} triple, in place of measurement.hex.
+TDX_MEASUREMENTS_FILE = "measurements.json"
 
 # The nix `gpuImage` output directory has the identical byte layout to the
 # vprogram `image` output (the gpu flavor differs only in the extra gpu.json
@@ -84,11 +91,20 @@ class BundleInfo(StrictModel):
     size: int = Field(gt=0)
     members: BundleMembers
     platform_roothash: str = Field(pattern=SHA256_HEX_PATTERN)
-    # The measurement baked by the nix build (fixed CI shape); informational.
-    measurement: str = Field(min_length=1)
+    # The SNP measurement baked by the nix build (fixed CI shape); informational.
+    measurement: str | None = Field(default=None, min_length=1)
+    # The tdx flavor's register triple, published as the manifest's `measurements`.
+    tdx_measurements: TdxMeasurements | None = None
     # Recorded only by a `flavor="gpu"` build, from the image's gpu.json.
     gpu: GpuRuntimeSpec | None = None
     source: SourceInfo
+
+    @model_validator(mode="after")
+    def check_one_measurement(self) -> BundleInfo:
+        if (self.measurement is None) == (self.tdx_measurements is None):
+            msg = "bundle-info records exactly one of measurement (sev_snp) or tdx_measurements (tdx)"
+            raise ValueError(msg)
+        return self
 
 
 class InstanceBundleInfo(StrictModel):
@@ -169,8 +185,11 @@ def build_bundle(
     never reads a verity sidecar. `flavor="instance-gpu"` packages the nix
     `instanceGpuImage` output, same byte layout as `instance`, plus the
     `gpu.json` facts sidecar (read into `InstanceBundleInfo.instance_gpu`).
+    `flavor="tdx"` packages the nix `tdxImage` output: the vprogram layout
+    with TDVF in the OVMF.fd slot and `measurements.json` (read into
+    `BundleInfo.tdx_measurements`) in place of `measurement.hex`.
     """
-    if flavor not in ("vprogram", "instance", "compose", "gpu", "instance-gpu"):
+    if flavor not in ("vprogram", "instance", "compose", "gpu", "instance-gpu", "tdx"):
         msg = f"unknown bundle flavor: {flavor!r}"
         raise ValueError(msg)
 
@@ -201,13 +220,19 @@ def build_bundle(
         info_path.write_text(json.dumps(instance_info.model_dump(mode="json"), indent=2, sort_keys=True) + "\n")
         return instance_info
 
-    file_names = sorted({*MEMBER_FILES.values(), ROOTHASH_FILE, MEASUREMENT_FILE})
+    measurement_file = TDX_MEASUREMENTS_FILE if flavor == "tdx" else MEASUREMENT_FILE
+    file_names = sorted({*MEMBER_FILES.values(), ROOTHASH_FILE, measurement_file})
     _check_image_files(image_dir, file_names)
 
     gpu_spec = GpuRuntimeSpec.model_validate_json(_read_gpu_facts_json(image_dir)) if flavor == "gpu" else None
 
     platform_roothash = _read_sidecar(image_dir, ROOTHASH_FILE, SHA256_HEX_PATTERN)
-    measurement = _read_sidecar(image_dir, MEASUREMENT_FILE, None)
+    measurement: str | None = None
+    tdx_measurements: TdxMeasurements | None = None
+    if flavor == "tdx":
+        tdx_measurements = TdxMeasurements.model_validate_json((image_dir / TDX_MEASUREMENTS_FILE).read_text())
+    else:
+        measurement = _read_sidecar(image_dir, MEASUREMENT_FILE, None)
 
     tar_path = out_dir / BUNDLE_NAME
     _write_tar(image_dir, tar_path, source_epoch, file_names)
@@ -219,6 +244,7 @@ def build_bundle(
         members=BundleMembers(**{role: f"{TAR_PREFIX}/{name}" for role, name in MEMBER_FILES.items()}),
         platform_roothash=platform_roothash,
         measurement=measurement,
+        tdx_measurements=tdx_measurements,
         gpu=gpu_spec,
         source=source,
     )
@@ -263,6 +289,13 @@ CMDLINE_TEMPLATE_GPU_V1 = (
     " verified_volumes={verified_volumes}"
     " gpu_arch={gpu_arch} gpu_count={gpu_count} gpu_models={gpu_models}"
 )
+# TDX runtime: the fixed per-runtime cmdline the daemon derives on its own
+# (tdx_config_slice, lifecycle.rs) and RTMR2 is predicted from. No
+# per-deployment slot: workload_roothash and friends travel on the
+# MRCONFIGID-bound descriptor drive the last token switches the guest to.
+CMDLINE_TEMPLATE_TDX_V1 = (
+    f"console=ttyS0 root=/dev/mapper/verity-root ro roothash={{platform_roothash}} {CMDLINE_TDX_DESCRIPTOR_SWITCH_V1}"
+)
 # QEMU CPU models the published runtimes are measured for, in preference
 # order: the CRN launches the first one its QEMU can run. Despite the name,
 # "EPYC-v4" is QEMU's Naples model (family 23, model 1): no AVX-512, so
@@ -297,6 +330,49 @@ CMDLINE_TEMPLATE_INSTANCE_GPU_V1 = (
 )
 
 
+def _check_platform_facts(
+    info: BundleInfo, platform: Literal["sev_snp", "tdx"], *, compose_runtime: bool, gpu_runtime: bool
+) -> None:
+    """A tdx manifest needs a tdx flavor build (and no compose/gpu image
+    exists for tdx); a tdx flavor build cannot be published as anything else."""
+    if platform == "tdx":
+        if info.tdx_measurements is None:
+            msg = "platform tdx needs the measurements recorded by the tdx flavor build"
+            raise ValueError(msg)
+        if compose_runtime or gpu_runtime:
+            msg = "the compose and gpu runtimes have no tdx image"
+            raise ValueError(msg)
+    elif info.tdx_measurements is not None:
+        msg = f"a tdx flavor build cannot be published as a {platform} runtime"
+        raise ValueError(msg)
+
+
+def _boot_spec(
+    info: BundleInfo, platform: Literal["sev_snp", "tdx"], *, gpu_runtime: bool, workload_runtime: bool
+) -> BootSpec | TdxBootSpec:
+    if platform == "tdx":
+        # The fixed TDX cmdline whatever the workload contract: the workload
+        # tokens travel on the descriptor drive.
+        return TdxBootSpec(
+            method="qemu-direct-kernel",
+            platform_roothash=info.platform_roothash,
+            cmdline_template=CMDLINE_TEMPLATE_TDX_V1,
+        )
+    if gpu_runtime:
+        cmdline_template = CMDLINE_TEMPLATE_GPU_V1
+    elif workload_runtime:
+        cmdline_template = CMDLINE_TEMPLATE_EXEC_V1
+    else:
+        cmdline_template = CMDLINE_TEMPLATE_V1
+    return BootSpec(
+        method="qemu-direct-kernel",
+        kernel_hashes=True,
+        cpu_models=list(DEFAULT_CPU_MODELS),
+        platform_roothash=info.platform_roothash,
+        cmdline_template=cmdline_template,
+    )
+
+
 def make_manifest(  # noqa: PLR0913 -- one flag per mutually exclusive workload flavor, kept explicit over a mode enum
     info: BundleInfo,
     bundle_ref: str,
@@ -306,6 +382,7 @@ def make_manifest(  # noqa: PLR0913 -- one flag per mutually exclusive workload 
     exec_runtime: bool = False,
     compose_runtime: bool = False,
     gpu_runtime: bool = False,
+    platform: Literal["sev_snp", "tdx"] = "sev_snp",
 ) -> RuntimeManifest:
     """Build the manifest for an uploaded bundle. Validation is the
     constructor: any inconsistency raises pydantic ValidationError.
@@ -321,20 +398,20 @@ def make_manifest(  # noqa: PLR0913 -- one flag per mutually exclusive workload 
     to carry `info.gpu` onto the manifest; it requires `info.gpu` to be set,
     i.e. `info` must come from a `flavor="gpu"` build. The three are
     mutually exclusive.
+
+    `platform="tdx"` needs `info` from a `flavor="tdx"` build: the fixed TDX
+    cmdline template replaces the SNP one whatever the workload contract
+    (the workload tokens travel on the descriptor drive, not the cmdline),
+    `info.tdx_measurements` becomes the manifest's `measurements`, and the
+    compose and gpu runtimes are refused (no TDX image exists for either).
     """
     if sum((exec_runtime, compose_runtime, gpu_runtime)) > 1:
         msg = "exec_runtime, compose_runtime and gpu_runtime are mutually exclusive"
         raise ValueError(msg)
+    _check_platform_facts(info, platform, compose_runtime=compose_runtime, gpu_runtime=gpu_runtime)
     if gpu_runtime and info.gpu is None:
         msg = "gpu_runtime needs the gpu facts recorded by the gpu flavor build"
         raise ValueError(msg)
-    workload_runtime = exec_runtime or compose_runtime or gpu_runtime
-    if gpu_runtime:
-        cmdline_template = CMDLINE_TEMPLATE_GPU_V1
-    elif workload_runtime:
-        cmdline_template = CMDLINE_TEMPLATE_EXEC_V1
-    else:
-        cmdline_template = CMDLINE_TEMPLATE_V1
     if exec_runtime or gpu_runtime:
         workload = EXEC_WORKLOAD
     elif compose_runtime:
@@ -346,18 +423,13 @@ def make_manifest(  # noqa: PLR0913 -- one flag per mutually exclusive workload 
         format_version=1,
         name=name,
         version=runtime_version,
-        platform="sev_snp",
+        platform=platform,
         bundle=RuntimeBundle(ref=bundle_ref, sha256=info.sha256, size=info.size, members=info.members),
-        boot=BootSpec(
-            method="qemu-direct-kernel",
-            kernel_hashes=True,
-            cpu_models=list(DEFAULT_CPU_MODELS),
-            platform_roothash=info.platform_roothash,
-            cmdline_template=cmdline_template,
-        ),
+        boot=_boot_spec(info, platform, gpu_runtime=gpu_runtime, workload_runtime=exec_runtime or compose_runtime),
         attestation=[protocol.model_copy(deep=True) for protocol in DEFAULT_ATTESTATION],
         workload=workload.model_copy(deep=True),
         gpu=info.gpu.model_copy(deep=True) if gpu_runtime and info.gpu is not None else None,
+        measurements=info.tdx_measurements.model_copy(deep=True) if info.tdx_measurements is not None else None,
         source=info.source,
     )
 

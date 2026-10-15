@@ -28,15 +28,21 @@
 # shellcheck disable=SC1091  # /bin/init-common.sh only exists inside the initrd
 . /bin/init-common.sh
 
-# Parse boot mode from kernel command line.
-roothash=$(/bin/busybox sed -n 's/.*\broothash=\([0-9a-fA-F]*\).*/\1/p' /proc/cmdline)
+# TDX only (no-op otherwise): verify the descriptor drive and merge its tokens
+# into $cmdline_tokens before anything below parses them.
+read_tdx_descriptor
+
+# Parse boot mode from the measured tokens (the cmdline, plus the TDX
+# descriptor's tokens when there is one).
+# shellcheck disable=SC2154  # cmdline_tokens is set by init-common.sh
+roothash=$(echo "$cmdline_tokens" | /bin/busybox sed -n 's/.*\broothash=\([0-9a-fA-F]*\).*/\1/p')
 # Parse the V-PROGRAM workload root hash, if present. `\b` requires a
 # non-word character immediately before the match: since "_" and letters are
 # both word characters, `\broothash=` above never matches inside
 # "workload_roothash=" (no boundary between the "d" of "workload" and the "_"
 # that follows, nor between that "_" and "r"), and this `\bworkload_roothash=`
 # match is unambiguous on its own. The two tokens never cross-match.
-workload_roothash=$(/bin/busybox sed -n 's/.*\bworkload_roothash=\([0-9a-fA-F]*\).*/\1/p' /proc/cmdline)
+workload_roothash=$(echo "$cmdline_tokens" | /bin/busybox sed -n 's/.*\bworkload_roothash=\([0-9a-fA-F]*\).*/\1/p')
 
 # Verified data volumes: comma-joined roothashes, lowercase hex only (the
 # schema and daemon both pin lowercase). Same \b reasoning as above. Capture
@@ -45,7 +51,7 @@ workload_roothash=$(/bin/busybox sed -n 's/.*\bworkload_roothash=\([0-9a-fA-F]*\
 # gate that decides well-formedness, rather than silently truncating to an
 # empty capture here.
 # shellcheck disable=SC2034  # verified_volumes is consumed by mount_verified_volumes (init-common.sh), not here
-verified_volumes=$(/bin/busybox sed -n 's/.*\bverified_volumes=\([^ ]*\).*/\1/p' /proc/cmdline)
+verified_volumes=$(echo "$cmdline_tokens" | /bin/busybox sed -n 's/.*\bverified_volumes=\([^ ]*\).*/\1/p')
 
 # Wait for the rootfs block device to appear.
 wait_for_rootfs_blkdev
