@@ -3286,19 +3286,7 @@ fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, 
     // Python readopt propagating out of create.
     let restore = (|| -> Result<(), LifecycleError> {
         if state.host.settings.allow_vm_networking {
-            let tap = tap_assignment(state, vm_id)?;
-            let _net = net_lock(state);
-            if !state.taps.interface_exists(&tap.device_name) {
-                state.taps.create_tap(&tap)?;
-                if let Some(ndp) = &state.ndp {
-                    ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
-                }
-            } else if let Some(ndp) = &state.ndp {
-                // Prime the ndppd map without touching the service: the
-                // on-disk config already covers this running VM.
-                ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, false)?;
-            }
-            nft_setup_vm(state, tap.vm_index, &tap.device_name)?;
+            restore_adopted_network(state, vm_id)?;
         }
         with_entry_mut(state, vm_id, |entry| entry.times.started_at_ns = now_ns());
         recreate_port_redirect_rules(state, vm_id)?;
@@ -4298,9 +4286,61 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
 
 // ── Adoption step 5: the boot-time reconcile ────────────────────────────
 
+/// Put an adopted VM's host networking back: its tap (QEMU creates it with no
+/// host address after a host reboot), ndppd range, nft rules and, for a
+/// measured guest, its per-tap DHCP unit (transient, gone after a reboot).
+fn restore_adopted_network(state: &DaemonState, vm_id: &str) -> Result<(), LifecycleError> {
+    let tap = tap_assignment(state, vm_id)?;
+    let is_measured = entry_snapshot(state, vm_id).is_some_and(|entry| entry.config.is_measured());
+    {
+        let _net = net_lock(state);
+        if !state.taps.interface_exists(&tap.device_name) {
+            state.taps.create_tap(&tap)?;
+            if let Some(ndp) = &state.ndp {
+                ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
+            }
+        } else {
+            // A tap without a host IPv6 was created by QEMU after a host
+            // reboot: ndppd started before it existed and needs a restart.
+            let bare_tap = state.taps.global_ipv6_address(&tap.device_name).is_none();
+            if let Err(error) = state.taps.ensure_addresses(&tap) {
+                tracing::warn!(vm_id, %error, "cannot ensure the tap addresses; continuing");
+            }
+            if let Some(ndp) = &state.ndp {
+                // Otherwise prime the map only: the on-disk ndppd.conf
+                // already covers running VMs.
+                ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, bare_tap)?;
+            }
+        }
+        nft_setup_vm(state, tap.vm_index, &tap.device_name)?;
+    }
+    if is_measured {
+        // An active unit survived a plain daemon restart: leave it alone.
+        if state.units.get_active_state(&dhcp::dhcp_unit_name(vm_id)) == "active" {
+            tracing::debug!(vm_id, "DHCP server already active; leaving it alone");
+            return Ok(());
+        }
+        // Drop the lease file first: the rebooted guest solicits with a new
+        // IAID that a surviving lease would refuse, as in reboot_vm.
+        let lease_file = dhcp::lease_file_path(&dhcp_lease_dir(state), vm_id);
+        if let Err(dhcp_error) = state.dhcp.stop(vm_id, &lease_file) {
+            tracing::warn!(vm_id, %dhcp_error, "cannot stop the DHCP server, continuing");
+        }
+        let config = dhcp::DhcpConfig::for_tap(
+            vm_id,
+            &tap,
+            state.host.dns_nameservers.as_deref().unwrap_or(&[]),
+            &dhcp_lease_dir(state),
+        )?;
+        state.dhcp.start(&config)?;
+    }
+    Ok(())
+}
+
 /// Ensure the kernel/service state of every VM adopted running:
-/// create-if-absent taps, primed ndppd ranges, per-VM nftables chains and
-/// persisted port redirects. Never flush-and-rebuild (live connections
+/// taps (created if absent, addresses ensured on an existing one), the
+/// measured guests' DHCP units, primed ndppd ranges, per-VM nftables chains
+/// and persisted port redirects. Never flush-and-rebuild (live connections
 /// survive), exactly the `_restore_network` half of the Python reattach. A
 /// per-VM failure hides the VM like a failed Python reattach.
 pub fn reconcile_boot(state: &DaemonState) {
@@ -4317,25 +4357,7 @@ pub fn reconcile_boot(state: &DaemonState) {
         .collect();
     for vm_id in running {
         let result = (|| -> Result<(), LifecycleError> {
-            let tap = tap_assignment(state, &vm_id)?;
-            {
-                let _net = net_lock(state);
-                if !state.taps.interface_exists(&tap.device_name) {
-                    state.taps.create_tap(&tap)?;
-                    if let Some(ndp) = &state.ndp {
-                        ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
-                    }
-                }
-                if let Some(ndp) = &state.ndp
-                    && state.taps.interface_exists(&tap.device_name)
-                {
-                    // Prime the in-memory map without a config rewrite or
-                    // service restart: the on-disk ndppd.conf already covers
-                    // running VMs (update_service=False in Python).
-                    ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, false)?;
-                }
-                nft_setup_vm(state, tap.vm_index, &tap.device_name)?;
-            }
+            restore_adopted_network(state, &vm_id)?;
             recreate_port_redirect_rules(state, &vm_id)?;
             Ok(())
         })();
@@ -8654,6 +8676,209 @@ mod tests {
     }
 
     #[test]
+    fn boot_reconcile_puts_the_addresses_on_a_tap_qemu_created() {
+        // Host reboot: the controller unit started on its own and QEMU
+        // created the tap without a host address. Adoption must add it.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+        let (entry, _) = create_vm(state, spec(&vm_id, &root)).unwrap();
+        with_entry_mut(state, &vm_id, |entry| entry.adopted_running = true);
+        let creates_before = harness.taps.actions().len();
+
+        reconcile_boot(state);
+
+        let actions = harness.taps.actions();
+        let tap = TapAssignment::new(
+            entry.vm_index,
+            entry.ipv4.clone().unwrap(),
+            entry.ipv6.clone().unwrap(),
+        );
+        assert_eq!(
+            actions[creates_before..],
+            [format!(
+                "ensure {} {} {}",
+                tap.device_name,
+                tap.host_ipv4_cidr(),
+                tap.host_ipv6_cidr()
+            )]
+        );
+        assert!(
+            harness.dhcp.started().is_empty(),
+            "a plain VM gets no DHCP server"
+        );
+        assert!(state.world.blocking_read().entries.contains_key(&vm_id));
+    }
+
+    #[test]
+    fn boot_reconcile_restarts_the_dhcp_server_of_an_snp_vm() {
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('b');
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let (entry, _) =
+            create_vm(state, snp_spec(&vm_id, &root, &firmware.to_string_lossy())).unwrap();
+        with_entry_mut(state, &vm_id, |entry| entry.adopted_running = true);
+        assert_eq!(harness.dhcp.started().len(), 1, "the create started one");
+
+        reconcile_boot(state);
+
+        // The DHCP unit is not active in the fake systemd, as after a reboot.
+        assert_eq!(
+            harness.dhcp.stopped(),
+            [vm_id.as_str()],
+            "stale lease dropped"
+        );
+        let started = harness.dhcp.started();
+        assert_eq!(started.len(), 2, "adoption starts it again");
+        assert_eq!(started[1].vm_hash, vm_id);
+        assert_eq!(started[1].device_name, format!("vmtap{}", entry.vm_index));
+        assert_eq!(started[1].guest_ipv6, entry.ipv6.as_ref().unwrap().address);
+        assert!(harness.dhcp.is_running(&vm_id));
+    }
+
+    #[test]
+    fn boot_reconcile_leaves_an_active_dhcp_unit_alone() {
+        // Plain daemon restart: the transient DHCP unit survived.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('f');
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        create_vm(state, snp_spec(&vm_id, &root, &firmware.to_string_lossy())).unwrap();
+        harness
+            .systemd
+            .set_state(&dhcp::dhcp_unit_name(&vm_id), "active");
+        with_entry_mut(state, &vm_id, |entry| entry.adopted_running = true);
+
+        reconcile_boot(state);
+
+        assert_eq!(
+            harness.dhcp.started().len(),
+            1,
+            "only the create started it"
+        );
+        assert!(harness.dhcp.stopped().is_empty());
+        assert!(state.world.blocking_read().entries.contains_key(&vm_id));
+    }
+
+    #[test]
+    fn boot_reconcile_restarts_ndppd_for_a_bare_tap() {
+        // Host reboot: ndppd started before QEMU created the tap.
+        let mut harness = harness();
+        let root = harness.state.host.settings.execution_root.clone();
+        let vm_id = hash('9');
+        let (entry, _) = create_vm(&harness.state, spec(&vm_id, &root)).unwrap();
+        let edge = Arc::new(crate::ndppd::FakeNdppd::default());
+        Arc::get_mut(&mut harness.state).unwrap().ndp = Some(Arc::new(
+            crate::ndppd::NdpProxy::new("eth0".into(), edge.clone()),
+        ));
+        let state = &harness.state;
+        let device = format!("vmtap{}", entry.vm_index);
+        harness.taps.add_bare_device(&device);
+        with_entry_mut(state, &vm_id, |entry| entry.adopted_running = true);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+
+        reconcile_boot(state);
+
+        let written = edge.written();
+        assert_eq!(written.len(), 1, "the config is rewritten");
+        assert!(written[0].contains(&device), "{written:?}");
+        runtime.block_on(tokio::time::sleep(std::time::Duration::from_millis(1500)));
+        assert_eq!(edge.restart_count(), 1);
+    }
+
+    #[test]
+    fn boot_reconcile_only_primes_ndppd_for_an_addressed_tap() {
+        // Plain daemon restart: the tap kept its addresses, ndppd is current.
+        let mut harness = harness();
+        let root = harness.state.host.settings.execution_root.clone();
+        let vm_id = hash('8');
+        create_vm(&harness.state, spec(&vm_id, &root)).unwrap();
+        let edge = Arc::new(crate::ndppd::FakeNdppd::default());
+        Arc::get_mut(&mut harness.state).unwrap().ndp = Some(Arc::new(
+            crate::ndppd::NdpProxy::new("eth0".into(), edge.clone()),
+        ));
+        let state = &harness.state;
+        with_entry_mut(state, &vm_id, |entry| entry.adopted_running = true);
+
+        reconcile_boot(state);
+
+        assert!(edge.written().is_empty());
+        assert!(state.world.blocking_read().entries.contains_key(&vm_id));
+    }
+
+    #[test]
+    fn boot_reconcile_still_creates_a_missing_tap() {
+        // Adoption ran before QEMU opened the tap: the existing path.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('c');
+        let (entry, _) = create_vm(state, spec(&vm_id, &root)).unwrap();
+        with_entry_mut(state, &vm_id, |entry| entry.adopted_running = true);
+        let tap = TapAssignment::new(
+            entry.vm_index,
+            entry.ipv4.clone().unwrap(),
+            entry.ipv6.clone().unwrap(),
+        );
+        harness.taps.delete_tap(&tap).unwrap();
+
+        reconcile_boot(state);
+
+        let actions = harness.taps.actions();
+        assert_eq!(
+            actions.last().unwrap(),
+            &format!(
+                "create {} {} {}",
+                tap.device_name,
+                tap.host_ipv4_cidr(),
+                tap.host_ipv6_cidr()
+            )
+        );
+        assert!(!actions.iter().any(|action| action.starts_with("ensure")));
+    }
+
+    #[test]
+    fn boot_reconcile_keeps_the_vm_when_ensure_fails() {
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('d');
+        create_vm(state, spec(&vm_id, &root)).unwrap();
+        with_entry_mut(state, &vm_id, |entry| entry.adopted_running = true);
+        harness.taps.fail_ensure(|| TapError::Command {
+            argv: "addr replace".to_string(),
+            stderr: "Operation not permitted".to_string(),
+        });
+
+        reconcile_boot(state);
+
+        // The production backend never returns Err for an address failure;
+        // the reconcile tolerates one from a backend that does, logging it.
+        assert!(
+            state.world.blocking_read().entries.contains_key(&vm_id),
+            "the VM is not hidden"
+        );
+        let index = state.world.blocking_read().entries[&vm_id].vm_index;
+        assert!(
+            harness
+                .taps
+                .actions()
+                .contains(&format!("ensure-failed vmtap{index}")),
+            "the failing ensure ran"
+        );
+    }
+
+    #[test]
     fn recreate_redirects_replay_the_python_both_protocols_batch() {
         // C3: the udp-then-tcp protocol order of
         // SUPPORTED_PROTOCOL_FOR_REDIRECT, pinned byte-for-byte against
@@ -9333,6 +9558,70 @@ mod tests {
             .failed_reattach
             .insert(vm_id.clone(), world::FailedReattach::new(3));
         vm_id
+    }
+
+    #[test]
+    fn the_retry_pass_addresses_an_existing_tap_on_readopt() {
+        let harness = harness();
+        let state = &harness.state;
+        let vm_id = seed_hidden_vm(&harness);
+        // vm_index 3 of the fixture; QEMU made the device, no host address.
+        let (ipv4, ipv6) =
+            world::derive_tap_assignment(&state.host.settings, 3, "fc00:1:2:3::30/124").unwrap();
+        let tap = TapAssignment::new(3, ipv4, ipv6);
+        harness.taps.create_tap(&tap).unwrap();
+        let before = harness.taps.actions().len();
+        harness
+            .systemd
+            .set_state(&controller_unit_name(&vm_id), "active");
+
+        retry_failed_reattachments_once(state);
+
+        assert!(
+            state.world.blocking_read().entries.contains_key(&vm_id),
+            "re-adopted"
+        );
+        let actions = harness.taps.actions();
+        assert_eq!(actions.len(), before + 1, "{actions:?}");
+        assert!(actions[before].starts_with("ensure vmtap3 "), "{actions:?}");
+    }
+
+    #[test]
+    fn the_retry_pass_restarts_the_dhcp_server_of_a_readopted_snp_vm() {
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('e');
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let (entry, _) =
+            create_vm(state, snp_spec(&vm_id, &root, &firmware.to_string_lossy())).unwrap();
+        // Hide it the way adoption would: entry gone, index reserved, queued.
+        {
+            let mut world = state.world.blocking_write();
+            world.entries.remove(&vm_id);
+            world.reserved_vm_indices.insert(entry.vm_index);
+            world
+                .failed_reattach
+                .insert(vm_id.clone(), world::FailedReattach::new(entry.vm_index));
+        }
+        harness
+            .systemd
+            .set_state(&controller_unit_name(&vm_id), "active");
+        assert_eq!(harness.dhcp.started().len(), 1);
+
+        retry_failed_reattachments_once(state);
+
+        assert!(state.world.blocking_read().entries.contains_key(&vm_id));
+        assert_eq!(
+            harness.dhcp.stopped(),
+            [vm_id.as_str()],
+            "stale lease dropped"
+        );
+        let started = harness.dhcp.started();
+        assert_eq!(started.len(), 2);
+        assert_eq!(started[1].vm_hash, vm_id);
+        assert_eq!(started[1].guest_ipv6, entry.ipv6.as_ref().unwrap().address);
     }
 
     #[test]

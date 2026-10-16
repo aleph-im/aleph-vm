@@ -172,15 +172,16 @@ A daemon restart never destroys or restarts a live VM. In short: at startup
 the daemon rebuilds its world view from on-disk controller configs, systemd
 unit states, and the port-forward sqlite store, `reconcile_boot` recreates
 any missing tap/nftables state (plus persisted port-redirect rules) for VMs
-it adopted running (create-if-absent, never flush-and-rebuild), and any VM
-that fails reconciliation is hidden from the world and queued for
-background retry rather than torn down. `reconcile_boot` never touches
-DHCP: an SNP VM's per-tap dnsmasq runs as its own transient systemd unit
-(`aleph-vm-dhcp-{vm_hash}.service`, started via `systemd-run`), independent
-of the daemon process, so it survives a daemon restart on its own and needs
-no boot-time reconciliation; only `create_vm`/`start_vm` (re)start it, and
-only the teardown paths stop it. The full mechanism, including the
-retry loop's liveness gating and give-up behavior, is described in
+it adopted running (create-if-absent, addresses ensured on an existing tap,
+never flush-and-rebuild), and any VM that fails reconciliation is hidden
+from the world and queued for background retry rather than torn down. A
+measured VM's (SEV-SNP or TDX) per-tap dnsmasq runs as its own transient
+systemd unit (`aleph-vm-dhcp-{vm_hash}.service`, started via `systemd-run`)
+that does not survive a host reboot, so adoption starts it again on a fresh
+lease file when the unit is not active, and leaves an active one alone;
+`create_vm`/`start_vm` and `reboot_vm` also (re)start it. The full
+mechanism, including the retry loop's liveness gating and give-up
+behavior, is described in
 [`process-model.md`](process-model.md#adoption-and-the-zero-downtime-model);
 `create_vm` also participates in it directly through
 `readopt_live_controller`, used both for an on-demand create racing a live
