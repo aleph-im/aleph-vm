@@ -568,6 +568,16 @@ fn known_ipv6_cidr(state: &DaemonState, entry: &VmEntry) -> Result<String, world
         .or_else(|| {
             world::ipv6_from_tap(&*state.taps, entry.vm_index).map(|pair| pair.network_cidr)
         })
+        .inspect(|cidr| {
+            if !world::ipv6_in_pool(&state.host.settings.ipv6_address_pool, cidr) {
+                tracing::warn!(
+                    vm_hash = entry.vm_hash,
+                    cidr,
+                    pool = state.host.settings.ipv6_address_pool,
+                    "starting on a guest IPv6 outside the host pool; the agent rebuilds the VM"
+                );
+            }
+        })
         .ok_or_else(|| world::WorldError::NoKnownIpv6 {
             vm_id: entry.vm_hash.clone(),
         })
