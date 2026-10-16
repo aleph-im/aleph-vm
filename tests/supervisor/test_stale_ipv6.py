@@ -12,6 +12,7 @@ from aleph_message.models import ItemHash
 from test_supervisor_translate import _make_qemu_instance_message
 
 from aleph.vm.agent import stale_ipv6 as pass_module
+from aleph.vm.agent.run import StaleRebuild
 from aleph.vm.agent.vm.retire import RetireReason
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
@@ -81,16 +82,25 @@ def pool(monkeypatch):
     monkeypatch.setattr(settings, "IPV6_ADDRESS_POOL", "fc00:1:2:3::/64")
 
 
-async def _run(supervisor, registry, *, start=None, retire=None, program_client=None, monkeypatch=None):
+async def _run(
+    supervisor,
+    registry,
+    *,
+    start=None,
+    retire=None,
+    program_client=None,
+    update_watcher=None,
+    monkeypatch=None,
+):
     if monkeypatch is not None:
-        monkeypatch.setattr(pass_module, "start_persistent_vm", start or AsyncMock())
+        monkeypatch.setattr(pass_module, "rebuild_if_stale", start or AsyncMock(return_value=StaleRebuild.MOVED))
         monkeypatch.setattr(pass_module, "retire_vm", retire or AsyncMock())
     return await pass_module.rebuild_stale_vms_once(
         supervisor=supervisor,
         registry=registry,
         capacity=MagicMock(),
         expiry=MagicMock(),
-        update_watcher=MagicMock(),
+        update_watcher=update_watcher or MagicMock(),
         program_client=program_client or MagicMock(forget=AsyncMock()),
         pubsub_getter=lambda: None,
     )
@@ -106,7 +116,7 @@ async def test_pass_moves_running_vms_outside_the_pool(pool, monkeypatch):
         ]
     )
     supervisor.get_vm = AsyncMock(return_value=_info(HASH_A, VmStatus.RUNNING, "fc00:1:2:3::20/124"))
-    start = AsyncMock()
+    start = AsyncMock(return_value=StaleRebuild.MOVED)
 
     report = await _run(supervisor, _registry(HASH_A, HASH_B), start=start, monkeypatch=monkeypatch)
 
@@ -117,16 +127,18 @@ async def test_pass_moves_running_vms_outside_the_pool(pool, monkeypatch):
     call = start.await_args
     assert call is not None
     assert call.args[0] == HASH_A
-    assert call.kwargs["recreate"] is True
 
 
 @pytest.mark.asyncio
 async def test_pass_retires_a_stale_on_demand_program_instead_of_starting_it(pool, monkeypatch):
     supervisor = MagicMock()
-    supervisor.list_vms = AsyncMock(return_value=[_info(HASH_C, VmStatus.RUNNING, "2001:db8::30/124")])
+    stale = _info(HASH_C, VmStatus.RUNNING, "2001:db8::30/124")
+    supervisor.list_vms = AsyncMock(return_value=[stale])
+    supervisor.get_vm = AsyncMock(return_value=stale)
     start = AsyncMock()
     retire = AsyncMock()
     forget = AsyncMock()
+    watcher = MagicMock()
 
     report = await _run(
         supervisor,
@@ -134,10 +146,12 @@ async def test_pass_retires_a_stale_on_demand_program_instead_of_starting_it(poo
         start=start,
         retire=retire,
         program_client=MagicMock(forget=forget),
+        update_watcher=watcher,
         monkeypatch=monkeypatch,
     )
 
     start.assert_not_awaited()
+    watcher.cancel.assert_called_once_with(VmId(str(HASH_C)))
     retire.assert_awaited_once()
     call = retire.await_args
     assert call is not None
@@ -187,7 +201,7 @@ async def test_pass_continues_past_a_failed_move(pool, monkeypatch):
         ]
     )
     supervisor.get_vm = AsyncMock(return_value=_info(HASH_B, VmStatus.RUNNING, "fc00:1:2:3::20/124"))
-    start = AsyncMock(side_effect=[RuntimeError("boom"), None])
+    start = AsyncMock(side_effect=[RuntimeError("boom"), StaleRebuild.MOVED])
 
     report = await _run(supervisor, _registry(HASH_A, HASH_B), start=start, monkeypatch=monkeypatch)
 
@@ -228,6 +242,85 @@ async def test_pass_moves_vms_one_at_a_time(pool, monkeypatch):
         order.append(f"begin {vm_hash[:1]}")
         await asyncio.sleep(0)
         order.append(f"end {vm_hash[:1]}")
+        return StaleRebuild.MOVED
 
     await _run(supervisor, _registry(HASH_A, HASH_B), start=start, monkeypatch=monkeypatch)
     assert order == ["begin a", "end a", "begin b", "end b"]
+
+
+@pytest.mark.asyncio
+async def test_pass_reports_a_vm_judged_fine_at_action_time_as_skipped(pool, monkeypatch):
+    # The owner stopped it (or it moved) between the listing and its turn.
+    supervisor = MagicMock()
+    supervisor.list_vms = AsyncMock(return_value=[_info(HASH_A, VmStatus.RUNNING, "2001:db8::10/124")])
+    start = AsyncMock(return_value=StaleRebuild.SKIPPED)
+
+    report = await _run(supervisor, _registry(HASH_A), start=start, monkeypatch=monkeypatch)
+
+    assert report.skipped == [VmId(str(HASH_A))]
+    assert report.moved == []
+
+
+@pytest.mark.asyncio
+async def test_pass_names_the_owner_session_for_a_moved_confidential_vm(pool, monkeypatch, caplog):
+    supervisor = MagicMock()
+    supervisor.list_vms = AsyncMock(return_value=[_info(HASH_A, VmStatus.RUNNING, "2001:db8::10/124")])
+    supervisor.get_vm = AsyncMock(return_value=_info(HASH_A, VmStatus.BOOTING, "fc00:1:2:3::20/124"))
+    start = AsyncMock(return_value=StaleRebuild.MOVED_AWAITING_INIT)
+
+    with caplog.at_level(logging.INFO, logger="aleph.vm.agent.stale_ipv6"):
+        report = await _run(supervisor, _registry(HASH_A), start=start, monkeypatch=monkeypatch)
+
+    assert report.moved == [VmId(str(HASH_A))]
+    assert report.awaiting_init == [VmId(str(HASH_A))]
+    assert any("confidential/initialize" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_pass_leaves_an_on_demand_program_stopped_since_the_listing(pool, monkeypatch):
+    supervisor = MagicMock()
+    supervisor.list_vms = AsyncMock(return_value=[_info(HASH_C, VmStatus.RUNNING, "2001:db8::30/124")])
+    supervisor.get_vm = AsyncMock(return_value=_info(HASH_C, VmStatus.STOPPED))
+    retire = AsyncMock()
+    forget = AsyncMock()
+
+    report = await _run(
+        supervisor,
+        _registry(on_demand=(HASH_C,)),
+        retire=retire,
+        program_client=MagicMock(forget=forget),
+        monkeypatch=monkeypatch,
+    )
+
+    retire.assert_not_awaited()
+    forget.assert_not_awaited()
+    assert report.skipped == [VmId(str(HASH_C))]
+
+
+@pytest.mark.asyncio
+async def test_pass_counts_starting_vms_as_not_judged(pool, monkeypatch, caplog):
+    supervisor = MagicMock()
+    supervisor.list_vms = AsyncMock(
+        return_value=[_info(HASH_A, VmStatus.BOOTING, "2001:db8::10/124"), _info(HASH_B, VmStatus.DEFINED)]
+    )
+    start = AsyncMock()
+
+    with caplog.at_level(logging.INFO, logger="aleph.vm.agent.stale_ipv6"):
+        report = await _run(supervisor, _registry(HASH_A, HASH_B), start=start, monkeypatch=monkeypatch)
+
+    assert report.not_judged == [VmId(str(HASH_A)), VmId(str(HASH_B))]
+    assert report.checked == 0
+    start.assert_not_awaited()
+    assert any(r.levelno == logging.INFO and "not judged" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_pass_summary_is_debug_when_nothing_is_stale(pool, monkeypatch, caplog):
+    supervisor = MagicMock()
+    supervisor.list_vms = AsyncMock(return_value=[_info(HASH_A, VmStatus.RUNNING, "fc00:1:2:3::10/124")])
+
+    with caplog.at_level(logging.DEBUG, logger="aleph.vm.agent.stale_ipv6"):
+        await _run(supervisor, _registry(HASH_A), monkeypatch=monkeypatch)
+
+    summary = [r for r in caplog.records if "VMs checked" in r.getMessage()]
+    assert [r.levelno for r in summary] == [logging.DEBUG]

@@ -1,4 +1,5 @@
 import asyncio
+import enum
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -1142,6 +1143,42 @@ async def run_code_on_event(
             await program_client.forget(vm_id)
 
 
+async def _create_persistent(
+    vm_hash: ItemHash,
+    *,
+    supervisor: Supervisor,
+    registry: AgentVmRegistry,
+    capacity: CapacityManager,
+    recreate: bool,
+    create: CreateVmExecution | None = None,
+) -> bool:
+    """Create a persistent VM and wait for RUNNING, unless it ends awaiting its
+    owner's confidential session. True in that last case."""
+    vm_id = VmId(str(vm_hash))
+    logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
+    # Resolved here, not as a default argument: a default would bind the
+    # function object at import time, past any patch of the module name.
+    await (create or create_vm_execution)(
+        vm_hash=vm_hash, supervisor=supervisor, registry=registry, capacity=capacity, recreate=recreate
+    )
+    # A confidential VM is created but left awaiting its owner's session
+    # (only the owner can start it via /confidential/initialize). Waiting
+    # for RUNNING would block forever, so re-read the status and skip the
+    # readiness barrier when it is awaiting init.
+    try:
+        info: VmInfo | None = await supervisor.get_vm(vm_id)
+    except VmNotFoundError:
+        info = None
+    if info is not None and info.awaiting_confidential_init:
+        logger.info(f"{vm_hash} is waiting for its owner to initialize the confidential session")
+        return True
+    # create_vm_execution blocks until RUNNING in-process today; this
+    # re-poll is the explicit readiness barrier (and stays correct if a
+    # future out-of-process create returns before the VM is RUNNING).
+    await _wait_until_running(supervisor, vm_id)
+    return False
+
+
 async def start_persistent_vm(
     vm_hash: ItemHash,
     pubsub: PubSub | None,
@@ -1229,30 +1266,55 @@ async def start_persistent_vm(
                 await reconcile_adopted_port_forwards(supervisor, registry, vm_hash)
 
         if info is None:
-            logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
-            # Resolved here, not as a default argument: a default would bind the
-            # function object at import time, past any patch of the module name.
-            await (create or create_vm_execution)(
-                vm_hash=vm_hash, supervisor=supervisor, registry=registry, capacity=capacity, recreate=recreate
+            await _create_persistent(
+                vm_hash, supervisor=supervisor, registry=registry, capacity=capacity, recreate=recreate, create=create
             )
-            # A confidential VM is created but left awaiting its owner's session
-            # (only the owner can start it via /confidential/initialize). Waiting
-            # for RUNNING would block forever, so re-read the status and skip the
-            # readiness barrier when it is awaiting init.
-            try:
-                info = await supervisor.get_vm(vm_id)
-            except VmNotFoundError:
-                info = None
-            if info is not None and info.awaiting_confidential_init:
-                logger.info(f"{vm_hash} is waiting for its owner to initialize the confidential session")
-            else:
-                # create_vm_execution blocks until RUNNING in-process today; this
-                # re-poll is the explicit readiness barrier (and stays correct if a
-                # future out-of-process create returns before the VM is RUNNING).
-                await _wait_until_running(supervisor, vm_id)
 
         # Scheduled long-running: it must not idle-expire.
         expiry.cancel(vm_id)
 
         if pubsub and settings.WATCH_FOR_UPDATES:
             update_watcher.watch(vm_id, vm_hash, pubsub)
+
+
+class StaleRebuild(enum.Enum):
+    MOVED = "moved"
+    MOVED_AWAITING_INIT = "moved_awaiting_init"
+    SKIPPED = "skipped"
+
+
+async def rebuild_if_stale(
+    vm_hash: ItemHash,
+    pubsub: PubSub | None,
+    *,
+    supervisor: Supervisor,
+    registry: AgentVmRegistry,
+    capacity: CapacityManager,
+    expiry: ExpiryManager,
+    update_watcher: UpdateWatcher,
+) -> StaleRebuild:
+    """Rebuild a persistent VM still running on an address outside the pool.
+
+    Judged afresh under the create lock: between a listing and this call the
+    owner may have stopped the VM, which must then stay stopped.
+    """
+    async with vm_create_lock(str(vm_hash)):
+        vm_id = VmId(str(vm_hash))
+        try:
+            info = await supervisor.get_vm(vm_id)
+        except VmNotFoundError:
+            logger.debug(f"{vm_hash} is gone, no IPv6 move needed")
+            return StaleRebuild.SKIPPED
+        if info.status != VmStatus.RUNNING or info.awaiting_confidential_init or not stale_ipv6(info.ipv6.network_cidr):
+            logger.debug(f"{vm_hash} is {info.status.name} on IPv6 network {info.ipv6.network_cidr!r}, not moving it")
+            return StaleRebuild.SKIPPED
+        await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
+        awaiting_init = await _create_persistent(
+            vm_hash, supervisor=supervisor, registry=registry, capacity=capacity, recreate=True
+        )
+        expiry.cancel(vm_id)
+        if pubsub and settings.WATCH_FOR_UPDATES:
+            update_watcher.watch(vm_id, vm_hash, pubsub)
+        if awaiting_init:
+            return StaleRebuild.MOVED_AWAITING_INIT
+        return StaleRebuild.MOVED

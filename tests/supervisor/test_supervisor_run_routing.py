@@ -743,6 +743,95 @@ async def test_start_persistent_leaves_a_running_vm_with_no_address_alone(monkey
     created.assert_not_awaited()
 
 
+async def _rebuild_if_stale(sup):
+    return await run_module.rebuild_if_stale(
+        ItemHash(_HASH),
+        None,
+        supervisor=sup,
+        registry=AgentVmRegistry(),
+        capacity=_fake_capacity(),
+        expiry=MagicMock(),
+        update_watcher=MagicMock(),
+    )
+
+
+@pytest.fixture
+def _stale_pool(monkeypatch):
+    monkeypatch.setattr(settings, "ALLOW_VM_NETWORKING", True)
+    monkeypatch.setattr(settings, "IPV6_ADDRESS_POOL", "fc00:1:2:3::/64")
+
+
+def _patch_rebuild(monkeypatch):
+    created = AsyncMock()
+    retired = AsyncMock()
+    monkeypatch.setattr(run_module, "create_vm_execution", created)
+    monkeypatch.setattr(run_module, "retire_vm", retired)
+    monkeypatch.setattr(run_module, "_wait_until_running", AsyncMock())
+    return created, retired
+
+
+@pytest.mark.asyncio
+async def test_rebuild_if_stale_leaves_a_vm_stopped_since_the_listing(monkeypatch, _stale_pool):
+    # A stopped VM stays stopped, even one whose spec holds a stale address.
+    sup = _fake_supervisor(get_status=VmStatus.STOPPED)
+    sup.get_vm_spec = AsyncMock(
+        return_value=replace(
+            _spec(),
+            network=NetworkConfig(internet_access=True, requested_ipv6="2001:db8::10/124", ipv6_prefix_len=124),
+        )
+    )
+    created, retired = _patch_rebuild(monkeypatch)
+
+    assert await _rebuild_if_stale(sup) is run_module.StaleRebuild.SKIPPED
+
+    retired.assert_not_awaited()
+    created.assert_not_awaited()
+    sup.start_vm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rebuild_if_stale_leaves_a_vm_now_on_a_usable_address(monkeypatch, _stale_pool):
+    sup = _fake_supervisor()
+    sup.get_vm = AsyncMock(return_value=_running_on("fc00:1:2:3::10/124"))
+    created, retired = _patch_rebuild(monkeypatch)
+
+    assert await _rebuild_if_stale(sup) is run_module.StaleRebuild.SKIPPED
+
+    retired.assert_not_awaited()
+    created.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rebuild_if_stale_moves_a_running_vm_on_a_stale_address(monkeypatch, _stale_pool):
+    sup = _fake_supervisor()
+    sup.get_vm = AsyncMock(side_effect=[_running_on("2001:db8::10/124"), _running_on("fc00:1:2:3::10/124")])
+    created, retired = _patch_rebuild(monkeypatch)
+
+    assert await _rebuild_if_stale(sup) is run_module.StaleRebuild.MOVED
+
+    retired.assert_awaited_once()
+    assert retired.await_args is not None
+    assert retired.await_args.args[1] is run_module.RetireReason.RECREATE
+    created.assert_awaited_once()
+    assert created.await_args is not None
+    assert created.await_args.kwargs["recreate"] is True
+
+
+@pytest.mark.asyncio
+async def test_rebuild_if_stale_reports_a_confidential_vm_awaiting_init(monkeypatch, _stale_pool):
+    sup = _fake_supervisor()
+    awaiting = replace(_info(VmStatus.BOOTING), awaiting_confidential_init=True)
+    sup.get_vm = AsyncMock(side_effect=[_running_on("2001:db8::10/124"), awaiting])
+    created, _ = _patch_rebuild(monkeypatch)
+    waited = AsyncMock()
+    monkeypatch.setattr(run_module, "_wait_until_running", waited)
+
+    assert await _rebuild_if_stale(sup) is run_module.StaleRebuild.MOVED_AWAITING_INIT
+
+    created.assert_awaited_once()
+    waited.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_start_persistent_readopt_instance_heals_with_strict_resolve(monkeypatch):
     """An instance adopted already-RUNNING gets its forwards reconciled from
