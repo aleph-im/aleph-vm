@@ -16,6 +16,7 @@ from aleph.vm.agent.run import StaleRebuild
 from aleph.vm.agent.vm.retire import RetireReason
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
+from aleph.vm.supervisor_interface.errors import InternalSupervisorError
 from aleph.vm.supervisor_interface.types import (
     Backend,
     CreateVmSpec,
@@ -90,6 +91,7 @@ async def _run(
     retire=None,
     program_client=None,
     update_watcher=None,
+    stop=None,
     monkeypatch=None,
 ):
     if monkeypatch is not None:
@@ -103,6 +105,7 @@ async def _run(
         update_watcher=update_watcher or MagicMock(),
         program_client=program_client or MagicMock(forget=AsyncMock()),
         pubsub_getter=lambda: None,
+        stop=stop,
     )
 
 
@@ -324,3 +327,78 @@ async def test_pass_summary_is_debug_when_nothing_is_stale(pool, monkeypatch, ca
 
     summary = [r for r in caplog.records if "VMs checked" in r.getMessage()]
     assert [r.levelno for r in summary] == [logging.DEBUG]
+
+
+@pytest.mark.asyncio
+async def test_pass_waits_for_the_supervisor_to_answer(pool, monkeypatch):
+    monkeypatch.setattr(pass_module, "_LIST_RETRY_INTERVAL_SECONDS", 0)
+    supervisor = MagicMock()
+    supervisor.list_vms = AsyncMock(
+        side_effect=[
+            InternalSupervisorError("down"),
+            InternalSupervisorError("down"),
+            [_info(HASH_A, VmStatus.RUNNING, "2001:db8::10/124")],
+        ]
+    )
+    start = AsyncMock(return_value=StaleRebuild.MOVED)
+
+    report = await _run(supervisor, _registry(HASH_A), start=start, monkeypatch=monkeypatch)
+
+    assert supervisor.list_vms.await_count == 3
+    assert report.moved == [VmId(str(HASH_A))]
+
+
+@pytest.mark.asyncio
+async def test_pass_gives_up_loudly_when_the_supervisor_never_answers(pool, monkeypatch, caplog):
+    monkeypatch.setattr(pass_module, "_LIST_RETRY_INTERVAL_SECONDS", 0)
+    supervisor = MagicMock()
+    supervisor.list_vms = AsyncMock(side_effect=InternalSupervisorError("down"))
+
+    with caplog.at_level(logging.ERROR, logger="aleph.vm.agent.stale_ipv6"):
+        report = await _run(supervisor, _registry(HASH_A), monkeypatch=monkeypatch)
+
+    assert report.checked == 0
+    assert supervisor.list_vms.await_count == pass_module._LIST_RETRY_ATTEMPTS
+    assert any(r.levelno == logging.ERROR and "Could not list VMs" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_pass_stops_between_vms_when_asked(pool, monkeypatch):
+    supervisor = MagicMock()
+    supervisor.list_vms = AsyncMock(
+        return_value=[
+            _info(HASH_A, VmStatus.RUNNING, "2001:db8::10/124"),
+            _info(HASH_B, VmStatus.RUNNING, "2001:db8::20/124"),
+        ]
+    )
+    supervisor.get_vm = AsyncMock(return_value=_info(HASH_A, VmStatus.RUNNING, "fc00:1:2:3::20/124"))
+    stop = asyncio.Event()
+
+    async def start(vm_hash, *args, **kwargs):
+        stop.set()  # The agent is told to stop during the first move.
+        return StaleRebuild.MOVED
+
+    mock = AsyncMock(side_effect=start)
+    report = await _run(supervisor, _registry(HASH_A, HASH_B), start=mock, stop=stop, monkeypatch=monkeypatch)
+
+    assert mock.await_count == 1
+    assert report.moved == [VmId(str(HASH_A))]
+
+
+@pytest.mark.asyncio
+async def test_stop_hook_lets_the_move_in_flight_finish():
+    stop = asyncio.Event()
+    finished: list[bool] = []
+
+    async def move():
+        await stop.wait()
+        await asyncio.sleep(0)
+        finished.append(True)
+
+    task = asyncio.ensure_future(move())
+    app = {"_stale_ipv6_pass": task, "_stale_ipv6_stop": stop}
+
+    await pass_module.stop_stale_ipv6_pass(app)  # type: ignore[arg-type]
+
+    assert finished == [True]
+    assert not task.cancelled()

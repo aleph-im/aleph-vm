@@ -9,6 +9,7 @@ VM is left stopped; its owner's next start rebuilds it.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -34,6 +35,14 @@ from aleph.vm.utils import create_task_log_exceptions
 
 logger = logging.getLogger(__name__)
 
+# The agent may start before the supervisor answers (host reboot, upgrade):
+# retry the listing every interval, for 120 s in all.
+_LIST_RETRY_INTERVAL_SECONDS = 5.0
+_LIST_RETRY_ATTEMPTS = 25
+# Below the agent unit's TimeoutStopSec (30 s): a move in flight gets this
+# long to finish on shutdown before it is cancelled.
+_STOP_GRACE_SECONDS = 20.0
+
 
 @dataclass
 class StalePassReport:
@@ -58,6 +67,29 @@ async def _held_network(supervisor: Supervisor, info: VmInfo) -> str:
         except SupervisorError as error:
             logger.debug("No spec for %s while checking its IPv6: %s", info.vm_id, error)
     return ""
+
+
+async def _list_vms(supervisor: Supervisor, stop: asyncio.Event) -> list[VmInfo] | None:
+    """The supervisor's VMs, retried while it does not answer. None when it
+    never did, or the agent is stopping."""
+    for attempt in range(_LIST_RETRY_ATTEMPTS):
+        try:
+            return await supervisor.list_vms()
+        except (SupervisorError, OSError) as error:
+            if attempt + 1 == _LIST_RETRY_ATTEMPTS:
+                break
+            logger.debug("The supervisor does not list VMs yet, retrying: %s", error)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=_LIST_RETRY_INTERVAL_SECONDS)
+            return None
+        except asyncio.TimeoutError:
+            pass
+    logger.error(
+        "Could not list VMs after %ds; VMs outside the IPv6 pool %s are not rebuilt until the next agent restart",
+        int(_LIST_RETRY_INTERVAL_SECONDS * (_LIST_RETRY_ATTEMPTS - 1)),
+        settings.IPV6_ADDRESS_POOL,
+    )
+    return None
 
 
 async def _retire_on_demand_if_stale(
@@ -95,16 +127,22 @@ async def rebuild_stale_vms_once(
     update_watcher: UpdateWatcher,
     program_client: ProgramGuestClient,
     pubsub_getter: Callable[[], object | None],
+    stop: asyncio.Event | None = None,
 ) -> StalePassReport:
     report = StalePassReport()
+    stop = stop or asyncio.Event()
     try:
         pool = IPv6Network(settings.IPV6_ADDRESS_POOL)
     except ValueError:
         logger.error("IPV6_ADDRESS_POOL %r does not parse; skipping the stale IPv6 pass", settings.IPV6_ADDRESS_POOL)
         return report
 
+    listed = await _list_vms(supervisor, stop)
+    if listed is None:
+        return report
+
     stale: list[tuple[VmId, str]] = []
-    for info in await supervisor.list_vms():
+    for info in listed:
         if info.status in (VmStatus.DEFINED, VmStatus.BOOTING):
             # No live address yet to judge; a start path judges it once up.
             report.not_judged.append(info.vm_id)
@@ -135,6 +173,9 @@ async def rebuild_stale_vms_once(
     # One at a time: each move is a VM reboot, and a burst would starve the
     # node of memory and download bandwidth.
     for vm_id, old_network in stale:
+        if stop.is_set():
+            logger.info("Agent stopping: the stale IPv6 pass leaves the remaining VMs for the next start")
+            break
         vm_hash = ItemHash(str(vm_id))
         record = registry.get(vm_hash)
         if record is None:
@@ -187,6 +228,7 @@ async def rebuild_stale_vms_once(
 async def start_stale_ipv6_pass(app: web.Application) -> None:
     """on_startup hook: run the pass in the background so a slow rebuild
     never delays the agent's boot."""
+    stop = asyncio.Event()
 
     async def _run() -> None:
         await rebuild_stale_vms_once(
@@ -197,7 +239,27 @@ async def start_stale_ipv6_pass(app: web.Application) -> None:
             update_watcher=app["update_watcher"],
             program_client=app["program_client"],
             pubsub_getter=lambda: app.get("pubsub"),
+            stop=stop,
         )
 
+    app["_stale_ipv6_stop"] = stop
     app["_stale_ipv6_pass"] = create_task_log_exceptions(_run(), name="stale ipv6 pass")
 
+
+async def stop_stale_ipv6_pass(app: web.Application) -> None:
+    """on_cleanup hook: let a move in flight finish, then stop the pass. A move
+    cancelled halfway would leave the VM retired and not recreated."""
+    task = app.get("_stale_ipv6_pass")
+    if task is None:
+        return
+    stop = app.get("_stale_ipv6_stop")
+    if stop is not None:
+        stop.set()
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=_STOP_GRACE_SECONDS)
+    except asyncio.TimeoutError:
+        logger.warning("The stale IPv6 pass did not finish within %ds; cancelling it", int(_STOP_GRACE_SECONDS))
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    except Exception:
+        logger.debug("The stale IPv6 pass ended with an error", exc_info=True)
