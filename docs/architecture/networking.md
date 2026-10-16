@@ -73,8 +73,21 @@ landing on one is refused rather than moved. The address is persisted as
 restart. A legacy config without it adopts the address still configured on
 its live tap (`TapBackend::global_ipv6_address`); with neither, a running
 VM is hidden like a failed reattach and a stopped one refuses to start
-(the agent then rebuilds it through a fresh create). Guest = network+1,
+(the agent then rebuilds it through a fresh create); the same holds for
+a persisted address outside the current pool. Guest = network+1,
 gateway = the network address.
+
+**Changing the IPv6 pool.** Edit `IPV6_ADDRESS_POOL` in
+`/etc/aleph-vm/supervisor.env` and restart `aleph-vm-agent`. The agent's
+startup pass (`stale_ipv6.py`) lists the supervisor's VMs and rebuilds every
+running one whose address lies outside the new pool, one VM at a time: a
+reboot per affected VM, disks and port forwards kept, logged as "Moved
+<vm> off stale IPv6 network <old> to <new>". A stopped VM stays stopped and
+is rebuilt on its owner's next start. The daemon does not need a restart; it
+keeps serving the old address until the rebuild and logs "guest IPv6 lies
+outside the host pool" for each such VM. A VM hidden in the daemon's
+reattach queue is not listed and catches up through the usual paths, or on
+a second agent restart.
 
 Both parsers (`parse_ipv4_cidr`/`parse_ipv6_cidr`) reject a pool with host
 bits set and a prefix that does not actually subnet the pool, matching
