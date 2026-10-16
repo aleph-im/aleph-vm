@@ -94,6 +94,30 @@ def _parse_network(cidr: str) -> IPv6Network | None:
         return None
 
 
+def usable_ipv6(cidr: str) -> bool:
+    """Whether ``cidr`` is a guest network this node can serve: inside the
+    current ``IPV6_ADDRESS_POOL``. A persisted address survives a pool change
+    unchanged, so every reuse of one goes through here."""
+    network = _parse_network(cidr)
+    if network is None:
+        return False
+    try:
+        pool = IPv6Network(settings.IPV6_ADDRESS_POOL)
+    except ValueError:
+        logger.error("IPV6_ADDRESS_POOL %r does not parse; no guest IPv6 is usable", settings.IPV6_ADDRESS_POOL)
+        return False
+    return network.subnet_of(pool)
+
+
+def stale_ipv6(cidr: str) -> bool:
+    """A non-empty guest network outside the pool: the VM holds an address
+    this node no longer routes and must be rebuilt. An empty address is not
+    stale (no tap, networking off, or an entry adopted without one)."""
+    if not cidr or not settings.ALLOW_VM_NETWORKING:
+        return False
+    return not usable_ipv6(cidr)
+
+
 async def _network_of(supervisor: Supervisor, info: VmInfo) -> IPv6Network | None:
     """The guest network a VM holds: its live assignment, or for a VM without
     one (stopped) the address it was created with, which it gets back on start."""

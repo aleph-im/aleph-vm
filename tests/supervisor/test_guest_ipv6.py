@@ -9,6 +9,8 @@ from aleph.vm.agent.guest_ipv6 import (
     compute_requested_ipv6,
     create_vm_with_ipv6,
     lacks_known_ipv6,
+    stale_ipv6,
+    usable_ipv6,
 )
 from aleph.vm.conf import IPv6AllocationPolicy, settings
 from aleph.vm.supervisor_interface.errors import (
@@ -317,3 +319,27 @@ async def test_lacks_known_ipv6_ignores_vms_without_a_tap(dynamic, monkeypatch):
     monkeypatch.setattr(settings, "ALLOW_VM_NETWORKING", False)
     monkeypatch.setattr(supervisor, "get_vm_spec", FakeSupervisor(stopped={"legacy": ""}).get_vm_spec)
     assert await lacks_known_ipv6(supervisor, VmId("legacy")) is False
+
+
+# ── pool membership ─────────────────────────────────────────────────────
+
+
+def test_usable_ipv6_requires_an_address_inside_the_pool(dynamic):
+    assert usable_ipv6("fc00:1:2:3::10/124") is True
+    assert usable_ipv6("fc00:1:2:3:3:dead:beef:aa0/124") is True
+    # Empty, malformed, outside the pool, or wider than the pool.
+    assert usable_ipv6("") is False
+    assert usable_ipv6("not-an-address") is False
+    assert usable_ipv6("2001:db8::10/124") is False
+    assert usable_ipv6("fc00:1:2::/60") is False
+
+
+def test_stale_ipv6_is_a_non_empty_address_outside_the_pool(dynamic, monkeypatch):
+    assert stale_ipv6("2001:db8::10/124") is True
+    assert stale_ipv6("garbage") is True
+    # No address is not a stale address: an entry adopted without one, a
+    # program without a tap, or networking off.
+    assert stale_ipv6("") is False
+    assert stale_ipv6("fc00:1:2:3::10/124") is False
+    monkeypatch.setattr(settings, "ALLOW_VM_NETWORKING", False)
+    assert stale_ipv6("2001:db8::10/124") is False
