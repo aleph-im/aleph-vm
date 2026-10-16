@@ -32,7 +32,7 @@ from aleph.vm.agent.capacity import (
 )
 from aleph.vm.agent.create_lock import vm_create_lock
 from aleph.vm.agent.expiry import ExpiryManager
-from aleph.vm.agent.guest_ipv6 import create_vm_with_ipv6, lacks_known_ipv6
+from aleph.vm.agent.guest_ipv6 import create_vm_with_ipv6, lacks_usable_ipv6
 from aleph.vm.agent.snp_instance_launch import (
     build_snp_instance_spec,
     confidential_gpu,
@@ -1189,11 +1189,10 @@ async def start_persistent_vm(
                 logger.info(f"{vm_hash} is stopping, waiting before restart")
                 await _wait_until_gone(supervisor, vm_id)
                 info = None
-            elif info.status == VmStatus.STOPPED and await lacks_known_ipv6(supervisor, vm_id):
-                # A stopped VM whose config predates the persisted guest IPv6
-                # (older supervisor): the supervisor never derives an address,
-                # so it refuses to start it. Rebuild it instead, like a FAILED
-                # VM: the fresh create carries an address this agent allocates.
+            elif info.status == VmStatus.STOPPED and await lacks_usable_ipv6(supervisor, vm_id):
+                # A stopped VM with no usable guest IPv6: the config predates
+                # the persisted address, or the pool changed since. Rebuild it
+                # through a fresh create that carries an in-pool address.
                 logger.info(f"{vm_hash} is stopped with no known guest IPv6, recreating")
                 await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
                 info = None
