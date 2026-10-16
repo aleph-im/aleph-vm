@@ -340,6 +340,7 @@ async def test_pass_waits_for_the_supervisor_to_answer(pool, monkeypatch):
             [_info(HASH_A, VmStatus.RUNNING, "2001:db8::10/124")],
         ]
     )
+    supervisor.get_vm = AsyncMock(return_value=_info(HASH_A, VmStatus.RUNNING, "fc00:1:2:3::20/124"))
     start = AsyncMock(return_value=StaleRebuild.MOVED)
 
     report = await _run(supervisor, _registry(HASH_A), start=start, monkeypatch=monkeypatch)
