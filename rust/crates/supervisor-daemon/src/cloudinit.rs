@@ -78,6 +78,9 @@ pub fn user_data(
     config.insert("ssh_authorized_keys".into(), json!(ssh_authorized_keys));
     config.insert("resize_rootfs".into(), json!(true));
     config.insert("package_update".into(), json!(true));
+    // Re-apply the seed's network config on every boot, not only on a new
+    // instance-id: a rebuild keeps the index but may change the address.
+    config.insert("updates".into(), json!({"network": {"when": ["boot"]}}));
     let mut bootcmd: Vec<Value> = Vec::new();
     if is_confidential {
         // Confidential instances use LUKS: cloud-init's growpart cannot
