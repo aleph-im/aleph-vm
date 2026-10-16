@@ -4308,6 +4308,8 @@ pub fn reconcile_boot(state: &DaemonState) {
     for vm_id in running {
         let result = (|| -> Result<(), LifecycleError> {
             let tap = tap_assignment(state, &vm_id)?;
+            let is_snp =
+                entry_snapshot(state, &vm_id).is_some_and(|entry| entry.config.snp().is_some());
             {
                 let _net = net_lock(state);
                 if !state.taps.interface_exists(&tap.device_name) {
@@ -4315,16 +4317,30 @@ pub fn reconcile_boot(state: &DaemonState) {
                     if let Some(ndp) = &state.ndp {
                         ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
                     }
-                }
-                if let Some(ndp) = &state.ndp
-                    && state.taps.interface_exists(&tap.device_name)
-                {
-                    // Prime the in-memory map without a config rewrite or
-                    // service restart: the on-disk ndppd.conf already covers
-                    // running VMs (update_service=False in Python).
-                    ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, false)?;
+                } else {
+                    // QEMU creates the tap itself after a host reboot, with
+                    // no host address: put ours on it.
+                    if let Err(error) = state.taps.ensure_addresses(&tap) {
+                        tracing::warn!(vm_id, %error, "cannot ensure the tap addresses; continuing");
+                    }
+                    if let Some(ndp) = &state.ndp {
+                        // Prime the in-memory map without a config rewrite or
+                        // service restart: the on-disk ndppd.conf already
+                        // covers running VMs.
+                        ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, false)?;
+                    }
                 }
                 nft_setup_vm(state, tap.vm_index, &tap.device_name)?;
+                // The transient DHCP unit does not survive a host reboot.
+                if is_snp {
+                    let config = dhcp::DhcpConfig::for_tap(
+                        &vm_id,
+                        &tap,
+                        state.host.dns_nameservers.as_deref().unwrap_or(&[]),
+                        &dhcp_lease_dir(state),
+                    )?;
+                    state.dhcp.start(&config)?;
+                }
             }
             recreate_port_redirect_rules(state, &vm_id)?;
             Ok(())
@@ -8640,6 +8656,127 @@ mod tests {
         assert!(
             world.reserved_vm_indices.contains(&4),
             "its vm_index claim is kept out of the allocator"
+        );
+    }
+
+    #[test]
+    fn boot_reconcile_puts_the_addresses_on_a_tap_qemu_created() {
+        // Host reboot: the controller unit started on its own and QEMU
+        // created the tap without a host address. Adoption must add it.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('a');
+        let (entry, _) = create_vm(state, spec(&vm_id, &root)).unwrap();
+        with_entry_mut(state, &vm_id, |entry| entry.adopted_running = true);
+        let creates_before = harness.taps.actions().len();
+
+        reconcile_boot(state);
+
+        let actions = harness.taps.actions();
+        let tap = TapAssignment::new(
+            entry.vm_index,
+            entry.ipv4.clone().unwrap(),
+            entry.ipv6.clone().unwrap(),
+        );
+        assert_eq!(
+            actions[creates_before..],
+            [format!(
+                "ensure {} {} {}",
+                tap.device_name,
+                tap.host_ipv4_cidr(),
+                tap.host_ipv6_cidr()
+            )]
+        );
+        assert!(
+            harness.dhcp.started().is_empty(),
+            "a plain VM gets no DHCP server"
+        );
+        assert!(state.world.blocking_read().entries.contains_key(&vm_id));
+    }
+
+    #[test]
+    fn boot_reconcile_restarts_the_dhcp_server_of_an_snp_vm() {
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('b');
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let (entry, _) =
+            create_vm(state, snp_spec(&vm_id, &root, &firmware.to_string_lossy())).unwrap();
+        with_entry_mut(state, &vm_id, |entry| entry.adopted_running = true);
+        assert_eq!(harness.dhcp.started().len(), 1, "the create started one");
+
+        reconcile_boot(state);
+
+        let started = harness.dhcp.started();
+        assert_eq!(
+            started.len(),
+            2,
+            "adoption starts it again (start replaces a leftover unit)"
+        );
+        assert_eq!(started[1].vm_hash, vm_id);
+        assert_eq!(started[1].device_name, format!("vmtap{}", entry.vm_index));
+        assert_eq!(started[1].guest_ipv6, entry.ipv6.as_ref().unwrap().address);
+        assert_eq!(
+            started[1].lease_file, started[0].lease_file,
+            "same lease db, the guest's lease stays valid"
+        );
+        assert!(harness.dhcp.is_running(&vm_id));
+    }
+
+    #[test]
+    fn boot_reconcile_still_creates_a_missing_tap() {
+        // Adoption ran before QEMU opened the tap: the existing path.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('c');
+        let (entry, _) = create_vm(state, spec(&vm_id, &root)).unwrap();
+        with_entry_mut(state, &vm_id, |entry| entry.adopted_running = true);
+        let tap = TapAssignment::new(
+            entry.vm_index,
+            entry.ipv4.clone().unwrap(),
+            entry.ipv6.clone().unwrap(),
+        );
+        harness.taps.delete_tap(&tap).unwrap();
+
+        reconcile_boot(state);
+
+        let actions = harness.taps.actions();
+        assert_eq!(
+            actions.last().unwrap(),
+            &format!(
+                "create {} {} {}",
+                tap.device_name,
+                tap.host_ipv4_cidr(),
+                tap.host_ipv6_cidr()
+            )
+        );
+        assert!(!actions.iter().any(|action| action.starts_with("ensure")));
+    }
+
+    #[test]
+    fn boot_reconcile_keeps_the_vm_when_ensure_fails() {
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('d');
+        create_vm(state, spec(&vm_id, &root)).unwrap();
+        with_entry_mut(state, &vm_id, |entry| entry.adopted_running = true);
+        harness.taps.fail_ensure(|| TapError::Command {
+            argv: "addr replace".to_string(),
+            stderr: "Operation not permitted".to_string(),
+        });
+
+        reconcile_boot(state);
+
+        // The production backend never returns Err for an address failure;
+        // the reconcile tolerates one from a backend that does, logging it.
+        assert!(
+            state.world.blocking_read().entries.contains_key(&vm_id),
+            "the VM is not hidden"
         );
     }
 
