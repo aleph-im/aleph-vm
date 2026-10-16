@@ -22,6 +22,7 @@ from aleph.vm.agent.capacity import CapacityManager
 from aleph.vm.agent.create_lock import vm_create_lock
 from aleph.vm.agent.expiry import ExpiryManager
 from aleph.vm.agent.guest_ipv6 import stale_ipv6
+from aleph.vm.agent.pubsub import PubSub
 from aleph.vm.agent.run import StaleRebuild, rebuild_if_stale
 from aleph.vm.agent.update_watcher import UpdateWatcher
 from aleph.vm.agent.vm.program_client import ProgramGuestClient
@@ -54,6 +55,8 @@ class StalePassReport:
     awaiting_init: list[VmId] = field(default_factory=list)
     failed: list[VmId] = field(default_factory=list)
     skipped: list[VmId] = field(default_factory=list)
+    # A FAILED or STOPPING VM is rebuilt by its next start, which carries an in-pool address.
+    left_to_start_paths: list[VmId] = field(default_factory=list)
 
 
 async def _held_network(supervisor: Supervisor, info: VmInfo) -> str:
@@ -96,6 +99,7 @@ async def _retire_on_demand_if_stale(
     vm_hash: ItemHash,
     *,
     supervisor: Supervisor,
+    expiry: ExpiryManager,
     update_watcher: UpdateWatcher,
     program_client: ProgramGuestClient,
 ) -> bool:
@@ -112,6 +116,7 @@ async def _retire_on_demand_if_stale(
                 "%s is %s on IPv6 network %r, not retiring it", vm_id, info.status.name, info.ipv6.network_cidr
             )
             return False
+        expiry.cancel(vm_id)
         update_watcher.cancel(vm_id)
         await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
         await program_client.forget(vm_id)
@@ -126,7 +131,7 @@ async def rebuild_stale_vms_once(
     expiry: ExpiryManager,
     update_watcher: UpdateWatcher,
     program_client: ProgramGuestClient,
-    pubsub_getter: Callable[[], object | None],
+    pubsub_getter: Callable[[], PubSub | None],
     stop: asyncio.Event | None = None,
 ) -> StalePassReport:
     report = StalePassReport()
@@ -148,6 +153,7 @@ async def rebuild_stale_vms_once(
             report.not_judged.append(info.vm_id)
             continue
         if info.status not in (VmStatus.RUNNING, VmStatus.STOPPED):
+            report.left_to_start_paths.append(info.vm_id)
             continue
         report.checked += 1
         network = await _held_network(supervisor, info)
@@ -158,16 +164,18 @@ async def rebuild_stale_vms_once(
             continue
         report.stale_running.append(info.vm_id)
         stale.append((info.vm_id, network))
-    noteworthy = report.stale_running or report.stale_stopped or report.not_judged
+    noteworthy = report.stale_running or report.stale_stopped or report.not_judged or report.left_to_start_paths
     logger.log(
         logging.INFO if noteworthy else logging.DEBUG,
         "IPv6 pool %s: %d VMs checked, %d running outside it (rebuilding), "
-        "%d stopped outside it (rebuilt on their next start), %d still starting (not judged)",
+        "%d stopped outside it (rebuilt on their next start), %d still starting (not judged), "
+        "%d failed or stopping (left to their start paths)",
         pool,
         report.checked,
         len(report.stale_running),
         len(report.stale_stopped),
         len(report.not_judged),
+        len(report.left_to_start_paths),
     )
 
     # One at a time: each move is a VM reboot, and a burst would starve the
@@ -196,7 +204,6 @@ async def rebuild_stale_vms_once(
                 if outcome is StaleRebuild.SKIPPED:
                     report.skipped.append(vm_id)
                     continue
-                new_network = (await supervisor.get_vm(vm_id)).ipv6.network_cidr
                 if outcome is StaleRebuild.MOVED_AWAITING_INIT:
                     logger.info(
                         "Moved %s off stale IPv6 network %s; it now awaits its owner's confidential session "
@@ -207,10 +214,24 @@ async def rebuild_stale_vms_once(
                     )
                     report.awaiting_init.append(vm_id)
                 else:
-                    logger.info("Moved %s off stale IPv6 network %s to %s", vm_id, old_network, new_network)
+                    try:
+                        new_network = (await supervisor.get_vm(vm_id)).ipv6.network_cidr
+                    except SupervisorError as error:
+                        logger.info(
+                            "Moved %s off stale IPv6 network %s (its new address could not be read: %s)",
+                            vm_id,
+                            old_network,
+                            error,
+                        )
+                    else:
+                        logger.info("Moved %s off stale IPv6 network %s to %s", vm_id, old_network, new_network)
             else:
                 retired = await _retire_on_demand_if_stale(
-                    vm_hash, supervisor=supervisor, update_watcher=update_watcher, program_client=program_client
+                    vm_hash,
+                    supervisor=supervisor,
+                    expiry=expiry,
+                    update_watcher=update_watcher,
+                    program_client=program_client,
                 )
                 if not retired:
                     report.skipped.append(vm_id)

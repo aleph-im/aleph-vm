@@ -16,7 +16,10 @@ from aleph.vm.agent.run import StaleRebuild
 from aleph.vm.agent.vm.retire import RetireReason
 from aleph.vm.agent.vm_registry import AgentVmRegistry
 from aleph.vm.conf import settings
-from aleph.vm.supervisor_interface.errors import InternalSupervisorError
+from aleph.vm.supervisor_interface.errors import (
+    InternalSupervisorError,
+    VmNotFoundError,
+)
 from aleph.vm.supervisor_interface.types import (
     Backend,
     CreateVmSpec,
@@ -91,6 +94,7 @@ async def _run(
     retire=None,
     program_client=None,
     update_watcher=None,
+    expiry=None,
     stop=None,
     monkeypatch=None,
 ):
@@ -101,7 +105,7 @@ async def _run(
         supervisor=supervisor,
         registry=registry,
         capacity=MagicMock(),
-        expiry=MagicMock(),
+        expiry=expiry or MagicMock(),
         update_watcher=update_watcher or MagicMock(),
         program_client=program_client or MagicMock(forget=AsyncMock()),
         pubsub_getter=lambda: None,
@@ -142,6 +146,7 @@ async def test_pass_retires_a_stale_on_demand_program_instead_of_starting_it(poo
     retire = AsyncMock()
     forget = AsyncMock()
     watcher = MagicMock()
+    expiry = MagicMock()
 
     report = await _run(
         supervisor,
@@ -150,10 +155,12 @@ async def test_pass_retires_a_stale_on_demand_program_instead_of_starting_it(poo
         retire=retire,
         program_client=MagicMock(forget=forget),
         update_watcher=watcher,
+        expiry=expiry,
         monkeypatch=monkeypatch,
     )
 
     start.assert_not_awaited()
+    expiry.cancel.assert_called_once_with(VmId(str(HASH_C)))
     watcher.cancel.assert_called_once_with(VmId(str(HASH_C)))
     retire.assert_awaited_once()
     call = retire.await_args
@@ -403,3 +410,30 @@ async def test_stop_hook_lets_the_move_in_flight_finish():
 
     assert finished == [True]
     assert not task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_pass_counts_a_move_as_moved_when_the_new_address_cannot_be_read(pool, monkeypatch):
+    supervisor = MagicMock()
+    supervisor.list_vms = AsyncMock(return_value=[_info(HASH_A, VmStatus.RUNNING, "2001:db8::10/124")])
+    supervisor.get_vm = AsyncMock(side_effect=VmNotFoundError("gone"))
+    start = AsyncMock(return_value=StaleRebuild.MOVED)
+
+    report = await _run(supervisor, _registry(HASH_A), start=start, monkeypatch=monkeypatch)
+
+    assert report.moved == [VmId(str(HASH_A))]
+    assert report.failed == []
+
+
+@pytest.mark.asyncio
+async def test_pass_reports_failed_and_stopping_vms_as_left_to_their_start_paths(pool, monkeypatch):
+    supervisor = MagicMock()
+    supervisor.list_vms = AsyncMock(return_value=[_info(HASH_A, VmStatus.FAILED, "2001:db8::10/124")])
+    start = AsyncMock()
+
+    report = await _run(supervisor, _registry(HASH_A), start=start, monkeypatch=monkeypatch)
+
+    assert report.left_to_start_paths == [VmId(str(HASH_A))]
+    assert report.moved == []
+    assert report.checked == 0
+    start.assert_not_awaited()
