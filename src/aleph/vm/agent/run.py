@@ -32,7 +32,7 @@ from aleph.vm.agent.capacity import (
 )
 from aleph.vm.agent.create_lock import vm_create_lock
 from aleph.vm.agent.expiry import ExpiryManager
-from aleph.vm.agent.guest_ipv6 import create_vm_with_ipv6, lacks_usable_ipv6
+from aleph.vm.agent.guest_ipv6 import create_vm_with_ipv6, lacks_usable_ipv6, stale_ipv6
 from aleph.vm.agent.snp_instance_launch import (
     build_snp_instance_spec,
     confidential_gpu,
@@ -1180,6 +1180,15 @@ async def start_persistent_vm(
                 # via /confidential/initialize. Waiting for RUNNING or recreating it
                 # would loop forever, so leave it untouched.
                 logger.info(f"{vm_hash} is waiting for its owner to initialize the confidential session")
+            elif info.status == VmStatus.RUNNING and stale_ipv6(info.ipv6.network_cidr):
+                # The pool changed under it: the guest holds an address this
+                # node no longer routes. Rebuild it like a FAILED VM.
+                logger.info(
+                    f"{vm_hash} runs on IPv6 network {info.ipv6.network_cidr}, "
+                    f"outside the pool {settings.IPV6_ADDRESS_POOL}: recreating"
+                )
+                await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
+                info = None
             elif info.status == VmStatus.RUNNING:
                 logger.info(f"{vm_hash} is already running")
             elif info.status in (VmStatus.DEFINED, VmStatus.BOOTING):

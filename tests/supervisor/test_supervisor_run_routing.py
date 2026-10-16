@@ -681,6 +681,68 @@ async def _start_persistent(sup, registry):
     )
 
 
+def _running_on(network_cidr: str) -> VmInfo:
+    return replace(_info(VmStatus.RUNNING), ipv6=IpAssignment(address="", network_cidr=network_cidr, gateway=""))
+
+
+@pytest.mark.asyncio
+async def test_start_persistent_rebuilds_a_running_vm_outside_the_pool(monkeypatch):
+    # The pool changed under a running VM: its address is dead, so the start
+    # path rebuilds it like a FAILED one instead of reporting it running.
+    monkeypatch.setattr(settings, "ALLOW_VM_NETWORKING", True)
+    monkeypatch.setattr(settings, "IPV6_ADDRESS_POOL", "fc00:1:2:3::/64")
+    sup = _fake_supervisor()
+    sup.get_vm = AsyncMock(return_value=_running_on("2001:db8::10/124"))
+    created = AsyncMock()
+    retired = AsyncMock()
+    monkeypatch.setattr(run_module, "create_vm_execution", created)
+    monkeypatch.setattr(run_module, "retire_vm", retired)
+    monkeypatch.setattr(run_module, "_wait_until_running", AsyncMock())
+
+    await _start_persistent(sup, AgentVmRegistry())
+
+    retired.assert_awaited_once()
+    assert retired.await_args is not None
+    assert retired.await_args.args[1] is run_module.RetireReason.RECREATE
+    created.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_start_persistent_leaves_a_running_vm_inside_the_pool_alone(monkeypatch):
+    monkeypatch.setattr(settings, "ALLOW_VM_NETWORKING", True)
+    monkeypatch.setattr(settings, "IPV6_ADDRESS_POOL", "fc00:1:2:3::/64")
+    sup = _fake_supervisor()
+    sup.get_vm = AsyncMock(return_value=_running_on("fc00:1:2:3::10/124"))
+    sup.list_port_forwards = AsyncMock(return_value=[])
+    created = AsyncMock()
+    retired = AsyncMock()
+    monkeypatch.setattr(run_module, "create_vm_execution", created)
+    monkeypatch.setattr(run_module, "retire_vm", retired)
+
+    await _start_persistent(sup, AgentVmRegistry())
+
+    retired.assert_not_awaited()
+    created.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_start_persistent_leaves_a_running_vm_with_no_address_alone(monkeypatch):
+    # An empty live address (adopted during a bus outage, or no tap) is not a
+    # stale one: never rebuild on it.
+    monkeypatch.setattr(settings, "ALLOW_VM_NETWORKING", True)
+    sup = _fake_supervisor()
+    sup.list_port_forwards = AsyncMock(return_value=[])
+    created = AsyncMock()
+    retired = AsyncMock()
+    monkeypatch.setattr(run_module, "create_vm_execution", created)
+    monkeypatch.setattr(run_module, "retire_vm", retired)
+
+    await _start_persistent(sup, AgentVmRegistry())
+
+    retired.assert_not_awaited()
+    created.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_start_persistent_readopt_instance_heals_with_strict_resolve(monkeypatch):
     """An instance adopted already-RUNNING gets its forwards reconciled from
