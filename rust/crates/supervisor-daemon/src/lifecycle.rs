@@ -3276,19 +3276,7 @@ fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, 
     // Python readopt propagating out of create.
     let restore = (|| -> Result<(), LifecycleError> {
         if state.host.settings.allow_vm_networking {
-            let tap = tap_assignment(state, vm_id)?;
-            let _net = net_lock(state);
-            if !state.taps.interface_exists(&tap.device_name) {
-                state.taps.create_tap(&tap)?;
-                if let Some(ndp) = &state.ndp {
-                    ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
-                }
-            } else if let Some(ndp) = &state.ndp {
-                // Prime the ndppd map without touching the service: the
-                // on-disk config already covers this running VM.
-                ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, false)?;
-            }
-            nft_setup_vm(state, tap.vm_index, &tap.device_name)?;
+            restore_adopted_network(state, vm_id)?;
         }
         with_entry_mut(state, vm_id, |entry| entry.times.started_at_ns = now_ns());
         recreate_port_redirect_rules(state, vm_id)?;
@@ -4288,6 +4276,41 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
 
 // ── Adoption step 5: the boot-time reconcile ────────────────────────────
 
+/// Put an adopted VM's host networking back: its tap (QEMU creates it with no
+/// host address after a host reboot), ndppd range, nft rules and, for a
+/// measured guest, its per-tap DHCP unit (transient, gone after a reboot).
+fn restore_adopted_network(state: &DaemonState, vm_id: &str) -> Result<(), LifecycleError> {
+    let tap = tap_assignment(state, vm_id)?;
+    let is_measured = entry_snapshot(state, vm_id).is_some_and(|entry| entry.config.is_measured());
+    let _net = net_lock(state);
+    if !state.taps.interface_exists(&tap.device_name) {
+        state.taps.create_tap(&tap)?;
+        if let Some(ndp) = &state.ndp {
+            ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
+        }
+    } else {
+        if let Err(error) = state.taps.ensure_addresses(&tap) {
+            tracing::warn!(vm_id, %error, "cannot ensure the tap addresses; continuing");
+        }
+        if let Some(ndp) = &state.ndp {
+            // Prime the in-memory map without a config rewrite or service
+            // restart: the on-disk ndppd.conf already covers running VMs.
+            ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, false)?;
+        }
+    }
+    nft_setup_vm(state, tap.vm_index, &tap.device_name)?;
+    if is_measured {
+        let config = dhcp::DhcpConfig::for_tap(
+            vm_id,
+            &tap,
+            state.host.dns_nameservers.as_deref().unwrap_or(&[]),
+            &dhcp_lease_dir(state),
+        )?;
+        state.dhcp.start(&config)?;
+    }
+    Ok(())
+}
+
 /// Ensure the kernel/service state of every VM adopted running:
 /// create-if-absent taps, primed ndppd ranges, per-VM nftables chains and
 /// persisted port redirects. Never flush-and-rebuild (live connections
@@ -4307,41 +4330,7 @@ pub fn reconcile_boot(state: &DaemonState) {
         .collect();
     for vm_id in running {
         let result = (|| -> Result<(), LifecycleError> {
-            let tap = tap_assignment(state, &vm_id)?;
-            let is_snp =
-                entry_snapshot(state, &vm_id).is_some_and(|entry| entry.config.snp().is_some());
-            {
-                let _net = net_lock(state);
-                if !state.taps.interface_exists(&tap.device_name) {
-                    state.taps.create_tap(&tap)?;
-                    if let Some(ndp) = &state.ndp {
-                        ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
-                    }
-                } else {
-                    // QEMU creates the tap itself after a host reboot, with
-                    // no host address: put ours on it.
-                    if let Err(error) = state.taps.ensure_addresses(&tap) {
-                        tracing::warn!(vm_id, %error, "cannot ensure the tap addresses; continuing");
-                    }
-                    if let Some(ndp) = &state.ndp {
-                        // Prime the in-memory map without a config rewrite or
-                        // service restart: the on-disk ndppd.conf already
-                        // covers running VMs.
-                        ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, false)?;
-                    }
-                }
-                nft_setup_vm(state, tap.vm_index, &tap.device_name)?;
-                // The transient DHCP unit does not survive a host reboot.
-                if is_snp {
-                    let config = dhcp::DhcpConfig::for_tap(
-                        &vm_id,
-                        &tap,
-                        state.host.dns_nameservers.as_deref().unwrap_or(&[]),
-                        &dhcp_lease_dir(state),
-                    )?;
-                    state.dhcp.start(&config)?;
-                }
-            }
+            restore_adopted_network(state, &vm_id)?;
             recreate_port_redirect_rules(state, &vm_id)?;
             Ok(())
         })();
@@ -8778,6 +8767,14 @@ mod tests {
             state.world.blocking_read().entries.contains_key(&vm_id),
             "the VM is not hidden"
         );
+        let index = state.world.blocking_read().entries[&vm_id].vm_index;
+        assert!(
+            harness
+                .taps
+                .actions()
+                .contains(&format!("ensure-failed vmtap{index}")),
+            "the failing ensure ran"
+        );
     }
 
     #[test]
@@ -9460,6 +9457,65 @@ mod tests {
             .failed_reattach
             .insert(vm_id.clone(), world::FailedReattach::new(3));
         vm_id
+    }
+
+    #[test]
+    fn the_retry_pass_addresses_an_existing_tap_on_readopt() {
+        let harness = harness();
+        let state = &harness.state;
+        let vm_id = seed_hidden_vm(&harness);
+        // vm_index 3 of the fixture; QEMU made the device, no host address.
+        let (ipv4, ipv6) =
+            world::derive_tap_assignment(&state.host.settings, 3, "fc00:1:2:3::30/124").unwrap();
+        let tap = TapAssignment::new(3, ipv4, ipv6);
+        harness.taps.create_tap(&tap).unwrap();
+        let before = harness.taps.actions().len();
+        harness
+            .systemd
+            .set_state(&controller_unit_name(&vm_id), "active");
+
+        retry_failed_reattachments_once(state);
+
+        assert!(
+            state.world.blocking_read().entries.contains_key(&vm_id),
+            "re-adopted"
+        );
+        let actions = harness.taps.actions();
+        assert_eq!(actions.len(), before + 1, "{actions:?}");
+        assert!(actions[before].starts_with("ensure vmtap3 "), "{actions:?}");
+    }
+
+    #[test]
+    fn the_retry_pass_restarts_the_dhcp_server_of_a_readopted_snp_vm() {
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('e');
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        let (entry, _) =
+            create_vm(state, snp_spec(&vm_id, &root, &firmware.to_string_lossy())).unwrap();
+        // Hide it the way adoption would: entry gone, index reserved, queued.
+        {
+            let mut world = state.world.blocking_write();
+            world.entries.remove(&vm_id);
+            world.reserved_vm_indices.insert(entry.vm_index);
+            world
+                .failed_reattach
+                .insert(vm_id.clone(), world::FailedReattach::new(entry.vm_index));
+        }
+        harness
+            .systemd
+            .set_state(&controller_unit_name(&vm_id), "active");
+        assert_eq!(harness.dhcp.started().len(), 1);
+
+        retry_failed_reattachments_once(state);
+
+        assert!(state.world.blocking_read().entries.contains_key(&vm_id));
+        let started = harness.dhcp.started();
+        assert_eq!(started.len(), 2);
+        assert_eq!(started[1].vm_hash, vm_id);
+        assert_eq!(started[1].guest_ipv6, entry.ipv6.as_ref().unwrap().address);
     }
 
     #[test]

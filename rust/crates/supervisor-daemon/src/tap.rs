@@ -441,7 +441,11 @@ impl TapBackend for FakeTapBackend {
     fn ensure_addresses(&self, tap: &TapAssignment) -> Result<(), TapError> {
         let mut inner = self.lock();
         if let Some(make) = &inner.fail_ensure {
-            return Err(make());
+            let error = make();
+            inner
+                .actions
+                .push(format!("ensure-failed {}", tap.device_name));
+            return Err(error);
         }
         inner.actions.push(format!(
             "ensure {} {} {}",
@@ -549,6 +553,17 @@ mod tests {
             fake.global_ipv6_address("vmtap3"),
             Some(tap.host_ipv6_cidr())
         );
+    }
+
+    #[test]
+    fn the_fake_records_a_failed_ensure() {
+        let fake = FakeTapBackend::with_devices(&["vmtap3"]);
+        fake.fail_ensure(|| TapError::Command {
+            argv: "addr replace".to_string(),
+            stderr: "denied".to_string(),
+        });
+        assert!(fake.ensure_addresses(&assignment()).is_err());
+        assert_eq!(fake.actions(), vec!["ensure-failed vmtap3".to_string()]);
     }
 
     #[test]
