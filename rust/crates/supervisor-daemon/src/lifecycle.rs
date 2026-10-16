@@ -4290,13 +4290,16 @@ fn restore_adopted_network(state: &DaemonState, vm_id: &str) -> Result<(), Lifec
                 ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
             }
         } else {
+            // A tap without a host IPv6 was created by QEMU after a host
+            // reboot: ndppd started before it existed and needs a restart.
+            let bare_tap = state.taps.global_ipv6_address(&tap.device_name).is_none();
             if let Err(error) = state.taps.ensure_addresses(&tap) {
                 tracing::warn!(vm_id, %error, "cannot ensure the tap addresses; continuing");
             }
             if let Some(ndp) = &state.ndp {
-                // Prime the in-memory map without a config rewrite or service
-                // restart: the on-disk ndppd.conf already covers running VMs.
-                ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, false)?;
+                // Otherwise prime the map only: the on-disk ndppd.conf
+                // already covers running VMs.
+                ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, bare_tap)?;
             }
         }
         nft_setup_vm(state, tap.vm_index, &tap.device_name)?;
@@ -8750,6 +8753,56 @@ mod tests {
             "only the create started it"
         );
         assert!(harness.dhcp.stopped().is_empty());
+        assert!(state.world.blocking_read().entries.contains_key(&vm_id));
+    }
+
+    #[test]
+    fn boot_reconcile_restarts_ndppd_for_a_bare_tap() {
+        // Host reboot: ndppd started before QEMU created the tap.
+        let mut harness = harness();
+        let root = harness.state.host.settings.execution_root.clone();
+        let vm_id = hash('9');
+        let (entry, _) = create_vm(&harness.state, spec(&vm_id, &root)).unwrap();
+        let edge = Arc::new(crate::ndppd::FakeNdppd::default());
+        Arc::get_mut(&mut harness.state).unwrap().ndp = Some(Arc::new(
+            crate::ndppd::NdpProxy::new("eth0".into(), edge.clone()),
+        ));
+        let state = &harness.state;
+        let device = format!("vmtap{}", entry.vm_index);
+        harness.taps.add_bare_device(&device);
+        with_entry_mut(state, &vm_id, |entry| entry.adopted_running = true);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+
+        reconcile_boot(state);
+
+        let written = edge.written();
+        assert_eq!(written.len(), 1, "the config is rewritten");
+        assert!(written[0].contains(&device), "{written:?}");
+        runtime.block_on(tokio::time::sleep(std::time::Duration::from_millis(1500)));
+        assert_eq!(edge.restart_count(), 1);
+    }
+
+    #[test]
+    fn boot_reconcile_only_primes_ndppd_for_an_addressed_tap() {
+        // Plain daemon restart: the tap kept its addresses, ndppd is current.
+        let mut harness = harness();
+        let root = harness.state.host.settings.execution_root.clone();
+        let vm_id = hash('8');
+        create_vm(&harness.state, spec(&vm_id, &root)).unwrap();
+        let edge = Arc::new(crate::ndppd::FakeNdppd::default());
+        Arc::get_mut(&mut harness.state).unwrap().ndp = Some(Arc::new(
+            crate::ndppd::NdpProxy::new("eth0".into(), edge.clone()),
+        ));
+        let state = &harness.state;
+        with_entry_mut(state, &vm_id, |entry| entry.adopted_running = true);
+
+        reconcile_boot(state);
+
+        assert!(edge.written().is_empty());
         assert!(state.world.blocking_read().entries.contains_key(&vm_id));
     }
 

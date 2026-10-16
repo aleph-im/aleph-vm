@@ -366,6 +366,14 @@ impl FakeTapBackend {
         self
     }
 
+    /// A live device with no host address, as QEMU creates it after a host
+    /// reboot.
+    pub fn add_bare_device(&self, device_name: &str) {
+        let mut inner = self.lock();
+        inner.devices.insert(device_name.to_string());
+        inner.ipv6_addresses.remove(device_name);
+    }
+
     pub fn actions(&self) -> Vec<String> {
         self.lock().actions.clone()
     }
