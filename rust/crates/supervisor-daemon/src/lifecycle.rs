@@ -4312,8 +4312,9 @@ fn restore_adopted_network(state: &DaemonState, vm_id: &str) -> Result<(), Lifec
 }
 
 /// Ensure the kernel/service state of every VM adopted running:
-/// create-if-absent taps, primed ndppd ranges, per-VM nftables chains and
-/// persisted port redirects. Never flush-and-rebuild (live connections
+/// taps (created if absent, addresses ensured on an existing one), the
+/// measured guests' DHCP units, primed ndppd ranges, per-VM nftables chains
+/// and persisted port redirects. Never flush-and-rebuild (live connections
 /// survive), exactly the `_restore_network` half of the Python reattach. A
 /// per-VM failure hides the VM like a failed Python reattach.
 pub fn reconcile_boot(state: &DaemonState) {

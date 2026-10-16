@@ -89,6 +89,10 @@ binding tolerated as warnings rather than errors: `EEXIST` on an
 already-existing device or address, and `EBUSY` on tap creation ("is
 another process using it?"); everything else propagates. A missing device
 on delete is a warning, not a failure: deletion is idempotent by design.
+At adoption (boot reconcile and readopt) a tap that already exists, which
+QEMU created itself when the controller started before the daemon after a
+host reboot, gets its host addresses through `TapBackend::ensure_addresses`
+(`ip addr replace`, idempotent) instead of being left bare.
 
 ### nftables ruleset structure
 
@@ -259,11 +263,11 @@ Type=exec` (`Type=exec` is load-bearing: with the default
 daemon would boot the VM with no working DHCP while believing it worked).
 Lease files live one-per-VM under `{EXECUTION_ROOT}/dhcp/{vm_hash}.leases`
 so concurrent per-tap servers never share a lease database. Only
-`create_vm`/`start_vm` (re)start this server, and only the teardown paths
-stop it; `reconcile_boot` never touches DHCP at all, because the per-tap
-dnsmasq runs as its own transient systemd unit, independent of the daemon
-process, and so survives a daemon restart on its own with no boot-time
-reconciliation needed (see
+`create_vm`/`start_vm` and adoption (re)start this server, and only the
+teardown paths stop it. The unit is transient and does not survive a host
+reboot; adoption starts it again for every measured VM (SEV-SNP or TDX)
+adopted running (a plain daemon restart therefore restarts a healthy
+dnsmasq once, on the same lease file; see
 [`vm-lifecycle.md`](vm-lifecycle.md#adoption-and-boot-reconcile)). A
 `debug_assert_eq!` in `create_vm_inner` checks the request-level and
 written-config `snp()` predicates agree, specifically to prevent a DHCP
@@ -294,10 +298,8 @@ exactly.
 - Boot reconcile, create, start and stop only ever create-if-absent
   tap/nftables/ndppd state; only the operator-invoked `RecreateNetwork` RPC
   flushes and rebuilds (`rust/crates/supervisor-daemon/src/lifecycle.rs`).
-  DHCP is not part of this: `reconcile_boot` never touches it, since the
-  per-tap dnsmasq is a transient systemd unit that survives a daemon
-  restart on its own; only `create_vm`/`start_vm` (re)start it and only the
-  teardown paths stop it
+  DHCP is not part of this: only `create_vm`/`start_vm` and adoption
+  (re)start the per-tap dnsmasq unit and only the teardown paths stop it
   (see [`vm-lifecycle.md`](vm-lifecycle.md#adoption-and-boot-reconcile)).
 - The supervisor is the sole writer of nftables and port-forward state; the
   agent only computes desired forwards and diffs against
