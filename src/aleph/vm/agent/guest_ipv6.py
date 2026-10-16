@@ -103,14 +103,26 @@ def _pool() -> IPv6Network | None:
 
 
 def usable_ipv6(cidr: str) -> bool:
-    """Whether ``cidr`` is a guest network this node can serve: inside the
-    current ``IPV6_ADDRESS_POOL``. A persisted address survives a pool change
-    unchanged, so every reuse of one goes through here."""
+    """Whether ``cidr`` is a guest network this node can serve. A persisted
+    address survives a pool change unchanged, so every reuse of one goes
+    through here.
+
+    Dynamic policy: inside the current ``IPV6_ADDRESS_POOL``. Static policy:
+    a guest-sized network on the pool's first 64 bits, the ones the scheduler
+    builds the address from (a pool wider than /64 holds addresses it never
+    computes)."""
     network = _parse_network(cidr)
     if network is None:
         return False
     pool = _pool()
-    return pool is not None and network.subnet_of(pool)
+    if pool is None:
+        return False
+    if settings.IPV6_ALLOCATION_POLICY == IPv6AllocationPolicy.static:
+        return (
+            network.prefixlen in (124, settings.IPV6_SUBNET_PREFIX)
+            and int(network.network_address) >> 64 == int(pool.network_address) >> 64
+        )
+    return network.subnet_of(pool)
 
 
 def stale_ipv6(cidr: str) -> bool:

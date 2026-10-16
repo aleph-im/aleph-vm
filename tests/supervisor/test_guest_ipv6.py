@@ -375,6 +375,35 @@ def test_usable_ipv6_requires_an_address_inside_the_pool(dynamic):
     assert usable_ipv6("fc00:1:2::/60") is False
 
 
+@pytest.fixture
+def static_pool(monkeypatch):
+    monkeypatch.setattr(settings, "IPV6_ALLOCATION_POLICY", IPv6AllocationPolicy.static)
+    monkeypatch.setattr(settings, "IPV6_ADDRESS_POOL", "fc00:1:2::/48")
+    monkeypatch.setattr(settings, "IPV6_SUBNET_PREFIX", 124)
+    monkeypatch.setattr(settings, "ALLOW_VM_NETWORKING", True)
+
+
+def test_static_usable_ipv6_needs_the_pools_first_64_bits(static_pool):
+    # The static address is built from the pool's first four hextets, so a
+    # /124 elsewhere in a wider pool is not where the scheduler expects it.
+    assert usable_ipv6("fc00:1:2:3:3:dead:beef:aa0/124") is False
+    assert usable_ipv6("fc00:1:2:0:3:dead:beef:aa0/124") is True
+    assert usable_ipv6("fc00:1:2:4:3:dead:beef:aa0/124") is False
+    assert usable_ipv6("fc00:1:2::/64") is False
+
+
+def test_static_usable_ipv6_on_a_64_pool(static_pool, monkeypatch):
+    monkeypatch.setattr(settings, "IPV6_ADDRESS_POOL", "fc00:1:2:3::/64")
+    assert usable_ipv6("fc00:1:2:3:3:dead:beef:aa0/124") is True
+    assert usable_ipv6("fc00:1:2:4:3:dead:beef:aa0/124") is False
+
+
+def test_dynamic_usable_ipv6_is_pool_membership(dynamic, monkeypatch):
+    monkeypatch.setattr(settings, "IPV6_ADDRESS_POOL", "fc00:1:2::/48")
+    assert usable_ipv6("fc00:1:2:3:3:dead:beef:aa0/124") is True
+    assert usable_ipv6("fc00:1:2:4:3:dead:beef:aa0/124") is True
+
+
 def test_stale_ipv6_is_a_non_empty_address_outside_the_pool(dynamic, monkeypatch):
     assert stale_ipv6("2001:db8::10/124") is True
     assert stale_ipv6("garbage") is True
