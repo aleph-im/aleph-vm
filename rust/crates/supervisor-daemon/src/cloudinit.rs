@@ -3,10 +3,8 @@
 //! configuration assembly.
 //!
 //! The Python builder emits YAML (yaml.safe_dump); this port emits the
-//! `#cloud-config` header plus a JSON body. JSON is a YAML subset, so
-//! cloud-init parses both into the same structure; the parity target is
-//! the parsed mapping, asserted by the conformance suite against the
-//! actual Python functions. Nothing compares the raw seed bytes.
+//! `#cloud-config` header plus a JSON body, which cloud-init parses alike
+//! since JSON is a YAML subset. The fixtures pin the daemon's own output.
 //! Increment 6 adds the confidential create path: the LUKS growpart
 //! bootcmds and the install_guest_agent=false branch
 //! (build_qemu_confidential_configuration).
@@ -264,9 +262,8 @@ mod tests {
     use super::*;
     use crate::world::IpPair;
 
-    /// The committed parity fixtures under tests/fixtures/cloudinit/; the
-    /// conformance suite parses the same files and compares them with the
-    /// parsed output of the actual Python builders. Regenerate with
+    /// The committed fixtures under tests/fixtures/cloudinit/, pinning the
+    /// daemon's own seed output. Regenerate with
     /// UPDATE_CLOUDINIT_FIXTURES=1 cargo test -p supervisor-daemon cloudinit.
     fn assert_matches_fixture(name: &str, produced: &str) {
         let path = crate::test_fixtures::fixtures_dir()

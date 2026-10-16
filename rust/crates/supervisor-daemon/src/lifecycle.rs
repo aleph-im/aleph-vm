@@ -572,7 +572,7 @@ fn known_ipv6_cidr(state: &DaemonState, entry: &VmEntry) -> Result<String, world
             if !world::ipv6_in_pool(&state.host.settings.ipv6_address_pool, cidr) {
                 tracing::warn!(
                     vm_hash = entry.vm_hash,
-                    cidr,
+                    network = cidr,
                     pool = state.host.settings.ipv6_address_pool,
                     "starting on a guest IPv6 outside the host pool; the agent rebuilds the VM"
                 );
