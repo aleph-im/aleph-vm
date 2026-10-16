@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -195,14 +197,16 @@ async def test_pass_continues_past_a_failed_move(pool, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_pass_skips_on_an_unparseable_pool(pool, monkeypatch):
+async def test_pass_skips_on_an_unparseable_pool(pool, monkeypatch, caplog):
     monkeypatch.setattr(settings, "IPV6_ADDRESS_POOL", "nonsense")
     supervisor = MagicMock()
     supervisor.list_vms = AsyncMock()
 
-    report = await _run(supervisor, AgentVmRegistry(), monkeypatch=monkeypatch)
+    with caplog.at_level(logging.ERROR, logger="aleph.vm.agent.stale_ipv6"):
+        report = await _run(supervisor, AgentVmRegistry(), monkeypatch=monkeypatch)
 
     assert report.checked == 0
+    assert any(r.levelno == logging.ERROR and "IPV6_ADDRESS_POOL" in r.getMessage() for r in caplog.records)
     supervisor.list_vms.assert_not_awaited()
 
 
@@ -222,6 +226,7 @@ async def test_pass_moves_vms_one_at_a_time(pool, monkeypatch):
 
     async def start(vm_hash, *args, **kwargs):
         order.append(f"begin {vm_hash[:1]}")
+        await asyncio.sleep(0)
         order.append(f"end {vm_hash[:1]}")
 
     await _run(supervisor, _registry(HASH_A, HASH_B), start=start, monkeypatch=monkeypatch)
