@@ -81,6 +81,11 @@ pub trait TapBackend: Send + Sync {
     /// error.
     fn delete_tap(&self, tap: &TapAssignment) -> Result<(), TapError>;
 
+    /// Put the host-side addresses on a device that already exists (QEMU
+    /// creates the tap itself when it is absent at boot) and set it up.
+    /// Idempotent: a device that already carries them is left as is.
+    fn ensure_addresses(&self, tap: &TapAssignment) -> Result<(), TapError>;
+
     /// The global IPv6 address configured on a live device, in
     /// `address/prefix` form (the host side of the tap, i.e. the guest
     /// network address), or `None` when the device or address is absent or
@@ -140,6 +145,34 @@ fn classify_ip_failure(stderr: &str) -> IpFailure {
     } else {
         IpFailure::Other
     }
+}
+
+/// The `ip` calls `ensure_addresses` makes, in order. `addr replace` is
+/// idempotent where `addr add` reports EEXIST.
+pub fn ensure_addresses_argv(tap: &TapAssignment) -> Vec<Vec<String>> {
+    let owned = |parts: &[&str]| {
+        parts
+            .iter()
+            .map(|part| part.to_string())
+            .collect::<Vec<_>>()
+    };
+    vec![
+        owned(&[
+            "addr",
+            "replace",
+            &tap.host_ipv4_cidr(),
+            "dev",
+            &tap.device_name,
+        ]),
+        owned(&[
+            "addr",
+            "replace",
+            &tap.host_ipv6_cidr(),
+            "dev",
+            &tap.device_name,
+        ]),
+        owned(&["link", "set", &tap.device_name, "up"]),
+    ]
 }
 
 fn run_ip(args: &[&str]) -> Result<(), TapError> {
@@ -203,6 +236,16 @@ impl TapBackend for IpCommand {
                 %error,
                 "cannot set the tap interface up"
             );
+        }
+        Ok(())
+    }
+
+    fn ensure_addresses(&self, tap: &TapAssignment) -> Result<(), TapError> {
+        for argv in ensure_addresses_argv(tap) {
+            let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+            if let Err(error) = run_ip(&args) {
+                tracing::error!(device = tap.device_name, ?argv, %error, "cannot ensure the tap addresses");
+            }
         }
         Ok(())
     }
@@ -289,6 +332,7 @@ struct FakeTapState {
     pub actions: Vec<String>,
     fail_create: Option<TapErrorFn>,
     fail_delete: Option<TapErrorFn>,
+    fail_ensure: Option<TapErrorFn>,
     panic_on_create: bool,
 }
 
@@ -342,6 +386,11 @@ impl FakeTapBackend {
         self.lock().fail_delete = Some(Box::new(make));
     }
 
+    /// Every ensure_addresses fails with the error `make` builds, until cleared.
+    pub fn fail_ensure(&self, make: impl Fn() -> TapError + Send + Sync + 'static) {
+        self.lock().fail_ensure = Some(Box::new(make));
+    }
+
     /// The next create_tap panics (for unwind-safety tests).
     pub fn panic_on_create(&self) {
         self.lock().panic_on_create = true;
@@ -386,6 +435,25 @@ impl TapBackend for FakeTapBackend {
             .insert(tap.device_name.clone(), tap.host_ipv6_cidr());
         drop(inner);
         self.record(format!("tap: create {}", tap.device_name));
+        Ok(())
+    }
+
+    fn ensure_addresses(&self, tap: &TapAssignment) -> Result<(), TapError> {
+        let mut inner = self.lock();
+        if let Some(make) = &inner.fail_ensure {
+            return Err(make());
+        }
+        inner.actions.push(format!(
+            "ensure {} {} {}",
+            tap.device_name,
+            tap.host_ipv4_cidr(),
+            tap.host_ipv6_cidr()
+        ));
+        inner
+            .ipv6_addresses
+            .insert(tap.device_name.clone(), tap.host_ipv6_cidr());
+        drop(inner);
+        self.record(format!("tap: ensure {}", tap.device_name));
         Ok(())
     }
 
@@ -439,6 +507,48 @@ mod tests {
         assert_eq!(tap.guest_ipv4_cidr(), "172.16.3.2/24");
         assert_eq!(tap.host_ipv6_cidr(), "fc00:1:2:3::10/124");
         assert_eq!(tap.guest_ipv6_cidr(), "fc00:1:2:3::11/124");
+    }
+
+    #[test]
+    fn ensure_addresses_argv_replaces_both_families_then_sets_the_link_up() {
+        let tap = assignment();
+        let argv = ensure_addresses_argv(&tap);
+        assert_eq!(
+            argv,
+            vec![
+                vec!["addr", "replace", &tap.host_ipv4_cidr(), "dev", "vmtap3"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect::<Vec<_>>(),
+                vec!["addr", "replace", &tap.host_ipv6_cidr(), "dev", "vmtap3"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect::<Vec<_>>(),
+                vec!["link", "set", "vmtap3", "up"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect::<Vec<_>>(),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_fake_records_an_ensure_and_learns_the_ipv6() {
+        let fake = FakeTapBackend::with_devices(&["vmtap3"]);
+        let tap = assignment();
+        fake.ensure_addresses(&tap).unwrap();
+        assert_eq!(
+            fake.actions(),
+            vec![format!(
+                "ensure vmtap3 {} {}",
+                tap.host_ipv4_cidr(),
+                tap.host_ipv6_cidr()
+            )]
+        );
+        assert_eq!(
+            fake.global_ipv6_address("vmtap3"),
+            Some(tap.host_ipv6_cidr())
+        );
     }
 
     #[test]
