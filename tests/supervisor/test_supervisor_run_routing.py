@@ -743,6 +743,26 @@ async def test_start_persistent_leaves_a_running_vm_with_no_address_alone(monkey
     created.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_start_persistent_leaves_an_awaiting_init_vm_on_a_stale_address_alone(monkeypatch):
+    # Only the owner's confidential session can start it: a rebuild would
+    # discard the launch waiting for that session.
+    monkeypatch.setattr(settings, "ALLOW_VM_NETWORKING", True)
+    monkeypatch.setattr(settings, "IPV6_ADDRESS_POOL", "fc00:1:2:3::/64")
+    sup = _fake_supervisor()
+    sup.get_vm = AsyncMock(return_value=replace(_running_on("2001:db8::10/124"), awaiting_confidential_init=True))
+    created = AsyncMock()
+    retired = AsyncMock()
+    monkeypatch.setattr(run_module, "create_vm_execution", created)
+    monkeypatch.setattr(run_module, "retire_vm", retired)
+    monkeypatch.setattr(run_module, "_wait_until_running", AsyncMock())
+
+    await _start_persistent(sup, AgentVmRegistry())
+
+    retired.assert_not_awaited()
+    created.assert_not_awaited()
+
+
 async def _rebuild_if_stale(sup):
     return await run_module.rebuild_if_stale(
         ItemHash(_HASH),
