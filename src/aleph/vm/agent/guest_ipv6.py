@@ -165,9 +165,10 @@ async def allocate_dynamic_ipv6(supervisor: Supervisor, vm_id: VmId) -> IPv6Netw
     """The dynamic-policy subnet for ``vm_id``. Callers hold the allocation lock.
 
     A VM the supervisor already knows keeps its address when it is inside the
-    pool (an idempotent retry or a rebuild must not move it). Otherwise the first free subnet of the pool,
-    skipping the host's subnet 0, every network a known VM holds and every
-    allocation still in flight.
+    pool, or when the pool does not parse (an idempotent retry or a rebuild
+    must not move it). Otherwise the first free subnet of the pool, skipping
+    the host's subnet 0, every network a known VM holds and every allocation
+    still in flight.
     """
     held: list[IPv6Network] = list(_in_flight.values())
     for info in await supervisor.list_vms():
@@ -175,7 +176,7 @@ async def allocate_dynamic_ipv6(supervisor: Supervisor, vm_id: VmId) -> IPv6Netw
         if network is None:
             continue
         if info.vm_id == vm_id:
-            if usable_ipv6(str(network)):
+            if _pool() is None or usable_ipv6(str(network)):
                 return network
             # A stale address (previous pool): fall through and allocate anew.
             continue
@@ -224,7 +225,7 @@ async def lacks_usable_ipv6(supervisor: Supervisor, vm_id: VmId) -> bool:
     changed since). The supervisor would start the latter on a dead address,
     so the caller rebuilds either through a fresh create.
     """
-    if not settings.ALLOW_VM_NETWORKING:
+    if not settings.ALLOW_VM_NETWORKING or _pool() is None:
         return False
     try:
         spec = await supervisor.get_vm_spec(vm_id)

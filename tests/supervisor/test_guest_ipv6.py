@@ -346,6 +346,22 @@ async def test_dynamic_allocation_keeps_a_known_vm_on_a_usable_address(dynamic):
     assert str(network) == "fc00:1:2:3::30/124"
 
 
+@pytest.mark.asyncio
+async def test_lacks_usable_ipv6_is_false_when_the_pool_does_not_parse(dynamic, monkeypatch):
+    # A broken pool is an operator error: start the VM in place, never retire it.
+    monkeypatch.setattr(settings, "IPV6_ADDRESS_POOL", "nonsense")
+    supervisor = FakeSupervisor(stopped={"stale": "2001:db8::10/124"})
+    assert await lacks_usable_ipv6(supervisor, VmId("stale")) is False
+
+
+@pytest.mark.asyncio
+async def test_dynamic_allocation_keeps_a_known_vm_when_the_pool_does_not_parse(dynamic, monkeypatch):
+    monkeypatch.setattr(settings, "IPV6_ADDRESS_POOL", "nonsense")
+    supervisor = FakeSupervisor(live={"old": "2001:db8::10/124"})
+    network = await allocate_dynamic_ipv6(supervisor, VmId("old"))
+    assert str(network) == "2001:db8::10/124"
+
+
 # ── pool membership ─────────────────────────────────────────────────────
 
 

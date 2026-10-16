@@ -1193,7 +1193,7 @@ async def start_persistent_vm(
                 # A stopped VM with no usable guest IPv6: the config predates
                 # the persisted address, or the pool changed since. Rebuild it
                 # through a fresh create that carries an in-pool address.
-                logger.info(f"{vm_hash} is stopped with no known guest IPv6, recreating")
+                logger.info(f"{vm_hash} is stopped with no usable guest IPv6, recreating")
                 await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
                 info = None
             elif info.status == VmStatus.STOPPED:
