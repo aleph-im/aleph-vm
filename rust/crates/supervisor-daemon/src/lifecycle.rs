@@ -4282,24 +4282,37 @@ pub fn recreate_network(state: &DaemonState) -> Result<serde_json::Value, RpcErr
 fn restore_adopted_network(state: &DaemonState, vm_id: &str) -> Result<(), LifecycleError> {
     let tap = tap_assignment(state, vm_id)?;
     let is_measured = entry_snapshot(state, vm_id).is_some_and(|entry| entry.config.is_measured());
-    let _net = net_lock(state);
-    if !state.taps.interface_exists(&tap.device_name) {
-        state.taps.create_tap(&tap)?;
-        if let Some(ndp) = &state.ndp {
-            ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
+    {
+        let _net = net_lock(state);
+        if !state.taps.interface_exists(&tap.device_name) {
+            state.taps.create_tap(&tap)?;
+            if let Some(ndp) = &state.ndp {
+                ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, true)?;
+            }
+        } else {
+            if let Err(error) = state.taps.ensure_addresses(&tap) {
+                tracing::warn!(vm_id, %error, "cannot ensure the tap addresses; continuing");
+            }
+            if let Some(ndp) = &state.ndp {
+                // Prime the in-memory map without a config rewrite or service
+                // restart: the on-disk ndppd.conf already covers running VMs.
+                ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, false)?;
+            }
         }
-    } else {
-        if let Err(error) = state.taps.ensure_addresses(&tap) {
-            tracing::warn!(vm_id, %error, "cannot ensure the tap addresses; continuing");
-        }
-        if let Some(ndp) = &state.ndp {
-            // Prime the in-memory map without a config rewrite or service
-            // restart: the on-disk ndppd.conf already covers running VMs.
-            ndp.add_range(&tap.device_name, &tap.ipv6.network_cidr, false)?;
-        }
+        nft_setup_vm(state, tap.vm_index, &tap.device_name)?;
     }
-    nft_setup_vm(state, tap.vm_index, &tap.device_name)?;
     if is_measured {
+        // An active unit survived a plain daemon restart: leave it alone.
+        if state.units.get_active_state(&dhcp::dhcp_unit_name(vm_id)) == "active" {
+            tracing::debug!(vm_id, "DHCP server already active; leaving it alone");
+            return Ok(());
+        }
+        // Drop the lease file first: the rebooted guest solicits with a new
+        // IAID that a surviving lease would refuse, as in reboot_vm.
+        let lease_file = dhcp::lease_file_path(&dhcp_lease_dir(state), vm_id);
+        if let Err(dhcp_error) = state.dhcp.stop(vm_id, &lease_file) {
+            tracing::warn!(vm_id, %dhcp_error, "cannot stop the DHCP server, continuing");
+        }
         let config = dhcp::DhcpConfig::for_tap(
             vm_id,
             &tap,
@@ -8700,20 +8713,44 @@ mod tests {
 
         reconcile_boot(state);
 
-        let started = harness.dhcp.started();
+        // The DHCP unit is not active in the fake systemd, as after a reboot.
         assert_eq!(
-            started.len(),
-            2,
-            "adoption starts it again (start replaces a leftover unit)"
+            harness.dhcp.stopped(),
+            [vm_id.as_str()],
+            "stale lease dropped"
         );
+        let started = harness.dhcp.started();
+        assert_eq!(started.len(), 2, "adoption starts it again");
         assert_eq!(started[1].vm_hash, vm_id);
         assert_eq!(started[1].device_name, format!("vmtap{}", entry.vm_index));
         assert_eq!(started[1].guest_ipv6, entry.ipv6.as_ref().unwrap().address);
-        assert_eq!(
-            started[1].lease_file, started[0].lease_file,
-            "same lease db, the guest's lease stays valid"
-        );
         assert!(harness.dhcp.is_running(&vm_id));
+    }
+
+    #[test]
+    fn boot_reconcile_leaves_an_active_dhcp_unit_alone() {
+        // Plain daemon restart: the transient DHCP unit survived.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = hash('f');
+        let firmware = root.join("OVMF.fd");
+        std::fs::write(&firmware, b"ovmf").unwrap();
+        create_vm(state, snp_spec(&vm_id, &root, &firmware.to_string_lossy())).unwrap();
+        harness
+            .systemd
+            .set_state(&dhcp::dhcp_unit_name(&vm_id), "active");
+        with_entry_mut(state, &vm_id, |entry| entry.adopted_running = true);
+
+        reconcile_boot(state);
+
+        assert_eq!(
+            harness.dhcp.started().len(),
+            1,
+            "only the create started it"
+        );
+        assert!(harness.dhcp.stopped().is_empty());
+        assert!(state.world.blocking_read().entries.contains_key(&vm_id));
     }
 
     #[test]
@@ -9513,6 +9550,11 @@ mod tests {
         retry_failed_reattachments_once(state);
 
         assert!(state.world.blocking_read().entries.contains_key(&vm_id));
+        assert_eq!(
+            harness.dhcp.stopped(),
+            [vm_id.as_str()],
+            "stale lease dropped"
+        );
         let started = harness.dhcp.started();
         assert_eq!(started.len(), 2);
         assert_eq!(started[1].vm_hash, vm_id);

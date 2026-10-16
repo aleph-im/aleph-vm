@@ -349,7 +349,7 @@ impl DhcpBackend for SystemdRunDhcp {
                 unit,
                 device = config.device_name,
                 guest_ip = config.guest_ip,
-                "started per-tap DHCP server for SNP VM"
+                "started per-tap DHCP server for measured VM"
             );
             return Ok(());
         }
