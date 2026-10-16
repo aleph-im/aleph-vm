@@ -263,12 +263,14 @@ Type=exec` (`Type=exec` is load-bearing: with the default
 daemon would boot the VM with no working DHCP while believing it worked).
 Lease files live one-per-VM under `{EXECUTION_ROOT}/dhcp/{vm_hash}.leases`
 so concurrent per-tap servers never share a lease database. Only
-`create_vm`/`start_vm` and adoption (re)start this server, and only the
-teardown paths stop it. The unit is transient and does not survive a host
-reboot; adoption starts it again for every measured VM (SEV-SNP or TDX)
-adopted running (a plain daemon restart therefore restarts a healthy
-dnsmasq once, on the same lease file; see
-[`vm-lifecycle.md`](vm-lifecycle.md#adoption-and-boot-reconcile)). A
+`create_vm`/`start_vm`, `reboot_vm` and adoption (re)start this server,
+and only the teardown paths and `reboot_vm` stop it. The unit is transient
+and does not survive a host reboot; adoption starts it again for every
+measured VM (SEV-SNP or TDX) adopted running whose unit is not active, on
+a fresh lease file (the rebooted guest solicits with a new IAID that a
+surviving lease would refuse). A plain daemon restart finds the unit
+active and leaves it alone; see
+[`vm-lifecycle.md`](vm-lifecycle.md#adoption-and-boot-reconcile). A
 `debug_assert_eq!` in `create_vm_inner` checks the request-level and
 written-config `snp()` predicates agree, specifically to prevent a DHCP
 server leaking on a VM that teardown treats as "plain."
@@ -295,11 +297,12 @@ exactly.
 - A negative or otherwise invalid `vm_index`/derivation input hides the VM
   instead of silently serving a fallback subnet; two VMs never share a tap
   network (`rust/crates/supervisor-daemon/src/world.rs`).
-- Boot reconcile, create, start and stop only ever create-if-absent
-  tap/nftables/ndppd state; only the operator-invoked `RecreateNetwork` RPC
-  flushes and rebuilds (`rust/crates/supervisor-daemon/src/lifecycle.rs`).
-  DHCP is not part of this: only `create_vm`/`start_vm` and adoption
-  (re)start the per-tap dnsmasq unit and only the teardown paths stop it
+- Boot reconcile, create, start and stop only ever create-if-absent (or
+  additively ensure) tap/nftables/ndppd state; only the operator-invoked
+  `RecreateNetwork` RPC flushes and rebuilds
+  (`rust/crates/supervisor-daemon/src/lifecycle.rs`). DHCP is not part of
+  this: only `create_vm`/`start_vm`, `reboot_vm` and adoption (re)start the
+  per-tap dnsmasq unit and only the teardown paths and `reboot_vm` stop it
   (see [`vm-lifecycle.md`](vm-lifecycle.md#adoption-and-boot-reconcile)).
 - The supervisor is the sole writer of nftables and port-forward state; the
   agent only computes desired forwards and diffs against

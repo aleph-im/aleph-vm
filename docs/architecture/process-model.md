@@ -215,16 +215,23 @@ never report an already-attached GPU as free.
 
 `reconcile_boot` (`rust/crates/supervisor-daemon/src/lifecycle.rs`) runs
 inside the async runtime, still before the socket is bound. For every VM the
-world view marked `adopted_running`, it creates the TAP device if absent,
-primes the NDP proxy's in-memory range map, ensures the per-VM nftables
+world view marked `adopted_running`, it creates the TAP device if absent
+or ensures the host addresses on an existing one (QEMU creates a bare tap
+after a host reboot), primes the NDP proxy's in-memory range map
+(rewriting `ndppd.conf` and restarting ndppd when the tap was bare, since
+ndppd then started before the tap existed), ensures the per-VM nftables
 chain exists, and recreates the nftables redirect rules for the port
 forwards already loaded from sqlite during world assembly (step 4 above,
-not a second sqlite read here). Every step is **create-if-absent**, never
-flush-and-rebuild: a full flush would drop live guest connections on VMs
-that never stopped. If any step fails for a given VM, that VM is removed
-from the in-memory world (hidden from `ListVms`, its `vm_index` kept
-reserved) and queued in `failed_reattach` for retry, exactly mirroring a
-failed Python reattach.
+not a second sqlite read here). For a measured guest (SEV-SNP or TDX) it
+then starts the per-tap DHCP unit when that unit is not active, removing
+the lease file first so the rebooted guest's new DHCPv6 IAID can lease its
+address; an active unit (a plain daemon restart) is left alone. Every step
+is **create-if-absent** or additive (an address ensure only adds what is
+missing), never flush-and-rebuild: a full flush would drop live guest
+connections on VMs that never stopped. If any step fails for a given VM,
+that VM is removed from the in-memory world (hidden from `ListVms`, its
+`vm_index` kept reserved) and queued in `failed_reattach` for retry,
+exactly mirroring a failed Python reattach.
 
 ### The reattach retry loop
 
@@ -267,8 +274,9 @@ auto-stopped.
   (`rust/crates/supervisor-daemon/src/controller_config.rs`,
   `rust/crates/supervisor-daemon/src/world.rs`); a config whose unit is not
   active is kept and reported `STOPPED`, not deleted.
-- Adoption and boot reconcile only ever create-if-absent kernel/service
-  state for VMs already running; neither ever flushes and rebuilds
+- Adoption and boot reconcile only ever create-if-absent (or additively
+  ensure) kernel/service state for VMs already running; neither ever
+  flushes and rebuilds
   (`rust/crates/supervisor-daemon/src/lifecycle.rs`, `reconcile_boot`).
 - Concurrent creates cannot double-commit memory or double-attach a GPU:
   both `check_memory_backstop` and `validate_spec_gpus` run under
