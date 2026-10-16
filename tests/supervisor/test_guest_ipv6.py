@@ -6,9 +6,12 @@ import pytest
 
 from aleph.vm.agent import guest_ipv6
 from aleph.vm.agent.guest_ipv6 import (
+    allocate_dynamic_ipv6,
     compute_requested_ipv6,
     create_vm_with_ipv6,
-    lacks_known_ipv6,
+    lacks_usable_ipv6,
+    stale_ipv6,
+    usable_ipv6,
 )
 from aleph.vm.conf import IPv6AllocationPolicy, settings
 from aleph.vm.supervisor_interface.errors import (
@@ -297,23 +300,124 @@ async def test_the_static_policy_never_asks_the_supervisor(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_lacks_known_ipv6(dynamic):
+async def test_lacks_usable_ipv6(dynamic):
     supervisor = FakeSupervisor(stopped={"legacy": "", "fine": "fc00:1:2:3::10/124"})
-    assert await lacks_known_ipv6(supervisor, VmId("legacy")) is True
-    assert await lacks_known_ipv6(supervisor, VmId("fine")) is False
+    assert await lacks_usable_ipv6(supervisor, VmId("legacy")) is True
+    assert await lacks_usable_ipv6(supervisor, VmId("fine")) is False
     # No spec to judge by: start it as is and let the supervisor answer.
-    assert await lacks_known_ipv6(supervisor, VmId("gone")) is False
+    assert await lacks_usable_ipv6(supervisor, VmId("gone")) is False
 
 
 @pytest.mark.asyncio
-async def test_lacks_known_ipv6_ignores_vms_without_a_tap(dynamic, monkeypatch):
+async def test_lacks_usable_ipv6_ignores_vms_without_a_tap(dynamic, monkeypatch):
     supervisor = FakeSupervisor()
 
     async def program_spec(vm_id):
         return _spec(vm_id, backend=Backend.FIRECRACKER, internet=False)
 
     monkeypatch.setattr(supervisor, "get_vm_spec", program_spec)
-    assert await lacks_known_ipv6(supervisor, VmId("p")) is False
+    assert await lacks_usable_ipv6(supervisor, VmId("p")) is False
     monkeypatch.setattr(settings, "ALLOW_VM_NETWORKING", False)
     monkeypatch.setattr(supervisor, "get_vm_spec", FakeSupervisor(stopped={"legacy": ""}).get_vm_spec)
-    assert await lacks_known_ipv6(supervisor, VmId("legacy")) is False
+    assert await lacks_usable_ipv6(supervisor, VmId("legacy")) is False
+
+
+@pytest.mark.asyncio
+async def test_lacks_usable_ipv6_for_a_stopped_vm_outside_the_pool(dynamic):
+    # A stopped VM persisted on an address from a previous pool must be
+    # rebuilt on its next start, like a legacy VM with no address at all.
+    supervisor = FakeSupervisor(stopped={"stale": "2001:db8::10/124"})
+    assert await lacks_usable_ipv6(supervisor, VmId("stale")) is True
+
+
+@pytest.mark.asyncio
+async def test_dynamic_allocation_moves_a_known_vm_off_a_stale_address(dynamic):
+    # The supervisor still lists the VM on the old pool's address; a rebuild
+    # must not take it back but get the first free subnet of the new pool.
+    supervisor = FakeSupervisor(live={"old": "2001:db8::10/124"})
+    network = await allocate_dynamic_ipv6(supervisor, VmId("old"))
+    assert str(network) == "fc00:1:2:3::10/124"
+
+
+@pytest.mark.asyncio
+async def test_dynamic_allocation_keeps_a_known_vm_on_a_usable_address(dynamic):
+    supervisor = FakeSupervisor(live={"fine": "fc00:1:2:3::30/124"})
+    network = await allocate_dynamic_ipv6(supervisor, VmId("fine"))
+    assert str(network) == "fc00:1:2:3::30/124"
+
+
+@pytest.mark.asyncio
+async def test_lacks_usable_ipv6_is_false_when_the_pool_does_not_parse(dynamic, monkeypatch):
+    # A broken pool is an operator error: start the VM in place, never retire it.
+    monkeypatch.setattr(settings, "IPV6_ADDRESS_POOL", "nonsense")
+    supervisor = FakeSupervisor(stopped={"stale": "2001:db8::10/124"})
+    assert await lacks_usable_ipv6(supervisor, VmId("stale")) is False
+
+
+@pytest.mark.asyncio
+async def test_dynamic_allocation_keeps_a_known_vm_when_the_pool_does_not_parse(dynamic, monkeypatch):
+    monkeypatch.setattr(settings, "IPV6_ADDRESS_POOL", "nonsense")
+    supervisor = FakeSupervisor(live={"old": "2001:db8::10/124"})
+    network = await allocate_dynamic_ipv6(supervisor, VmId("old"))
+    assert str(network) == "2001:db8::10/124"
+
+
+# ── pool membership ─────────────────────────────────────────────────────
+
+
+def test_usable_ipv6_requires_an_address_inside_the_pool(dynamic):
+    assert usable_ipv6("fc00:1:2:3::10/124") is True
+    assert usable_ipv6("fc00:1:2:3:3:dead:beef:aa0/124") is True
+    # Empty, malformed, outside the pool, or wider than the pool.
+    assert usable_ipv6("") is False
+    assert usable_ipv6("not-an-address") is False
+    assert usable_ipv6("2001:db8::10/124") is False
+    assert usable_ipv6("fc00:1:2::/60") is False
+
+
+@pytest.fixture
+def static_pool(monkeypatch):
+    monkeypatch.setattr(settings, "IPV6_ALLOCATION_POLICY", IPv6AllocationPolicy.static)
+    monkeypatch.setattr(settings, "IPV6_ADDRESS_POOL", "fc00:1:2::/48")
+    monkeypatch.setattr(settings, "IPV6_SUBNET_PREFIX", 124)
+    monkeypatch.setattr(settings, "ALLOW_VM_NETWORKING", True)
+
+
+def test_static_usable_ipv6_needs_the_pools_first_64_bits(static_pool):
+    # The static address is built from the pool's first four hextets, so a
+    # /124 elsewhere in a wider pool is not where the scheduler expects it.
+    assert usable_ipv6("fc00:1:2:3:3:dead:beef:aa0/124") is False
+    assert usable_ipv6("fc00:1:2:0:3:dead:beef:aa0/124") is True
+    assert usable_ipv6("fc00:1:2:4:3:dead:beef:aa0/124") is False
+    assert usable_ipv6("fc00:1:2::/64") is False
+
+
+def test_static_usable_ipv6_on_a_64_pool(static_pool, monkeypatch):
+    monkeypatch.setattr(settings, "IPV6_ADDRESS_POOL", "fc00:1:2:3::/64")
+    assert usable_ipv6("fc00:1:2:3:3:dead:beef:aa0/124") is True
+    assert usable_ipv6("fc00:1:2:4:3:dead:beef:aa0/124") is False
+
+
+def test_dynamic_usable_ipv6_is_pool_membership(dynamic, monkeypatch):
+    monkeypatch.setattr(settings, "IPV6_ADDRESS_POOL", "fc00:1:2::/48")
+    assert usable_ipv6("fc00:1:2:3:3:dead:beef:aa0/124") is True
+    assert usable_ipv6("fc00:1:2:4:3:dead:beef:aa0/124") is True
+
+
+def test_stale_ipv6_is_a_non_empty_address_outside_the_pool(dynamic, monkeypatch):
+    assert stale_ipv6("2001:db8::10/124") is True
+    assert stale_ipv6("garbage") is True
+    # No address is not a stale address: an entry adopted without one, a
+    # program without a tap, or networking off.
+    assert stale_ipv6("") is False
+    assert stale_ipv6("fc00:1:2:3::10/124") is False
+    monkeypatch.setattr(settings, "ALLOW_VM_NETWORKING", False)
+    assert stale_ipv6("2001:db8::10/124") is False
+
+
+def test_stale_ipv6_is_false_when_the_pool_itself_does_not_parse(dynamic, monkeypatch):
+    # A broken pool setting is an operator error to fix, not a reason to
+    # rebuild every VM.
+    monkeypatch.setattr(settings, "IPV6_ADDRESS_POOL", "nonsense")
+    assert stale_ipv6("2001:db8::10/124") is False
+    assert usable_ipv6("2001:db8::10/124") is False

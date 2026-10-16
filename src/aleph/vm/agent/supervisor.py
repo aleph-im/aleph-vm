@@ -19,6 +19,7 @@ from aleph.vm.agent.allocation.reconciler import AllocationReconciler
 from aleph.vm.agent.capacity import CapacityManager
 from aleph.vm.agent.expiry import ExpiryManager
 from aleph.vm.agent.migration.reaper import reap_orphan_migration_files
+from aleph.vm.agent.stale_ipv6 import start_stale_ipv6_pass, stop_stale_ipv6_pass
 from aleph.vm.agent.update_watcher import UpdateWatcher
 from aleph.vm.agent.vcpu_probe import get_snp_launch_capability
 from aleph.vm.agent.vm.backup import BackupManager
@@ -549,6 +550,11 @@ def run():
     # record was lost or is unparseable is still live. The startup pass
     # refuses to purge at all when neither half can be trusted.
     app.on_startup.append(reconcile_at_startup)
+    # After the registry rehydrates (the pass needs persistent-or-not) and
+    # the allocation reconciler exists; the supervisor has adopted its VMs by
+    # the time the socket answers.
+    app.on_startup.append(start_stale_ipv6_pass)
+    app.on_cleanup.append(stop_stale_ipv6_pass)
     app.on_startup.append(start_storage_reconcile_task)
     app.on_cleanup.append(stop_storage_reconcile_task)
     # Placement asks the reconciler to evict retained volumes when a create

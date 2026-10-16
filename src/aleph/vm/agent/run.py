@@ -1,4 +1,5 @@
 import asyncio
+import enum
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -32,7 +33,7 @@ from aleph.vm.agent.capacity import (
 )
 from aleph.vm.agent.create_lock import vm_create_lock
 from aleph.vm.agent.expiry import ExpiryManager
-from aleph.vm.agent.guest_ipv6 import create_vm_with_ipv6, lacks_known_ipv6
+from aleph.vm.agent.guest_ipv6 import create_vm_with_ipv6, lacks_usable_ipv6, stale_ipv6
 from aleph.vm.agent.snp_instance_launch import (
     build_snp_instance_spec,
     confidential_gpu,
@@ -1142,6 +1143,42 @@ async def run_code_on_event(
             await program_client.forget(vm_id)
 
 
+async def _create_persistent(
+    vm_hash: ItemHash,
+    *,
+    supervisor: Supervisor,
+    registry: AgentVmRegistry,
+    capacity: CapacityManager,
+    recreate: bool,
+    create: CreateVmExecution | None = None,
+) -> bool:
+    """Create a persistent VM and wait for RUNNING, unless it ends awaiting its
+    owner's confidential session. True in that last case."""
+    vm_id = VmId(str(vm_hash))
+    logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
+    # Resolved here, not as a default argument: a default would bind the
+    # function object at import time, past any patch of the module name.
+    await (create or create_vm_execution)(
+        vm_hash=vm_hash, supervisor=supervisor, registry=registry, capacity=capacity, recreate=recreate
+    )
+    # A confidential VM is created but left awaiting its owner's session
+    # (only the owner can start it via /confidential/initialize). Waiting
+    # for RUNNING would block forever, so re-read the status and skip the
+    # readiness barrier when it is awaiting init.
+    try:
+        info: VmInfo | None = await supervisor.get_vm(vm_id)
+    except VmNotFoundError:
+        info = None
+    if info is not None and info.awaiting_confidential_init:
+        logger.info(f"{vm_hash} is waiting for its owner to initialize the confidential session")
+        return True
+    # create_vm_execution blocks until RUNNING in-process today; this
+    # re-poll is the explicit readiness barrier (and stays correct if a
+    # future out-of-process create returns before the VM is RUNNING).
+    await _wait_until_running(supervisor, vm_id)
+    return False
+
+
 async def start_persistent_vm(
     vm_hash: ItemHash,
     pubsub: PubSub | None,
@@ -1180,6 +1217,15 @@ async def start_persistent_vm(
                 # via /confidential/initialize. Waiting for RUNNING or recreating it
                 # would loop forever, so leave it untouched.
                 logger.info(f"{vm_hash} is waiting for its owner to initialize the confidential session")
+            elif info.status == VmStatus.RUNNING and stale_ipv6(info.ipv6.network_cidr):
+                # The pool changed under it: the guest holds an address this
+                # node no longer routes. Rebuild it like a FAILED VM.
+                logger.info(
+                    f"{vm_hash} runs on IPv6 network {info.ipv6.network_cidr}, "
+                    f"outside the pool {settings.IPV6_ADDRESS_POOL}: recreating"
+                )
+                await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
+                info = None
             elif info.status == VmStatus.RUNNING:
                 logger.info(f"{vm_hash} is already running")
             elif info.status in (VmStatus.DEFINED, VmStatus.BOOTING):
@@ -1189,12 +1235,11 @@ async def start_persistent_vm(
                 logger.info(f"{vm_hash} is stopping, waiting before restart")
                 await _wait_until_gone(supervisor, vm_id)
                 info = None
-            elif info.status == VmStatus.STOPPED and await lacks_known_ipv6(supervisor, vm_id):
-                # A stopped VM whose config predates the persisted guest IPv6
-                # (older supervisor): the supervisor never derives an address,
-                # so it refuses to start it. Rebuild it instead, like a FAILED
-                # VM: the fresh create carries an address this agent allocates.
-                logger.info(f"{vm_hash} is stopped with no known guest IPv6, recreating")
+            elif info.status == VmStatus.STOPPED and await lacks_usable_ipv6(supervisor, vm_id):
+                # A stopped VM with no usable guest IPv6: the config predates
+                # the persisted address, or the pool changed since. Rebuild it
+                # through a fresh create that carries an in-pool address.
+                logger.info(f"{vm_hash} is stopped with no usable guest IPv6, recreating")
                 await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
                 info = None
             elif info.status == VmStatus.STOPPED:
@@ -1221,30 +1266,55 @@ async def start_persistent_vm(
                 await reconcile_adopted_port_forwards(supervisor, registry, vm_hash)
 
         if info is None:
-            logger.info(f"Starting persistent virtual machine with id: {vm_hash}")
-            # Resolved here, not as a default argument: a default would bind the
-            # function object at import time, past any patch of the module name.
-            await (create or create_vm_execution)(
-                vm_hash=vm_hash, supervisor=supervisor, registry=registry, capacity=capacity, recreate=recreate
+            await _create_persistent(
+                vm_hash, supervisor=supervisor, registry=registry, capacity=capacity, recreate=recreate, create=create
             )
-            # A confidential VM is created but left awaiting its owner's session
-            # (only the owner can start it via /confidential/initialize). Waiting
-            # for RUNNING would block forever, so re-read the status and skip the
-            # readiness barrier when it is awaiting init.
-            try:
-                info = await supervisor.get_vm(vm_id)
-            except VmNotFoundError:
-                info = None
-            if info is not None and info.awaiting_confidential_init:
-                logger.info(f"{vm_hash} is waiting for its owner to initialize the confidential session")
-            else:
-                # create_vm_execution blocks until RUNNING in-process today; this
-                # re-poll is the explicit readiness barrier (and stays correct if a
-                # future out-of-process create returns before the VM is RUNNING).
-                await _wait_until_running(supervisor, vm_id)
 
         # Scheduled long-running: it must not idle-expire.
         expiry.cancel(vm_id)
 
         if pubsub and settings.WATCH_FOR_UPDATES:
             update_watcher.watch(vm_id, vm_hash, pubsub)
+
+
+class StaleRebuild(enum.Enum):
+    MOVED = "moved"
+    MOVED_AWAITING_INIT = "moved_awaiting_init"
+    SKIPPED = "skipped"
+
+
+async def rebuild_if_stale(
+    vm_hash: ItemHash,
+    pubsub: PubSub | None,
+    *,
+    supervisor: Supervisor,
+    registry: AgentVmRegistry,
+    capacity: CapacityManager,
+    expiry: ExpiryManager,
+    update_watcher: UpdateWatcher,
+) -> StaleRebuild:
+    """Rebuild a persistent VM still running on an address outside the pool.
+
+    Judged afresh under the create lock: between a listing and this call the
+    owner may have stopped the VM, which must then stay stopped.
+    """
+    async with vm_create_lock(str(vm_hash)):
+        vm_id = VmId(str(vm_hash))
+        try:
+            info = await supervisor.get_vm(vm_id)
+        except VmNotFoundError:
+            logger.debug(f"{vm_hash} is gone, no IPv6 move needed")
+            return StaleRebuild.SKIPPED
+        if info.status != VmStatus.RUNNING or info.awaiting_confidential_init or not stale_ipv6(info.ipv6.network_cidr):
+            logger.debug(f"{vm_hash} is {info.status.name} on IPv6 network {info.ipv6.network_cidr!r}, not moving it")
+            return StaleRebuild.SKIPPED
+        await retire_vm(vm_hash, RetireReason.RECREATE, supervisor=supervisor)
+        awaiting_init = await _create_persistent(
+            vm_hash, supervisor=supervisor, registry=registry, capacity=capacity, recreate=True
+        )
+        expiry.cancel(vm_id)
+        if pubsub and settings.WATCH_FOR_UPDATES:
+            update_watcher.watch(vm_id, vm_hash, pubsub)
+        if awaiting_init:
+            return StaleRebuild.MOVED_AWAITING_INIT
+        return StaleRebuild.MOVED

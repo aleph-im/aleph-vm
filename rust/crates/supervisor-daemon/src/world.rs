@@ -748,7 +748,18 @@ pub fn build_world_view(
                         },
                     };
                     match ipv6_result {
-                        Ok(pair) => ipv6 = Some(pair),
+                        Ok(pair) => {
+                            if !ipv6_in_pool(&settings.ipv6_address_pool, &pair.network_cidr) {
+                                tracing::warn!(
+                                    vm_hash,
+                                    network = pair.network_cidr,
+                                    pool = settings.ipv6_address_pool,
+                                    "guest IPv6 lies outside the host pool; serving it as is, \
+                                     the agent rebuilds the VM"
+                                );
+                            }
+                            ipv6 = Some(pair)
+                        }
                         Err(error) => {
                             tracing::warn!(
                                 vm_hash,
@@ -1020,6 +1031,18 @@ pub fn ipv6_from_cidr(cidr: &str) -> Result<IpPair, WorldError> {
     Ok(ipv6_pair(network, prefix))
 }
 
+/// Whether `cidr` lies inside the host's IPv6 pool. False for anything that
+/// does not parse: a stale or malformed address is never "in pool".
+pub fn ipv6_in_pool(pool: &str, cidr: &str) -> bool {
+    let (Ok((pool_address, pool_prefix)), Ok((address, prefix))) =
+        (parse_ipv6_cidr(pool), parse_ipv6_cidr(cidr))
+    else {
+        return false;
+    };
+    let mask = ipv6_mask(pool_prefix);
+    prefix >= pool_prefix && (u128::from(address) & mask) == (u128::from(pool_address) & mask)
+}
+
 fn parse_ipv4_cidr(pool: &str) -> Result<(Ipv4Addr, u8), WorldError> {
     let (address, len) = pool
         .split_once('/')
@@ -1236,6 +1259,55 @@ mod tests {
             Some(ipv6_from_cidr(persisted).unwrap()),
             "adoption must serve the persisted guest IPv6 verbatim"
         );
+    }
+
+    #[test]
+    fn ipv6_in_pool_is_a_subnet_check() {
+        assert!(ipv6_in_pool("fc00:1:2:3::/64", "fc00:1:2:3::10/124"));
+        assert!(ipv6_in_pool(
+            "fc00:1:2:3::/64",
+            "fc00:1:2:3:3:dead:beef:aa0/124"
+        ));
+        assert!(!ipv6_in_pool("fc00:1:2:3::/64", "2001:db8::10/124"));
+        // Wider than the pool, malformed, empty.
+        assert!(!ipv6_in_pool("fc00:1:2:3::/64", "fc00:1:2::/60"));
+        assert!(!ipv6_in_pool("fc00:1:2:3::/64", "garbage"));
+        assert!(!ipv6_in_pool("fc00:1:2:3::/64", ""));
+        assert!(!ipv6_in_pool("garbage", "fc00:1:2:3::10/124"));
+    }
+
+    #[test]
+    fn adoption_still_serves_an_address_outside_the_pool() {
+        // The running guest really holds it; hiding the VM would help nobody.
+        // The agent rebuilds it. Same fixture dance as the persisted test.
+        let tmp = tempfile::tempdir().unwrap();
+        let hash = "f".repeat(64);
+        let fixture = std::fs::read_to_string(
+            test_fixtures::fixtures_dir()
+                .join(format!("{}-controller.json", test_fixtures::QEMU_HASH)),
+        )
+        .unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&fixture).unwrap();
+        value["vm_id"] = 13.into();
+        value["vm_hash"] = hash.clone().into();
+        let persisted = "2001:db8:ffff::a0/124";
+        value["vm_configuration"]
+            .as_object_mut()
+            .unwrap()
+            .insert("guest_ipv6_cidr".to_string(), persisted.into());
+        std::fs::write(
+            tmp.path().join(format!("{hash}-controller.json")),
+            value.to_string(),
+        )
+        .unwrap();
+
+        let settings = test_settings(tmp.path());
+        let units = StaticUnitStates::with_active_vms(&[hash.as_str()]);
+        let world = build_world_view(&settings, &units, &[], &FakeTapBackend::new());
+
+        let entry = &world.entries[hash.as_str()];
+        assert!(entry.adopted_running);
+        assert_eq!(entry.ipv6, Some(ipv6_from_cidr(persisted).unwrap()));
     }
 
     #[test]

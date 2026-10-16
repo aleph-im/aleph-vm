@@ -73,8 +73,32 @@ landing on one is refused rather than moved. The address is persisted as
 restart. A legacy config without it adopts the address still configured on
 its live tap (`TapBackend::global_ipv6_address`); with neither, a running
 VM is hidden like a failed reattach and a stopped one refuses to start
-(the agent then rebuilds it through a fresh create). Guest = network+1,
+(the agent then rebuilds it through a fresh create). A persisted address
+outside the current pool is different: the daemon adopts and serves it
+verbatim with a warning, and the agent moves the VM. Guest = network+1,
 gateway = the network address.
+
+**Changing the IPv6 pool.** Edit `IPV6_ADDRESS_POOL` in
+`/etc/aleph-vm/supervisor.env` and restart `aleph-vm-agent`: the agent
+restart is what moves the VMs. Its startup pass (`stale_ipv6.py`) lists the
+supervisor's VMs and rebuilds every running one whose address lies outside
+the new pool, one VM at a time: a reboot per affected VM, disks and port
+forwards kept, logged as "Moved <vm> off stale IPv6 network <old> to
+<new>". A SEV or SEV-ES instance comes back awaiting its owner's
+confidential session, logged as such: it runs again once the owner calls
+`/control/machine/<hash>/confidential/initialize`. An on-demand program is
+retired and recreated on its next request, logged as "Retired on-demand
+<vm> ...". A stopped VM stays stopped and is rebuilt on its owner's next
+start. Under the static policy an address counts as in the pool only when
+it shares the pool's first 64 bits, the ones the static scheme builds
+addresses from.
+
+The supervisor reads `IPV6_ADDRESS_POOL` once, at startup. It keeps
+serving the old addresses until each rebuild and needs no restart for the
+move. Restart it too if you want its "guest IPv6 lies outside the host
+pool" warnings, which it emits when adopting VMs on its next start. A VM
+hidden in the daemon's reattach queue is not listed and catches up through
+the usual paths, or on a second agent restart.
 
 Both parsers (`parse_ipv4_cidr`/`parse_ipv6_cidr`) reject a pool with host
 bits set and a prefix that does not actually subnet the pool, matching

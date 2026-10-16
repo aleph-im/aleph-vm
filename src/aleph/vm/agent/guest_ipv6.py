@@ -94,6 +94,47 @@ def _parse_network(cidr: str) -> IPv6Network | None:
         return None
 
 
+def _pool() -> IPv6Network | None:
+    try:
+        return IPv6Network(settings.IPV6_ADDRESS_POOL)
+    except ValueError:
+        logger.error("IPV6_ADDRESS_POOL %r does not parse; no guest IPv6 is usable", settings.IPV6_ADDRESS_POOL)
+        return None
+
+
+def usable_ipv6(cidr: str) -> bool:
+    """Whether ``cidr`` is a guest network this node can serve. A persisted
+    address survives a pool change unchanged, so every reuse of one goes
+    through here.
+
+    Dynamic policy: inside the current ``IPV6_ADDRESS_POOL``. Static policy:
+    a guest-sized network on the pool's first 64 bits, the ones the scheduler
+    builds the address from (a pool wider than /64 holds addresses it never
+    computes)."""
+    network = _parse_network(cidr)
+    if network is None:
+        return False
+    pool = _pool()
+    if pool is None:
+        return False
+    if settings.IPV6_ALLOCATION_POLICY == IPv6AllocationPolicy.static:
+        return (
+            network.prefixlen in (124, settings.IPV6_SUBNET_PREFIX)
+            and int(network.network_address) >> 64 == int(pool.network_address) >> 64
+        )
+    return network.subnet_of(pool)
+
+
+def stale_ipv6(cidr: str) -> bool:
+    """A non-empty guest network outside the pool: the VM holds an address
+    this node no longer routes and must be rebuilt. An empty address is not
+    stale (no tap, networking off, or an entry adopted without one). A pool
+    that does not parse makes nothing stale: that is an operator error."""
+    if not cidr or not settings.ALLOW_VM_NETWORKING or _pool() is None:
+        return False
+    return not usable_ipv6(cidr)
+
+
 async def _network_of(supervisor: Supervisor, info: VmInfo) -> IPv6Network | None:
     """The guest network a VM holds: its live assignment, or for a VM without
     one (stopped) the address it was created with, which it gets back on start."""
@@ -135,10 +176,11 @@ def _first_free_subnet(held: list[IPv6Network]) -> IPv6Network:
 async def allocate_dynamic_ipv6(supervisor: Supervisor, vm_id: VmId) -> IPv6Network:
     """The dynamic-policy subnet for ``vm_id``. Callers hold the allocation lock.
 
-    A VM the supervisor already knows keeps its address (an idempotent retry or
-    a rebuild must not move it). Otherwise the first free subnet of the pool,
-    skipping the host's subnet 0, every network a known VM holds and every
-    allocation still in flight.
+    A VM the supervisor already knows keeps its address when it is inside the
+    pool, or when the pool does not parse (an idempotent retry or a rebuild
+    must not move it). Otherwise the first free subnet of the pool, skipping
+    the host's subnet 0, every network a known VM holds and every allocation
+    still in flight.
     """
     held: list[IPv6Network] = list(_in_flight.values())
     for info in await supervisor.list_vms():
@@ -146,7 +188,10 @@ async def allocate_dynamic_ipv6(supervisor: Supervisor, vm_id: VmId) -> IPv6Netw
         if network is None:
             continue
         if info.vm_id == vm_id:
-            return network
+            if _pool() is None or usable_ipv6(str(network)):
+                return network
+            # A stale address (previous pool): fall through and allocate anew.
+            continue
         held.append(network)
     return _first_free_subnet(held)
 
@@ -184,22 +229,22 @@ async def reserved_ipv6(supervisor: Supervisor, spec: CreateVmSpec) -> AsyncIter
         del _in_flight[token]
 
 
-async def lacks_known_ipv6(supervisor: Supervisor, vm_id: VmId) -> bool:
-    """Whether a stopped VM has no guest IPv6 the supervisor could restore.
+async def lacks_usable_ipv6(supervisor: Supervisor, vm_id: VmId) -> bool:
+    """Whether a stopped VM has no guest IPv6 this node can restore it on.
 
-    True only for a networked VM whose spec (the supervisor's reconstruction
-    from its config) carries no address: a config written by an older
-    supervisor that did not persist it. The supervisor refuses to start such a
-    VM, so the caller rebuilds it through a fresh create instead.
+    True for a networked VM whose spec carries no address (a config written
+    by an older supervisor) or one outside the current pool (the pool
+    changed since). The supervisor would start the latter on a dead address,
+    so the caller rebuilds either through a fresh create.
     """
-    if not settings.ALLOW_VM_NETWORKING:
+    if not settings.ALLOW_VM_NETWORKING or _pool() is None:
         return False
     try:
         spec = await supervisor.get_vm_spec(vm_id)
     except SupervisorError as error:
         logger.debug("No spec for %s, starting it as is: %s", vm_id, error)
         return False
-    if spec.network.requested_ipv6:
+    if usable_ipv6(spec.network.requested_ipv6):
         return False
     return spec.backend == Backend.QEMU or spec.network.internet_access
 
