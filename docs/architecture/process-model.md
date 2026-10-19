@@ -193,10 +193,16 @@ Before the gRPC socket is bound, `build_world_view`
    `vm_hash`/`vm_id` (never the file name; here `vm_id` means the wire
    vm_id, i.e. the VM hash, not the config's integer `vm_id` field, which
    this doc calls `vm_index`). When two ACTIVE configs claim
-   the same `vm_index`, only the first in sorted file order is adopted
-   (`world.rs`, mirroring the Python `claimed_vm_ids` guard); the other's
-   `vm_index` is still reserved out of the allocator so nothing can later
-   collide with it. For each VM adopted running, this step also reads that
+   the same `vm_index` (the 1.x line reused indices, so an in-place
+   upgrade can carry such pairs), only the most recently written one is
+   adopted (`world.rs`, the Python `claimed_vm_ids` guard with a better
+   tie-break: a create wires the tap right after writing the config, so
+   the newest config is the VM whose qemu holds the tap and whose address
+   the tap carries; equal timestamps fall back to sorted file order). The
+   other is not served; a later `CreateVm` for it stops its controller and
+   rebuilds it on a fresh `vm_index` (see the CreateVm section of
+   [`vm-lifecycle.md`](vm-lifecycle.md)). The index itself stays claimed by
+   the adopted VM. For each VM adopted running, this step also reads that
    VM's persisted port-forward rows straight out of the port-mapping
    sqlite store (`ports::load_port_forwards` in
    `rust/crates/supervisor-daemon/src/world.rs`, backed by

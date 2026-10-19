@@ -3189,16 +3189,80 @@ fn parse_int_digits(digits: &str, radix: u32, allow_leading_underscore: bool) ->
     Some(value)
 }
 
+/// The on-disk controller config of `vm_id`.
+fn load_controller_config(
+    state: &DaemonState,
+    vm_id: &str,
+) -> Result<controller_config::ControllerConfig, RpcError> {
+    let root = &state.host.settings.execution_root;
+    let path = controller_config::controller_config_path(root, vm_id);
+    let contents = std::fs::read_to_string(&path)
+        .map_err(|error| RpcError::Internal(format!("cannot read {}: {error}", path.display())))?;
+    Ok(parse_controller_config(&contents)?)
+}
+
+/// The tracked VM, other than `vm_id`, holding `vm_index`. A live controller
+/// whose on-disk vm_index another tracked VM holds can never be re-adopted:
+/// the tap, routes and nft chains of that index are the holder's, and
+/// restoring on it would rewire the holder's networking.
+fn tracked_index_holder(state: &DaemonState, vm_id: &str, vm_index: i64) -> Option<String> {
+    state
+        .world
+        .blocking_read()
+        .entries
+        .values()
+        .find(|entry| entry.vm_hash != vm_id && entry.vm_index == vm_index)
+        .map(|entry| entry.vm_hash.clone())
+}
+
+/// Stop a live controller that cannot be re-adopted because its on-disk
+/// vm_index is held by `holder`: the only way to run it again is a clean
+/// create on a fresh vm_index, which the caller performs next. The index's
+/// tap and nft chains are the holder's and are left alone.
+fn stop_unadoptable_duplicate(
+    state: &DaemonState,
+    vm_id: &str,
+    vm_index: i64,
+    holder: &str,
+) -> Result<(), RpcError> {
+    let unit = controller_unit_name(vm_id);
+    tracing::warn!(
+        vm_id,
+        vm_index,
+        holder,
+        "controller runs on a vm_index another tracked VM holds and cannot be \
+         re-adopted; stopping it to rebuild it on a fresh vm_index"
+    );
+    units::stop_and_disable(&*state.units, &unit)?;
+    wait_for_controller_stopped(state, &unit);
+    state.world.blocking_write().failed_reattach.remove(vm_id);
+    Ok(())
+}
+
 /// Re-adopt a live-but-untracked controller (Python
 /// `_readopt_live_controller` + `_restore_running_execution_from_config`):
 /// rebuild the entry from the on-disk config instead of creating a
 /// duplicate over the running qemu.
 fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, RpcError> {
-    let root = &state.host.settings.execution_root;
-    let path = controller_config::controller_config_path(root, vm_id);
-    let contents = std::fs::read_to_string(&path)
-        .map_err(|error| RpcError::Internal(format!("cannot read {}: {error}", path.display())))?;
-    let config = parse_controller_config(&contents)?;
+    let config = load_controller_config(state, vm_id)?;
+    if let Some(claimed_by) = tracked_index_holder(state, vm_id, config.vm_index) {
+        return Err(RpcError::Internal(format!(
+            "Cannot re-adopt VM {vm_id}: its on-disk vm_index {} is now claimed by \
+             running VM {claimed_by}; refusing to rewire that VM's networking or to \
+             create a duplicate, a create for VM {vm_id} rebuilds it on a fresh vm_index",
+            config.vm_index
+        )));
+    }
+    readopt_loaded_controller(state, vm_id, config)
+}
+
+/// [`readopt_live_controller`] past the vm_index check, on a config the
+/// caller already loaded and checked.
+fn readopt_loaded_controller(
+    state: &DaemonState,
+    vm_id: &str,
+    config: controller_config::ControllerConfig,
+) -> Result<VmEntry, RpcError> {
     let qemu = match config.vm {
         VmConfiguration::Qemu(qemu) => *qemu,
         VmConfiguration::Firecracker => {
@@ -3207,25 +3271,6 @@ fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, 
             ));
         }
     };
-
-    // The on-disk vm_index may meanwhile belong to another tracked VM;
-    // restoring on it would rewire that VM's networking (Python raises the
-    // same refusal).
-    if let Some(claimed_by) = state
-        .world
-        .blocking_read()
-        .entries
-        .values()
-        .find(|entry| entry.vm_hash != vm_id && entry.vm_index == config.vm_index)
-        .map(|entry| entry.vm_hash.clone())
-    {
-        return Err(RpcError::Internal(format!(
-            "Cannot re-adopt VM {vm_id}: its on-disk vm_index {} is now claimed by \
-             running VM {claimed_by}; refusing to rewire that VM's networking or to \
-             create a duplicate, operator intervention required",
-            config.vm_index
-        )));
-    }
 
     tracing::warn!(
         vm_id,
@@ -3474,9 +3519,27 @@ fn create_vm_inner(
             // restart-from-disk.
             "inactive" | "failed" | "not-loaded" => {}
             "active" => {
-                let entry = readopt_live_controller(state, &vm_id)?;
-                let entry = same_spec_or_conflict(&entry, &request)?;
-                return Ok((entry, true));
+                let config = load_controller_config(state, &vm_id)?;
+                match tracked_index_holder(state, &vm_id, config.vm_index) {
+                    None => {
+                        let entry = readopt_loaded_controller(state, &vm_id, config)?;
+                        let entry = same_spec_or_conflict(&entry, &request)?;
+                        return Ok((entry, true));
+                    }
+                    Some(holder) => {
+                        // A duplicate of the 1.x line's reused vm_indices,
+                        // skipped at adoption: it can only run again through
+                        // the clean create below, on a fresh vm_index. The
+                        // agent's address must be free before anything is
+                        // stopped, so a refused create leaves the controller
+                        // as it was.
+                        if state.host.settings.allow_vm_networking {
+                            let ipv6 = requested_ipv6_pair(&request)?;
+                            ensure_ipv6_free(&state.world.blocking_read(), &ipv6, &vm_id)?;
+                        }
+                        stop_unadoptable_duplicate(state, &vm_id, config.vm_index, &holder)?;
+                    }
+                }
             }
             other => {
                 return Err(RpcError::Internal(format!(
@@ -7809,6 +7872,106 @@ mod tests {
         let (entry, running) = create_vm(state, reconstructed).unwrap();
         assert!(running);
         assert_eq!(entry.vm_index, 3);
+    }
+
+    /// A live controller for `vm_id` whose on-disk config claims `vm_index`:
+    /// a duplicate of the 1.x line's reused indices, skipped at adoption.
+    fn seed_live_duplicate(harness: &Harness, vm_id: &str, vm_index: i64) {
+        let root = harness.state.host.settings.execution_root.clone();
+        let fixture = std::fs::read_to_string(
+            test_fixtures::fixtures_dir()
+                .join(format!("{}-controller.json", test_fixtures::QEMU_HASH)),
+        )
+        .unwrap();
+        let mut value: Value = serde_json::from_str(&fixture).unwrap();
+        value["vm_id"] = vm_index.into();
+        value["vm_hash"] = vm_id.into();
+        std::fs::write(
+            root.join(format!("{vm_id}-controller.json")),
+            value.to_string(),
+        )
+        .unwrap();
+        harness
+            .systemd
+            .set_state(&controller_unit_name(vm_id), "active");
+    }
+
+    #[test]
+    fn create_rebuilds_a_live_duplicate_controller_on_a_fresh_vm_index() {
+        // A live controller whose on-disk vm_index a tracked VM holds can
+        // never be re-adopted. Its create stops it and rebuilds it on a
+        // fresh index, leaving the holder's networking alone, instead of
+        // failing on every retry for ever.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let holder = hash('b');
+        let (held, _) = create_vm(state, spec(&holder, &root)).unwrap();
+        assert_eq!(held.vm_index, 4);
+        let duplicate = hash('a');
+        seed_live_duplicate(&harness, &duplicate, 4);
+        let unit = controller_unit_name(&duplicate);
+
+        let (entry, running) = create_vm(state, spec(&duplicate, &root)).unwrap();
+        assert!(running);
+        assert_eq!(entry.vm_index, 5, "a fresh index; the holder keeps 4");
+        let actions = harness.systemd.actions();
+        let stopped = actions
+            .iter()
+            .position(|action| *action == format!("stop {unit}"))
+            .expect("the duplicate controller is stopped first");
+        let started = actions
+            .iter()
+            .rposition(|action| *action == format!("start {unit}"))
+            .expect("then started on its new config");
+        assert!(stopped < started);
+        let world = state.world.blocking_read();
+        assert_eq!(world.entries[&holder].vm_index, 4);
+        assert_eq!(world.entries[&duplicate].vm_index, 5);
+        assert!(
+            harness.taps.devices().contains("vmtap4"),
+            "the holder's tap is untouched"
+        );
+        assert!(
+            !harness
+                .taps
+                .actions()
+                .iter()
+                .any(|action| action == "delete vmtap4")
+        );
+    }
+
+    #[test]
+    fn a_live_duplicate_controller_is_kept_when_its_address_is_held() {
+        // The overlap refusal comes before anything is stopped: the
+        // duplicate keeps running as it was and the agent sees the holder.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let holder = hash('b');
+        create_vm(state, spec(&holder, &root)).unwrap();
+        let duplicate = hash('a');
+        seed_live_duplicate(&harness, &duplicate, 4);
+        let unit = controller_unit_name(&duplicate);
+
+        let mut request = spec(&duplicate, &root);
+        request.network.as_mut().unwrap().requested_ipv6 = test_ipv6(&holder);
+        match create_vm(state, request) {
+            Err(RpcError::InvalidBackend(message)) => assert!(
+                message.contains("overlaps") && message.contains(holder.as_str()),
+                "got {message:?}"
+            ),
+            other => panic!("expected the overlap refusal, got {other:?}"),
+        }
+        assert!(
+            !harness
+                .systemd
+                .actions()
+                .iter()
+                .any(|action| *action == format!("stop {unit}"))
+        );
+        assert_eq!(state.units.get_active_state(&unit), "active");
+        assert!(!state.world.blocking_read().entries.contains_key(&duplicate));
     }
 
     #[test]
