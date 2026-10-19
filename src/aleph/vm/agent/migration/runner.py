@@ -276,6 +276,18 @@ def schedule_import_ttl(job: ImportJob, timeout: int) -> None:
         logger.warning("Failed to schedule TTL cleanup for %s: %s", job.vm_hash, e)
 
 
+def _safe_disk_path(dest_dir: Path, name: str) -> Path:
+    if not name or name in {".", ".."} or name != Path(name).name or "\\" in name:
+        msg = f"Invalid disk file name: {name!r}"
+        raise RuntimeError(msg)
+    base = dest_dir.resolve()
+    dest = (dest_dir / name).resolve()
+    if not dest.is_relative_to(base):
+        msg = f"Disk file escapes destination: {name!r}"
+        raise RuntimeError(msg)
+    return dest
+
+
 async def run_import(
     job: ImportJob,
     supervisor: "Supervisor",
@@ -375,7 +387,7 @@ async def run_import(
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     for disk_file in disk_files:
                         url = f"{base_url}{disk_file.download_path}"
-                        dest_path = dest_dir / disk_file.name
+                        dest_path = _safe_disk_path(dest_dir, disk_file.name)
                         job.downloaded_files.append(dest_path)
                         base_so_far = job.bytes_downloaded
 
@@ -393,7 +405,7 @@ async def run_import(
 
                 job.current_step = "rebasing"
                 for disk_file in disk_files:
-                    overlay_path = dest_dir / disk_file.name
+                    overlay_path = _safe_disk_path(dest_dir, disk_file.name)
                     if not overlay_path.exists():
                         msg = f"Expected overlay {overlay_path} missing after download"
                         raise RuntimeError(msg)

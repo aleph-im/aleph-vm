@@ -5,8 +5,10 @@ from datetime import datetime, timezone
 
 import pytest
 from aleph_message.models import ItemHash
+from pydantic import ValidationError
 
 from aleph.vm.agent.migration.jobs import (
+    DiskFileInfo,
     ExportJob,
     ImportJob,
     MigrationState,
@@ -71,3 +73,17 @@ async def test_migration_semaphore_is_singleton():
     a = get_migration_semaphore()
     b = get_migration_semaphore()
     assert a is b
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["../../../../tmp/x", "/etc/passwd", "a/b", "..", ".", "a\\b"],
+)
+def test_disk_file_info_rejects_unsafe_names(name):
+    with pytest.raises(ValidationError):
+        DiskFileInfo(name=name, size_bytes=1, sha256="0" * 64, download_path="/x")
+
+
+def test_disk_file_info_accepts_plain_name():
+    info = DiskFileInfo(name="disk.qcow2", size_bytes=1, sha256="0" * 64, download_path="/x")
+    assert info.name == "disk.qcow2"

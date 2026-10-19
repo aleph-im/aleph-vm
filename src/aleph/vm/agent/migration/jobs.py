@@ -7,7 +7,7 @@ from enum import Enum
 from pathlib import Path
 
 from aleph_message.models import ItemHash
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from aleph.vm.conf import settings
 
@@ -31,6 +31,14 @@ class DiskFileInfo(BaseModel):
     size_bytes: int
     sha256: str
     download_path: str
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        if not value or value in {".", ".."} or value != Path(value).name or "\\" in value:
+            msg = f"Invalid disk file name: {value!r}"
+            raise ValueError(msg)
+        return value
 
 
 @dataclass
