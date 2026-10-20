@@ -675,6 +675,9 @@ mod tests {
     const QUOTE_OUTDATED: &[u8] = include_bytes!("../../tests/fixtures/tdx/tdx_quote_outdated.bin");
     const COLLATERAL_OUTDATED: &[u8] =
         include_bytes!("../../tests/fixtures/tdx/tdx_quote_outdated_collateral.json");
+    const QUOTE_XEON6: &[u8] = include_bytes!("../../tests/fixtures/tdx/tdx_quote_xeon6_ratls.bin");
+    const COLLATERAL_XEON6: &[u8] =
+        include_bytes!("../../tests/fixtures/tdx/tdx_quote_xeon6_ratls_collateral.json");
 
     fn now_v4() -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(1_750_377_600)
@@ -682,6 +685,23 @@ mod tests {
     fn now_outdated() -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(1_771_459_200)
     }
+    /// Inside the xeon6 collateral's windows: 2026-10-01T00:00:00Z.
+    fn now_xeon6() -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(1_790_812_800)
+    }
+
+    /// The advisories of the TCB level the xeon6 platform lands on, in the
+    /// document's order.
+    const XEON6_ADVISORIES: [&str; 8] = [
+        "INTEL-SA-01268",
+        "INTEL-SA-01273",
+        "INTEL-SA-01278",
+        "INTEL-SA-01192",
+        "INTEL-SA-01245",
+        "INTEL-SA-01312",
+        "INTEL-SA-01313",
+        "INTEL-SA-01367",
+    ];
 
     fn pck_leaf(raw: &[u8]) -> Vec<u8> {
         let quote = parse_tdx_quote(raw).expect("quote parses");
@@ -768,10 +788,71 @@ mod tests {
     }
 
     #[test]
+    fn xeon6_platform_lands_on_a_genuine_out_of_date_level() {
+        // Untouched hardware fixture: the ROM 1.10 platform's CPUSVN and
+        // TDX module SVN 7 match the third of four levels (2024-11-13,
+        // OutOfDate, eight advisories), the module identity TDX_01 lands on
+        // its isvsvn 6 rung (a subset of those advisories) and the QE is
+        // UpToDate. The default policy refuses it; admitting OutOfDate
+        // yields the converged verdict with the level's advisory list.
+        let quote = parse_tdx_quote(QUOTE_XEON6).unwrap();
+        let collateral = TdxCollateral::from_json(COLLATERAL_XEON6).unwrap();
+        let err = format!(
+            "{:#}",
+            evaluate_tcb(
+                &quote,
+                &collateral,
+                &pck_leaf(QUOTE_XEON6),
+                now_xeon6(),
+                &TdxTcbPolicy::default(),
+            )
+            .unwrap_err()
+        );
+        assert!(err.contains("OutOfDate"), "got: {err}");
+        assert!(err.contains("not accepted by policy"), "got: {err}");
+
+        let mut accepting = TdxTcbPolicy::default();
+        accepting.accepted_statuses.insert(TcbStatus::OutOfDate);
+        let outcome = evaluate_tcb(
+            &quote,
+            &collateral,
+            &pck_leaf(QUOTE_XEON6),
+            now_xeon6(),
+            &accepting,
+        )
+        .expect("admitted once the policy says so");
+        assert_eq!(outcome.status, TcbStatus::OutOfDate);
+        assert_eq!(outcome.advisory_ids, XEON6_ADVISORIES);
+
+        // The module's own rung carries only advisories the platform level
+        // already lists; a denied one from that overlap still refuses.
+        let mut denying = accepting.clone();
+        denying
+            .denied_advisories
+            .insert("INTEL-SA-01245".to_string());
+        let err = format!(
+            "{:#}",
+            evaluate_tcb(
+                &quote,
+                &collateral,
+                &pck_leaf(QUOTE_XEON6),
+                now_xeon6(),
+                &denying,
+            )
+            .unwrap_err()
+        );
+        assert!(
+            err.contains("denied advisory: INTEL-SA-01245"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
     fn out_of_date_level_is_refused_by_the_acceptance_policy() {
-        // No fixture lands on a published OutOfDate level on its own, so two
-        // SGX components of the real PCK platform are moved: 7 up to what
-        // every level demands, 4 down to what only the OutOfDate rung allows.
+        // Synthetic counterpart of the xeon6 case on the vendored sample:
+        // two SGX components of the real PCK platform are moved, 7 up to
+        // what every level demands, 4 down to what only the OutOfDate rung
+        // allows.
         let quote = parse_tdx_quote(QUOTE_OUTDATED).unwrap();
         let collateral = TdxCollateral::from_json(COLLATERAL_OUTDATED).unwrap();
         let tcb_info = verify_tcb_info(&collateral, now_outdated()).expect("TCB Info verifies");
