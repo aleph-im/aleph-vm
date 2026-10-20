@@ -21,6 +21,10 @@ pub const DESCRIPTOR_MAGIC: &[u8] = b"ALEPH-TDX-DESCRIPTOR-v1\n";
 /// The drive is this large; everything past the suffix line is zero.
 pub const DESCRIPTOR_SIZE: usize = 64 * 1024;
 
+/// Most verified volumes a deployment may declare: the schema's cap, and
+/// the number of device-letter pairs the init hands out.
+const MAX_VERIFIED_VOLUMES: usize = 8;
+
 #[derive(clap::Args, Debug)]
 pub struct TdxDescriptorArgs {
     /// Block device holding the descriptor image.
@@ -55,7 +59,50 @@ pub fn parse_descriptor(image: &[u8]) -> Result<&str> {
     if rest[end + 1..].iter().any(|&b| b != 0) {
         bail!("descriptor carries data after the suffix line");
     }
-    std::str::from_utf8(suffix).context("descriptor suffix is not UTF-8")
+    let suffix = std::str::from_utf8(suffix).context("descriptor suffix is not UTF-8")?;
+    check_suffix_grammar(suffix)?;
+    Ok(suffix)
+}
+
+fn is_sha256_hex(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// The only tokens a descriptor may carry, in the daemon's rendering order:
+/// nothing, `workload_roothash=<sha256 hex>`, and after it
+/// `verified_volumes=<comma-joined sha256 hex>`, single-space separated.
+/// The init splices the suffix next to the measured cmdline and its parsers
+/// take the last occurrence of a key, so a key the cmdline already settles
+/// (`roothash=`, `aleph_insecure_unattested=`) must never arrive this way,
+/// whatever MRCONFIGID says.
+fn check_suffix_grammar(suffix: &str) -> Result<()> {
+    if suffix.is_empty() {
+        return Ok(());
+    }
+    let mut tokens = suffix.split(' ');
+    let first = tokens.next().unwrap_or_default();
+    let Some(workload) = first.strip_prefix("workload_roothash=") else {
+        bail!("descriptor token {first:?} is not workload_roothash=");
+    };
+    if !is_sha256_hex(workload) {
+        bail!("descriptor workload_roothash is not a lowercase sha256 hex string");
+    }
+    if let Some(second) = tokens.next() {
+        let Some(volumes) = second.strip_prefix("verified_volumes=") else {
+            bail!("descriptor token {second:?} is not verified_volumes=");
+        };
+        let list: Vec<&str> = volumes.split(',').collect();
+        if list.len() > MAX_VERIFIED_VOLUMES || !list.iter().all(|v| is_sha256_hex(v)) {
+            bail!(
+                "descriptor verified_volumes is not a comma-joined list of at most \
+                 {MAX_VERIFIED_VOLUMES} lowercase sha256 hex roothashes"
+            );
+        }
+    }
+    if let Some(extra) = tokens.next() {
+        bail!("descriptor carries an unexpected token {extra:?}");
+    }
+    Ok(())
 }
 
 /// The suffix, once its hash is the MRCONFIGID the TD was launched with.
@@ -159,7 +206,10 @@ mod tests {
         image
     }
 
-    const SUFFIX: &str = "workload_roothash=0123abcd swiotlb=65536 gpu_arch=hopper gpu_count=1";
+    const WORKLOAD: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const VOLUME: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+    const SUFFIX: &str =
+        "workload_roothash=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     #[test]
     fn a_good_descriptor_yields_its_suffix() {
@@ -225,7 +275,8 @@ mod tests {
     fn the_suffix_must_hash_to_the_launched_mrconfigid() {
         let launched = mrconfigid(SUFFIX);
         assert_eq!(check_descriptor(&image(SUFFIX), &launched).unwrap(), SUFFIX);
-        let err = check_descriptor(&image("workload_roothash=ffff"), &launched)
+        let other = format!("workload_roothash={VOLUME}");
+        let err = check_descriptor(&image(&other), &launched)
             .unwrap_err()
             .to_string();
         assert!(err.contains("does not match MRCONFIGID"), "got: {err}");
@@ -237,6 +288,89 @@ mod tests {
         assert!(check_descriptor(&image(SUFFIX), &[0u8; 48]).is_err());
         // A malformed image never reaches the comparison.
         assert!(check_descriptor(b"junk", &launched).is_err());
+    }
+
+    #[test]
+    fn the_suffix_grammar_is_closed() {
+        let ok = |s: &str| check_suffix_grammar(s).unwrap_or_else(|e| panic!("{s:?}: {e}"));
+        ok("");
+        ok(SUFFIX);
+        ok(&format!(
+            "workload_roothash={WORKLOAD} verified_volumes={VOLUME}"
+        ));
+        ok(&format!(
+            "workload_roothash={WORKLOAD} verified_volumes={}",
+            [VOLUME; 8].join(",")
+        ));
+
+        let refused = |s: String, needle: &str| {
+            let err = check_suffix_grammar(&s).unwrap_err().to_string();
+            assert!(err.contains(needle), "{s:?}: got {err}");
+        };
+        // Keys the measured cmdline settles can never ride on the drive,
+        // whether alone, first or last.
+        refused("roothash=zz".into(), "not workload_roothash=");
+        refused(
+            "aleph_insecure_unattested=1".into(),
+            "not workload_roothash=",
+        );
+        refused(
+            format!("workload_roothash={WORKLOAD} roothash="),
+            "not verified_volumes=",
+        );
+        refused(
+            format!("workload_roothash={WORKLOAD} verified_volumes={VOLUME} roothash="),
+            "unexpected token",
+        );
+        // Tokens the SNP cmdline may carry are not part of this grammar.
+        refused(
+            format!("workload_roothash={WORKLOAD} swiotlb=65536"),
+            "not verified_volumes=",
+        );
+        // Shape: lowercase sha256 hex, single spaces, bounded list.
+        refused("workload_roothash=0123abcd".into(), "lowercase sha256");
+        refused(
+            format!("workload_roothash={}", WORKLOAD.to_uppercase()),
+            "lowercase sha256",
+        );
+        refused(
+            format!(" workload_roothash={WORKLOAD}"),
+            "not workload_roothash=",
+        );
+        refused(
+            format!("workload_roothash={WORKLOAD} "),
+            "not verified_volumes=",
+        );
+        refused(
+            format!("workload_roothash={WORKLOAD}  verified_volumes={VOLUME}"),
+            "not verified_volumes=",
+        );
+        refused(
+            format!("workload_roothash={WORKLOAD} verified_volumes="),
+            "verified_volumes is not",
+        );
+        refused(
+            format!("workload_roothash={WORKLOAD} verified_volumes={VOLUME},,{VOLUME}"),
+            "verified_volumes is not",
+        );
+        refused(
+            format!(
+                "workload_roothash={WORKLOAD} verified_volumes={}",
+                [VOLUME; 9].join(",")
+            ),
+            "verified_volumes is not",
+        );
+        refused(
+            format!("verified_volumes={VOLUME}"),
+            "not workload_roothash=",
+        );
+
+        // And the gate sits on the image path, before any hash comparison.
+        let launched = mrconfigid("roothash=zz");
+        let err = check_descriptor(&image("roothash=zz"), &launched)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not workload_roothash="), "got: {err}");
     }
 
     #[test]

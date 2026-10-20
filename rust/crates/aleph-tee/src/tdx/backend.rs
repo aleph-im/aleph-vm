@@ -191,7 +191,7 @@ fn quote_from_entry(entry: &Path, report_data: &[u8; 64], timeout: Duration) -> 
     let provider = read_attr(entry, "provider")?;
     let provider = String::from_utf8_lossy(&provider);
     let provider = provider.trim();
-    if !provider.starts_with(TDX_PROVIDER) {
+    if provider != TDX_PROVIDER {
         bail!("tsm report provider is {provider:?}, not {TDX_PROVIDER}: this is not a TDX guest");
     }
 
@@ -298,6 +298,10 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("not a TDX guest"), "got: {err}");
+        assert!(!entry.join("inblob").exists());
+        // Exact match: a provider that merely starts with the name is not it.
+        let entry = fake_entry(dir.path(), "tdx_guest_v2", QUOTE_V4);
+        assert!(quote_from_entry(&entry, &[0u8; 64], QUOTE_TIMEOUT).is_err());
         assert!(!entry.join("inblob").exists());
     }
 
