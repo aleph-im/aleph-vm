@@ -46,14 +46,16 @@ fn verify_qe_report_signature(quote: &TdxQuote, pck_leaf_der: &[u8]) -> Result<(
 }
 
 /// Verify that the QE report binds the attestation key: its `report_data`
-/// must open with `SHA-256(attestation_key || qe_auth_data)`. Skipping this
-/// check is a total break: without it, any key could sign the quote body.
+/// must be `SHA-256(attestation_key || qe_auth_data)` followed by 32 zero
+/// bytes, the whole field. Skipping this check is a total break: without
+/// it, any key could sign the quote body.
 fn check_attestation_key_binding(quote: &TdxQuote) -> Result<()> {
     let mut hasher = Sha256::new();
     hasher.update(quote.signature.attestation_key);
     hasher.update(&quote.signature.qe_auth_data);
-    let bound: [u8; 32] = hasher.finalize().into();
-    let report_data = &quote.signature.qe_report[QE_REPORT_DATA_OFFSET..QE_REPORT_DATA_OFFSET + 32];
+    let mut bound = [0u8; 64];
+    bound[..32].copy_from_slice(&hasher.finalize());
+    let report_data = &quote.signature.qe_report[QE_REPORT_DATA_OFFSET..QE_REPORT_DATA_OFFSET + 64];
     if report_data != bound {
         bail!("the QE report does not bind the quote's attestation key");
     }
@@ -276,6 +278,20 @@ mod tests {
             err.contains("QE report signature") || err.contains("does not bind"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn attestation_key_binding_covers_the_whole_report_data() {
+        // The upper 32 bytes of the QE report_data must be zero: a QE that
+        // put anything there is not binding the key the way Intel's does.
+        let quote = parse_tdx_quote(QUOTE_V4).expect("quote parses");
+        check_attestation_key_binding(&quote).expect("the genuine report binds");
+        let mut tampered = quote.clone();
+        tampered.signature.qe_report[QE_REPORT_DATA_OFFSET + 63] = 0x01;
+        let err = check_attestation_key_binding(&tampered)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("does not bind"), "got: {err}");
     }
 
     #[test]
