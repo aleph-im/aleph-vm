@@ -323,14 +323,14 @@ async def test_tdx_bundle_measurements_malformed_fail_closed(tmp_path, storage_f
 
 
 @pytest.mark.asyncio
-async def test_tdx_bundle_without_measurements_file_launches(tmp_path, storage_files, tdx_host, no_snp_probe):
-    """The manifest is the authority clients pin against; the recorded
-    triple is a cross-check only when the bundle ships one."""
+async def test_tdx_bundle_without_measurements_file_fails_closed(tmp_path, storage_files, tdx_host, no_snp_probe):
+    """Every tdx bundle the builder emits records its triple; one without
+    the record cannot be cross-checked against the manifest clients pin."""
     files = {name: data for name, data in TDX_BUNDLE_FILES.items() if name != TDX_MEASUREMENTS_FILE}
     stage_tdx_bundle(tmp_path, storage_files, files)
     message = tdx_message(volumes=[])
-    spec, _ = await build_vprogram_spec(message.item_hash, message.content)
-    assert spec.tee is not None and spec.tee.backend is TeeBackend.TDX
+    with pytest.raises(VmSetupError, match="ships no measurements.json"):
+        await build_vprogram_spec(message.item_hash, message.content)
 
 
 def test_remove_vprogram_staging_takes_the_daemon_descriptor_with_it(tmp_path, monkeypatch):

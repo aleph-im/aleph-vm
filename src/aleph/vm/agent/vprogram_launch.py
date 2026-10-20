@@ -185,12 +185,15 @@ def _check_platform(vm_hash: ItemHash, content: VerifiableProgramContent, manife
 
 def _check_tdx_measurements(image_dir: Path, manifest: RuntimeManifest) -> None:
     """A tdx bundle records the {mrtd, rtmr1, rtmr2} triple its build
-    predicted; when it does, it must be the triple the manifest publishes
-    (the one clients pin). A disagreement is a mispackaged or tampered
-    bundle: never boot a runtime the manifest mismeasures."""
-    recorded_path = image_dir / TDX_MEASUREMENTS_FILE
-    if manifest.measurements is None or not recorded_path.is_file():
+    predicted, and it must be the triple the manifest publishes (the one
+    clients pin). A missing record or a disagreement is a mispackaged or
+    tampered bundle: never boot a runtime the manifest mismeasures."""
+    if manifest.measurements is None:
         return
+    recorded_path = image_dir / TDX_MEASUREMENTS_FILE
+    if not recorded_path.is_file():
+        msg = f"tdx bundle ships no {TDX_MEASUREMENTS_FILE} to check the manifest's measurements against"
+        raise VmSetupError(msg)
     try:
         recorded = TdxMeasurements.model_validate_json(recorded_path.read_bytes())
     except (ValidationError, ValueError, OSError) as error:
