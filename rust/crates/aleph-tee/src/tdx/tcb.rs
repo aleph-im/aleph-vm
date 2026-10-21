@@ -319,8 +319,23 @@ fn verify_tcb_info(collateral: &TdxCollateral, now: SystemTime) -> Result<TcbInf
         &collateral.tcb_info_issuer_chain,
         now,
     )?;
-    let tcb_info: TcbInfo =
-        serde_json::from_str(&collateral.tcb_info).context("failed to parse TCB Info body")?;
+    parse_tcb_info(&collateral.tcb_info, now)
+}
+
+/// Parse a signature-checked TCB Info body and refuse anything but a TDX
+/// document of a version that carries the TDX module identities: an SGX or
+/// pre-v3 document would otherwise skip the module gate instead of failing.
+fn parse_tcb_info(body: &str, now: SystemTime) -> Result<TcbInfo> {
+    let tcb_info: TcbInfo = serde_json::from_str(body).context("failed to parse TCB Info body")?;
+    if tcb_info.id != "TDX" {
+        bail!("TCB Info id is {:?}, not TDX", tcb_info.id);
+    }
+    if tcb_info.version < 3 {
+        bail!(
+            "TCB Info version {} predates the TDX module identities (v3)",
+            tcb_info.version
+        );
+    }
     check_document_window("TCB Info", &tcb_info.issue_date, &tcb_info.next_update, now)?;
     Ok(tcb_info)
 }
@@ -481,9 +496,6 @@ fn tdx_module_status(
     body: &TdReportBody,
     tee_tcb_svn: &[u8; 16],
 ) -> Result<Option<(TcbStatus, Vec<String>)>> {
-    if tcb_info.id != "TDX" || tcb_info.version < 3 {
-        return Ok(None);
-    }
     let module_svn = tee_tcb_svn[0];
     let module_version = tee_tcb_svn[1];
 
@@ -611,9 +623,17 @@ fn qe_identity_status(qe: &QeIdentity, qe_report: &[u8; 384]) -> Result<(TcbStat
 /// important gate.
 const TD_ATTRIBUTES_DEBUG: u8 = 0x01;
 
+/// TD_ATTRIBUTES.SEPT_VE_DISABLE (bit 28, so bit 4 of byte 3). Every TD the
+/// daemon launches has it set and a Linux guest refuses to run without it;
+/// a quote without it is not from one of our launches.
+const TD_ATTRIBUTES_SEPT_VE_DISABLE: u8 = 0x10;
+
 fn check_platform_gates(quote: &TdxQuote) -> Result<()> {
     if quote.body.td_attributes[0] & TD_ATTRIBUTES_DEBUG != 0 {
         bail!("the TD is debuggable (TD_ATTRIBUTES.DEBUG set): the host can read guest memory");
+    }
+    if quote.body.td_attributes[3] & TD_ATTRIBUTES_SEPT_VE_DISABLE == 0 {
+        bail!("TD_ATTRIBUTES.SEPT_VE_DISABLE is clear: not a TD launched by this platform");
     }
     Ok(())
 }
@@ -1061,6 +1081,48 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("TCB Info signature"), "got: {err}");
+    }
+
+    #[test]
+    fn tcb_info_must_be_a_v3_tdx_document() {
+        // Both fields live in the signed body, so a mutated document fails
+        // the signature first; the identity check is exercised on the parsed
+        // body alone. The fixture text is compact JSON.
+        let collateral = TdxCollateral::from_json(COLLATERAL_V4).unwrap();
+        let body = collateral.tcb_info.as_str();
+        assert!(
+            body.starts_with(r#"{"id":"TDX","version":3,"#),
+            "fixture layout changed"
+        );
+        parse_tcb_info(body, now_v4()).expect("the genuine body parses");
+
+        let sgx = body.replacen(r#""id":"TDX""#, r#""id":"SGX""#, 1);
+        let err = parse_tcb_info(&sgx, now_v4()).unwrap_err().to_string();
+        assert!(err.contains("not TDX"), "got: {err}");
+
+        let v2 = body.replacen(r#""version":3"#, r#""version":2"#, 1);
+        let err = parse_tcb_info(&v2, now_v4()).unwrap_err().to_string();
+        assert!(err.contains("version 2"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_td_without_sept_ve_disable() {
+        let mut raw = QUOTE_V4.to_vec();
+        // Clear TD_ATTRIBUTES.SEPT_VE_DISABLE: body offset 120 + 3, after the header.
+        assert_eq!(raw[48 + 123] & 0x10, 0x10, "the fixture has the bit set");
+        raw[48 + 123] &= !0x10;
+        let quote = parse_tdx_quote(&raw).unwrap();
+        let collateral = TdxCollateral::from_json(COLLATERAL_V4).unwrap();
+        let err = evaluate_tcb(
+            &quote,
+            &collateral,
+            &pck_leaf(QUOTE_V4),
+            now_v4(),
+            &TdxTcbPolicy::default(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("SEPT_VE_DISABLE"), "got: {err}");
     }
 
     #[test]

@@ -269,6 +269,36 @@ pub(crate) fn check_signed_by(
     )
 }
 
+/// Reject a certificate whose profile does not fit its place in a chain:
+/// basicConstraints and keyUsage must both be present, a CA must say so and
+/// be allowed to sign certificates and CRLs, an end entity must not be a CA
+/// and must be allowed to sign.
+pub(crate) fn check_cert_profile(what: &str, cert: &X509Certificate<'_>, ca: bool) -> Result<()> {
+    let constraints = cert
+        .basic_constraints()
+        .with_context(|| format!("{what} has a malformed basicConstraints extension"))?
+        .with_context(|| format!("{what} carries no basicConstraints extension"))?;
+    if constraints.value.ca != ca {
+        bail!(
+            "{what} is {}marked as a CA, which does not fit its place in the chain",
+            if constraints.value.ca { "" } else { "not " }
+        );
+    }
+    let usage = cert
+        .key_usage()
+        .with_context(|| format!("{what} has a malformed keyUsage extension"))?
+        .with_context(|| format!("{what} carries no keyUsage extension"))?;
+    let fits = if ca {
+        usage.value.key_cert_sign() && usage.value.crl_sign()
+    } else {
+        usage.value.digital_signature()
+    };
+    if !fits {
+        bail!("{what} keyUsage does not allow what its place in the chain requires");
+    }
+    Ok(())
+}
+
 /// [`check_signed_by`] for a CRL.
 pub(crate) fn check_crl_signed_by(
     crl_label: &str,

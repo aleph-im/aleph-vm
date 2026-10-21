@@ -19,6 +19,7 @@ verify = [
     "dep:ring",
     "dep:x509-parser",
     "dep:reqwest",
+    "dep:tempfile",
 ]
 
 [dependencies]
@@ -42,6 +43,8 @@ k256.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
+# Exclusive temporary files for the vendor collateral cache (verify only).
+tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Attested-TLS certificate fabrication in the x509 tests and the impostor

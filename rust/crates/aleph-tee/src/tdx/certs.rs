@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use x509_parser::certificate::X509Certificate;
 
 use crate::pki::{
-    check_cert_window, check_crl_signed_by, check_pinned_root, check_signed_by,
+    check_cert_profile, check_cert_window, check_crl_signed_by, check_pinned_root, check_signed_by,
     check_validity_window, parse_cert, parse_crl, pem_certs_to_der, single_common_name,
     unix_seconds,
 };
@@ -134,6 +134,10 @@ pub(crate) fn verify_pck_chain(
     check_cert_window("the root certificate", &root, now)?;
     check_cert_window("the intermediate certificate", &intermediate, now)?;
     check_cert_window("the PCK leaf certificate", &leaf, now)?;
+    check_cert_profile("the root certificate", &root, true)?;
+    check_cert_profile("the intermediate CA certificate", &intermediate, true)?;
+    check_cert_profile("the PCK leaf certificate", &leaf, false)?;
+    check_pck_identities(&leaf, &intermediate)?;
 
     // Revocation: the root's CRL covers intermediates, the intermediate's
     // covers PCK leaves. The root here is the pinned one, byte for byte.
@@ -153,6 +157,28 @@ pub(crate) fn verify_pck_chain(
     )?;
 
     Ok(chain[0].clone())
+}
+
+/// Common Names Intel gives the two PCK issuing CAs and the PCK leaf.
+const PCK_CA_CNS: [&str; 2] = ["Intel SGX PCK Platform CA", "Intel SGX PCK Processor CA"];
+const PCK_LEAF_CN: &str = "Intel SGX PCK Certificate";
+
+/// Reject a PCK chain whose intermediate is not one of Intel's PCK CAs or
+/// whose leaf is not a PCK certificate: the root pin and signatures alone
+/// would also pass any other certificate the same CAs issued.
+fn check_pck_identities(
+    leaf: &X509Certificate<'_>,
+    intermediate: &X509Certificate<'_>,
+) -> Result<()> {
+    let ca_cn = single_common_name("the intermediate CA certificate", intermediate.subject())?;
+    if !PCK_CA_CNS.contains(&ca_cn) {
+        bail!("the intermediate CA Common Name {ca_cn:?} is not an Intel SGX PCK CA");
+    }
+    let leaf_cn = single_common_name("the PCK leaf certificate", leaf.subject())?;
+    if leaf_cn != PCK_LEAF_CN {
+        bail!("the PCK leaf Common Name {leaf_cn:?} is not {PCK_LEAF_CN:?}");
+    }
+    Ok(())
 }
 
 /// Common Name Intel gives the certificate that signs its TCB Info and QE
@@ -193,6 +219,7 @@ pub(crate) fn verify_signer_chain(chain_pem: &[u8], now: SystemTime) -> Result<V
         &pinned,
     )?;
     check_signer_identity(&signer)?;
+    check_cert_profile("the collateral signer certificate", &signer, false)?;
 
     // The pinned copy's window rather than the presented root's, which is the
     // same check: the two were just established to be the same bytes.
@@ -332,6 +359,65 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("more than one Common Name"), "got: {err}");
+    }
+
+    /// The profile and identity gates on the genuine PCK chain: each
+    /// certificate fits its own place and no other.
+    #[test]
+    fn pck_chain_certificates_must_fit_their_places() {
+        use crate::tdx::quote::parse_tdx_quote;
+        const QUOTE_V4: &[u8] = include_bytes!("../../tests/fixtures/tdx/tdx_quote_v4.bin");
+        let quote = parse_tdx_quote(QUOTE_V4).expect("quote parses");
+        let chain = pem_certs_to_der("chain", &quote.signature.pck_chain_pem).unwrap();
+        let leaf = parse_cert("leaf", &chain[0]).unwrap();
+        let intermediate = parse_cert("intermediate", &chain[1]).unwrap();
+        let root = parse_cert("root", &chain[2]).unwrap();
+
+        check_cert_profile("leaf", &leaf, false).expect("the PCK leaf is an end entity");
+        check_cert_profile("intermediate", &intermediate, true).expect("the PCK CA is a CA");
+        check_cert_profile("root", &root, true).expect("the root is a CA");
+        let err = check_cert_profile("leaf", &leaf, true)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not marked as a CA"), "got: {err}");
+        let err = check_cert_profile("intermediate", &intermediate, false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("is marked as a CA"), "got: {err}");
+
+        check_pck_identities(&leaf, &intermediate).expect("genuine identities");
+        let err = check_pck_identities(&intermediate, &intermediate)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("is not \"Intel SGX PCK Certificate\""),
+            "got: {err}"
+        );
+        let err = check_pck_identities(&leaf, &root).unwrap_err().to_string();
+        assert!(err.contains("not an Intel SGX PCK CA"), "got: {err}");
+    }
+
+    /// A fabricated certificate without the extensions is refused in either
+    /// role: the gate requires them rather than defaulting.
+    #[test]
+    fn a_certificate_without_profile_extensions_is_refused() {
+        let bare = cert(
+            &intel_root_name(),
+            &p256_key(),
+            None,
+            1_700_000_000,
+            1_900_000_000,
+        );
+        let parsed = parse_cert("bare", bare.der()).unwrap();
+        for ca in [true, false] {
+            let err = check_cert_profile("bare", &parsed, ca)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("carries no basicConstraints"),
+                "ca={ca}: {err}"
+            );
+        }
     }
 
     #[test]

@@ -84,20 +84,23 @@ pub(crate) fn read_cached(path: &Path) -> Option<Vec<u8>> {
 
 /// Write data to the cache; a failure is logged, never fatal.
 ///
-/// Written to a sibling temporary file and renamed into place, so a
-/// concurrent reader sees either the previous copy or the whole new one.
+/// Written to an exclusively created, randomly named sibling and renamed
+/// into place, so a concurrent reader sees either the previous copy or the
+/// whole new one, and a planted symlink at a guessable name is never
+/// followed. A failed persist drops the temporary file with it.
 pub(crate) fn write_cache(path: &Path, data: &[u8]) {
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
-    let result = std::fs::write(&tmp, data).and_then(|()| std::fs::rename(&tmp, path));
+    use std::io::Write as _;
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(parent);
+    let result = tempfile::NamedTempFile::new_in(parent).and_then(|mut tmp| {
+        tmp.write_all(data)?;
+        tmp.persist(path).map(|_| ()).map_err(|e| e.error)
+    });
     match result {
         Ok(()) => debug!(path = %path.display(), "cached"),
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
-            debug!(path = %path.display(), error = %e, "failed to write the cache");
-        }
+        Err(e) => debug!(path = %path.display(), error = %e, "failed to write the cache"),
     }
 }
 
@@ -119,6 +122,21 @@ mod tests {
         );
         std::fs::write(&path, b"").unwrap();
         assert!(read_cached(&path).is_none());
+    }
+
+    #[test]
+    fn write_cache_does_not_follow_a_planted_symlink() {
+        // A symlink sitting at the cache path itself is replaced, not
+        // written through: the rename swaps the link for the real file.
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("elsewhere");
+        std::fs::write(&target, b"untouched").unwrap();
+        let path = dir.path().join("item");
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        write_cache(&path, b"data");
+        assert_eq!(std::fs::read(&target).unwrap(), b"untouched");
+        assert!(!std::fs::symlink_metadata(&path).unwrap().is_symlink());
+        assert_eq!(read_cached(&path).unwrap(), b"data");
     }
 
     #[test]
