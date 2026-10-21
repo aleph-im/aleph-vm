@@ -168,14 +168,18 @@ be quoted. It feeds `HostInfo.tdx_supported`, the `tdx` entry of
 QGS is down, `/about/capability` names that in `tee_unavailable_reason`.
 With the probe true the `ENABLE_CONFIDENTIAL_COMPUTING` startup check waives
 the sevctl and SEV/SEV-ES module gates, which an Intel host cannot meet.
-`ConfidentialMode` on the wire has a `TDX` value. What is still missing is
-everything after the capability: no controller argv for a `tdx-guest`
-object, no daemon create path, no register prediction (MRTD/RTMR), no
-in-guest `TdxBackend: TeeBackend` (only `SevSnpBackend` and the no-op
-`NoTeeBackend` exist), and no agent routing of a TDX V-PROGRAM. The rest of
-this doc covers only the SEV/SEV-ES/SEV-SNP paths that are wired end to end
-into VM creation today; TDX and NVIDIA CC on SEV-SNP are not yet reachable
-from a create.
+`ConfidentialMode` on the wire has a `TDX` value, and the path behind it is
+wired end to end: the controller renders the `tdx-guest` object and TDVF
+(`supervisor-controller/src/qemu.rs`, `build_tdx_argv`), the daemon's
+`tdx_config_slice` (`lifecycle.rs`) derives the fixed per-runtime cmdline
+and writes the per-deployment tokens to a 64 KiB descriptor drive whose
+SHA-384 it passes as `mrconfigid`, `aleph_tee::tdx::measure` and the
+Python `tdx_measurement.py` predict `{mrtd, rtmr1, rtmr2}` byte-exactly,
+the in-guest `TdxBackend` quotes over configfs-tsm, and the agent routes a
+V-PROGRAM by its runtime manifest's `platform`. The measured init verifies
+the descriptor against MRCONFIGID (`aleph-attest-agent tdx-descriptor`)
+before any token from it is parsed. The rest of this doc covers the
+SEV/SEV-ES/SEV-SNP paths; the TDX operator guide is `docs/operators/tdx.md`.
 
 **`rust/crates/aleph-attest-agent`** is the in-guest sidecar
 (`main.rs`). On boot it generates an ephemeral ECDSA P-384 key, requests a

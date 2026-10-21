@@ -172,7 +172,7 @@ Useful when reading a QEMU argv or a guest console:
   runtime ships both.
 - **Attested calls fail with `host quote service unreachable`.** The
   guest asked for a quote through configfs-tsm and QGS did not answer
-  within 60 s. QGS died after the capability probe, or the socket path in
+  within 90 s. QGS died after the capability probe, or the socket path in
   the QEMU argv is stale (the daemon reads `ALEPH_VM_TDX_QGS_SOCKET` at
   create time). Restart `qgsd`; the next quote request succeeds without
   restarting the TD.
