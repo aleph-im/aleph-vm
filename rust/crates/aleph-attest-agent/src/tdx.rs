@@ -68,9 +68,12 @@ fn is_sha256_hex(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-/// The only tokens a descriptor may carry, in the daemon's rendering order:
-/// nothing, `workload_roothash=<sha256 hex>`, and after it
-/// `verified_volumes=<comma-joined sha256 hex>`, single-space separated.
+/// The only tokens a descriptor may carry: nothing, `workload_roothash=<sha256
+/// hex>`, and after it `verified_volumes=<comma-joined sha256 hex>`,
+/// single-space separated. The daemon renders the SNP suffix order for TDX
+/// too; swiotlb and GPU tokens stay out because the manifest validator's fixed
+/// TDX token set has none and the agent refuses a GPU, so this is the only
+/// check on the descriptor itself.
 /// The init splices the suffix next to the measured cmdline and its parsers
 /// take the last occurrence of a key, so a key the cmdline already settles
 /// (`roothash=`, `aleph_insecure_unattested=`) must never arrive this way,
