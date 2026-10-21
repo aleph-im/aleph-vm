@@ -7002,23 +7002,19 @@ mod tests {
 
     #[test]
     fn tdx_config_slice_puts_the_measured_tokens_in_the_descriptor_not_the_cmdline() {
-        // Every per-deployment token (workload roothash, swiotlb, verified
-        // volumes) stays OUT of the cmdline, so RTMR2 is constant per runtime,
-        // and goes onto the descriptor drive in the SNP suffix order; the
-        // MRCONFIGID binds exactly that string.
+        // Every per-deployment token (workload roothash, verified volumes)
+        // stays OUT of the cmdline, so RTMR2 is constant per runtime, and
+        // goes onto the descriptor drive in the shape the guest's closed
+        // grammar accepts; the MRCONFIGID binds exactly that string.
         let harness = harness();
         let root = harness.state.host.settings.execution_root.clone();
         let vm_id = hash('u');
         let spec = tdx_spec(&vm_id, &root);
         let rootfs = root.join(format!("{vm_id}-rootfs.ext4"));
+        let workload = "cafef00d".repeat(8);
         std::fs::write(
             format!("{}.workload_roothash", rootfs.display()),
-            "cafef00d00\n",
-        )
-        .unwrap();
-        std::fs::write(
-            format!("{}.cmdline_extra", rootfs.display()),
-            b"swiotlb=262144\n",
+            format!("{workload}\n"),
         )
         .unwrap();
         let vol_a = "aa".repeat(32);
@@ -7034,8 +7030,7 @@ mod tests {
             slice.kernel_cmdline, TDX_CMDLINE,
             "no per-deployment token enters the TDX cmdline"
         );
-        let suffix =
-            format!("workload_roothash=cafef00d00 swiotlb=262144 verified_volumes={vol_a},{vol_b}");
+        let suffix = format!("workload_roothash={workload} verified_volumes={vol_a},{vol_b}");
         let bytes = std::fs::read(&slice.descriptor_path).unwrap();
         assert_eq!(bytes, expected_descriptor(&suffix));
         assert_eq!(slice.mrconfigid, tdx_mrconfigid(&suffix));
