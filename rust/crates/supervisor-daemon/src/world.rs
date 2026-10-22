@@ -920,6 +920,10 @@ const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 struct ScannedConfig {
     config: ControllerConfig,
     modified: SystemTime,
+    path: std::path::PathBuf,
+    /// The file is `{vm_hash}-controller.json`, the one the daemon reads
+    /// back later.
+    canonical: bool,
 }
 
 /// Scan `{EXECUTION_ROOT}/*-controller.json` in sorted order, parsing each;
@@ -997,14 +1001,43 @@ fn scan_controller_configs(settings: &Settings) -> Vec<ScannedConfig> {
                 }
                 // A filesystem without timestamps ranks the file oldest.
                 let modified = metadata.modified().unwrap_or(UNIX_EPOCH);
-                configs.push(ScannedConfig { config, modified });
+                let canonical = config.vm_hash == file_hash;
+                configs.push(ScannedConfig {
+                    config,
+                    modified,
+                    path: path.clone(),
+                    canonical,
+                });
             }
             Err(error) => {
                 tracing::warn!(path = %path.display(), %error, "unparseable controller config; skipping the VM");
             }
         }
     }
-    configs
+    // Two files can embed one hash (a hand-made copy). Adopting both would
+    // register the VM twice, so the canonical file wins, else the first in
+    // sorted order.
+    let mut kept: Vec<ScannedConfig> = Vec::new();
+    let mut by_hash: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for scanned in configs {
+        let Some(&index) = by_hash.get(&scanned.config.vm_hash) else {
+            by_hash.insert(scanned.config.vm_hash.clone(), kept.len());
+            kept.push(scanned);
+            continue;
+        };
+        let dropped = if scanned.canonical && !kept[index].canonical {
+            std::mem::replace(&mut kept[index], scanned)
+        } else {
+            scanned
+        };
+        tracing::warn!(
+            path = %dropped.path.display(),
+            vm_hash = dropped.config.vm_hash,
+            kept = %kept[index].path.display(),
+            "controller config embeds the vm_hash of another file; skipping it"
+        );
+    }
+    kept
 }
 
 // ── IP assignment math ──────────────────────────────────────────────────
@@ -1702,6 +1735,37 @@ mod tests {
         let units = StaticUnitStates::with_active_vms(&[test_fixtures::QEMU_HASH]);
         let world = build_world_view(&settings, &units, &[], &FakeTapBackend::new());
         assert_eq!(world.len(), 3, "only the three real fixture configs");
+    }
+
+    #[test]
+    fn a_copy_embedding_another_files_vm_hash_is_skipped() {
+        // Two files, one embedded hash: the canonical file is the one the
+        // daemon reads back later, so it is the one adopted, although the
+        // copy sorts first.
+        let tmp = tempfile::tempdir().unwrap();
+        populate_execution_root(tmp.path());
+        let fixture_name = format!("{}-controller.json", test_fixtures::QEMU_HASH);
+        let fixture =
+            std::fs::read_to_string(test_fixtures::fixtures_dir().join(&fixture_name)).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&fixture).unwrap();
+        value["vm_id"] = 9.into();
+        std::fs::write(
+            tmp.path()
+                .join(format!("{}-controller.json", "a".repeat(64))),
+            value.to_string(),
+        )
+        .unwrap();
+
+        let settings = test_settings(tmp.path());
+        let units = StaticUnitStates::with_active_vms(&[test_fixtures::QEMU_HASH]);
+        let world = build_world_view(&settings, &units, &[], &FakeTapBackend::new());
+
+        assert_eq!(world.len(), 3, "the fixture plus the two inactive fixtures");
+        assert_eq!(
+            world.entries[test_fixtures::QEMU_HASH].vm_index,
+            3,
+            "the canonical file's config, not the copy's"
+        );
     }
 
     #[test]
