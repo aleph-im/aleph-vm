@@ -38,7 +38,7 @@ def build_header(private_key: str, method: str, path: str, body: bytes, node_has
         "body_sha256": sha256(body).hexdigest(),
         "iat": int(time.time()),
     }
-    if node_hash:
+    if node_hash is not None:
         payload["node_hash"] = node_hash
     # The signature covers these exact bytes, which travel in the header, so the
     # verifier re-parses whatever we send and any JSON encoding would work. Sort
