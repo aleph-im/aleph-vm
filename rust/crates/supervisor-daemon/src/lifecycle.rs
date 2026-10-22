@@ -3218,7 +3218,10 @@ fn tracked_index_holder(state: &DaemonState, vm_id: &str, vm_index: i64) -> Opti
 /// Stop a live controller that cannot be re-adopted because its on-disk
 /// vm_index is held by `holder`: the only way to run it again is a clean
 /// create on a fresh vm_index, which the caller performs next. The index's
-/// tap and nft chains are the holder's and are left alone.
+/// tap and nft chains are the holder's and are left alone. Like the
+/// failed-boot path, the rebuild proceeds if the stop times out: the start
+/// queues behind the stop job on the same unit, and the new VM wires its
+/// own tap.
 fn stop_unadoptable_duplicate(
     state: &DaemonState,
     vm_id: &str,
@@ -3248,7 +3251,7 @@ fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, 
     if let Some(claimed_by) = tracked_index_holder(state, vm_id, config.vm_index) {
         return Err(RpcError::Internal(format!(
             "Cannot re-adopt VM {vm_id}: its on-disk vm_index {} is now claimed by \
-             running VM {claimed_by}; refusing to rewire that VM's networking or to \
+             tracked VM {claimed_by}; refusing to rewire that VM's networking or to \
              create a duplicate, a create for VM {vm_id} rebuilds it on a fresh vm_index",
             config.vm_index
         )));
