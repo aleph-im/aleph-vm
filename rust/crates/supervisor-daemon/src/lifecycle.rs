@@ -3206,18 +3206,27 @@ fn load_controller_config(
     Ok(parse_controller_config(&contents)?)
 }
 
-/// The tracked VM, other than `vm_id`, holding `vm_index`. A live controller
-/// whose on-disk vm_index another tracked VM holds can never be re-adopted:
-/// the tap, routes and nft chains of that index are the holder's, and
-/// restoring on it would rewire the holder's networking.
-fn tracked_index_holder(state: &DaemonState, vm_id: &str, vm_index: i64) -> Option<String> {
-    state
-        .world
-        .blocking_read()
+/// The VM, other than `vm_id`, holding `vm_index`: a tracked entry, or a
+/// hidden VM queued for reattach whose live controller still owns the index.
+/// A live controller whose on-disk vm_index another VM holds can never be
+/// re-adopted: the tap, routes and nft chains of that index are the
+/// holder's, and restoring on it would rewire the holder's networking.
+fn index_holder(state: &DaemonState, vm_id: &str, vm_index: i64) -> Option<String> {
+    let world = state.world.blocking_read();
+    world
         .entries
         .values()
         .find(|entry| entry.vm_hash != vm_id && entry.vm_index == vm_index)
         .map(|entry| entry.vm_hash.clone())
+        .or_else(|| {
+            world
+                .failed_reattach
+                .iter()
+                .find(|(queued_id, queued)| {
+                    queued_id.as_str() != vm_id && queued.vm_index == vm_index
+                })
+                .map(|(queued_id, _)| queued_id.clone())
+        })
 }
 
 /// Stop a live controller that cannot be re-adopted because its on-disk
@@ -3238,7 +3247,7 @@ fn stop_unadoptable_duplicate(
         vm_id,
         vm_index,
         holder,
-        "controller runs on a vm_index another tracked VM holds and cannot be \
+        "controller runs on a vm_index another VM holds and cannot be \
          re-adopted; stopping it to rebuild it on a fresh vm_index"
     );
     units::stop_and_disable(&*state.units, &unit)?;
@@ -3253,10 +3262,10 @@ fn stop_unadoptable_duplicate(
 /// duplicate over the running qemu.
 fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, RpcError> {
     let config = load_controller_config(state, vm_id)?;
-    if let Some(claimed_by) = tracked_index_holder(state, vm_id, config.vm_index) {
+    if let Some(claimed_by) = index_holder(state, vm_id, config.vm_index) {
         return Err(RpcError::Internal(format!(
             "Cannot re-adopt VM {vm_id}: its on-disk vm_index {} is now claimed by \
-             tracked VM {claimed_by}; refusing to rewire that VM's networking or to \
+             VM {claimed_by}; refusing to rewire that VM's networking or to \
              create a duplicate, a create for VM {vm_id} rebuilds it on a fresh vm_index",
             config.vm_index
         )));
@@ -3532,7 +3541,7 @@ fn create_vm_inner(
             "inactive" | "failed" | "not-loaded" => {}
             "active" => {
                 let config = load_controller_config(state, &vm_id)?;
-                match tracked_index_holder(state, &vm_id, config.vm_index) {
+                match index_holder(state, &vm_id, config.vm_index) {
                     None => {
                         let entry = readopt_loaded_controller(state, &vm_id, config)?;
                         let entry = same_spec_or_conflict(&entry, &request)?;
@@ -8018,6 +8027,61 @@ mod tests {
         );
         assert_eq!(state.units.get_active_state(&unit), "active");
         assert!(!state.world.blocking_read().entries.contains_key(&duplicate));
+    }
+
+    #[test]
+    fn a_hidden_holder_also_makes_a_live_duplicate_unadoptable() {
+        // The holder of the contested index may itself be hidden (adopted,
+        // then queued for retry): its qemu still owns the tap, so the
+        // duplicate is rebuilt on a fresh index, never re-adopted onto it.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let hidden = hash('b');
+        {
+            let mut world = state.world.blocking_write();
+            world.reserved_vm_indices.insert(4);
+            world
+                .failed_reattach
+                .insert(hidden.clone(), world::FailedReattach::new(4));
+        }
+        let (ipv4, ipv6) =
+            world::derive_tap_assignment(&state.host.settings, 4, "fc00:1:2:3::40/124").unwrap();
+        harness
+            .taps
+            .create_tap(&TapAssignment::new(4, ipv4, ipv6))
+            .unwrap();
+        let duplicate = hash('a');
+        seed_live_duplicate(&harness, &duplicate, 4);
+        let unit = controller_unit_name(&duplicate);
+        let before = harness.taps.actions().len();
+
+        let (entry, _) = create_vm(state, spec(&duplicate, &root)).unwrap();
+        assert_eq!(
+            entry.vm_index, 5,
+            "a fresh index; the hidden holder keeps 4"
+        );
+        assert!(
+            harness
+                .systemd
+                .actions()
+                .iter()
+                .any(|action| *action == format!("stop {unit}")),
+            "the duplicate is stopped and rebuilt, not re-adopted"
+        );
+        let actions = harness.taps.actions();
+        assert!(
+            !actions[before..]
+                .iter()
+                .any(|action| action.contains("vmtap4")),
+            "the hidden holder's tap is untouched: {actions:?}"
+        );
+        let world = state.world.blocking_read();
+        assert!(
+            world.failed_reattach.contains_key(&hidden),
+            "the holder stays queued"
+        );
+        assert!(world.reserved_vm_indices.contains(&4));
     }
 
     #[test]
