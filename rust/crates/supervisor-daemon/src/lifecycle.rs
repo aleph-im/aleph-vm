@@ -9871,6 +9871,51 @@ mod tests {
     }
 
     #[test]
+    fn the_retry_pass_keeps_refusing_a_queued_duplicate() {
+        // Only a create carries the identity needed to rebuild a duplicate:
+        // the retry pass refuses it on every pass and leaves the holder's
+        // tap alone.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let holder = hash('b');
+        create_vm(state, spec(&holder, &root)).unwrap();
+        let duplicate = hash('a');
+        seed_live_duplicate(&harness, &duplicate, 4);
+        {
+            let mut world = state.world.blocking_write();
+            world.reserved_vm_indices.insert(4);
+            world
+                .failed_reattach
+                .insert(duplicate.clone(), world::FailedReattach::new(4));
+        }
+        let before = harness.taps.actions().len();
+
+        retry_failed_reattachments_once(state);
+
+        let world = state.world.blocking_read();
+        assert!(
+            !world.entries.contains_key(&duplicate),
+            "never adopted onto the holder's index"
+        );
+        // The adoption attempt counts as the first one.
+        assert_eq!(world.failed_reattach[&duplicate].attempts, 2);
+        assert_eq!(world.entries[&holder].vm_index, 4);
+        assert_eq!(
+            harness.taps.actions().len(),
+            before,
+            "the holder's tap is untouched"
+        );
+        assert_eq!(
+            state
+                .units
+                .get_active_state(&controller_unit_name(&duplicate)),
+            "active",
+            "the retry pass stops nothing"
+        );
+    }
+
+    #[test]
     fn the_retry_pass_addresses_an_existing_tap_on_readopt() {
         let harness = harness();
         let state = &harness.state;
