@@ -4501,6 +4501,13 @@ pub fn has_pending_reattach(state: &DaemonState) -> bool {
         .any(|queued| !queued.exhausted)
 }
 
+/// Drop a VM's reattach queue entry with the vm_index claim it reserved.
+fn drop_queue_entry(world: &mut WorldView, vm_id: &str) {
+    if let Some(queued) = world.failed_reattach.remove(vm_id) {
+        world.reserved_vm_indices.remove(&queued.vm_index);
+    }
+}
+
 /// One pass of the Python `_retry_failed_reattachments_once`: re-attempt
 /// adoption for every queued VM not yet exhausted. A VM that succeeds is
 /// dropped from the queue; one that fails has its attempt count bumped and
@@ -4520,8 +4527,9 @@ pub fn retry_failed_reattachments_once(state: &DaemonState) {
             if world.entries.contains_key(&vm_id) {
                 // Adopted in the meantime (e.g. by an on-demand create).
                 // Checked before the exhausted skip so even a given-up
-                // entry is dropped once another path tracks the VM.
-                world.failed_reattach.remove(&vm_id);
+                // entry is dropped once another path tracks the VM. A clean
+                // re-create took a fresh index, so the old claim goes too.
+                drop_queue_entry(&mut world, &vm_id);
                 continue;
             }
             match world.failed_reattach.get(&vm_id) {
@@ -4540,7 +4548,7 @@ pub fn retry_failed_reattachments_once(state: &DaemonState) {
             let mut world = state.world.blocking_write();
             if world.entries.contains_key(&vm_id) {
                 // Adopted while we waited for the lock.
-                world.failed_reattach.remove(&vm_id);
+                drop_queue_entry(&mut world, &vm_id);
                 continue;
             }
             if !world.failed_reattach.contains_key(&vm_id) {
@@ -9912,6 +9920,28 @@ mod tests {
                 .get_active_state(&controller_unit_name(&duplicate)),
             "active",
             "the retry pass stops nothing"
+        );
+    }
+
+    #[test]
+    fn a_recreated_queued_vm_releases_its_old_index_claim() {
+        // The agent re-created the hidden VM (its controller had died) on a
+        // fresh index before a retry pass ran: dropping the queue entry
+        // releases the old index too, or it stays pinned until a restart.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = seed_hidden_vm(&harness);
+        let (entry, _) = create_vm(state, spec(&vm_id, &root)).unwrap();
+        assert_ne!(entry.vm_index, 3, "the clean create takes a fresh index");
+
+        retry_failed_reattachments_once(state);
+
+        let world = state.world.blocking_read();
+        assert!(world.failed_reattach.is_empty());
+        assert!(
+            !world.reserved_vm_indices.contains(&3),
+            "the old index claim is released"
         );
     }
 
