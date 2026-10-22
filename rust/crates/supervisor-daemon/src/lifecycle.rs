@@ -3512,6 +3512,10 @@ fn create_vm_inner(
     // config plus the unit's definitive state, like _readopt_live_controller.
     let config_path =
         controller_config::controller_config_path(&state.host.settings.execution_root, &vm_id);
+    // A live controller whose on-disk vm_index another tracked VM holds: a
+    // duplicate of the 1.x line's reused indices, skipped at adoption. It can
+    // only run again through the clean create below, on a fresh vm_index.
+    let mut unadoptable: Option<(i64, String)> = None;
     if config_path.exists() {
         let unit = controller_unit_name(&vm_id);
         match state.units.get_active_state(&unit).as_str() {
@@ -3526,19 +3530,7 @@ fn create_vm_inner(
                         let entry = same_spec_or_conflict(&entry, &request)?;
                         return Ok((entry, true));
                     }
-                    Some(holder) => {
-                        // A duplicate of the 1.x line's reused vm_indices,
-                        // skipped at adoption: it can only run again through
-                        // the clean create below, on a fresh vm_index. The
-                        // agent's address must be free before anything is
-                        // stopped, so a refused create leaves the controller
-                        // as it was.
-                        if state.host.settings.allow_vm_networking {
-                            let ipv6 = requested_ipv6_pair(&request)?;
-                            ensure_ipv6_free(&state.world.blocking_read(), &ipv6, &vm_id)?;
-                        }
-                        stop_unadoptable_duplicate(state, &vm_id, config.vm_index, &holder)?;
-                    }
+                    Some(holder) => unadoptable = Some((config.vm_index, holder)),
                 }
             }
             other => {
@@ -3564,6 +3556,16 @@ fn create_vm_inner(
     } else {
         None
     };
+    // The spec refusals above and the agent's address come first, so a create
+    // they refuse leaves the duplicate's controller as it was; only the NUMA
+    // placement below can still refuse, and it unwinds to a stopped unit the
+    // next create restarts cleanly.
+    if let Some((vm_index, holder)) = unadoptable {
+        if let Some(ipv6) = &requested_ipv6 {
+            ensure_ipv6_free(&state.world.blocking_read(), ipv6, &vm_id)?;
+        }
+        stop_unadoptable_duplicate(state, &vm_id, vm_index, &holder)?;
+    }
     // The cheap spec refusals above and the SNP one-card cap run before any
     // card is reset; later refusals can still follow a switch.
     ensure_gpu_modes(state, &vm_id, &validated_gpus, wanted_cc_mode(&request))?;
@@ -7962,6 +7964,37 @@ mod tests {
                 "got {message:?}"
             ),
             other => panic!("expected the overlap refusal, got {other:?}"),
+        }
+        assert!(
+            !harness
+                .systemd
+                .actions()
+                .iter()
+                .any(|action| *action == format!("stop {unit}"))
+        );
+        assert_eq!(state.units.get_active_state(&unit), "active");
+        assert!(!state.world.blocking_read().entries.contains_key(&duplicate));
+    }
+
+    #[test]
+    fn a_live_duplicate_controller_is_kept_when_the_spec_is_refused() {
+        // A spec refusal is deterministic across retries, so it must not
+        // cost the duplicate its controller.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        create_vm(state, spec(&hash('b'), &root)).unwrap();
+        let duplicate = hash('a');
+        seed_live_duplicate(&harness, &duplicate, 4);
+        let unit = controller_unit_name(&duplicate);
+
+        let mut request = spec(&duplicate, &root);
+        request.disks.clear();
+        match create_vm(state, request) {
+            Err(RpcError::InvalidBackend(message)) => {
+                assert!(message.contains("no ROOTFS disk"), "got {message:?}")
+            }
+            other => panic!("expected the rootfs refusal, got {other:?}"),
         }
         assert!(
             !harness
