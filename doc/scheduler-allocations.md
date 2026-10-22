@@ -11,9 +11,12 @@ legacy one: an `Aleph-EIP191-V1` signature from an address in
 `AUTHORIZED_ALLOCATION_SIGNERS` (local override), else the settings
 aggregate, else `DEFAULT_ALLOCATION_SIGNERS`. The signed payload's `iat`
 must be within `ALLOCATION_SIGNATURE_MAX_AGE_SECONDS` (300) of the node's
-clock, and a payload that carries a `node_hash` is accepted only by that
-node. A plan body may be up to 8 MiB; a larger one gets 413, not 401, so a
-scheduler whose plan outgrew the cap is not sent looking at its key.
+clock, and a payload that carries a `node_hash` (the node's bare item
+hash, as the corechannel aggregate lists it) is accepted only by that node;
+a node that has not resolved its own hash yet refuses every bound payload
+until it does. A plan body may be up to 8 MiB; a larger one gets 413, not
+401, so a scheduler whose plan outgrew the cap is not sent looking at its
+key.
 
 ## A node runs one mode, not both
 
