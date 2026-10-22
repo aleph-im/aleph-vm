@@ -2563,6 +2563,18 @@ fn cc_mode_mismatch(
     })
 }
 
+/// The SNP gate's one-card cap: a spec refusal, so it runs with the other
+/// spec checks, before any card is reset or any controller is stopped.
+fn ensure_snp_gpu_cap(gpus: &[AttachedGpu], wanted: crate::gpu_cc::CcMode) -> Result<(), RpcError> {
+    if wanted == crate::gpu_cc::CcMode::On && gpus.len() > 1 {
+        return Err(RpcError::InvalidBackend(format!(
+            "an SEV-SNP VM takes at most one GPU, the spec carries {}",
+            gpus.len()
+        )));
+    }
+    Ok(())
+}
+
 /// Bring every NVIDIA card of a create into `wanted` before the world is
 /// touched, or refuse. An unknown or unreadable mode passes the plain arm only.
 fn ensure_gpu_modes(
@@ -2571,13 +2583,6 @@ fn ensure_gpu_modes(
     gpus: &[AttachedGpu],
     wanted: crate::gpu_cc::CcMode,
 ) -> Result<(), RpcError> {
-    // The SNP gate's one-card cap, applied before any card is reset.
-    if wanted == crate::gpu_cc::CcMode::On && gpus.len() > 1 {
-        return Err(RpcError::InvalidBackend(format!(
-            "an SEV-SNP VM takes at most one GPU, the spec carries {}",
-            gpus.len()
-        )));
-    }
     let settings = &state.host.settings;
     for gpu in gpus {
         let Some(device) = inventory_gpu(state, &gpu.pci_host) else {
@@ -3559,19 +3564,23 @@ fn create_vm_inner(
     } else {
         None
     };
+    let wanted_cc = wanted_cc_mode(&request);
+    ensure_snp_gpu_cap(&validated_gpus, wanted_cc)?;
     // The spec refusals above and the agent's address come first, so a create
-    // they refuse leaves the duplicate's controller as it was; only the NUMA
-    // placement below can still refuse, and it unwinds to a stopped unit the
-    // next create restarts cleanly.
+    // they refuse leaves the duplicate's controller as it was. Only the GPU
+    // mode switch and the NUMA placement below can still refuse, and they
+    // unwind to a stopped unit the next create restarts cleanly.
     if let Some((vm_index, holder)) = unadoptable {
         if let Some(ipv6) = &requested_ipv6 {
             ensure_ipv6_free(&state.world.blocking_read(), ipv6, &vm_id)?;
         }
         stop_unadoptable_duplicate(state, &vm_id, vm_index, &holder)?;
     }
-    // The cheap spec refusals above and the SNP one-card cap run before any
-    // card is reset; later refusals can still follow a switch.
-    ensure_gpu_modes(state, &vm_id, &validated_gpus, wanted_cc_mode(&request))?;
+    // After the stop: the switch resets the card, and the only qemu that can
+    // still hold a requested card is the duplicate's (the spec check above
+    // refused every tracked or queued holder). Later refusals can still
+    // follow a switch.
+    ensure_gpu_modes(state, &vm_id, &validated_gpus, wanted_cc)?;
 
     // Register the entry (Python registers the execution before prepare so
     // duplicate creates and Health see it), allocating the vm_index and the
@@ -11686,15 +11695,13 @@ mod tests {
     }
 
     #[test]
-    fn ensure_gpu_modes_applies_the_snp_card_cap_before_switching() {
+    fn the_snp_card_cap_is_a_spec_refusal() {
         let harness = harness_with_gpu_switch(
             vec![nvidia_card("06:00.0"), nvidia_card("07:00.0")],
             switchable_probe,
             flipping_switch,
         );
         let state = &harness.state;
-        SWITCHES.with(|count| count.set(0));
-        PROBED_CC_MODE.with(|mode| mode.set(Some(crate::gpu_cc::CcMode::Off)));
         let cards = validate_spec_gpus(
             state,
             &[
@@ -11709,11 +11716,12 @@ mod tests {
             ],
         )
         .unwrap();
-        match ensure_gpu_modes(state, "vm", &cards, crate::gpu_cc::CcMode::On) {
+        match ensure_snp_gpu_cap(&cards, crate::gpu_cc::CcMode::On) {
             Err(RpcError::InvalidBackend(msg)) => assert!(msg.contains("at most one GPU"), "{msg}"),
             other => panic!("got {other:?}"),
         }
-        assert_eq!(SWITCHES.with(|count| count.get()), 0);
+        ensure_snp_gpu_cap(&cards, crate::gpu_cc::CcMode::Off).unwrap();
+        ensure_snp_gpu_cap(&cards[..1], crate::gpu_cc::CcMode::On).unwrap();
     }
 
     #[test]
