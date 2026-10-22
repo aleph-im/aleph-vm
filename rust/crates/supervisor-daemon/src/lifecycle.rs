@@ -2563,6 +2563,18 @@ fn cc_mode_mismatch(
     })
 }
 
+/// The SNP gate's one-card cap: a spec refusal, so it runs with the other
+/// spec checks, before any card is reset or any controller is stopped.
+fn ensure_snp_gpu_cap(gpus: &[AttachedGpu], wanted: crate::gpu_cc::CcMode) -> Result<(), RpcError> {
+    if wanted == crate::gpu_cc::CcMode::On && gpus.len() > 1 {
+        return Err(RpcError::InvalidBackend(format!(
+            "an SEV-SNP VM takes at most one GPU, the spec carries {}",
+            gpus.len()
+        )));
+    }
+    Ok(())
+}
+
 /// Bring every NVIDIA card of a create into `wanted` before the world is
 /// touched, or refuse. An unknown or unreadable mode passes the plain arm only.
 fn ensure_gpu_modes(
@@ -2571,13 +2583,6 @@ fn ensure_gpu_modes(
     gpus: &[AttachedGpu],
     wanted: crate::gpu_cc::CcMode,
 ) -> Result<(), RpcError> {
-    // The SNP gate's one-card cap, applied before any card is reset.
-    if wanted == crate::gpu_cc::CcMode::On && gpus.len() > 1 {
-        return Err(RpcError::InvalidBackend(format!(
-            "an SEV-SNP VM takes at most one GPU, the spec carries {}",
-            gpus.len()
-        )));
-    }
     let settings = &state.host.settings;
     for gpu in gpus {
         let Some(device) = inventory_gpu(state, &gpu.pci_host) else {
@@ -3189,16 +3194,97 @@ fn parse_int_digits(digits: &str, radix: u32, allow_leading_underscore: bool) ->
     Some(value)
 }
 
+/// The on-disk controller config of `vm_id`.
+fn load_controller_config(
+    state: &DaemonState,
+    vm_id: &str,
+) -> Result<controller_config::ControllerConfig, RpcError> {
+    let root = &state.host.settings.execution_root;
+    let path = controller_config::controller_config_path(root, vm_id);
+    let contents = std::fs::read_to_string(&path)
+        .map_err(|error| RpcError::Internal(format!("cannot read {}: {error}", path.display())))?;
+    Ok(parse_controller_config(&contents)?)
+}
+
+/// The VM, other than `vm_id`, holding `vm_index`: a tracked entry, or a
+/// hidden VM queued for reattach whose live controller still owns the index.
+/// A live controller whose on-disk vm_index another VM holds can never be
+/// re-adopted: the tap, routes and nft chains of that index are the
+/// holder's, and restoring on it would rewire the holder's networking.
+fn index_holder(state: &DaemonState, vm_id: &str, vm_index: i64) -> Option<String> {
+    let world = state.world.blocking_read();
+    world
+        .entries
+        .values()
+        .find(|entry| entry.vm_hash != vm_id && entry.vm_index == vm_index)
+        .map(|entry| entry.vm_hash.clone())
+        .or_else(|| {
+            world
+                .failed_reattach
+                .iter()
+                .find(|(queued_id, queued)| {
+                    queued_id.as_str() != vm_id && queued.vm_index == vm_index
+                })
+                .map(|(queued_id, _)| queued_id.clone())
+        })
+}
+
+/// Stop a live controller that cannot be re-adopted because its on-disk
+/// vm_index is held by `holder`: the only way to run it again is a clean
+/// create on a fresh vm_index, which the caller performs next. The index's
+/// tap and nft chains are the holder's and are left alone. Like the
+/// failed-boot path, the rebuild proceeds if the stop times out: the start
+/// queues behind the stop job on the same unit, and the new VM wires its
+/// own tap.
+fn stop_unadoptable_duplicate(
+    state: &DaemonState,
+    vm_id: &str,
+    vm_index: i64,
+    holder: &str,
+) -> Result<(), RpcError> {
+    let unit = controller_unit_name(vm_id);
+    tracing::warn!(
+        vm_id,
+        vm_index,
+        holder,
+        "controller runs on a vm_index another VM holds and cannot be \
+         re-adopted; stopping it to rebuild it on a fresh vm_index"
+    );
+    units::stop_and_disable(&*state.units, &unit)?;
+    wait_for_controller_stopped(state, &unit);
+    // A queued duplicate reserved the index; the holder's entry keeps it out
+    // of the allocator, so the reservation goes with the queue entry.
+    let mut world = state.world.blocking_write();
+    if let Some(queued) = world.failed_reattach.remove(vm_id) {
+        world.reserved_vm_indices.remove(&queued.vm_index);
+    }
+    Ok(())
+}
+
 /// Re-adopt a live-but-untracked controller (Python
 /// `_readopt_live_controller` + `_restore_running_execution_from_config`):
 /// rebuild the entry from the on-disk config instead of creating a
 /// duplicate over the running qemu.
 fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, RpcError> {
-    let root = &state.host.settings.execution_root;
-    let path = controller_config::controller_config_path(root, vm_id);
-    let contents = std::fs::read_to_string(&path)
-        .map_err(|error| RpcError::Internal(format!("cannot read {}: {error}", path.display())))?;
-    let config = parse_controller_config(&contents)?;
+    let config = load_controller_config(state, vm_id)?;
+    if let Some(claimed_by) = index_holder(state, vm_id, config.vm_index) {
+        return Err(RpcError::Internal(format!(
+            "Cannot re-adopt VM {vm_id}: its on-disk vm_index {} is now claimed by \
+             VM {claimed_by}; refusing to rewire that VM's networking or to \
+             create a duplicate, a create for VM {vm_id} rebuilds it on a fresh vm_index",
+            config.vm_index
+        )));
+    }
+    readopt_loaded_controller(state, vm_id, config)
+}
+
+/// [`readopt_live_controller`] past the vm_index check, on a config the
+/// caller already loaded and checked.
+fn readopt_loaded_controller(
+    state: &DaemonState,
+    vm_id: &str,
+    config: controller_config::ControllerConfig,
+) -> Result<VmEntry, RpcError> {
     let qemu = match config.vm {
         VmConfiguration::Qemu(qemu) => *qemu,
         VmConfiguration::Firecracker => {
@@ -3207,25 +3293,6 @@ fn readopt_live_controller(state: &DaemonState, vm_id: &str) -> Result<VmEntry, 
             ));
         }
     };
-
-    // The on-disk vm_index may meanwhile belong to another tracked VM;
-    // restoring on it would rewire that VM's networking (Python raises the
-    // same refusal).
-    if let Some(claimed_by) = state
-        .world
-        .blocking_read()
-        .entries
-        .values()
-        .find(|entry| entry.vm_hash != vm_id && entry.vm_index == config.vm_index)
-        .map(|entry| entry.vm_hash.clone())
-    {
-        return Err(RpcError::Internal(format!(
-            "Cannot re-adopt VM {vm_id}: its on-disk vm_index {} is now claimed by \
-             running VM {claimed_by}; refusing to rewire that VM's networking or to \
-             create a duplicate, operator intervention required",
-            config.vm_index
-        )));
-    }
 
     tracing::warn!(
         vm_id,
@@ -3467,6 +3534,10 @@ fn create_vm_inner(
     // config plus the unit's definitive state, like _readopt_live_controller.
     let config_path =
         controller_config::controller_config_path(&state.host.settings.execution_root, &vm_id);
+    // A live controller whose on-disk vm_index another tracked VM holds: a
+    // duplicate of the 1.x line's reused indices, skipped at adoption. It can
+    // only run again through the clean create below, on a fresh vm_index.
+    let mut unadoptable: Option<(i64, String)> = None;
     if config_path.exists() {
         let unit = controller_unit_name(&vm_id);
         match state.units.get_active_state(&unit).as_str() {
@@ -3474,9 +3545,17 @@ fn create_vm_inner(
             // restart-from-disk.
             "inactive" | "failed" | "not-loaded" => {}
             "active" => {
-                let entry = readopt_live_controller(state, &vm_id)?;
-                let entry = same_spec_or_conflict(&entry, &request)?;
-                return Ok((entry, true));
+                let config = load_controller_config(state, &vm_id)?;
+                match index_holder(state, &vm_id, config.vm_index) {
+                    None => {
+                        let entry = readopt_loaded_controller(state, &vm_id, config)?;
+                        let entry = same_spec_or_conflict(&entry, &request)?;
+                        return Ok((entry, true));
+                    }
+                    // No spec conflict here, unlike the readopt arm: the VM
+                    // restarts anyway, on the requested spec like a fresh create.
+                    Some(holder) => unadoptable = Some((config.vm_index, holder)),
+                }
             }
             other => {
                 return Err(RpcError::Internal(format!(
@@ -3501,9 +3580,25 @@ fn create_vm_inner(
     } else {
         None
     };
-    // The cheap spec refusals above and the SNP one-card cap run before any
-    // card is reset; later refusals can still follow a switch.
-    ensure_gpu_modes(state, &vm_id, &validated_gpus, wanted_cc_mode(&request))?;
+    let wanted_cc = wanted_cc_mode(&request);
+    ensure_snp_gpu_cap(&validated_gpus, wanted_cc)?;
+    // The spec refusals above and the agent's address come first, so a create
+    // they refuse leaves the duplicate's controller as it was. Only the GPU
+    // mode switch, the under-lock address re-check (a concurrent RPC can
+    // take the address during the stop) and the NUMA placement below can
+    // still refuse, and they unwind to a stopped unit the next create
+    // restarts cleanly.
+    if let Some((vm_index, holder)) = unadoptable {
+        if let Some(ipv6) = &requested_ipv6 {
+            ensure_ipv6_free(&state.world.blocking_read(), ipv6, &vm_id)?;
+        }
+        stop_unadoptable_duplicate(state, &vm_id, vm_index, &holder)?;
+    }
+    // After the stop: the switch resets the card, and the only qemu that can
+    // still hold a requested card is the duplicate's (the spec check above
+    // refused every tracked or queued holder). Later refusals can still
+    // follow a switch.
+    ensure_gpu_modes(state, &vm_id, &validated_gpus, wanted_cc)?;
 
     // Register the entry (Python registers the execution before prepare so
     // duplicate creates and Health see it), allocating the vm_index and the
@@ -4410,11 +4505,18 @@ pub fn has_pending_reattach(state: &DaemonState) -> bool {
         .any(|queued| !queued.exhausted)
 }
 
+/// Drop a VM's reattach queue entry with the vm_index claim it reserved.
+fn drop_queue_entry(world: &mut WorldView, vm_id: &str) {
+    if let Some(queued) = world.failed_reattach.remove(vm_id) {
+        world.reserved_vm_indices.remove(&queued.vm_index);
+    }
+}
+
 /// One pass of the Python `_retry_failed_reattachments_once`: re-attempt
 /// adoption for every queued VM not yet exhausted. A VM that succeeds is
 /// dropped from the queue; one that fails has its attempt count bumped and
 /// is marked exhausted at the cap (its controller keeps running, the daemon
-/// just cannot manage it; operator intervention required).
+/// just cannot manage it; a CreateVm may still adopt or rebuild it).
 pub fn retry_failed_reattachments_once(state: &DaemonState) {
     let queued: Vec<String> = state
         .world
@@ -4429,8 +4531,9 @@ pub fn retry_failed_reattachments_once(state: &DaemonState) {
             if world.entries.contains_key(&vm_id) {
                 // Adopted in the meantime (e.g. by an on-demand create).
                 // Checked before the exhausted skip so even a given-up
-                // entry is dropped once another path tracks the VM.
-                world.failed_reattach.remove(&vm_id);
+                // entry is dropped once another path tracks the VM. A clean
+                // re-create took a fresh index, so the old claim goes too.
+                drop_queue_entry(&mut world, &vm_id);
                 continue;
             }
             match world.failed_reattach.get(&vm_id) {
@@ -4449,7 +4552,7 @@ pub fn retry_failed_reattachments_once(state: &DaemonState) {
             let mut world = state.world.blocking_write();
             if world.entries.contains_key(&vm_id) {
                 // Adopted while we waited for the lock.
-                world.failed_reattach.remove(&vm_id);
+                drop_queue_entry(&mut world, &vm_id);
                 continue;
             }
             if !world.failed_reattach.contains_key(&vm_id) {
@@ -4514,8 +4617,9 @@ fn note_reattach_retry_failure(state: &DaemonState, vm_id: &str) {
             vm_id,
             attempts = queued.attempts,
             "giving up reattaching the VM; its controller is still running but \
-             the supervisor cannot manage it; the VM is NOT auto-stopped, \
-             operator intervention required"
+             the supervisor cannot manage it; the VM is NOT auto-stopped; a \
+             CreateVm for it may still adopt or rebuild it, otherwise operator \
+             intervention is required"
         );
     } else {
         tracing::warn!(
@@ -7806,6 +7910,224 @@ mod tests {
         assert_eq!(entry.vm_index, 3);
     }
 
+    /// A live controller for `vm_id` whose on-disk config claims `vm_index`:
+    /// a duplicate of the 1.x line's reused indices, skipped at adoption.
+    fn seed_live_duplicate(harness: &Harness, vm_id: &str, vm_index: i64) {
+        let root = harness.state.host.settings.execution_root.clone();
+        let fixture = std::fs::read_to_string(
+            test_fixtures::fixtures_dir()
+                .join(format!("{}-controller.json", test_fixtures::QEMU_HASH)),
+        )
+        .unwrap();
+        let mut value: Value = serde_json::from_str(&fixture).unwrap();
+        value["vm_id"] = vm_index.into();
+        value["vm_hash"] = vm_id.into();
+        std::fs::write(
+            root.join(format!("{vm_id}-controller.json")),
+            value.to_string(),
+        )
+        .unwrap();
+        harness
+            .systemd
+            .set_state(&controller_unit_name(vm_id), "active");
+    }
+
+    #[test]
+    fn create_rebuilds_a_live_duplicate_controller_on_a_fresh_vm_index() {
+        // A live controller whose on-disk vm_index a tracked VM holds can
+        // never be re-adopted. Its create stops it and rebuilds it on a
+        // fresh index, leaving the holder's networking alone, instead of
+        // failing on every retry for ever.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let holder = hash('b');
+        let (held, _) = create_vm(state, spec(&holder, &root)).unwrap();
+        assert_eq!(held.vm_index, 4);
+        let duplicate = hash('a');
+        seed_live_duplicate(&harness, &duplicate, 4);
+        let unit = controller_unit_name(&duplicate);
+
+        let (entry, running) = create_vm(state, spec(&duplicate, &root)).unwrap();
+        assert!(running);
+        assert_eq!(entry.vm_index, 5, "a fresh index; the holder keeps 4");
+        let actions = harness.systemd.actions();
+        let stopped = actions
+            .iter()
+            .position(|action| *action == format!("stop {unit}"))
+            .expect("the duplicate controller is stopped first");
+        let started = actions
+            .iter()
+            .rposition(|action| *action == format!("start {unit}"))
+            .expect("then started on its new config");
+        assert!(stopped < started);
+        let world = state.world.blocking_read();
+        assert_eq!(world.entries[&holder].vm_index, 4);
+        assert_eq!(world.entries[&duplicate].vm_index, 5);
+        assert!(
+            harness.taps.devices().contains("vmtap4"),
+            "the holder's tap is untouched"
+        );
+        assert!(
+            !harness
+                .taps
+                .actions()
+                .iter()
+                .any(|action| action == "delete vmtap4")
+        );
+    }
+
+    #[test]
+    fn rebuilding_a_queued_duplicate_releases_its_index_claim() {
+        // The duplicate may sit in the reattach queue with its index
+        // reserved (hidden at adoption, the holder adopted stopped on the
+        // same index). The rebuild drops both: the holder's entry already
+        // keeps the index out of the allocator.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let holder = hash('b');
+        create_vm(state, spec(&holder, &root)).unwrap();
+        let duplicate = hash('a');
+        seed_live_duplicate(&harness, &duplicate, 4);
+        {
+            let mut world = state.world.blocking_write();
+            world.reserved_vm_indices.insert(4);
+            world
+                .failed_reattach
+                .insert(duplicate.clone(), world::FailedReattach::new(4));
+        }
+
+        let (entry, _) = create_vm(state, spec(&duplicate, &root)).unwrap();
+        assert_eq!(entry.vm_index, 5);
+        let world = state.world.blocking_read();
+        assert!(world.failed_reattach.is_empty(), "the queue entry is gone");
+        assert!(
+            !world.reserved_vm_indices.contains(&4),
+            "the holder owns the index; nothing reserves it"
+        );
+        assert_eq!(world.entries[&holder].vm_index, 4);
+    }
+
+    #[test]
+    fn a_live_duplicate_controller_is_kept_when_its_address_is_held() {
+        // The overlap refusal comes before anything is stopped: the
+        // duplicate keeps running as it was and the agent sees the holder.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let holder = hash('b');
+        create_vm(state, spec(&holder, &root)).unwrap();
+        let duplicate = hash('a');
+        seed_live_duplicate(&harness, &duplicate, 4);
+        let unit = controller_unit_name(&duplicate);
+
+        let mut request = spec(&duplicate, &root);
+        request.network.as_mut().unwrap().requested_ipv6 = test_ipv6(&holder);
+        match create_vm(state, request) {
+            Err(RpcError::InvalidBackend(message)) => assert!(
+                message.contains("overlaps") && message.contains(holder.as_str()),
+                "got {message:?}"
+            ),
+            other => panic!("expected the overlap refusal, got {other:?}"),
+        }
+        assert!(
+            !harness
+                .systemd
+                .actions()
+                .iter()
+                .any(|action| *action == format!("stop {unit}"))
+        );
+        assert_eq!(state.units.get_active_state(&unit), "active");
+        assert!(!state.world.blocking_read().entries.contains_key(&duplicate));
+    }
+
+    #[test]
+    fn a_live_duplicate_controller_is_kept_when_the_spec_is_refused() {
+        // A spec refusal is deterministic across retries, so it must not
+        // cost the duplicate its controller.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        create_vm(state, spec(&hash('b'), &root)).unwrap();
+        let duplicate = hash('a');
+        seed_live_duplicate(&harness, &duplicate, 4);
+        let unit = controller_unit_name(&duplicate);
+
+        let mut request = spec(&duplicate, &root);
+        request.disks.clear();
+        match create_vm(state, request) {
+            Err(RpcError::InvalidBackend(message)) => {
+                assert!(message.contains("no ROOTFS disk"), "got {message:?}")
+            }
+            other => panic!("expected the rootfs refusal, got {other:?}"),
+        }
+        assert!(
+            !harness
+                .systemd
+                .actions()
+                .iter()
+                .any(|action| *action == format!("stop {unit}"))
+        );
+        assert_eq!(state.units.get_active_state(&unit), "active");
+        assert!(!state.world.blocking_read().entries.contains_key(&duplicate));
+    }
+
+    #[test]
+    fn a_hidden_holder_also_makes_a_live_duplicate_unadoptable() {
+        // The holder of the contested index may itself be hidden (adopted,
+        // then queued for retry): its qemu still owns the tap, so the
+        // duplicate is rebuilt on a fresh index, never re-adopted onto it.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let hidden = hash('b');
+        {
+            let mut world = state.world.blocking_write();
+            world.reserved_vm_indices.insert(4);
+            world
+                .failed_reattach
+                .insert(hidden.clone(), world::FailedReattach::new(4));
+        }
+        let (ipv4, ipv6) =
+            world::derive_tap_assignment(&state.host.settings, 4, "fc00:1:2:3::40/124").unwrap();
+        harness
+            .taps
+            .create_tap(&TapAssignment::new(4, ipv4, ipv6))
+            .unwrap();
+        let duplicate = hash('a');
+        seed_live_duplicate(&harness, &duplicate, 4);
+        let unit = controller_unit_name(&duplicate);
+        let before = harness.taps.actions().len();
+
+        let (entry, _) = create_vm(state, spec(&duplicate, &root)).unwrap();
+        assert_eq!(
+            entry.vm_index, 5,
+            "a fresh index; the hidden holder keeps 4"
+        );
+        assert!(
+            harness
+                .systemd
+                .actions()
+                .iter()
+                .any(|action| *action == format!("stop {unit}")),
+            "the duplicate is stopped and rebuilt, not re-adopted"
+        );
+        let actions = harness.taps.actions();
+        assert!(
+            !actions[before..]
+                .iter()
+                .any(|action| action.contains("vmtap4")),
+            "the hidden holder's tap is untouched: {actions:?}"
+        );
+        let world = state.world.blocking_read();
+        assert!(
+            world.failed_reattach.contains_key(&hidden),
+            "the holder stays queued"
+        );
+        assert!(world.reserved_vm_indices.contains(&4));
+    }
+
     #[test]
     fn create_refuses_a_transitional_controller_state() {
         let harness = harness();
@@ -9553,6 +9875,73 @@ mod tests {
             .failed_reattach
             .insert(vm_id.clone(), world::FailedReattach::new(3));
         vm_id
+    }
+
+    #[test]
+    fn the_retry_pass_keeps_refusing_a_queued_duplicate() {
+        // Only a create carries the identity needed to rebuild a duplicate:
+        // the retry pass refuses it on every pass and leaves the holder's
+        // tap alone.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let holder = hash('b');
+        create_vm(state, spec(&holder, &root)).unwrap();
+        let duplicate = hash('a');
+        seed_live_duplicate(&harness, &duplicate, 4);
+        {
+            let mut world = state.world.blocking_write();
+            world.reserved_vm_indices.insert(4);
+            world
+                .failed_reattach
+                .insert(duplicate.clone(), world::FailedReattach::new(4));
+        }
+        let before = harness.taps.actions().len();
+
+        retry_failed_reattachments_once(state);
+
+        let world = state.world.blocking_read();
+        assert!(
+            !world.entries.contains_key(&duplicate),
+            "never adopted onto the holder's index"
+        );
+        // The adoption attempt counts as the first one.
+        assert_eq!(world.failed_reattach[&duplicate].attempts, 2);
+        assert_eq!(world.entries[&holder].vm_index, 4);
+        assert_eq!(
+            harness.taps.actions().len(),
+            before,
+            "the holder's tap is untouched"
+        );
+        assert_eq!(
+            state
+                .units
+                .get_active_state(&controller_unit_name(&duplicate)),
+            "active",
+            "the retry pass stops nothing"
+        );
+    }
+
+    #[test]
+    fn a_recreated_queued_vm_releases_its_old_index_claim() {
+        // The agent re-created the hidden VM (its controller had died) on a
+        // fresh index before a retry pass ran: dropping the queue entry
+        // releases the old index too, or it stays pinned until a restart.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let vm_id = seed_hidden_vm(&harness);
+        let (entry, _) = create_vm(state, spec(&vm_id, &root)).unwrap();
+        assert_ne!(entry.vm_index, 3, "the clean create takes a fresh index");
+
+        retry_failed_reattachments_once(state);
+
+        let world = state.world.blocking_read();
+        assert!(world.failed_reattach.is_empty());
+        assert!(
+            !world.reserved_vm_indices.contains(&3),
+            "the old index claim is released"
+        );
     }
 
     #[test]
@@ -11482,15 +11871,13 @@ mod tests {
     }
 
     #[test]
-    fn ensure_gpu_modes_applies_the_snp_card_cap_before_switching() {
+    fn the_snp_card_cap_is_a_spec_refusal() {
         let harness = harness_with_gpu_switch(
             vec![nvidia_card("06:00.0"), nvidia_card("07:00.0")],
             switchable_probe,
             flipping_switch,
         );
         let state = &harness.state;
-        SWITCHES.with(|count| count.set(0));
-        PROBED_CC_MODE.with(|mode| mode.set(Some(crate::gpu_cc::CcMode::Off)));
         let cards = validate_spec_gpus(
             state,
             &[
@@ -11505,11 +11892,12 @@ mod tests {
             ],
         )
         .unwrap();
-        match ensure_gpu_modes(state, "vm", &cards, crate::gpu_cc::CcMode::On) {
+        match ensure_snp_gpu_cap(&cards, crate::gpu_cc::CcMode::On) {
             Err(RpcError::InvalidBackend(msg)) => assert!(msg.contains("at most one GPU"), "{msg}"),
             other => panic!("got {other:?}"),
         }
-        assert_eq!(SWITCHES.with(|count| count.get()), 0);
+        ensure_snp_gpu_cap(&cards, crate::gpu_cc::CcMode::Off).unwrap();
+        ensure_snp_gpu_cap(&cards[..1], crate::gpu_cc::CcMode::On).unwrap();
     }
 
     #[test]

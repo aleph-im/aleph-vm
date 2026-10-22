@@ -578,7 +578,7 @@ pub fn build_world_view(
 
     let unit_names: Vec<String> = configs
         .iter()
-        .map(|config| controller_unit_name(&config.vm_hash))
+        .map(|scanned| controller_unit_name(&scanned.config.vm_hash))
         .collect();
     // None: the bus did not answer, so unit states are UNKNOWN. Adopted
     // entries must not be stamped stopped on a transient bus outage; their
@@ -624,31 +624,67 @@ pub fn build_world_view(
     }
 
     let mut world = WorldView::default();
-    // Python's claimed_vm_ids guard (pool.load_persistent_executions): a
-    // stale config can reuse a vm_index; only the first active one (sorted
-    // file order) is adopted, so two VMs never share a tap interface.
+    // Some(state): the bus answered; None: unknown (bus unreachable).
+    let liveness_of = |vm_hash: &str| -> Option<UnitLiveness> {
+        let unit = controller_unit_name(vm_hash);
+        unit_states
+            .as_ref()
+            .map(|states| states.get(&unit).copied().unwrap_or(UnitLiveness::Unknown))
+    };
+    // Python's claimed_vm_ids guard (pool.load_persistent_executions): the
+    // 1.x line reused vm_indices, so two configs can claim one. Only one
+    // active config per vm_index is adopted, so two VMs never share a tap,
+    // and it is the most recently written one: a create wires the tap and
+    // writes the config back to back, so the newest config is the VM whose
+    // qemu holds the tap device and whose address the tap carries. The others
+    // are skipped; a CreateVm for them rebuilds them on a fresh vm_index.
+    let mut newest_claim: std::collections::HashMap<i64, (SystemTime, &str)> =
+        std::collections::HashMap::new();
+    for scanned in &configs {
+        if !liveness_of(&scanned.config.vm_hash).is_some_and(UnitLiveness::is_active) {
+            continue;
+        }
+        let claim = newest_claim
+            .entry(scanned.config.vm_index)
+            .or_insert((scanned.modified, &scanned.config.vm_hash));
+        // Strictly newer replaces; a tie keeps the first in sorted file order.
+        if scanned.modified > claim.0 {
+            *claim = (scanned.modified, &scanned.config.vm_hash);
+        }
+    }
+    let outranked: std::collections::HashSet<String> = configs
+        .iter()
+        .filter(|scanned| {
+            newest_claim
+                .get(&scanned.config.vm_index)
+                .is_some_and(|(_, winner)| *winner != scanned.config.vm_hash)
+                && liveness_of(&scanned.config.vm_hash).is_some_and(UnitLiveness::is_active)
+        })
+        .map(|scanned| scanned.config.vm_hash.clone())
+        .collect();
     let mut claimed_vm_indices: std::collections::HashSet<i64> = std::collections::HashSet::new();
 
-    for config in configs {
+    for scanned in configs {
+        let config = scanned.config;
         let vm_hash = config.vm_hash.clone();
-        let unit = controller_unit_name(&vm_hash);
-        // Some(state): the bus answered; None: unknown (bus unreachable).
-        let liveness: Option<UnitLiveness> = unit_states
-            .as_ref()
-            .map(|states| states.get(&unit).copied().unwrap_or(UnitLiveness::Unknown));
+        let liveness = liveness_of(&vm_hash);
         let active = liveness.is_some_and(UnitLiveness::is_active);
 
         // Like Python, the vm_index claim precedes the per-VM rebuild: an
         // active duplicate is never adopted (Python destroys it at startup
         // and answers NOT_FOUND; this daemon just does not adopt, because a
         // daemon that adopts must not destroy state).
-        if active && !claimed_vm_indices.insert(config.vm_index) {
-            tracing::warn!(
-                vm_hash,
-                vm_index = config.vm_index,
-                "vm_index already claimed by an earlier active config; skipping the VM"
-            );
-            continue;
+        if active {
+            if outranked.contains(&vm_hash) {
+                tracing::warn!(
+                    vm_hash,
+                    vm_index = config.vm_index,
+                    "vm_index also claimed by another active config; \
+                     skipping the VM, a create rebuilds it on a fresh vm_index"
+                );
+                continue;
+            }
+            claimed_vm_indices.insert(config.vm_index);
         }
 
         let mut qemu = match config.vm {
@@ -879,12 +915,23 @@ pub fn build_world_view(
 /// anything above this is not a config and must not be buffered.
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 
+/// A parsed on-disk config with the time its file was last written, which
+/// decides a contested vm_index at adoption.
+struct ScannedConfig {
+    config: ControllerConfig,
+    modified: SystemTime,
+    path: std::path::PathBuf,
+    /// The file is `{vm_hash}-controller.json`, the one the daemon reads
+    /// back later.
+    canonical: bool,
+}
+
 /// Scan `{EXECUTION_ROOT}/*-controller.json` in sorted order, parsing each;
 /// unparseable, oversized or non-regular files are logged and skipped,
 /// never fatal. Each config is keyed on its EMBEDDED `vm_hash`, like the
 /// Python loader (pool.py keys the unit name, port mappings, static IPv6
 /// and vm_id on `config.vm_hash`; the file name only locates the file).
-fn scan_controller_configs(settings: &Settings) -> Vec<ControllerConfig> {
+fn scan_controller_configs(settings: &Settings) -> Vec<ScannedConfig> {
     let mut paths: Vec<std::path::PathBuf> = match std::fs::read_dir(&settings.execution_root) {
         Ok(dir) => dir
             .filter_map(|entry| entry.ok().map(|entry| entry.path()))
@@ -952,14 +999,45 @@ fn scan_controller_configs(settings: &Settings) -> Vec<ControllerConfig> {
                         "controller config vm_hash differs from its file name; using the embedded hash"
                     );
                 }
-                configs.push(config);
+                // A filesystem without timestamps ranks the file oldest.
+                let modified = metadata.modified().unwrap_or(UNIX_EPOCH);
+                let canonical = config.vm_hash == file_hash;
+                configs.push(ScannedConfig {
+                    config,
+                    modified,
+                    path: path.clone(),
+                    canonical,
+                });
             }
             Err(error) => {
                 tracing::warn!(path = %path.display(), %error, "unparseable controller config; skipping the VM");
             }
         }
     }
-    configs
+    // Two files can embed one hash (a hand-made copy). Adopting both would
+    // register the VM twice, so the canonical file wins, else the first in
+    // sorted order.
+    let mut kept: Vec<ScannedConfig> = Vec::new();
+    let mut by_hash: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for scanned in configs {
+        let Some(&index) = by_hash.get(&scanned.config.vm_hash) else {
+            by_hash.insert(scanned.config.vm_hash.clone(), kept.len());
+            kept.push(scanned);
+            continue;
+        };
+        let dropped = if scanned.canonical && !kept[index].canonical {
+            std::mem::replace(&mut kept[index], scanned)
+        } else {
+            scanned
+        };
+        tracing::warn!(
+            path = %dropped.path.display(),
+            vm_hash = dropped.config.vm_hash,
+            kept = %kept[index].path.display(),
+            "controller config embeds the vm_hash of another file; skipping it"
+        );
+    }
+    kept
 }
 
 // ── IP assignment math ──────────────────────────────────────────────────
@@ -1660,6 +1738,37 @@ mod tests {
     }
 
     #[test]
+    fn a_copy_embedding_another_files_vm_hash_is_skipped() {
+        // Two files, one embedded hash: the canonical file is the one the
+        // daemon reads back later, so it is the one adopted, although the
+        // copy sorts first.
+        let tmp = tempfile::tempdir().unwrap();
+        populate_execution_root(tmp.path());
+        let fixture_name = format!("{}-controller.json", test_fixtures::QEMU_HASH);
+        let fixture =
+            std::fs::read_to_string(test_fixtures::fixtures_dir().join(&fixture_name)).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&fixture).unwrap();
+        value["vm_id"] = 9.into();
+        std::fs::write(
+            tmp.path()
+                .join(format!("{}-controller.json", "a".repeat(64))),
+            value.to_string(),
+        )
+        .unwrap();
+
+        let settings = test_settings(tmp.path());
+        let units = StaticUnitStates::with_active_vms(&[test_fixtures::QEMU_HASH]);
+        let world = build_world_view(&settings, &units, &[], &FakeTapBackend::new());
+
+        assert_eq!(world.len(), 3, "the fixture plus the two inactive fixtures");
+        assert_eq!(
+            world.entries[test_fixtures::QEMU_HASH].vm_index,
+            3,
+            "the canonical file's config, not the copy's"
+        );
+    }
+
+    #[test]
     fn the_world_is_keyed_on_the_embedded_vm_hash() {
         // P2: Python keys everything on Configuration.vm_hash; a config
         // file whose name disagrees is served under the embedded hash.
@@ -1683,28 +1792,69 @@ mod tests {
         assert!(!world.entries.contains_key(&"0".repeat(64)));
     }
 
-    #[test]
-    fn duplicate_vm_indices_adopt_only_the_first_active_config() {
-        // P1: Python's claimed_vm_ids guard. Two ACTIVE configs share
-        // vm_index 3; the first in sorted file order wins, the second is
-        // not served at all.
+    /// Two ACTIVE configs sharing vm_index 3: the QEMU fixture and a clone
+    /// of it under a hash that sorts first, each file stamped with the given
+    /// modification time.
+    fn contested_vm_index_root(
+        clone_modified: SystemTime,
+        fixture_modified: SystemTime,
+    ) -> (tempfile::TempDir, String) {
         let tmp = tempfile::tempdir().unwrap();
         populate_execution_root(tmp.path());
         let clone_hash = "a".repeat(64);
-        let fixture = std::fs::read_to_string(
-            test_fixtures::fixtures_dir()
-                .join(format!("{}-controller.json", test_fixtures::QEMU_HASH)),
-        )
-        .unwrap();
+        let fixture_name = format!("{}-controller.json", test_fixtures::QEMU_HASH);
+        let fixture =
+            std::fs::read_to_string(test_fixtures::fixtures_dir().join(&fixture_name)).unwrap();
         let mut value: serde_json::Value = serde_json::from_str(&fixture).unwrap();
         value["vm_hash"] = clone_hash.clone().into();
-        // "aaaa..." sorts before the real fixture file name, so the clone
-        // is scanned (and claims vm_index 3) first.
-        std::fs::write(
-            tmp.path().join(format!("{clone_hash}-controller.json")),
-            value.to_string(),
-        )
-        .unwrap();
+        let clone_name = format!("{clone_hash}-controller.json");
+        std::fs::write(tmp.path().join(&clone_name), value.to_string()).unwrap();
+        for (name, modified) in [
+            (clone_name, clone_modified),
+            (fixture_name, fixture_modified),
+        ] {
+            std::fs::File::options()
+                .write(true)
+                .open(tmp.path().join(name))
+                .unwrap()
+                .set_modified(modified)
+                .unwrap();
+        }
+        (tmp, clone_hash)
+    }
+
+    #[test]
+    fn a_contested_vm_index_goes_to_the_most_recently_written_config() {
+        // The 1.x line reused vm_indices. The newest config is the create
+        // that wired the tap last, so it is the one served; the older one
+        // is not served at all, whatever the file order says.
+        let newer = SystemTime::now();
+        let older = newer - std::time::Duration::from_secs(3600);
+        let (tmp, clone_hash) = contested_vm_index_root(older, newer);
+
+        let settings = test_settings(tmp.path());
+        let units =
+            StaticUnitStates::with_active_vms(&[clone_hash.as_str(), test_fixtures::QEMU_HASH]);
+        let world = build_world_view(&settings, &units, &[], &FakeTapBackend::new());
+
+        assert!(world.entries.contains_key(test_fixtures::QEMU_HASH));
+        assert!(
+            !world.entries.contains_key(clone_hash.as_str()),
+            "the older duplicate is skipped, not served, although its name sorts first"
+        );
+        assert_eq!(world.len(), 3, "the fixture plus the two inactive fixtures");
+        assert!(
+            !world.reserved_vm_indices.contains(&3),
+            "the served VM owns the index; nothing reserves it"
+        );
+    }
+
+    #[test]
+    fn a_contested_vm_index_tie_keeps_the_sorted_file_order() {
+        // P1: Python's claimed_vm_ids guard. Same write time: the first in
+        // sorted file order wins, the second is not served at all.
+        let same = SystemTime::now();
+        let (tmp, clone_hash) = contested_vm_index_root(same, same);
 
         let settings = test_settings(tmp.path());
         let units =
@@ -1717,6 +1867,24 @@ mod tests {
             "the duplicate is skipped, not served"
         );
         assert_eq!(world.len(), 3, "the clone plus the two inactive fixtures");
+    }
+
+    #[test]
+    fn an_inactive_config_never_contests_a_vm_index() {
+        // Only live controllers hold a tap: a stopped config with the same
+        // vm_index, however new, takes nothing from the running VM.
+        let newer = SystemTime::now();
+        let older = newer - std::time::Duration::from_secs(3600);
+        let (tmp, clone_hash) = contested_vm_index_root(newer, older);
+
+        let settings = test_settings(tmp.path());
+        let units = StaticUnitStates::with_active_vms(&[test_fixtures::QEMU_HASH]);
+        let world = build_world_view(&settings, &units, &[], &FakeTapBackend::new());
+
+        let fixture = &world.entries[test_fixtures::QEMU_HASH];
+        assert!(fixture.adopted_running);
+        assert_eq!(fixture.vm_index, 3);
+        assert!(!world.entries[clone_hash.as_str()].adopted_running);
     }
 
     #[test]

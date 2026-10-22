@@ -54,7 +54,21 @@ exists and whose systemd unit is `active`, but which the daemon does not
 currently track, goes through `readopt_live_controller` instead of creating
 a duplicate: this is the on-demand counterpart to boot-time adoption,
 serving the case where a controller outlived a daemon crash or a failed
-initial reattach.
+initial reattach. One such controller can never be re-adopted: the one
+whose on-disk `vm_index` another VM holds, tracked or hidden in the reattach
+queue (a pair the 1.x line's index reuse left behind, skipped at boot-time
+adoption), since restoring it
+would rewire the holder's tap and nft chains. Its create first runs the spec
+refusals and checks that the agent's requested IPv6 is free (a create they
+refuse leaves the controller as it was; only the GPU mode switch, which
+must wait for the duplicate to release the card, the under-lock address
+re-check and the NUMA placement can still refuse after the stop, and the
+next create restarts the stopped unit cleanly), then stops and disables the
+controller, leaving the holder's
+networking alone, and falls through to the clean create below: the VM
+restarts once on a fresh `vm_index` with the address the agent requested.
+The reattach retry loop keeps refusing such a controller; only a create
+carries the identity needed to rebuild it.
 
 The boot itself (tap creation, nftables chain setup, cloud-init seed,
 controller-config write, NUMA drop-in, unit start) runs inside
