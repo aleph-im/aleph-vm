@@ -61,9 +61,10 @@ adoption), since restoring it
 would rewire the holder's tap and nft chains. Its create first runs the spec
 refusals and checks that the agent's requested IPv6 is free (a create they
 refuse leaves the controller as it was; only the GPU mode switch, which
-must wait for the duplicate to release the card, and the NUMA placement can
-still refuse after the stop, and the next create restarts the stopped unit
-cleanly), then stops and disables the controller, leaving the holder's
+must wait for the duplicate to release the card, the under-lock address
+re-check and the NUMA placement can still refuse after the stop, and the
+next create restarts the stopped unit cleanly), then stops and disables the
+controller, leaving the holder's
 networking alone, and falls through to the clean create below: the VM
 restarts once on a fresh `vm_index` with the address the agent requested.
 The reattach retry loop keeps refusing such a controller; only a create

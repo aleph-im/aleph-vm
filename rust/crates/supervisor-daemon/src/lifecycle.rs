@@ -3552,6 +3552,8 @@ fn create_vm_inner(
                         let entry = same_spec_or_conflict(&entry, &request)?;
                         return Ok((entry, true));
                     }
+                    // No spec conflict here, unlike the readopt arm: the VM
+                    // restarts anyway, on the requested spec like a fresh create.
                     Some(holder) => unadoptable = Some((config.vm_index, holder)),
                 }
             }
@@ -3582,8 +3584,10 @@ fn create_vm_inner(
     ensure_snp_gpu_cap(&validated_gpus, wanted_cc)?;
     // The spec refusals above and the agent's address come first, so a create
     // they refuse leaves the duplicate's controller as it was. Only the GPU
-    // mode switch and the NUMA placement below can still refuse, and they
-    // unwind to a stopped unit the next create restarts cleanly.
+    // mode switch, the under-lock address re-check (a concurrent RPC can
+    // take the address during the stop) and the NUMA placement below can
+    // still refuse, and they unwind to a stopped unit the next create
+    // restarts cleanly.
     if let Some((vm_index, holder)) = unadoptable {
         if let Some(ipv6) = &requested_ipv6 {
             ensure_ipv6_free(&state.world.blocking_read(), ipv6, &vm_id)?;
