@@ -1044,22 +1044,27 @@ async def _verify_with_node(mock_request, account, *, claimed, own):
     return await _verify_aleph_signature(request, auth)
 
 
+@pytest.mark.asyncio
 async def test_verify_accepts_payload_naming_this_node(mock_request, authorize_signer):
     assert await _verify_with_node(mock_request, authorize_signer, claimed=THIS_NODE, own=THIS_NODE) is True
 
 
+@pytest.mark.asyncio
 async def test_verify_node_hash_match_ignores_case(mock_request, authorize_signer):
     assert await _verify_with_node(mock_request, authorize_signer, claimed=THIS_NODE.upper(), own=THIS_NODE) is True
 
 
+@pytest.mark.asyncio
 async def test_verify_rejects_payload_naming_another_node(mock_request, authorize_signer):
     assert await _verify_with_node(mock_request, authorize_signer, claimed=OTHER_NODE, own=THIS_NODE) is False
 
 
+@pytest.mark.asyncio
 async def test_verify_rejects_named_node_when_own_hash_unresolved(mock_request, authorize_signer):
     assert await _verify_with_node(mock_request, authorize_signer, claimed=THIS_NODE, own=None) is False
 
 
+@pytest.mark.asyncio
 async def test_verify_rejects_named_node_without_node_identity(mock_request, authorize_signer):
     payload_bytes = make_signed_payload(body=b"{}", node_hash=THIS_NODE)
     auth = make_auth_header(authorize_signer, payload_bytes)
@@ -1067,15 +1072,18 @@ async def test_verify_rejects_named_node_without_node_identity(mock_request, aut
     assert await _verify_aleph_signature(request, auth) is False
 
 
+@pytest.mark.asyncio
 async def test_verify_rejects_non_string_node_hash(mock_request, authorize_signer):
     assert await _verify_with_node(mock_request, authorize_signer, claimed=12345, own=THIS_NODE) is False
 
 
+@pytest.mark.asyncio
 async def test_verify_accepts_payload_without_node_hash(mock_request, authorize_signer):
     """A scheduler that does not name the node yet is still served."""
     assert await _verify_with_node(mock_request, authorize_signer, claimed=None, own=THIS_NODE) is True
 
 
+@pytest.mark.asyncio
 async def test_verify_rejects_tampered_node_hash(mock_request, authorize_signer):
     """Rewriting the node named in a captured payload breaks the signature."""
     signed = make_signed_payload(body=b"{}", node_hash=OTHER_NODE)
