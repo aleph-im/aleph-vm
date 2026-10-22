@@ -3252,7 +3252,12 @@ fn stop_unadoptable_duplicate(
     );
     units::stop_and_disable(&*state.units, &unit)?;
     wait_for_controller_stopped(state, &unit);
-    state.world.blocking_write().failed_reattach.remove(vm_id);
+    // A queued duplicate reserved the index; the holder's entry keeps it out
+    // of the allocator, so the reservation goes with the queue entry.
+    let mut world = state.world.blocking_write();
+    if let Some(queued) = world.failed_reattach.remove(vm_id) {
+        world.reserved_vm_indices.remove(&queued.vm_index);
+    }
     Ok(())
 }
 
@@ -7963,6 +7968,38 @@ mod tests {
                 .iter()
                 .any(|action| action == "delete vmtap4")
         );
+    }
+
+    #[test]
+    fn rebuilding_a_queued_duplicate_releases_its_index_claim() {
+        // The duplicate may sit in the reattach queue with its index
+        // reserved (hidden at adoption, the holder adopted stopped on the
+        // same index). The rebuild drops both: the holder's entry already
+        // keeps the index out of the allocator.
+        let harness = harness();
+        let state = &harness.state;
+        let root = state.host.settings.execution_root.clone();
+        let holder = hash('b');
+        create_vm(state, spec(&holder, &root)).unwrap();
+        let duplicate = hash('a');
+        seed_live_duplicate(&harness, &duplicate, 4);
+        {
+            let mut world = state.world.blocking_write();
+            world.reserved_vm_indices.insert(4);
+            world
+                .failed_reattach
+                .insert(duplicate.clone(), world::FailedReattach::new(4));
+        }
+
+        let (entry, _) = create_vm(state, spec(&duplicate, &root)).unwrap();
+        assert_eq!(entry.vm_index, 5);
+        let world = state.world.blocking_read();
+        assert!(world.failed_reattach.is_empty(), "the queue entry is gone");
+        assert!(
+            !world.reserved_vm_indices.contains(&4),
+            "the holder owns the index; nothing reserves it"
+        );
+        assert_eq!(world.entries[&holder].vm_index, 4);
     }
 
     #[test]
