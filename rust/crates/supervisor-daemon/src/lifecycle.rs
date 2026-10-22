@@ -4491,7 +4491,7 @@ pub fn has_pending_reattach(state: &DaemonState) -> bool {
 /// adoption for every queued VM not yet exhausted. A VM that succeeds is
 /// dropped from the queue; one that fails has its attempt count bumped and
 /// is marked exhausted at the cap (its controller keeps running, the daemon
-/// just cannot manage it; operator intervention required).
+/// just cannot manage it; a CreateVm may still adopt or rebuild it).
 pub fn retry_failed_reattachments_once(state: &DaemonState) {
     let queued: Vec<String> = state
         .world
@@ -4591,8 +4591,9 @@ fn note_reattach_retry_failure(state: &DaemonState, vm_id: &str) {
             vm_id,
             attempts = queued.attempts,
             "giving up reattaching the VM; its controller is still running but \
-             the supervisor cannot manage it; the VM is NOT auto-stopped, \
-             operator intervention required"
+             the supervisor cannot manage it; the VM is NOT auto-stopped; a \
+             CreateVm for it may still adopt or rebuild it, otherwise operator \
+             intervention is required"
         );
     } else {
         tracing::warn!(
