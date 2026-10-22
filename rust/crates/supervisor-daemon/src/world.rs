@@ -634,9 +634,9 @@ pub fn build_world_view(
     // Python's claimed_vm_ids guard (pool.load_persistent_executions): the
     // 1.x line reused vm_indices, so two configs can claim one. Only one
     // active config per vm_index is adopted, so two VMs never share a tap,
-    // and it is the most recently written one: a create wires the tap right
-    // after writing the config, so the newest config is the VM whose qemu
-    // holds the tap device and whose address the tap carries. The others
+    // and it is the most recently written one: a create wires the tap and
+    // writes the config back to back, so the newest config is the VM whose
+    // qemu holds the tap device and whose address the tap carries. The others
     // are skipped; a CreateVm for them rebuilds them on a fresh vm_index.
     let mut newest_claim: std::collections::HashMap<i64, (SystemTime, &str)> =
         std::collections::HashMap::new();
@@ -679,7 +679,7 @@ pub fn build_world_view(
                 tracing::warn!(
                     vm_hash,
                     vm_index = config.vm_index,
-                    "vm_index also claimed by a more recently written active config; \
+                    "vm_index also claimed by another active config; \
                      skipping the VM, a create rebuilds it on a fresh vm_index"
                 );
                 continue;

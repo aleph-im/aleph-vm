@@ -196,9 +196,10 @@ Before the gRPC socket is bound, `build_world_view`
    the same `vm_index` (the 1.x line reused indices, so an in-place
    upgrade can carry such pairs), only the most recently written one is
    adopted (`world.rs`, the Python `claimed_vm_ids` guard with a better
-   tie-break: a create wires the tap right after writing the config, so
-   the newest config is the VM whose qemu holds the tap and whose address
-   the tap carries; equal timestamps fall back to sorted file order). The
+   tie-break: a create wires the tap and writes the config back to back,
+   so the newest config is the VM whose qemu holds the tap and whose
+   address the tap carries; equal timestamps fall back to sorted file
+   order). The
    other is not served; a later `CreateVm` for it stops its controller and
    rebuilds it on a fresh `vm_index` (see the CreateVm section of
    [`vm-lifecycle.md`](vm-lifecycle.md)). The index itself stays claimed by

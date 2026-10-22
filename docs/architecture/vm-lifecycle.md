@@ -55,8 +55,9 @@ currently track, goes through `readopt_live_controller` instead of creating
 a duplicate: this is the on-demand counterpart to boot-time adoption,
 serving the case where a controller outlived a daemon crash or a failed
 initial reattach. One such controller can never be re-adopted: the one
-whose on-disk `vm_index` another tracked VM holds (a pair the 1.x line's
-index reuse left behind, skipped at boot-time adoption), since restoring it
+whose on-disk `vm_index` another VM holds, tracked or hidden in the reattach
+queue (a pair the 1.x line's index reuse left behind, skipped at boot-time
+adoption), since restoring it
 would rewire the holder's tap and nft chains. Its create first runs the spec
 refusals and checks that the agent's requested IPv6 is free (a create they
 refuse leaves the controller as it was; only the GPU mode switch, which
