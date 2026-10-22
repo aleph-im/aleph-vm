@@ -105,13 +105,14 @@ def reset_replay_cache():
     _accepted_payloads.clear()
 
 
-def make_signed_payload(*, method="POST", path="/control/allocations", body=b"", iat=None) -> bytes:
-    """Build the canonical JSON bytes that get signed."""
+def make_signed_payload(*, method="POST", path="/control/allocations", body=b"", iat=None, **extra) -> bytes:
+    """Build the canonical JSON bytes that get signed; `extra` adds optional fields."""
     payload = {
         "method": method,
         "path": path,
         "body_sha256": sha256(body).hexdigest(),
         "iat": iat if iat is not None else int(time_module.time()),
+        **extra,
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
 
@@ -152,6 +153,8 @@ def mock_request(mocker):
         # this double is its own clone.
         request.client_max_size = MAX_SIGNED_REQUEST_BODY_BYTES
         request.clone = lambda **_kwargs: request
+        # No node identity unless a test installs one.
+        request.app = {}
         return request
 
     return factory
@@ -1021,3 +1024,73 @@ async def test_verify_rejects_unknown_signer_via_default_fallback(mock_request, 
     request = mock_request(headers={"Authorization": auth}, body=b"{}")
 
     assert await _verify_aleph_signature(request, auth) is False
+
+
+# --- node binding -----------------------------------------------------------
+
+THIS_NODE = "a" * 64
+OTHER_NODE = "b" * 64
+
+
+def _node_identity(node_hash):
+    return types.SimpleNamespace(get_node_hash=lambda: node_hash)
+
+
+async def _verify_with_node(mock_request, account, *, claimed, own):
+    payload_bytes = make_signed_payload(body=b"{}", **({"node_hash": claimed} if claimed is not None else {}))
+    auth = make_auth_header(account, payload_bytes)
+    request = mock_request(headers={"Authorization": auth}, body=b"{}")
+    request.app = {"node_identity": _node_identity(own)}
+    return await _verify_aleph_signature(request, auth)
+
+
+@pytest.mark.asyncio
+async def test_verify_accepts_payload_naming_this_node(mock_request, authorize_signer):
+    assert await _verify_with_node(mock_request, authorize_signer, claimed=THIS_NODE, own=THIS_NODE) is True
+
+
+@pytest.mark.asyncio
+async def test_verify_node_hash_match_ignores_case(mock_request, authorize_signer):
+    assert await _verify_with_node(mock_request, authorize_signer, claimed=THIS_NODE.upper(), own=THIS_NODE) is True
+
+
+@pytest.mark.asyncio
+async def test_verify_rejects_payload_naming_another_node(mock_request, authorize_signer):
+    assert await _verify_with_node(mock_request, authorize_signer, claimed=OTHER_NODE, own=THIS_NODE) is False
+
+
+@pytest.mark.asyncio
+async def test_verify_rejects_named_node_when_own_hash_unresolved(mock_request, authorize_signer):
+    assert await _verify_with_node(mock_request, authorize_signer, claimed=THIS_NODE, own=None) is False
+
+
+@pytest.mark.asyncio
+async def test_verify_rejects_named_node_without_node_identity(mock_request, authorize_signer):
+    payload_bytes = make_signed_payload(body=b"{}", node_hash=THIS_NODE)
+    auth = make_auth_header(authorize_signer, payload_bytes)
+    request = mock_request(headers={"Authorization": auth}, body=b"{}")
+    assert await _verify_aleph_signature(request, auth) is False
+
+
+@pytest.mark.asyncio
+async def test_verify_rejects_non_string_node_hash(mock_request, authorize_signer):
+    assert await _verify_with_node(mock_request, authorize_signer, claimed=12345, own=THIS_NODE) is False
+
+
+@pytest.mark.asyncio
+async def test_verify_accepts_payload_without_node_hash(mock_request, authorize_signer):
+    """A scheduler that does not name the node yet is still served."""
+    assert await _verify_with_node(mock_request, authorize_signer, claimed=None, own=THIS_NODE) is True
+
+
+@pytest.mark.asyncio
+async def test_verify_rejects_tampered_node_hash(mock_request, authorize_signer):
+    """Rewriting the node named in a captured payload breaks the signature."""
+    signed = make_signed_payload(body=b"{}", node_hash=OTHER_NODE)
+    auth = make_auth_header(authorize_signer, signed)
+    rewritten = make_signed_payload(body=b"{}", node_hash=THIS_NODE, iat=json.loads(signed)["iat"])
+    sig = auth.split("sig=")[1].split(",")[0]
+    forged = f"Aleph-EIP191-V1 sig={sig},payload={rewritten.hex()}"
+    request = mock_request(headers={"Authorization": forged}, body=b"{}")
+    request.app = {"node_identity": _node_identity(THIS_NODE)}
+    assert await _verify_aleph_signature(request, forged) is False

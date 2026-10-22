@@ -119,6 +119,25 @@ doesn't require a running event loop."""
 
 PAYLOAD_REQUIRED_FIELDS = ("method", "path", "body_sha256", "iat")
 
+PAYLOAD_NODE_FIELD = "node_hash"
+"""Optional payload field naming the node the request was signed for. When
+present it must match this node's own hash. Absent, the payload is accepted
+as before, until every scheduler emits it."""
+
+
+def _node_binding_ok(request: web.Request, payload: dict) -> bool:
+    """A payload that names a node must name this one; one that names none
+    passes. A node that has not resolved its own hash yet cannot tell, so it
+    refuses."""
+    if PAYLOAD_NODE_FIELD not in payload:
+        return True
+    claimed = payload[PAYLOAD_NODE_FIELD]
+    if not isinstance(claimed, str):
+        return False
+    identity = request.app.get("node_identity")
+    own = identity.get_node_hash() if identity else None
+    return own is not None and claimed.lower() == own.lower()
+
 
 async def _accept_payload_if_new(signer_key: str, payload_hash: str, iat: int) -> bool:
     """Atomically check this exact payload is unseen for this signer and record it.
@@ -191,7 +210,8 @@ async def _verify_aleph_signature(
         # endpoints: callers control them, attackers do too, and silent
         # under-binding is the worst of both worlds.
         has_query = bool(request.query_string)
-        if stale or method_path_mismatch or has_query:
+        wrong_node = not _node_binding_ok(request, payload)
+        if stale or method_path_mismatch or has_query or wrong_node:
             return False
 
         # Crypto: recover signer and check authorization.

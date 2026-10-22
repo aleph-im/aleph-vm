@@ -31,13 +31,15 @@ from eth_account import Account
 from eth_account.messages import encode_defunct
 
 
-def build_header(private_key: str, method: str, path: str, body: bytes) -> str:
+def build_header(private_key: str, method: str, path: str, body: bytes, node_hash: str | None = None) -> str:
     payload = {
         "method": method,
         "path": path,
         "body_sha256": sha256(body).hexdigest(),
         "iat": int(time.time()),
     }
+    if node_hash is not None:
+        payload["node_hash"] = node_hash
     # The signature covers these exact bytes, which travel in the header, so the
     # verifier re-parses whatever we send and any JSON encoding would work. Sort
     # and strip anyway: it keeps the payload compact, and makes the hash used by
@@ -52,6 +54,7 @@ def main() -> None:
     parser.add_argument("--key", required=True, help="signer private key, hex (0x-prefixed or not)")
     parser.add_argument("--path", required=True, help="request path, matched exactly (no query string allowed)")
     parser.add_argument("--method", default="POST", help="HTTP method (default: POST)")
+    parser.add_argument("--node-hash", help="hash of the node the request is for; the node refuses any other")
     parser.add_argument(
         "--body-file",
         default="-",
@@ -67,7 +70,7 @@ def main() -> None:
         with open(args.body_file, "rb") as handle:
             body = handle.read()
 
-    print(build_header(args.key, args.method, args.path, body))
+    print(build_header(args.key, args.method, args.path, body, node_hash=args.node_hash))
 
 
 if __name__ == "__main__":
