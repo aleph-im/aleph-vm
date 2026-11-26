@@ -87,7 +87,6 @@ async def repost(request: web.Request):
 
 async def properties(request: web.Request):
     logger.debug("Forwarding signing properties")
-    _ = request
 
     url = f"{ALEPH_VM_CONNECTOR}/properties"
     session: aiohttp.ClientSession = request.app["http_session"]
