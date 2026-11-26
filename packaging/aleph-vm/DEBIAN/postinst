@@ -55,6 +55,10 @@ fi
 
 # Systemd is absent from containers
 if ! [[ -v container ]]; then
+  # Apply the inotify limits immediately; /etc/sysctl.d also applies them at boot.
+  sysctl -q -p /etc/sysctl.d/99-aleph-vm-inotify.conf || \
+    echo "aleph-vm: warning: could not apply inotify sysctl limits" >&2
+
   systemctl daemon-reload
   systemctl enable aleph-vm-supervisor.service aleph-vm-agent.service
   systemctl restart aleph-vm-supervisor.service
