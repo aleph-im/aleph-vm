@@ -166,6 +166,31 @@ async def list_keys_from_cache(request: web.Request):
     return web.json_response(keys)
 
 
+def create_app(vm_hash: str | None = None) -> web.Application:
+    app = web.Application()
+    app["meta_vm_hash"] = vm_hash or "_"
+    # One session for the whole process: a session (and its resolver) per
+    # request leaks a c-ares inotify watcher on /etc/resolv.conf each time.
+    app.on_startup.append(create_http_session)
+    app.on_cleanup.append(close_http_session)
+
+    app.router.add_route(method="GET", path="/properties", handler=properties)
+    app.router.add_route(method="POST", path="/sign", handler=sign)
+
+    app.router.add_route(method="GET", path="/cache/", handler=list_keys_from_cache)
+    app.router.add_route(method="GET", path="/cache/{key:.*}", handler=get_from_cache)
+    app.router.add_route(method="PUT", path="/cache/{key:.*}", handler=put_in_cache)
+    app.router.add_route(method="DELETE", path="/cache/{key:.*}", handler=delete_from_cache)
+
+    app.router.add_route(method="GET", path="/{tail:.*}", handler=proxy)
+    app.router.add_route(method="HEAD", path="/{tail:.*}", handler=proxy)
+    app.router.add_route(method="OPTIONS", path="/{tail:.*}", handler=proxy)
+
+    app.router.add_route(method="POST", path="/api/v0/ipfs/pubsub/pub", handler=repost)
+    app.router.add_route(method="POST", path="/api/v0/p2p/pubsub/pub", handler=repost)
+    return app
+
+
 def run_guest_api(
     unix_socket_path: Path,
     vm_hash: str | None = None,
@@ -191,27 +216,7 @@ def run_guest_api(
         )
 
     setproctitle(f"aleph-vm guest_api on {unix_socket_path}")
-    app = web.Application()
-    app["meta_vm_hash"] = vm_hash or "_"
-    # One session for the whole process: a session (and its resolver) per
-    # request leaks a c-ares inotify watcher on /etc/resolv.conf each time.
-    app.on_startup.append(create_http_session)
-    app.on_cleanup.append(close_http_session)
-
-    app.router.add_route(method="GET", path="/properties", handler=properties)
-    app.router.add_route(method="POST", path="/sign", handler=sign)
-
-    app.router.add_route(method="GET", path="/cache/", handler=list_keys_from_cache)
-    app.router.add_route(method="GET", path="/cache/{key:.*}", handler=get_from_cache)
-    app.router.add_route(method="PUT", path="/cache/{key:.*}", handler=put_in_cache)
-    app.router.add_route(method="DELETE", path="/cache/{key:.*}", handler=delete_from_cache)
-
-    app.router.add_route(method="GET", path="/{tail:.*}", handler=proxy)
-    app.router.add_route(method="HEAD", path="/{tail:.*}", handler=proxy)
-    app.router.add_route(method="OPTIONS", path="/{tail:.*}", handler=proxy)
-
-    app.router.add_route(method="POST", path="/api/v0/ipfs/pubsub/pub", handler=repost)
-    app.router.add_route(method="POST", path="/api/v0/p2p/pubsub/pub", handler=repost)
+    app = create_app(vm_hash)
 
     # web.run_app(app=app, port=9000)
     web.run_app(app=app, path=str(unix_socket_path))
