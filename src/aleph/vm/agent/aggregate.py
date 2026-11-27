@@ -1,3 +1,4 @@
+from http import HTTPStatus
 from logging import getLogger
 from typing import Any, TypedDict
 
@@ -97,15 +98,18 @@ async def get_user_aggregate(addr: str, keys_arg: list[str]) -> dict:
     url = f"{settings.API_SERVER}/api/v0/aggregates/{addr}.json"
     logger.info(f"Fetching aggregate from {url}")
     resp = await session.get(url, params={"keys": ",".join(keys_arg)})
-    # No aggregate for the user
-    if resp.status == 404:
-        return {}
-    # Raise an error if the request failed
+    try:
+        # No aggregate for the user
+        if resp.status == HTTPStatus.NOT_FOUND:
+            return {}
+        # Raise an error if the request failed
 
-    resp.raise_for_status()
+        resp.raise_for_status()
 
-    resp_data = await resp.json()
-    return resp_data["data"] or {}
+        resp_data = await resp.json()
+        return resp_data["data"] or {}
+    finally:
+        resp.release()
 
 
 async def get_user_settings(addr: str, key) -> dict:

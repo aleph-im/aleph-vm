@@ -106,8 +106,11 @@ async def discover_node_hash(identity: NodeIdentity, api_server: str) -> str | N
     try:
         session = get_session()
         resp = await session.get(f"{api_server}/api/v0/posts.json", params=params)
-        resp.raise_for_status()
-        data = await resp.json()
+        try:
+            resp.raise_for_status()
+            data = await resp.json()
+        finally:
+            resp.release()
     except Exception as e:
         logger.warning(f"Failed to query Aleph API for node discovery: {e}")
         return None
