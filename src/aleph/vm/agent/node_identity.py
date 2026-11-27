@@ -2,10 +2,10 @@ import asyncio
 import logging
 from pathlib import Path
 
-import aiohttp
 from aiohttp import web
 
 from aleph.vm.utils import create_task_log_exceptions
+from aleph.vm.utils.http import get_session
 
 logger = logging.getLogger(__name__)
 
@@ -104,10 +104,13 @@ async def discover_node_hash(identity: NodeIdentity, api_server: str) -> str | N
     }
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"{api_server}/api/v0/posts.json", params=params) as resp:
-                resp.raise_for_status()
-                data = await resp.json()
+        session = get_session()
+        resp = await session.get(f"{api_server}/api/v0/posts.json", params=params)
+        try:
+            resp.raise_for_status()
+            data = await resp.json()
+        finally:
+            resp.release()
     except Exception as e:
         logger.warning(f"Failed to query Aleph API for node discovery: {e}")
         return None

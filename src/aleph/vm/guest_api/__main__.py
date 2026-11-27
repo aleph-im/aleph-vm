@@ -37,16 +37,24 @@ async def get_redis(address: str = REDIS_ADDRESS) -> redis_async.Redis:
     return _redis
 
 
+async def create_http_session(app: web.Application) -> None:
+    app["http_session"] = aiohttp.ClientSession()
+
+
+async def close_http_session(app: web.Application) -> None:
+    await app["http_session"].close()
+
+
 async def proxy(request: web.Request):
     tail: str = request.match_info.get("tail") or ""
     path: str = tail.lstrip("/")
     query_string = request.rel_url.query_string
     url = f"{ALEPH_API_SERVER}/{path}?{query_string}"
 
-    async with aiohttp.ClientSession() as session:
-        async with session.request(method=request.method, url=url) as response:
-            data = await response.read()
-            return web.Response(body=data, status=response.status, content_type=response.content_type)
+    session: aiohttp.ClientSession = request.app["http_session"]
+    async with session.request(method=request.method, url=url) as response:
+        data = await response.read()
+        return web.Response(body=data, status=response.status, content_type=response.content_type)
 
 
 async def repost(request: web.Request):
@@ -67,10 +75,10 @@ async def repost(request: web.Request):
     else:
         url = f"{ALEPH_VM_CONNECTOR}{path}"
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url=url, json=new_data) as response:
-            data = await response.read()
-            return web.Response(body=data, status=response.status, content_type=response.content_type)
+    session: aiohttp.ClientSession = request.app["http_session"]
+    async with session.post(url=url, json=new_data) as response:
+        data = await response.read()
+        return web.Response(body=data, status=response.status, content_type=response.content_type)
 
 
 # async def decrypt_secret(request: web.Request):
@@ -79,13 +87,12 @@ async def repost(request: web.Request):
 
 async def properties(request: web.Request):
     logger.debug("Forwarding signing properties")
-    _ = request
 
     url = f"{ALEPH_VM_CONNECTOR}/properties"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url=url) as response:
-            data = await response.read()
-            return web.Response(body=data, status=response.status, content_type=response.content_type)
+    session: aiohttp.ClientSession = request.app["http_session"]
+    async with session.get(url=url) as response:
+        data = await response.read()
+        return web.Response(body=data, status=response.status, content_type=response.content_type)
 
 
 async def sign(request: web.Request):
@@ -100,14 +107,14 @@ async def sign(request: web.Request):
     logger.info("Forwarding signing request to VM Connector")
 
     url = f"{ALEPH_VM_CONNECTOR}/sign"
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url=url, json=message) as response:
-            signed_message = await response.read()
-            return web.Response(
-                body=signed_message,
-                status=response.status,
-                content_type=response.content_type,
-            )
+    session: aiohttp.ClientSession = request.app["http_session"]
+    async with session.post(url=url, json=message) as response:
+        signed_message = await response.read()
+        return web.Response(
+            body=signed_message,
+            status=response.status,
+            content_type=response.content_type,
+        )
 
 
 async def get_from_cache(request: web.Request):
@@ -159,6 +166,31 @@ async def list_keys_from_cache(request: web.Request):
     return web.json_response(keys)
 
 
+def create_app(vm_hash: str | None = None) -> web.Application:
+    app = web.Application()
+    app["meta_vm_hash"] = vm_hash or "_"
+    # One session for the whole process: a session (and its resolver) per
+    # request leaks a c-ares inotify watcher on /etc/resolv.conf each time.
+    app.on_startup.append(create_http_session)
+    app.on_cleanup.append(close_http_session)
+
+    app.router.add_route(method="GET", path="/properties", handler=properties)
+    app.router.add_route(method="POST", path="/sign", handler=sign)
+
+    app.router.add_route(method="GET", path="/cache/", handler=list_keys_from_cache)
+    app.router.add_route(method="GET", path="/cache/{key:.*}", handler=get_from_cache)
+    app.router.add_route(method="PUT", path="/cache/{key:.*}", handler=put_in_cache)
+    app.router.add_route(method="DELETE", path="/cache/{key:.*}", handler=delete_from_cache)
+
+    app.router.add_route(method="GET", path="/{tail:.*}", handler=proxy)
+    app.router.add_route(method="HEAD", path="/{tail:.*}", handler=proxy)
+    app.router.add_route(method="OPTIONS", path="/{tail:.*}", handler=proxy)
+
+    app.router.add_route(method="POST", path="/api/v0/ipfs/pubsub/pub", handler=repost)
+    app.router.add_route(method="POST", path="/api/v0/p2p/pubsub/pub", handler=repost)
+    return app
+
+
 def run_guest_api(
     unix_socket_path: Path,
     vm_hash: str | None = None,
@@ -184,23 +216,7 @@ def run_guest_api(
         )
 
     setproctitle(f"aleph-vm guest_api on {unix_socket_path}")
-    app = web.Application()
-    app["meta_vm_hash"] = vm_hash or "_"
-
-    app.router.add_route(method="GET", path="/properties", handler=properties)
-    app.router.add_route(method="POST", path="/sign", handler=sign)
-
-    app.router.add_route(method="GET", path="/cache/", handler=list_keys_from_cache)
-    app.router.add_route(method="GET", path="/cache/{key:.*}", handler=get_from_cache)
-    app.router.add_route(method="PUT", path="/cache/{key:.*}", handler=put_in_cache)
-    app.router.add_route(method="DELETE", path="/cache/{key:.*}", handler=delete_from_cache)
-
-    app.router.add_route(method="GET", path="/{tail:.*}", handler=proxy)
-    app.router.add_route(method="HEAD", path="/{tail:.*}", handler=proxy)
-    app.router.add_route(method="OPTIONS", path="/{tail:.*}", handler=proxy)
-
-    app.router.add_route(method="POST", path="/api/v0/ipfs/pubsub/pub", handler=repost)
-    app.router.add_route(method="POST", path="/api/v0/p2p/pubsub/pub", handler=repost)
+    app = create_app(vm_hash)
 
     # web.run_app(app=app, port=9000)
     web.run_app(app=app, path=str(unix_socket_path))

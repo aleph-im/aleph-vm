@@ -1,7 +1,7 @@
+from http import HTTPStatus
 from logging import getLogger
 from typing import Any, TypedDict
 
-import aiohttp
 from pydantic import BaseModel, Field, ValidationError
 
 from aleph.vm.conf import settings
@@ -94,12 +94,13 @@ async def get_user_aggregate(addr: str, keys_arg: list[str]) -> dict:
     https://github.com/aleph-im/pyaleph/blob/master/src/aleph/web/controllers/routes.py#L62
     """
 
-    async with aiohttp.ClientSession() as session:
-        url = f"{settings.API_SERVER}/api/v0/aggregates/{addr}.json"
-        logger.info(f"Fetching aggregate from {url}")
-        resp = await session.get(url, params={"keys": ",".join(keys_arg)})
+    session = get_session()
+    url = f"{settings.API_SERVER}/api/v0/aggregates/{addr}.json"
+    logger.info(f"Fetching aggregate from {url}")
+    resp = await session.get(url, params={"keys": ",".join(keys_arg)})
+    try:
         # No aggregate for the user
-        if resp.status == 404:
+        if resp.status == HTTPStatus.NOT_FOUND:
             return {}
         # Raise an error if the request failed
 
@@ -107,6 +108,8 @@ async def get_user_aggregate(addr: str, keys_arg: list[str]) -> dict:
 
         resp_data = await resp.json()
         return resp_data["data"] or {}
+    finally:
+        resp.release()
 
 
 async def get_user_settings(addr: str, key) -> dict:

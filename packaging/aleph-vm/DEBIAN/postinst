@@ -55,6 +55,19 @@ fi
 
 # Systemd is absent from containers
 if ! [[ -v container ]]; then
+  # Apply the inotify limits immediately; /etc/sysctl.d also applies them at boot.
+  sysctl -q -p /etc/sysctl.d/99-aleph-vm-inotify.conf || \
+    echo "aleph-vm: warning: could not apply inotify sysctl limits" >&2
+
+  # Later-sorting sysctl files override the packaged file at boot.
+  for sysctl_file in /etc/sysctl.d/*.conf /run/sysctl.d/*.conf /usr/lib/sysctl.d/*.conf; do
+    [ -f "$sysctl_file" ] || continue
+    if [[ "$(basename "$sysctl_file")" > "99-aleph-vm-inotify.conf" ]] \
+       && grep -Eq '^[[:space:]]*fs\.inotify\.(max_user_instances|max_user_watches)[[:space:]]*=' "$sysctl_file"; then
+      echo "aleph-vm: warning: $sysctl_file overrides 99-aleph-vm-inotify.conf at boot" >&2
+    fi
+  done
+
   systemctl daemon-reload
   systemctl enable aleph-vm-supervisor.service aleph-vm-agent.service
   systemctl restart aleph-vm-supervisor.service

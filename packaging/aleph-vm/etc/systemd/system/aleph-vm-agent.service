@@ -15,6 +15,9 @@ Restart=on-failure
 RestartPreventExitStatus=0 130 143
 RestartSec=10s
 TimeoutStopSec=30s
+# Guest API children are forked from the agent and inherit this limit. The
+# default 1024 is exhausted by a few hundred requests per process.
+LimitNOFILE=524288
 
 [Install]
 WantedBy=multi-user.target
